@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/schemas/fail-closed-guard-evidence-v1.json",
+  "title": "Fail-closed guard discriminating evidence receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "subject",
+    "claims"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "fail-closed-guard-evidence/v1"
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
+    }
+  },
+  "$defs": {
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controllerHead",
+        "batteryId"
+      ],
+      "properties": {
+        "controllerHead": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "batteryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "guardId",
+        "governingVariable",
+        "preservedVariables",
+        "candidate",
+        "bypassMutant",
+        "failureSignature"
+      ],
+      "properties": {
+        "guardId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "governingVariable": {
+          "$ref": "#/$defs/governingVariable"
+        },
+        "preservedVariables": {
+          "$ref": "#/$defs/dataMap"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "bypassMutant": {
+          "$ref": "#/$defs/bypassMutant"
+        },
+        "failureSignature": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "governingVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pointer",
+        "candidateValue",
+        "bypassValue"
+      ],
+      "properties": {
+        "pointer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "candidateValue": {
+          "$ref": "#/$defs/scalar"
+        },
+        "bypassValue": {
+          "$ref": "#/$defs/scalar"
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "executed",
+        "expectation",
+        "result"
+      ],
+      "properties": {
+        "inputs": {
+          "$ref": "#/$defs/dataMap"
+        },
+        "executed": {
+          "const": true
+        },
+        "expectation": {
+          "$ref": "#/$defs/observation"
+        },
+        "result": {
+          "$ref": "#/$defs/observation"
+        }
+      }
+    },
+    "bypassMutant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "change",
+        "inputs",
+        "executed",
+        "expectation",
+        "result"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "change": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "inputs": {
+          "$ref": "#/$defs/dataMap"
+        },
+        "executed": {
+          "const": true
+        },
+        "expectation": {
+          "$ref": "#/$defs/observation"
+        },
+        "result": {
+          "$ref": "#/$defs/observation"
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "testOutcome",
+        "observation",
+        "failureSignature"
+      ],
+      "properties": {
+        "testOutcome": {
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "observation": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "failureSignature": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      }
+    },
+    "dataMap": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/genericValue"
+      }
+    },
+    "genericValue": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/dataMap"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/genericValue"
+          }
+        },
+        {
+          "$ref": "#/$defs/scalar"
+        }
+      ]
+    },
+    "scalar": {
+      "type": [
+        "string",
+        "integer",
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}
