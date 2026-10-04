@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/contracts/lane-selection-input-v1.schema.json",
+  "title": "Complete receipt-bound current-cycle host judgments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "cycleId",
+    "selectionAt",
+    "capturedAt",
+    "validUntil",
+    "authorityRevision",
+    "finalAuthorityRevision",
+    "complete",
+    "ambiguous",
+    "waveOrder",
+    "executableWaveMilestoneId",
+    "judgments"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "lane-selection-input/v1" },
+    "receiptId": { "$ref": "#/$defs/identifier" },
+    "cycleId": { "$ref": "#/$defs/identifier" },
+    "selectionAt": { "$ref": "#/$defs/instant" },
+    "capturedAt": { "$ref": "#/$defs/instant" },
+    "validUntil": { "$ref": "#/$defs/instant" },
+    "authorityRevision": { "$ref": "#/$defs/identifier" },
+    "finalAuthorityRevision": { "$ref": "#/$defs/identifier" },
+    "complete": { "type": "boolean" },
+    "ambiguous": { "type": "boolean" },
+    "waveOrder": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/identifier" }
+    },
+    "executableWaveMilestoneId": {
+      "oneOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "judgments": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate",
+          "candidateRevision",
+          "milestoneNodeId",
+          "milestoneRevision",
+          "explicitPriority",
+          "launchSpine",
+          "gatedTrack",
+          "hardeningCloseout",
+          "milestoneExitGateSatisfied",
+          "complete",
+          "ambiguous",
+          "operator"
+        ],
+        "properties": {
+          "candidate": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+          "candidateRevision": { "$ref": "#/$defs/identifier" },
+          "milestoneNodeId": { "$ref": "#/$defs/identifier" },
+          "milestoneRevision": { "$ref": "#/$defs/identifier" },
+          "explicitPriority": { "type": "boolean" },
+          "launchSpine": { "type": "boolean" },
+          "gatedTrack": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["member", "open"],
+            "properties": {
+              "member": { "type": "boolean" },
+              "open": { "type": ["boolean", "null"] }
+            }
+          },
+          "hardeningCloseout": { "type": "boolean" },
+          "milestoneExitGateSatisfied": { "type": "boolean" },
+          "complete": { "type": "boolean" },
+          "ambiguous": { "type": "boolean" },
+          "operator": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "dependencyExists",
+              "windowOpen",
+              "complete",
+              "ambiguous",
+              "capturedAt",
+              "validUntil",
+              "revision",
+              "finalRevision"
+            ],
+            "properties": {
+              "dependencyExists": { "type": "boolean" },
+              "windowOpen": { "type": ["boolean", "null"] },
+              "complete": { "type": "boolean" },
+              "ambiguous": { "type": "boolean" },
+              "capturedAt": { "$ref": "#/$defs/instant" },
+              "validUntil": { "$ref": "#/$defs/instant" },
+              "revision": { "$ref": "#/$defs/identifier" },
+              "finalRevision": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T.+(?:Z|[+-]\\d{2}:\\d{2})$"
+    }
+  }
+}
