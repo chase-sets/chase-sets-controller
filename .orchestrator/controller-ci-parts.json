@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "controller-ci-parts/v1",
+  "items": [
+    {
+      "identity": "test:board-hourly-scale.test.ps1",
+      "durationCompatibility": {
+        "baselineHead": "2815303128f3151e10d71bfdd351dc9b659a2b47",
+        "measuredSourceSha256": "b6ddaba00dd80074ada6ec28dd7f5b2ba20c05b59433b4a1afb6dd156c405ff6",
+        "candidateSourceSha256": "0a2c2490d1cfe91def095353b15b99bd912cb9df1b4cb68731a3bf78fb188db0",
+        "proof": "controller-ci-coverage.check.ps1: unchanged extracted source and seven-call union"
+      },
+      "selector": "-Arm",
+      "parts": [
+        { "name": "candidate", "weight": 96 },
+        { "name": "baseline", "weight": 190 },
+        { "name": "issue-scan", "weight": 195 },
+        { "name": "no-linkage", "weight": 200 },
+        { "name": "ten-item", "weight": 180 }
+      ]
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1",
+      "durationCompatibility": {
+        "baselineHead": "2815303128f3151e10d71bfdd351dc9b659a2b47",
+        "measuredSourceSha256": "6d544fb21863781d62062cd43205b12c2a8f18b3c2c65c54454f142c77cd4114",
+        "candidateSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+        "proof": "controller-ci-coverage.check.ps1: original source after partition-plumbing removal and disjoint region union"
+      },
+      "selector": "-Part",
+      "parts": [
+        { "name": "product-census", "weight": 2 },
+        { "name": "authority", "weight": 1 },
+        { "name": "dispatch", "weight": 4 },
+        { "name": "collector", "weight": 1 },
+        { "name": "ownership", "weight": 4 }
+      ]
+    }
+  ]
+}
