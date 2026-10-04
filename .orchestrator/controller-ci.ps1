@@ -1,0 +1,311 @@
+[CmdletBinding()]
+param(
+  [ValidateSet('Library','Plan','Shard','Merge','Seal')][string]$Mode = 'Library',
+  [string]$ControllerRoot,
+  [string]$BaselineRoot,
+  [string]$BaselineHead = 'e952418ff26cd0417564392b5c3d92cc96a945c3',
+  [string]$ArtifactDigest,
+  [string]$ArtifactId,
+  [string]$ProductSha,
+  [string]$Items = '',
+  [ValidateSet('full','impact')][string]$Scope = 'full',
+  [string]$PlanPath,
+  [string]$OutputDirectory,
+  [ValidateRange(0,9)][int]$Shard = 0
+)
+$ErrorActionPreference = 'Stop'
+
+function Assert-Ci([bool]$Condition, [string]$Message) {
+  if (-not $Condition) { throw "CONTROLLER_CI: $Message" }
+}
+
+function Write-CiJson($Value, [string]$Path) {
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent ([IO.Path]::GetFullPath($Path))))
+  [IO.File]::WriteAllText($Path, (($Value | ConvertTo-Json -Depth 40) + "`n"), [Text.UTF8Encoding]::new($false))
+}
+
+function Get-CiHead([string]$Root) {
+  $value = @(& git -C $Root rev-parse HEAD 2>&1) -join ''
+  Assert-Ci ($LASTEXITCODE -eq 0 -and $value -cmatch '^[a-f0-9]{40}$') 'unreadable checkout head'
+  return $value
+}
+
+function Get-CiSourceHead([string]$Root, [string]$CheckoutHead) {
+  $body = @(& git -C $Root show -s --format=%B $CheckoutHead) -join "`n"
+  Assert-Ci ($LASTEXITCODE -eq 0) 'unreadable snapshot trailer'
+  $trailers = [regex]::Matches($body, '(?m)^Source-Controller-Head: ([a-f0-9]{40})\s*$')
+  Assert-Ci ($trailers.Count -le 1) 'ambiguous source trailer'
+  if ($trailers.Count -eq 1) { return $trailers[0].Groups[1].Value }
+  return $CheckoutHead
+}
+
+function Get-CiRestriction([string]$Identity, [string]$Root) {
+  # Exclusions describe host resources, never a failing assertion or timing.
+  if ($Identity -ceq 'test:codex-launch-boundary.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited.' }
+  }
+  if ($Identity -ceq 'test:dispatch-lane.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe, excluded historical fixtures, and native carrier host fleet probe.'; notHermetic=$true }
+  }
+  if ($Identity -cin @('test:dispatch-ownership.test.ps1','test:rebase-integration.test.ps1',
+      'test:lane-stall-watchdog.test.ps1','test:landed-integration-r3.test.ps1')) {
+    return @{ classification='LOCAL_ONLY'; reason='Native carrier reads parent host fleet via interrupted-integration-test-support.ps1:45,149,206,533,535; depends on excluded historical commit b3b4ac2.'; notHermetic=$true }
+  }
+  if ($Identity -cin @('test:landing-preflight.test.ps1','test:issue-6254-fail-closed-guard-evidence.test.ps1')) {
+    return @{ classification='LOCAL_ONLY'; reason='landing-preflight.test.ps1:393-397 reads pinned live-host goal-7969 log and enqueue receipt; the issue-6254 suite executes that test transitively.'; notHermetic=$true }
+  }
+  if ($Identity -ceq 'test:host-heavy-verifier.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Requires the host Ubuntu WSL distribution and /srv/chase-sets-pg-probe plus /opt/chase-sets-native-db installed native admission resources; unavailable on fresh Windows runners.' }
+  }
+  if ($Identity -ceq 'test:planning-review-routes.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Requires installed HOME/.claude/skills/milestone-orchestrator/references/stall-gotchas.md and defect-classes.md; neither ledger is in the tracked controller snapshot.' }
+  }
+  $history = @{
+    'discriminator:issue-6289' = @('50e3695074960ed988996860ff9bf8a45d6b8bea','e396120d26a766e467e0d01052939d6abf945e21')
+    'discriminator:issue-6289-bounded-probe' = @('1031c527aeb3705e7738f8d7a18cb7b04dba81f8')
+    'test:admission-temp-cleanup.test.ps1' = @('f85f146380fb82dcee44accba762032f51987bf4')
+    'test:review-head-reducer.test.ps1' = @('16c53af23eb0656e7d2b233164fee99d8be55527')
+    'test:issue-6997-autonomy-policy.test.ps1' = @('af24feeabe2df0143e59461ad652291ab0b46936')
+    'test:heavy-slot.test.ps1' = @('177f2d55176d122b267444c3de240927f98285ff')
+  }
+  if ($history.ContainsKey($Identity)) {
+    foreach ($head in $history[$Identity]) {
+      & git -C $Root cat-file -e "$head`^{commit}" 2>$null
+      if ($LASTEXITCODE -ne 0) {
+        return @{ classification='LOCAL_ONLY'; reason="Exact historical fixture $head exists only in private container history; not published after secret-scan findings." }
+      }
+    }
+  }
+  return $null
+}
+
+function New-CiAssignments([object[]]$Inventory, [string]$Selection) {
+  $requested = @()
+  if (-not [string]::IsNullOrWhiteSpace($Selection)) {
+    $requested = @($Selection -split '[,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    Assert-Ci ($requested.Count -gt 0) 'empty explicit item selection'
+    Assert-Ci (@($requested | Select-Object -Unique).Count -eq $requested.Count) 'duplicate requested item'
+    foreach ($id in $requested) { Assert-Ci ($id -cin @($Inventory.identity)) "unknown requested item: $id" }
+  }
+  $selected = @($Inventory | Where-Object { $requested.Count -eq 0 -or $_.identity -cin $requested })
+  Assert-Ci ($selected.Count -gt 0) 'empty battery plan'
+  Assert-Ci (@($Inventory.identity | Select-Object -Unique).Count -eq $Inventory.Count) 'duplicate inventory identity'
+  for ($i=0; $i -lt $selected.Count; $i++) { $selected[$i] | Add-Member -NotePropertyName shard -NotePropertyValue ($i % 10) -Force }
+  return ,$selected
+}
+
+function Merge-CiResults($Plan, [object[]]$Shards) {
+  Assert-Ci ($Shards.Count -eq 10) 'exactly ten shard receipts required'
+  $seenShards = [Collections.Generic.HashSet[int]]::new()
+  $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  $results = [Collections.Generic.List[object]]::new()
+  foreach ($part in $Shards) {
+    Assert-Ci ($part.schemaVersion -ceq 'controller-ci-shard/v1') 'shard schema mismatch'
+    Assert-Ci ($part.checkoutHead -ceq $Plan.checkoutHead -and $part.controllerHead -ceq $Plan.controllerHead -and
+      $part.productSha -ceq $Plan.productSha -and $part.planSha256 -ceq $Plan.planSha256) 'shard identity mismatch'
+    if ($Plan.baseline) {
+      Assert-Ci ($part.baselineHead -ceq $Plan.baseline.head -and $part.baselineCheckoutHead -ceq $Plan.baseline.checkoutHead) 'baseline shard identity mismatch'
+    }
+    Assert-Ci ($part.shard -ge 0 -and $part.shard -lt 10 -and $seenShards.Add([int]$part.shard)) 'duplicate/invalid shard'
+    $expected = @($Plan.selected | Where-Object shard -EQ $part.shard)
+    Assert-Ci (@($part.results).Count -eq $expected.Count) 'shard cardinality mismatch'
+    foreach ($row in $part.results) {
+      Assert-Ci ($row.identity -cin @($expected.identity) -and $seen.Add([string]$row.identity)) 'extra/duplicate result'
+      Assert-Ci (($row.result -ceq 'PASS' -and $row.exitCode -eq 0) -or
+        ($row.result -ceq 'FAIL' -and $row.exitCode -ne 0) -or
+        ($row.result -ceq 'LOCAL_ONLY' -and $row.exitCode -eq 125)) 'inconsistent result/exitCode'
+      $item = @($expected | Where-Object identity -CEQ $row.identity)[0]
+      Assert-Ci (($null -ne $item.restriction) -eq ($row.result -ceq 'LOCAL_ONLY')) 'unauthorized exclusion'
+      if ($Plan.baseline -and $row.result -ceq 'FAIL') {
+        Assert-Ci ($row.baseline.head -ceq $Plan.baseline.head -and $row.baseline.checkoutHead -ceq $Plan.baseline.checkoutHead) 'missing/wrong baseline identity'
+        Assert-Ci ($row.baseline.classification -cin @('PREEXISTING','REGRESSION','UNCLASSIFIED')) 'invalid baseline classification'
+        if ($row.baseline.classification -ceq 'PREEXISTING') {
+          Assert-Ci ($row.baseline.exitCode -eq $row.exitCode -and $row.baseline.candidateSignatureSha256 -cmatch '^[a-f0-9]{64}$' -and
+            $row.baseline.candidateSignatureSha256 -ceq $row.baseline.signatureSha256) 'unproved preexisting failure'
+        }
+      } else { Assert-Ci ($null -eq $row.baseline) 'unexpected baseline result' }
+      $results.Add($row)
+    }
+  }
+  Assert-Ci ($seen.Count -eq @($Plan.selected).Count) 'missing item result'
+  return ,@($results | Sort-Object identity)
+}
+
+function Invoke-CiItem($Item, [string]$Root, [string]$LogPath) {
+  $arguments = @($Item.arguments | ForEach-Object { ([string]$_).Replace('{CONTROLLER}', $Root) })
+  $hostPath = (Get-Process -Id $PID).Path
+  Push-Location $Root
+  $routingScope = $null
+  try {
+    if ($Item.identity -cin @('discriminator:issue-6254','test:controller-review-scaling.test.ps1','test:install-controller-skills.test.ps1')) {
+      . (Join-Path $Root '.orchestrator/routing-data-test-support.ps1')
+      $routingScope = Enter-RoutingDataTestScope
+    }
+    & $hostPath @arguments *> $LogPath
+    return $LASTEXITCODE
+  } finally {
+    if ($null -ne $routingScope) { Exit-RoutingDataTestScope $routingScope }
+    Pop-Location
+  }
+}
+
+function Get-CiSignatureDigest([string]$Signature) {
+  if (-not $Signature) { return '' }
+  return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Signature))).ToLowerInvariant()
+}
+
+if ($Mode -ceq 'Library') { return }
+if ($Mode -ceq 'Seal') {
+  Assert-Ci ($ArtifactDigest -cmatch '^sha256:[a-f0-9]{64}$' -and $ArtifactId -cmatch '^[1-9][0-9]*$') 'invalid evidence artifact identity'
+  $path = Join-Path $OutputDirectory 'final.json'
+  $record = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+  Assert-Ci ($record.ci.runId -ceq $env:GITHUB_RUN_ID) 'seal run mismatch'
+  # A ZIP cannot contain its own digest. Bind the already uploaded evidence ZIP;
+  # the enclosing receipt ZIP is authenticated separately via the Actions API.
+  $record.ci | Add-Member -NotePropertyName evidenceArtifact -NotePropertyValue @{
+    name='controller-battery-evidence';id=$ArtifactId;digest=$ArtifactDigest;runId=$env:GITHUB_RUN_ID
+  }
+  Write-CiJson $record $path
+  return
+}
+if ($Mode -cin @('Plan','Shard')) {
+  Assert-Ci ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_ENVIRONMENT -ceq 'github-hosted' -and $IsWindows) 'execution is restricted to fresh GitHub-hosted Windows runners'
+  Assert-Ci ([string]::IsNullOrEmpty($env:CHASE_SETS_HEAVY_SLOT_ID)) 'inherited local admission forbidden'
+  Assert-Ci ([string]::IsNullOrEmpty($env:CHASE_SETS_BATTERY_IMPACT_PATHS)) 'inherited impact filtering forbidden'
+  Assert-Ci ($PSVersionTable.PSVersion.ToString() -ceq '7.6.5') 'PowerShell 7.6.5 required'
+  $ControllerRoot = [IO.Path]::GetFullPath($ControllerRoot)
+  $checkoutHead = Get-CiHead $ControllerRoot
+  $container = Split-Path -Parent $ControllerRoot
+  Assert-Ci (-not (Test-Path (Join-Path $container '.orchestrator'))) 'runner contains host runtime state'
+  Assert-Ci ($ProductSha -cmatch '^[a-f0-9]{40}$') 'product SHA must be immutable'
+  Assert-Ci ((Get-CiHead (Join-Path $container 'main')) -ceq $ProductSha) 'product checkout mismatch'
+  $BaselineRoot = [IO.Path]::GetFullPath($BaselineRoot)
+  $baselineCheckoutHead = Get-CiHead $BaselineRoot
+  Assert-Ci ($BaselineHead -cmatch '^[a-f0-9]{40}$' -and (Get-CiSourceHead $BaselineRoot $baselineCheckoutHead) -ceq $BaselineHead) 'installed baseline source mismatch'
+  Assert-Ci ((Split-Path -Parent $BaselineRoot) -ceq $container -and $BaselineRoot -cne $ControllerRoot) 'baseline must be a separate sibling checkout'
+}
+[void][IO.Directory]::CreateDirectory($OutputDirectory)
+
+if ($Mode -ceq 'Plan') {
+  # Dot-source the head's own public plan-only entry inside a child scope. This
+  # preserves exact argument arrays (including empty arguments) on legacy heads
+  # without parsing human PLAN command strings or altering candidate bytes.
+  $capture = & {
+    param($Root,$Head,$RequestedScope)
+    $planLog = @(. (Join-Path $Root '.orchestrator/controller-release-battery.ps1') -ControllerRoot $Root -ExpectedControllerHead $Head -Scope $RequestedScope -ValidatePlanOnly 6>&1)
+    Assert-Ci ($null -ne $requiredItems -and $requiredItems.Count -gt 0) 'battery plan-only did not expose its required inventory'
+    [pscustomobject]@{ inventory=@($requiredItems); scope=$batteryScope; reason=$scopeReason; log=$planLog; hostIdentity=$hostIdentity
+      signatureFunction=${function:Get-BatteryFailureSignature}.ToString() }
+  } $ControllerRoot $checkoutHead $Scope
+  [IO.File]::WriteAllLines((Join-Path $OutputDirectory 'plan.log'), [string[]]@($capture.log | ForEach-Object { "$_" }))
+  $inventory = @($capture.inventory | ForEach-Object {
+    $item = $_
+    [pscustomobject]@{ identity=$item.identity; path=$item.path; command=$item.command
+      arguments=@($item.arguments | ForEach-Object { ([string]$_).Replace($ControllerRoot, '{CONTROLLER}') })
+      restriction=(Get-CiRestriction $item.identity $ControllerRoot) }
+  })
+  $selected = New-CiAssignments $inventory $Items
+  $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=(Get-CiSourceHead $ControllerRoot $checkoutHead)
+    checkoutHead=$checkoutHead; productSha=$ProductSha; runnerHead=$env:GITHUB_SHA; inventory=$inventory; selected=$selected
+    scope=@{kind=$capture.scope;reason=$capture.reason;baselineHead=$BaselineHead;changedCount=0}; hostIdentity=$capture.hostIdentity
+    baseline=@{head=$BaselineHead;checkoutHead=$baselineCheckoutHead}; signatureFunction=$capture.signatureFunction
+    startedUtc=[DateTime]::UtcNow.ToString('o'); requestedScope=$Scope }
+  Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
+  $matrix = @{include=@(0..9 | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
+  Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "matrix=$matrix`ncheckout_head=$checkoutHead`nbaseline_checkout_head=$baselineCheckoutHead"
+  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count)"
+  return
+}
+
+$plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+Assert-Ci ($plan.schemaVersion -ceq 'controller-ci-plan/v1') 'plan schema mismatch'
+$plan | Add-Member -NotePropertyName planSha256 -NotePropertyValue (Get-FileHash -LiteralPath $PlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Mode -ceq 'Shard') {
+  Assert-Ci ($checkoutHead -ceq $plan.checkoutHead -and $ProductSha -ceq $plan.productSha) 'plan checkout mismatch'
+  Assert-Ci ($BaselineHead -ceq $plan.baseline.head -and $baselineCheckoutHead -ceq $plan.baseline.checkoutHead) 'plan baseline mismatch'
+  $signatureFunction = [scriptblock]::Create($plan.signatureFunction)
+  $rows = [Collections.Generic.List[object]]::new()
+  $start = [DateTime]::UtcNow
+  foreach ($item in @($plan.selected | Where-Object shard -EQ $Shard)) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $started = [DateTime]::UtcNow.ToString('o')
+    $logName = ('{0:d3}.log' -f $rows.Count)
+    $logPath = Join-Path $OutputDirectory $logName
+    if ($null -ne $item.restriction) {
+      $exitCode = 125; $result = 'LOCAL_ONLY'
+      [IO.File]::WriteAllText($logPath, $item.restriction.reason)
+    } else {
+      $exitCode = Invoke-CiItem $item $ControllerRoot $logPath
+      $result = if ($exitCode -eq 0) { 'PASS' } else { 'FAIL' }
+    }
+    $clock.Stop()
+    $row = [ordered]@{ identity=$item.identity; exitCode=$exitCode; result=$result; fleetLoad='none'
+      provenance=@{kind=$(if($result -ceq 'LOCAL_ONLY'){'local-only'}else{'execution'});command=$item.command
+        attempt="github-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-shard-$Shard"; log=$logName}
+      startedUtc=$started; finishedUtc=[DateTime]::UtcNow.ToString('o'); elapsedMs=$clock.ElapsedMilliseconds }
+    if ($result -ceq 'FAIL') {
+      $baselineStart = [DateTime]::UtcNow
+      $baselineLogName = ('{0:d3}.baseline.log' -f $rows.Count)
+      $baselineLogPath = Join-Path $OutputDirectory $baselineLogName
+      $baselineExit = $null; $classification = 'REGRESSION'; $baselineSignature = ''
+      $candidateSignature = & $signatureFunction ([IO.File]::ReadAllText($logPath)) $ControllerRoot
+      $restriction = Get-CiRestriction $item.identity $BaselineRoot
+      if ($restriction) {
+        $classification = 'UNCLASSIFIED'
+        [IO.File]::WriteAllText($baselineLogPath, $restriction.reason)
+      } elseif (Test-Path -LiteralPath (Join-Path $BaselineRoot $item.path) -PathType Leaf) {
+        $baselineExit = Invoke-CiItem $item $BaselineRoot $baselineLogPath
+        $baselineSignature = & $signatureFunction ([IO.File]::ReadAllText($baselineLogPath)) $BaselineRoot
+        if ($baselineExit -eq $exitCode -and $candidateSignature -and $candidateSignature -ceq $baselineSignature) { $classification = 'PREEXISTING' }
+      } else { [IO.File]::WriteAllText($baselineLogPath, 'Item absent at installed baseline; REGRESSION, as in the local battery.') }
+      $row.baseline = [ordered]@{head=$BaselineHead;classification=$classification;exitCode=$baselineExit
+        checkoutHead=$baselineCheckoutHead;result=$(if($null -eq $baselineExit){'NOT_RUN'}elseif($baselineExit -eq 0){'PASS'}else{'FAIL'})
+        log=$baselineLogName;candidateSignatureSha256=(Get-CiSignatureDigest $candidateSignature);signatureSha256=(Get-CiSignatureDigest $baselineSignature)
+        startedUtc=$baselineStart.ToString('o');finishedUtc=[DateTime]::UtcNow.ToString('o');elapsedMs=([DateTime]::UtcNow-$baselineStart).TotalMilliseconds}
+      Write-Output "BASELINE identity=$($item.identity) classification=$classification baseline=$BaselineHead baselineExit=$baselineExit"
+    }
+    $rows.Add([pscustomobject]$row)
+    Write-Output "RESULT identity=$($row.identity) exitCode=$exitCode result=$result fleetLoad=none startedUtc=$started finishedUtc=$($row.finishedUtc) elapsedMs=$($row.elapsedMs)"
+    Write-CiJson @{schemaVersion='controller-ci-shard/v1';controllerHead=$plan.controllerHead;checkoutHead=$checkoutHead
+      baselineHead=$BaselineHead;baselineCheckoutHead=$baselineCheckoutHead
+      productSha=$ProductSha;planSha256=$plan.planSha256;shard=$Shard;startedUtc=$start.ToString('o')
+      finishedUtc=[DateTime]::UtcNow.ToString('o');elapsedMs=([DateTime]::UtcNow-$start).TotalMilliseconds;results=@($rows)} (Join-Path $OutputDirectory 'shard.json')
+  }
+  if ($rows.Count -eq 0) {
+    Write-CiJson @{schemaVersion='controller-ci-shard/v1';controllerHead=$plan.controllerHead;checkoutHead=$checkoutHead
+      baselineHead=$BaselineHead;baselineCheckoutHead=$baselineCheckoutHead
+      productSha=$ProductSha;planSha256=$plan.planSha256;shard=$Shard;startedUtc=$start.ToString('o')
+      finishedUtc=[DateTime]::UtcNow.ToString('o');elapsedMs=0;results=@()} (Join-Path $OutputDirectory 'shard.json')
+  }
+  return
+}
+
+$parts = @(Get-ChildItem -LiteralPath $OutputDirectory -Filter shard.json -Recurse -File | ForEach-Object {
+  Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+})
+$results = Merge-CiResults $plan $parts
+$localOnly = @($plan.selected | Where-Object restriction | ForEach-Object { @{identity=$_.identity;reason=$_.restriction.reason} })
+$notHermetic = @($plan.selected | Where-Object { $_.restriction.notHermetic } | ForEach-Object identity)
+$notRun = @($plan.inventory | Where-Object { $_.identity -cnotin @($plan.selected.identity) } | ForEach-Object identity)
+$failures = @($results | Where-Object result -CEQ 'FAIL')
+$regressions = @($failures | Where-Object { $_.baseline.classification -cne 'PREEXISTING' })
+$eligibleOutcome = if ($regressions.Count) { 'FAIL' } elseif ($failures.Count) { 'FAIL_PREEXISTING_ONLY' } else { 'PASS' }
+$outcome = if ($regressions.Count) { 'FAIL' } elseif ($localOnly.Count -or $notRun.Count) { 'INCOMPLETE_CI' } else { $eligibleOutcome }
+$raw = @($results | ForEach-Object { "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=none startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)" }) -join "`n"
+$rawPath = Join-Path $OutputDirectory 'controller-ci.log'
+[IO.File]::WriteAllText($rawPath,$raw + "`n",[Text.UTF8Encoding]::new($false))
+$finished = [DateTime]::UtcNow
+$record = [ordered]@{schemaVersion='controller-battery-result/v1';controllerHead=$plan.controllerHead;hostIdentity=$plan.hostIdentity
+  fleetLoad='none';scope=$plan.scope;execution=@{mode='github-actions-sharded-file-serial';outcome=$outcome
+    startedUtc=$plan.startedUtc;finishedUtc=$finished.ToString('o');elapsedMs=($finished-[DateTime]::Parse($plan.startedUtc).ToUniversalTime()).TotalMilliseconds
+    measuredLoadCount=0;requiredCount=@($plan.inventory).Count;executedCount=@($results | Where-Object result -CNE 'LOCAL_ONLY').Count
+    reusedCount=0;satisfiedCount=@($results | Where-Object { $_.result -ceq 'PASS' -or $_.baseline.classification -ceq 'PREEXISTING' }).Count;onFailure='all';notRun=$notRun}
+  inventory=$plan.inventory;results=$results;rawLog=@{kind='raw-log';relativePath='.orchestrator/artifacts/controller-ci.log'
+    byteLength=(Get-Item $rawPath).Length;sha256=(Get-FileHash $rawPath -Algorithm SHA256).Hash.ToLowerInvariant()}
+  ci=@{checkoutHead=$plan.checkoutHead;productSha=$plan.productSha;runnerHead=$plan.runnerHead;runId=$env:GITHUB_RUN_ID
+    runAttempt=$env:GITHUB_RUN_ATTEMPT;baseline=$plan.baseline;eligibleOutcome=$eligibleOutcome
+    localOnly=$localOnly;notHermetic=$notHermetic;shards=@($parts | Select-Object shard,startedUtc,finishedUtc,elapsedMs)} }
+if ($outcome -cne 'PASS') { $record.failureCode="CI_$outcome" }
+Write-CiJson $record (Join-Path $OutputDirectory 'final.json')
+Write-Output "BATTERY_RESULT outcome=$outcome required=$($plan.inventory.Count) results=$($results.Count) localOnly=$($localOnly.Count)"
+if ($outcome -cne 'PASS') { exit 1 }
