@@ -1,0 +1,171 @@
+name: Controller Battery
+run-name: Controller battery ${{ inputs.controller_head || github.sha }}
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      controller_head:
+        description: Published controller SHA or snapshot ref (blank uses workflow head)
+        type: string
+        required: false
+      product_sha:
+        description: Immutable chase-sets/chase-sets SHA (blank resolves main once)
+        type: string
+        required: false
+      items:
+        description: Optional comma/newline-separated exact identities; blank uses required inventory
+        type: string
+        required: false
+      scope:
+        description: Battery scope (impact without a published baseline safely expands to full)
+        type: choice
+        options: [full, impact]
+        default: full
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  plan:
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      checkout_head: ${{ steps.plan.outputs.checkout_head }}
+      product_sha: ${{ steps.product.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: runner
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.controller_head || github.sha }}
+          path: container/controller
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: chase-sets/chase-sets
+          ref: ${{ inputs.product_sha || 'main' }}
+          path: container/main
+          persist-credentials: false
+      - id: product
+        env:
+          REQUESTED_SHA: ${{ inputs.product_sha }}
+        run: |
+          if ($env:REQUESTED_SHA -and $env:REQUESTED_SHA -cnotmatch '^[a-f0-9]{40}$') { throw 'product_sha must be a full SHA' }
+          $sha = git -C container/main rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Product identity unavailable' }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.21.0
+          run_install: false
+      - name: Provision pinned PowerShell
+        run: ./runner/.orchestrator/setup-controller-ci.ps1
+      - id: plan
+        env:
+          CI_ITEMS: ${{ inputs.items }}
+          CI_SCOPE: ${{ inputs.scope || 'full' }}
+          PRODUCT_SHA: ${{ steps.product.outputs.sha }}
+        run: |
+          & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Plan -ControllerRoot "$env:GITHUB_WORKSPACE/container/controller" -ProductSha $env:PRODUCT_SHA -Items $env:CI_ITEMS -Scope $env:CI_SCOPE -OutputDirectory "$env:GITHUB_WORKSPACE/plan"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: controller-plan
+          path: plan/
+          if-no-files-found: error
+          retention-days: 30
+
+  shard:
+    needs: plan
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: runner
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.plan.outputs.checkout_head }}
+          path: container/controller
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: chase-sets/chase-sets
+          ref: ${{ needs.plan.outputs.product_sha }}
+          path: container/main
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.21.0
+          run_install: false
+      - name: Provision pinned PowerShell
+        run: ./runner/.orchestrator/setup-controller-ci.ps1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: controller-plan
+          path: plan
+      - name: Execute shard serially
+        env:
+          PRODUCT_SHA: ${{ needs.plan.outputs.product_sha }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Shard -ControllerRoot "$env:GITHUB_WORKSPACE/container/controller" -ProductSha $env:PRODUCT_SHA -PlanPath "$env:GITHUB_WORKSPACE/plan/plan.json" -Shard $env:SHARD -OutputDirectory "$env:GITHUB_WORKSPACE/shard"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: controller-shard-${{ matrix.shard }}
+          path: shard/
+          if-no-files-found: error
+          retention-days: 30
+
+  merge:
+    if: always() && needs.plan.result == 'success'
+    needs: [plan, shard]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: runner
+          persist-credentials: false
+      - name: Provision pinned PowerShell
+        run: ./runner/.orchestrator/setup-controller-ci.ps1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: controller-plan
+          path: plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: controller-shard-*
+          path: result
+      - name: Reconcile exact item results
+        run: |
+          & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Merge -PlanPath "$env:GITHUB_WORKSPACE/plan/plan.json" -OutputDirectory "$env:GITHUB_WORKSPACE/result"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: controller-battery-result
+          path: result/
+          if-no-files-found: error
+          retention-days: 30
