@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/schemas/fail-closed-guard-suite-result-v1.json",
+  "title": "Fail-closed guard independently executed suite result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "subject",
+    "suite",
+    "execution",
+    "claims"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "fail-closed-guard-suite-result/v1"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "controllerHead"
+      ],
+      "properties": {
+        "controllerHead": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "expectedClaimCount"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "checker",
+            "issue-6254-production",
+            "release-battery"
+          ]
+        },
+        "expectedClaimCount": {
+          "enum": [
+            34,
+            16,
+            2
+          ]
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "executed",
+        "outcome"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "executed": {
+          "const": true
+        },
+        "outcome": {
+          "const": "pass"
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "$ref": "fail-closed-guard-evidence.schema.json#/$defs/claim"
+      }
+    }
+  }
+}
