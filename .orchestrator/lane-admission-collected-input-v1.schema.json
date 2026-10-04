@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/contracts/lane-admission-collected-input-v1.schema.json",
+  "title": "Collector-to-reducer lane admission snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "snapshotId",
+    "cycle",
+    "authorityRows",
+    "candidates",
+    "activeLanes",
+    "capacity",
+    "overrides",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "lane-admission-collected-input/v1" },
+    "snapshotId": { "$ref": "#/$defs/identifier" },
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycleId", "collectedAt", "finalRebindAt"],
+      "properties": {
+        "cycleId": { "$ref": "#/$defs/identifier" },
+        "collectedAt": { "$ref": "#/$defs/instant" },
+        "finalRebindAt": { "$ref": "#/$defs/instant" }
+      }
+    },
+    "authorityRows": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["set", "coverage"],
+        "properties": {
+          "set": {
+            "enum": ["candidate-issues", "labels", "milestones", "open-prs", "active-lanes"]
+          },
+          "coverage": { "$ref": "#/$defs/coverage" }
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "activeLanes": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "owner",
+          "revision",
+          "finalRevision",
+          "declaredFootprint",
+          "observedFootprint",
+          "complete"
+        ],
+        "properties": {
+          "owner": { "$ref": "#/$defs/identifier" },
+          "revision": { "$ref": "#/$defs/identifier" },
+          "finalRevision": { "$ref": "#/$defs/identifier" },
+          "declaredFootprint": { "$ref": "#/$defs/paths" },
+          "observedFootprint": { "$ref": "#/$defs/paths" },
+          "complete": { "type": "boolean" }
+        }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "queueAndDeployHealthy", "hostCapacity", "ownership"],
+      "properties": {
+        "decision": { "enum": ["option-1", "unknown"] },
+        "queueAndDeployHealthy": { "type": ["boolean", "null"] },
+        "hostCapacity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "memorySafe",
+            "heavyVerifierSafe",
+            "complete",
+            "authorityId",
+            "capturedAt",
+            "validUntil",
+            "revision",
+            "finalRevision"
+          ],
+          "properties": {
+            "memorySafe": { "type": ["boolean", "null"] },
+            "heavyVerifierSafe": { "type": ["boolean", "null"] },
+            "complete": { "type": "boolean" },
+            "authorityId": { "$ref": "#/$defs/identifier" },
+            "capturedAt": { "$ref": "#/$defs/instant" },
+            "validUntil": { "$ref": "#/$defs/instant" },
+            "revision": { "$ref": "#/$defs/identifier" },
+            "finalRevision": { "$ref": "#/$defs/identifier" }
+          }
+        },
+        "ownership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "safe",
+            "complete",
+            "currentPool",
+            "active",
+            "authorizedMax",
+            "revision",
+            "finalRevision"
+          ],
+          "properties": {
+            "safe": { "type": ["boolean", "null"] },
+            "complete": { "type": "boolean" },
+            "currentPool": { "$ref": "#/$defs/count" },
+            "active": { "$ref": "#/$defs/count" },
+            "authorizedMax": { "$ref": "#/$defs/count" },
+            "revision": { "$ref": "#/$defs/identifier" },
+            "finalRevision": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["who", "fact", "reason", "expiresAt", "receiptId"],
+        "properties": {
+          "who": { "$ref": "#/$defs/identifier" },
+          "fact": { "$ref": "#/$defs/identifier" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "expiresAt": { "$ref": "#/$defs/instant" },
+          "receiptId": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collector", "collectorVersion", "repository", "subjectHead"],
+      "properties": {
+        "collector": { "$ref": "#/$defs/identifier" },
+        "collectorVersion": { "$ref": "#/$defs/identifier" },
+        "repository": { "$ref": "#/$defs/identifier" },
+        "subjectHead": { "$ref": "#/$defs/identifier" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T.+(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "paths": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "pages",
+        "collected",
+        "total",
+        "providerCap",
+        "hasNextPage",
+        "unexamined",
+        "revision",
+        "finalRevision",
+        "revisionStable"
+      ],
+      "properties": {
+        "status": { "enum": ["complete", "unknown"] },
+        "pages": { "$ref": "#/$defs/count" },
+        "collected": { "$ref": "#/$defs/count" },
+        "total": { "$ref": "#/$defs/count" },
+        "providerCap": { "$ref": "#/$defs/count" },
+        "hasNextPage": { "type": "boolean" },
+        "unexamined": { "$ref": "#/$defs/count" },
+        "revision": { "$ref": "#/$defs/identifier" },
+        "finalRevision": { "$ref": "#/$defs/identifier" },
+        "revisionStable": { "type": "boolean" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "nodeId",
+        "revision",
+        "finalRevision",
+        "state",
+        "issueType",
+        "milestone",
+        "readiness",
+        "priority",
+        "dispatchRank",
+        "projectItemCount",
+        "dependencies",
+        "footprint",
+        "operatorLabel",
+        "lifecycle",
+        "authority"
+      ],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "revision": { "$ref": "#/$defs/identifier" },
+        "finalRevision": { "$ref": "#/$defs/identifier" },
+        "state": { "enum": ["open", "closed"] },
+        "issueType": { "enum": ["Slice", "Epic", "Tracking", "Decision", "Incident"] },
+        "milestone": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodeId", "number", "state", "revision", "finalRevision"],
+          "properties": {
+            "nodeId": { "$ref": "#/$defs/identifier" },
+            "number": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+            "state": { "enum": ["open", "closed"] },
+            "revision": { "$ref": "#/$defs/identifier" },
+            "finalRevision": { "$ref": "#/$defs/identifier" }
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "subjectRevision", "authorityComplete", "revisionStable", "checkerSha"],
+          "properties": {
+            "status": { "enum": ["ready", "not-ready", "unknown"] },
+            "subjectRevision": { "$ref": "#/$defs/identifier" },
+            "authorityComplete": { "type": "boolean" },
+            "revisionStable": { "type": "boolean" },
+            "checkerSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
+        "priority": { "enum": ["p0", "p1", "p2", "p3"] },
+        "dispatchRank": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 1000000 },
+            { "type": "null" }
+          ]
+        },
+        "projectItemCount": { "$ref": "#/$defs/count" },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["number", "state", "revision", "finalRevision"],
+            "properties": {
+              "number": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+              "state": { "enum": ["open", "closed"] },
+              "revision": { "$ref": "#/$defs/identifier" },
+              "finalRevision": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        },
+        "footprint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["declared", "observed", "complete", "grammarStatus"],
+          "properties": {
+            "declared": { "$ref": "#/$defs/paths" },
+            "observed": { "$ref": "#/$defs/paths" },
+            "complete": { "type": "boolean" },
+            "grammarStatus": { "enum": ["handled", "indeterminate"] }
+          }
+        },
+        "operatorLabel": { "type": "boolean" },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refined", "executable"],
+          "properties": {
+            "refined": { "type": "boolean" },
+            "executable": { "type": "boolean" }
+          }
+        },
+        "authority": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["isolated", "coverage"],
+          "properties": {
+            "isolated": { "type": "boolean" },
+            "coverage": { "$ref": "#/$defs/coverage" }
+          }
+        }
+      }
+    }
+  }
+}
