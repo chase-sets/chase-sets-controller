@@ -1,0 +1,6 @@
+{"at":"2026-07-16T18:15:30.1349648Z","task":"diagnose Platform Deploy run 29515204198 Deploy Staging failure","lane":"claude-agent","model":"sonnet-5","effort":"high","routingRow":10}
+{"at":"2026-07-16T18:24:46.6854390Z","task":"#5564 probe-list alignment","lane":"claude-agent worktree 20260716-issue-5549","model":"sonnet-5","effort":"high","routingRow":"3 (routine Claude scripts fix, pipeline-critical)"}
+{"at":"2026-07-16T19:37:03.3212835Z","task":"#3751 planning-repair","lane":"claude-agent","model":"sonnet-5","effort":"high","routingRow":"ready-gate repair (planning skill)"}
+{"at":"2026-07-16T19:39:12.0781347Z","task":"#5568 retire legacy hosts","lane":"lane-01","model":"sonnet-5","effort":"high","routingRow":"4 (infra)"}
+{"at":"2026-07-16T19:39:12.0781347Z","task":"#5567 staging-reset step","lane":"lane-02","model":"sonnet-5","effort":"medium","routingRow":"3 (routine workflow fix)"}
+{"at":"2026-07-16T20:25:23.5423126Z","task":"#5572 shadow-gate skip","lane":"lane-03","model":"sonnet-5","effort":"medium","routingRow":"3 (workflow fix, serialized after #5570)"}
