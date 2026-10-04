@@ -1,0 +1,2 @@
+.orchestrator/fixtures/codex-launch-boundary-* -text
+*.sh text eol=lf
