@@ -37,27 +37,17 @@ function Get-CiSourceHead([string]$Root, [string]$CheckoutHead) {
 
 function Get-CiRestriction([string]$Identity, [string]$Root) {
   # Exclusions describe host resources, never a failing assertion or timing.
-  if ($Identity -ceq 'test:codex-launch-boundary.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited.' }
+  # #8580: historical sources are tracked fixtures (fixtures/history), the
+  # Claude argv parse is a tracked fixture, and the native carriers observe the
+  # runner's own (vacant) container; only the three host smokes stay local.
+  if ($Identity -ceq 'test:host-smoke-codex-boundary.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable, live surface and host boundary profile; model CLI execution prohibited.' }
   }
-  if ($Identity -ceq 'test:dispatch-lane.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe, excluded historical fixtures, and native carrier host fleet probe.'; notHermetic=$true }
+  if ($Identity -ceq 'test:host-smoke-claude-cli.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI version and --help argv drift check against fixtures/claude-cli-help-v1.json; no model, session or authentication.' }
   }
-  if ($Identity -cin @('test:dispatch-ownership.test.ps1','test:rebase-integration.test.ps1',
-      'test:lane-stall-watchdog.test.ps1','test:landed-integration-r3.test.ps1')) {
-    return @{ classification='LOCAL_ONLY'; reason='Native carrier reads parent host fleet via interrupted-integration-test-support.ps1:45,149,206,533,535; depends on excluded historical commit b3b4ac2.'; notHermetic=$true }
-  }
-  $history = @{
-    'discriminator:issue-6289' = @('50e3695074960ed988996860ff9bf8a45d6b8bea','e396120d26a766e467e0d01052939d6abf945e21')
-    'discriminator:issue-6289-bounded-probe' = @('1031c527aeb3705e7738f8d7a18cb7b04dba81f8')
-  }
-  if ($history.ContainsKey($Identity)) {
-    foreach ($head in $history[$Identity]) {
-      & git -C $Root cat-file -e "$head`^{commit}" 2>$null
-      if ($LASTEXITCODE -ne 0) {
-        return @{ classification='LOCAL_ONLY'; reason="Exact historical fixture $head exists only in private container history; not published after secret-scan findings." }
-      }
-    }
+  if ($Identity -ceq 'test:host-smoke-fleet-source.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Real host fleet read: the installed container (with orchestrator runtime state) is the carriers'' default fleet source; fresh runners carry none.'; notHermetic=$true }
   }
   return $null
 }

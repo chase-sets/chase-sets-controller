@@ -73,12 +73,13 @@ installation receipt. No existing host admission or installation guard is
 changed by this author lane.
 
 Host-only items return `exitCode: 125`, `result: LOCAL_ONLY`; they are never
-converted to PASS. Native carrier tests that observe a parent host fleet are
-also listed in `ci.notHermetic`. Exact historical discriminator fixtures
-excluded from the public snapshot remain local-only. Model CLI/sandbox tests
-remain local-only; this workflow never installs or launches a model CLI.
-The classification lives in `Get-CiRestriction` and must be revisited when the
-candidate removes those dependencies. No test assertions, timeouts, product
+converted to PASS. Since #8580 the historical sources, the Claude argv parse
+and the carriers' fleet source are tracked fixtures or runner-local reads, so
+only the three `host-smoke-*` items (installed Codex sandbox/profile, installed
+Claude CLI drift, real host fleet read) remain local-only; the fleet smoke is
+also listed in `ci.notHermetic`. This workflow never installs or launches a
+model CLI. The classification lives in `Get-CiRestriction` and must be
+revisited when the candidate adds or removes host dependencies. No test assertions, timeouts, product
 files or local verifier locks are altered.
 
 A run with failures is FAIL. A run with only passing CI items plus exclusions
