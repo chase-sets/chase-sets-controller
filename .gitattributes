@@ -1,0 +1,4 @@
+.orchestrator/fixtures/codex-launch-boundary-* -text
+.orchestrator/fixtures/cleanup-orphan-worktree-dirs.pre-8670.ps1 text eol=lf
+.orchestrator/controller-skills/** -text
+*.sh text eol=lf
