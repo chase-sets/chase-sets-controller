@@ -1,0 +1,672 @@
+{
+  "schemaVersion": "controller-ci-durations/v1",
+  "estimation": "calibration-first composition: every calibration record, plus historical records outside remeasured families (test:dispatch-routing-data.test.ps1, test:cleanup-orphan-worktree-dirs.test.ps1, test:board-hourly-scale.test.ps1); recorded maximum elapsedMs per input with original provenance",
+  "records": [
+    {
+      "identity": "direct:fail-closed-guard-evidence",
+      "elapsedMs": 58538,
+      "recordedAtUtc": "2026-10-10T08:32:51.9322417Z",
+      "sourceSha256": "72f0d71f986da6144850d356c61ae07a87df3bc367054d6673df5e101259a814",
+      "measuredSourceSha256": "72f0d71f986da6144850d356c61ae07a87df3bc367054d6673df5e101259a814",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "discriminator:issue-6254",
+      "elapsedMs": 986,
+      "recordedAtUtc": "2026-10-10T08:32:18.6172708Z",
+      "sourceSha256": "b2a22175df68bf25136d7df7a4643c081d52d113f2b287af918094316180c364",
+      "measuredSourceSha256": "b2a22175df68bf25136d7df7a4643c081d52d113f2b287af918094316180c364",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:admission-temp-cleanup.test.ps1",
+      "elapsedMs": 899,
+      "recordedAtUtc": "2026-10-10T08:31:46.0118553Z",
+      "sourceSha256": "4b033757e1efd7f7693d9e8c1d62b2b9f955adf85c716a9f9ec5a01478b63f70",
+      "measuredSourceSha256": "4b033757e1efd7f7693d9e8c1d62b2b9f955adf85c716a9f9ec5a01478b63f70",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:astra-selection.test.ps1",
+      "elapsedMs": 2598,
+      "recordedAtUtc": "2026-10-10T08:30:24.1825418Z",
+      "sourceSha256": "f1d06e36caff4dbaee422e1466e76126cfc92e13f7059949d38c67d46ada8786",
+      "measuredSourceSha256": "f1d06e36caff4dbaee422e1466e76126cfc92e13f7059949d38c67d46ada8786",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:battery-proof-relevance.test.ps1",
+      "elapsedMs": 596,
+      "recordedAtUtc": "2026-10-10T08:33:23.0488833Z",
+      "sourceSha256": "7c229387240cef0f4a94aafef2320bb5989ac91a7a5c4e5c2f5adb5f54e7de38",
+      "measuredSourceSha256": "7c229387240cef0f4a94aafef2320bb5989ac91a7a5c4e5c2f5adb5f54e7de38",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-history-errors.test.ps1",
+      "elapsedMs": 1363,
+      "recordedAtUtc": "2026-10-10T08:33:21.7445131Z",
+      "sourceSha256": "c62b49527c2abb74ed4e25f029d631330d4ed6b600411917c75ad246bdbfc85c",
+      "measuredSourceSha256": "c62b49527c2abb74ed4e25f029d631330d4ed6b600411917c75ad246bdbfc85c",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-history-index.test.ps1",
+      "elapsedMs": 2192,
+      "recordedAtUtc": "2026-10-10T08:40:26.5384526Z",
+      "sourceSha256": "c7e301080de3173c7c4afac290396b4b0231666abb338c42d21dd365dd7e62f7",
+      "measuredSourceSha256": "c7e301080de3173c7c4afac290396b4b0231666abb338c42d21dd365dd7e62f7",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-history-scale.test.ps1",
+      "elapsedMs": 135878,
+      "recordedAtUtc": "2026-10-10T08:30:01.1143945Z",
+      "sourceSha256": "df7ffba9a66eab198b887acacd4133beeb6f8e2fc681473dbc1926aa165c52db",
+      "measuredSourceSha256": "df7ffba9a66eab198b887acacd4133beeb6f8e2fc681473dbc1926aa165c52db",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-index-refusal.test.ps1",
+      "elapsedMs": 5005,
+      "recordedAtUtc": "2026-10-10T08:33:05.0572383Z",
+      "sourceSha256": "448eb8aacd0bf07e089c773fd1b010f2db7728052d9a52160cc10ecf037b404d",
+      "measuredSourceSha256": "448eb8aacd0bf07e089c773fd1b010f2db7728052d9a52160cc10ecf037b404d",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-reconcile.test.ps1",
+      "elapsedMs": 5846,
+      "recordedAtUtc": "2026-10-10T08:40:24.3433067Z",
+      "sourceSha256": "6542195a7bd1469a52a0fd7067ffaf234204a6868cb120742fe9f4dc1a0ac37a",
+      "measuredSourceSha256": "6542195a7bd1469a52a0fd7067ffaf234204a6868cb120742fe9f4dc1a0ac37a",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-set.test.ps1",
+      "elapsedMs": 1731,
+      "recordedAtUtc": "2026-10-10T08:33:20.3792984Z",
+      "sourceSha256": "943a5cf456abfbfdf87b1943ff01804a77968789893226dcacf77fee2a3ead93",
+      "measuredSourceSha256": "943a5cf456abfbfdf87b1943ff01804a77968789893226dcacf77fee2a3ead93",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:board-unlinked-scope.test.ps1",
+      "elapsedMs": 1737,
+      "recordedAtUtc": "2026-10-10T08:30:25.9380593Z",
+      "sourceSha256": "ddcb700559bd479f737960b144ae717346a4c584a02b1a74cdcdcd70ed05d233",
+      "measuredSourceSha256": "ddcb700559bd479f737960b144ae717346a4c584a02b1a74cdcdcd70ed05d233",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:check-controller-skill-freshness.test.ps1",
+      "elapsedMs": 2743,
+      "recordedAtUtc": "2026-10-10T08:31:45.1100371Z",
+      "sourceSha256": "2f8e55c31f8691164fb6f09d0379affb45121d12dfe9602dbf2c563dab5d4bb7",
+      "measuredSourceSha256": "2f8e55c31f8691164fb6f09d0379affb45121d12dfe9602dbf2c563dab5d4bb7",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:contract-enforcement.test.ps1",
+      "elapsedMs": 3066,
+      "recordedAtUtc": "2026-10-10T08:34:51.8600411Z",
+      "sourceSha256": "e3275e7bcc0a4472eee3df57353b90823cf0511c6973d3e43386e8d06e6fc536",
+      "measuredSourceSha256": "e3275e7bcc0a4472eee3df57353b90823cf0511c6973d3e43386e8d06e6fc536",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:controller-heavy-paths.test.ps1",
+      "elapsedMs": 881,
+      "recordedAtUtc": "2026-10-10T08:30:09.4433298Z",
+      "sourceSha256": "610ad2d29114ccda4d073e25c5efc86ee6151a9041729786bf1564eeba510a72",
+      "measuredSourceSha256": "610ad2d29114ccda4d073e25c5efc86ee6151a9041729786bf1564eeba510a72",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:controller-release-battery-ci-prior.test.ps1",
+      "elapsedMs": 9391,
+      "recordedAtUtc": "2026-10-10T08:32:36.9877234Z",
+      "sourceSha256": "a43ece17291f43095018525285e7f6282cc618c975fb5aeffa7ac26f7a8a6260",
+      "measuredSourceSha256": "a43ece17291f43095018525285e7f6282cc618c975fb5aeffa7ac26f7a8a6260",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:controller-release-battery.test.ps1",
+      "elapsedMs": 22283,
+      "recordedAtUtc": "2026-10-10T08:32:27.5942221Z",
+      "sourceSha256": "adf41ce3a9cd12b57f7ac1c6ba81520dacc32aea325731ea643a4509d7408da7",
+      "measuredSourceSha256": "adf41ce3a9cd12b57f7ac1c6ba81520dacc32aea325731ea643a4509d7408da7",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:controller-review-scaling.test.ps1",
+      "elapsedMs": 1103,
+      "recordedAtUtc": "2026-10-10T08:40:27.6445322Z",
+      "sourceSha256": "3e6e5ff72bf712a4721ba1ff597dbf16cf9f86e2a9d555b83c3a634ef3086d21",
+      "measuredSourceSha256": "3e6e5ff72bf712a4721ba1ff597dbf16cf9f86e2a9d555b83c3a634ef3086d21",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:controller-skills/milestone-orchestrator/scripts/query-ledgers.test.ps1",
+      "elapsedMs": 3801,
+      "recordedAtUtc": "2026-10-10T08:34:06.9787602Z",
+      "sourceSha256": "cb33cc7cf0766dec8d440ac201a35e2c6ba38bec34c8522db150876deebaf55d",
+      "measuredSourceSha256": "cb33cc7cf0766dec8d440ac201a35e2c6ba38bec34c8522db150876deebaf55d",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:cost-harvest.test.ps1",
+      "elapsedMs": 4291,
+      "recordedAtUtc": "2026-10-10T08:33:18.6453939Z",
+      "sourceSha256": "c9f795f28bd20a77a6d6f828956599ff46ac103ac51e75e77857ece556d29961",
+      "measuredSourceSha256": "c9f795f28bd20a77a6d6f828956599ff46ac103ac51e75e77857ece556d29961",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:cost-routing-data.test.ps1",
+      "elapsedMs": 19230,
+      "recordedAtUtc": "2026-10-10T08:33:18.9963297Z",
+      "sourceSha256": "5133f0f94c528e4c0e68e13db1f20a3bc723b5542034d51dfd83fe8d4a843874",
+      "measuredSourceSha256": "5133f0f94c528e4c0e68e13db1f20a3bc723b5542034d51dfd83fe8d4a843874",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:digest-publish.test.ps1",
+      "elapsedMs": 652,
+      "recordedAtUtc": "2026-10-10T08:31:46.6665264Z",
+      "sourceSha256": "8472ed9399f87901f7ef1b4bd78f7bba4aac2b16e623059ffdb2edf97c0c53b3",
+      "measuredSourceSha256": "8472ed9399f87901f7ef1b4bd78f7bba4aac2b16e623059ffdb2edf97c0c53b3",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:dispatch-count-policy.test.ps1",
+      "elapsedMs": 137438,
+      "recordedAtUtc": "2026-10-10T08:31:53.1135419Z",
+      "sourceSha256": "842ed0e0e59533d2087cd9f2b2090f0d2cd1fd175f33c7d1c6b145205165b3f1",
+      "measuredSourceSha256": "842ed0e0e59533d2087cd9f2b2090f0d2cd1fd175f33c7d1c6b145205165b3f1",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:dispatch-ledger-lock-retry.test.ps1",
+      "elapsedMs": 36611,
+      "recordedAtUtc": "2026-10-10T08:30:08.5600340Z",
+      "sourceSha256": "9176a8de991cbb292c9e0bf3665241a5f5fedc60747e78e3a3f6092371fdeb7c",
+      "measuredSourceSha256": "9176a8de991cbb292c9e0bf3665241a5f5fedc60747e78e3a3f6092371fdeb7c",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:fail-closed-guard-evidence-aggregate.test.ps1",
+      "elapsedMs": 36701,
+      "recordedAtUtc": "2026-10-10T08:32:56.7013376Z",
+      "sourceSha256": "bd75bd3b458d6354050dea97c36216f320d7f5e8398402f153c622b8842f26ec",
+      "measuredSourceSha256": "bd75bd3b458d6354050dea97c36216f320d7f5e8398402f153c622b8842f26ec",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:fail-closed-guard-evidence.test.ps1",
+      "elapsedMs": 21661,
+      "recordedAtUtc": "2026-10-10T08:40:18.4949380Z",
+      "sourceSha256": "512fd331ce69c9705b9847c54a9d149a080180126dbb4d13ba73d7cffdcc949c",
+      "measuredSourceSha256": "512fd331ce69c9705b9847c54a9d149a080180126dbb4d13ba73d7cffdcc949c",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:fleet-exclusive-admission.test.ps1",
+      "elapsedMs": 23369,
+      "recordedAtUtc": "2026-10-10T08:33:41.6641319Z",
+      "sourceSha256": "bfe200de512322309261c5af9464d322fa4758e234c3d249b5d92bb42739914c",
+      "measuredSourceSha256": "bfe200de512322309261c5af9464d322fa4758e234c3d249b5d92bb42739914c",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:frontier-bounded-snapshot.test.ps1",
+      "elapsedMs": 980,
+      "recordedAtUtc": "2026-10-10T08:34:07.9610474Z",
+      "sourceSha256": "5652352687b3fb7b0aa664b0e993a04fcfd88063dfb18e62a9531c97b77d1143",
+      "measuredSourceSha256": "5652352687b3fb7b0aa664b0e993a04fcfd88063dfb18e62a9531c97b77d1143",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-admission-preload.test.ps1",
+      "elapsedMs": 500,
+      "recordedAtUtc": "2026-10-10T08:30:26.9972940Z",
+      "sourceSha256": "3f8308d3fb8b42866916b4f24fa7c6122ab7f19a60378569e822cb8166005323",
+      "measuredSourceSha256": "3f8308d3fb8b42866916b4f24fa7c6122ab7f19a60378569e822cb8166005323",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-ancestry.test.ps1",
+      "elapsedMs": 3060,
+      "recordedAtUtc": "2026-10-10T08:32:59.7641240Z",
+      "sourceSha256": "e29aa3c6c333851c03b76c96628b2c01207b01f3f0f132d252558734ee20a9a7",
+      "measuredSourceSha256": "e29aa3c6c333851c03b76c96628b2c01207b01f3f0f132d252558734ee20a9a7",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-census.test.ps1",
+      "elapsedMs": 10771,
+      "recordedAtUtc": "2026-10-10T08:33:14.3522990Z",
+      "sourceSha256": "40daa73eb58c8b1c39b2e69421d73e5957b884ae16225f91b32602ff694ee838",
+      "measuredSourceSha256": "40daa73eb58c8b1c39b2e69421d73e5957b884ae16225f91b32602ff694ee838",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-holder-deadline.test.ps1",
+      "elapsedMs": 1331,
+      "recordedAtUtc": "2026-10-10T08:32:49.0607954Z",
+      "sourceSha256": "ab4befec85112d35273f8822557dcd2ac5cc188b68a56a6aa7bffa8f53a2a3a5",
+      "measuredSourceSha256": "ab4befec85112d35273f8822557dcd2ac5cc188b68a56a6aa7bffa8f53a2a3a5",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-routing-row.test.ps1",
+      "elapsedMs": 1704,
+      "recordedAtUtc": "2026-10-10T08:38:01.7928482Z",
+      "sourceSha256": "b08b4b13a3bb3df97428e02f6013b05b997f2016a3688ff118ea9774545064a5",
+      "measuredSourceSha256": "b08b4b13a3bb3df97428e02f6013b05b997f2016a3688ff118ea9774545064a5",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:heavy-slot.test.ps1",
+      "elapsedMs": 712,
+      "recordedAtUtc": "2026-10-10T08:33:08.6192726Z",
+      "sourceSha256": "4db0a2e08da3e4ec69cfa32b6fcda6486772fb23e3643b6924fbc123ccc4756c",
+      "measuredSourceSha256": "4db0a2e08da3e4ec69cfa32b6fcda6486772fb23e3643b6924fbc123ccc4756c",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:host-heavy-verifier.test.ps1",
+      "elapsedMs": 704,
+      "recordedAtUtc": "2026-10-10T08:33:22.4507168Z",
+      "sourceSha256": "3f59ba9d1eaf847623111f5010947dd058fcea3a48c9031ed84d29dea2f89613",
+      "measuredSourceSha256": "3f59ba9d1eaf847623111f5010947dd058fcea3a48c9031ed84d29dea2f89613",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:install-controller-skills.test.ps1",
+      "elapsedMs": 44176,
+      "recordedAtUtc": "2026-10-10T08:34:03.1747461Z",
+      "sourceSha256": "6ebf05212041f1ff2de1e2cc49761eba30f23c6e0f0d19855dd718868e440b2f",
+      "measuredSourceSha256": "6ebf05212041f1ff2de1e2cc49761eba30f23c6e0f0d19855dd718868e440b2f",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:integration-dispatch-contract.test.ps1",
+      "elapsedMs": 2845,
+      "recordedAtUtc": "2026-10-10T08:33:07.9047690Z",
+      "sourceSha256": "4287d270fc10f31e9b02181f8a3b15fe7b6f1fc29cd3a665702483f1f41d6cf4",
+      "measuredSourceSha256": "4287d270fc10f31e9b02181f8a3b15fe7b6f1fc29cd3a665702483f1f41d6cf4",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:invoke-fleet-exclusive-gate.test.ps1",
+      "elapsedMs": 27403,
+      "recordedAtUtc": "2026-10-10T08:32:36.8411838Z",
+      "sourceSha256": "75750d1d144e0614f5ac87b2d13dd8bb7d3fdd6fe8592402cc4e28548ea219c2",
+      "measuredSourceSha256": "75750d1d144e0614f5ac87b2d13dd8bb7d3fdd6fe8592402cc4e28548ea219c2",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:invoke-heavy-verifier.test.ps1",
+      "elapsedMs": 115140,
+      "recordedAtUtc": "2026-10-10T08:29:31.9207573Z",
+      "sourceSha256": "ccffe01a7ecc889090ce3506b75857cb069f57760c72bffff96b95d3430abd8b",
+      "measuredSourceSha256": "ccffe01a7ecc889090ce3506b75857cb069f57760c72bffff96b95d3430abd8b",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-6254-fail-closed-guard-evidence.test.ps1",
+      "elapsedMs": 205846,
+      "recordedAtUtc": "2026-10-10T08:31:11.5768681Z",
+      "sourceSha256": "46ff453d9804f53d4dce179549601b3a1dd37c623c237e2bd8a4ac1d17bed811",
+      "measuredSourceSha256": "46ff453d9804f53d4dce179549601b3a1dd37c623c237e2bd8a4ac1d17bed811",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-6997-autonomy-policy.test.ps1",
+      "elapsedMs": 720,
+      "recordedAtUtc": "2026-10-10T08:40:28.3665600Z",
+      "sourceSha256": "c534d036b013f3d5c66da2e04e41123ced977bbd6e7d73b0aafd9fc077baaab3",
+      "measuredSourceSha256": "c534d036b013f3d5c66da2e04e41123ced977bbd6e7d73b0aafd9fc077baaab3",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-7880-agent-outcome-policy.test.ps1",
+      "elapsedMs": 602,
+      "recordedAtUtc": "2026-10-10T08:34:08.5662208Z",
+      "sourceSha256": "0845dd7c86eba2f75a1b50e661a1ef785c5bfe47e52cdf51a7170be47c5238ab",
+      "measuredSourceSha256": "0845dd7c86eba2f75a1b50e661a1ef785c5bfe47e52cdf51a7170be47c5238ab",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-8192-escalation-policy.test.ps1",
+      "elapsedMs": 1612,
+      "recordedAtUtc": "2026-10-10T08:32:17.6291313Z",
+      "sourceSha256": "5c37ce70e31599c6a6b4c35c87a68390cd4ba47fe1724b5bef983eb160ec98d2",
+      "measuredSourceSha256": "5c37ce70e31599c6a6b4c35c87a68390cd4ba47fe1724b5bef983eb160ec98d2",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-8205-velocity-policy.test.ps1",
+      "elapsedMs": 942,
+      "recordedAtUtc": "2026-10-10T08:32:50.0046672Z",
+      "sourceSha256": "9a6f40b6552c4e3ea10fe8fdeffa65e61a3c02c7c950cff54477de09a1edadba",
+      "measuredSourceSha256": "9a6f40b6552c4e3ea10fe8fdeffa65e61a3c02c7c950cff54477de09a1edadba",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-8207-velocity-alarms-policy.test.ps1",
+      "elapsedMs": 820,
+      "recordedAtUtc": "2026-10-10T08:34:53.7446768Z",
+      "sourceSha256": "3e379591661f756149b1988eb0704295fb5dccc0e6495ec3cc71de6c225f79e9",
+      "measuredSourceSha256": "3e379591661f756149b1988eb0704295fb5dccc0e6495ec3cc71de6c225f79e9",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:issue-8915-routing-rebalance.test.ps1",
+      "elapsedMs": 826,
+      "recordedAtUtc": "2026-10-10T08:32:17.4260071Z",
+      "sourceSha256": "69e56ee07fef1fa95249b061c62f748c2cbb4a1be1c583c8a58ed70dc3dbcc2a",
+      "measuredSourceSha256": "69e56ee07fef1fa95249b061c62f748c2cbb4a1be1c583c8a58ed70dc3dbcc2a",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1",
+      "elapsedMs": 409445,
+      "recordedAtUtc": "2026-10-10T08:32:16.5974183Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1#authority",
+      "elapsedMs": 18171,
+      "recordedAtUtc": "2026-10-10T08:31:32.5633742Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1#collector",
+      "elapsedMs": 40318,
+      "recordedAtUtc": "2026-10-10T08:32:05.3088776Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1#dispatch",
+      "elapsedMs": 112113,
+      "recordedAtUtc": "2026-10-10T08:29:35.6248399Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1#ownership",
+      "elapsedMs": 156627,
+      "recordedAtUtc": "2026-10-10T08:30:29.5282253Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1#product-census",
+      "elapsedMs": 82216,
+      "recordedAtUtc": "2026-10-10T08:32:16.5974183Z",
+      "sourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredSourceSha256": "24dd7cc72d24add4adb1cd1c110f957c126dd9f48d42c282987e0b82f08be7b0",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:landing-preflight.test.ps1",
+      "elapsedMs": 37727,
+      "recordedAtUtc": "2026-10-10T08:31:49.3448708Z",
+      "sourceSha256": "2fb5365e620e4c0f70f7868dffd080b8ecaddc849be925e1ff8c519f71746660",
+      "measuredSourceSha256": "2fb5365e620e4c0f70f7868dffd080b8ecaddc849be925e1ff8c519f71746660",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:lane-admission.test.ps1",
+      "elapsedMs": 4859,
+      "recordedAtUtc": "2026-10-10T08:32:45.3742093Z",
+      "sourceSha256": "bcd5d0fddef8672a277339dfb2532ac3fcbd4ec1a98c2f9833ca375d5fa7b1e8",
+      "measuredSourceSha256": "bcd5d0fddef8672a277339dfb2532ac3fcbd4ec1a98c2f9833ca375d5fa7b1e8",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:lane-selection.test.ps1",
+      "elapsedMs": 3828,
+      "recordedAtUtc": "2026-10-10T08:32:16.0133183Z",
+      "sourceSha256": "fd159ec08e07a2e3965868a0cb432ccac747f6808467c0005f5acab279adf551",
+      "measuredSourceSha256": "fd159ec08e07a2e3965868a0cb432ccac747f6808467c0005f5acab279adf551",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:lane-stall-watchdog-batch.test.ps1",
+      "elapsedMs": 211649,
+      "recordedAtUtc": "2026-10-10T08:31:14.3510485Z",
+      "sourceSha256": "1bb87c2561e112425a76902ffdfd8e6253d1de18621f6c0fc7ef4032a0b08874",
+      "measuredSourceSha256": "1bb87c2561e112425a76902ffdfd8e6253d1de18621f6c0fc7ef4032a0b08874",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:lease-contract.test.ps1",
+      "elapsedMs": 7272,
+      "recordedAtUtc": "2026-10-10T08:31:42.3642065Z",
+      "sourceSha256": "525e6fe39217b34cbc79315357d78881921a73be48421b06fad000e397a2d33f",
+      "measuredSourceSha256": "525e6fe39217b34cbc79315357d78881921a73be48421b06fad000e397a2d33f",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:log-event.test.ps1",
+      "elapsedMs": 12137,
+      "recordedAtUtc": "2026-10-10T08:30:21.5824055Z",
+      "sourceSha256": "e9ab64d4e743357ba1cb0bf658935e6bf60b1f14571411244b135afa99f30120",
+      "measuredSourceSha256": "e9ab64d4e743357ba1cb0bf658935e6bf60b1f14571411244b135afa99f30120",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:matrix-refresh.test.ps1",
+      "elapsedMs": 67088,
+      "recordedAtUtc": "2026-10-10T08:34:48.7907236Z",
+      "sourceSha256": "d0cc4e74db506ba9bf1fd11d31070a6586d81b0e2bf99a7aafe2e063b529a23d",
+      "measuredSourceSha256": "d0cc4e74db506ba9bf1fd11d31070a6586d81b0e2bf99a7aafe2e063b529a23d",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:matrix-routing-data.test.ps1",
+      "elapsedMs": 7785,
+      "recordedAtUtc": "2026-10-10T08:32:12.1823655Z",
+      "sourceSha256": "031ce7689e63c9c2b3c849fcc7b873e87547b47cb2a224ad8120c9bb25f6e76e",
+      "measuredSourceSha256": "031ce7689e63c9c2b3c849fcc7b873e87547b47cb2a224ad8120c9bb25f6e76e",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:merge-hold-state.test.ps1",
+      "elapsedMs": 555,
+      "recordedAtUtc": "2026-10-10T08:30:26.4950847Z",
+      "sourceSha256": "086810e467b38de4b8c080704c61139003d185178c95224935408643641f5b9a",
+      "measuredSourceSha256": "086810e467b38de4b8c080704c61139003d185178c95224935408643641f5b9a",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:observed-lane-time.test.ps1",
+      "elapsedMs": 15047,
+      "recordedAtUtc": "2026-10-10T08:32:04.3944905Z",
+      "sourceSha256": "c4be1d3ae5be23a94c7af3c52b9ba33011d992f0b974afb4c369e15a7b415ff9",
+      "measuredSourceSha256": "c4be1d3ae5be23a94c7af3c52b9ba33011d992f0b974afb4c369e15a7b415ff9",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:orchestration-log-lock.test.ps1",
+      "elapsedMs": 521,
+      "recordedAtUtc": "2026-10-10T08:34:54.2689949Z",
+      "sourceSha256": "a23323479c5f5e90ed5fa48bf2043a657cb0e6d6057024a78d2a62ddc5eab050",
+      "measuredSourceSha256": "a23323479c5f5e90ed5fa48bf2043a657cb0e6d6057024a78d2a62ddc5eab050",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:planning-review-routes.test.ps1",
+      "elapsedMs": 678,
+      "recordedAtUtc": "2026-10-10T08:32:19.2969754Z",
+      "sourceSha256": "cf9f2e50ecc07f9fe335e65ebafcebf9e2fbaf495a1e694ba5b8284625a8b4f9",
+      "measuredSourceSha256": "cf9f2e50ecc07f9fe335e65ebafcebf9e2fbaf495a1e694ba5b8284625a8b4f9",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:premise-freshness.test.ps1",
+      "elapsedMs": 46183,
+      "recordedAtUtc": "2026-10-10T08:32:46.2030473Z",
+      "sourceSha256": "5b0926fcb9747dee8b92e9f966064df8e46fa649fea3d9598870d27131107925",
+      "measuredSourceSha256": "5b0926fcb9747dee8b92e9f966064df8e46fa649fea3d9598870d27131107925",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:product-census-budget.test.ps1",
+      "elapsedMs": 83829,
+      "recordedAtUtc": "2026-10-10T08:31:24.9876705Z",
+      "sourceSha256": "c5f983b49e368972326666528a87fa05187d61b73f7574b074c6f03371056d30",
+      "measuredSourceSha256": "c5f983b49e368972326666528a87fa05187d61b73f7574b074c6f03371056d30",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:review-head-reducer.test.ps1",
+      "elapsedMs": 970,
+      "recordedAtUtc": "2026-10-10T08:38:02.7653652Z",
+      "sourceSha256": "20df3698e81d92aa39ae86bdc3cce83d7237db2555df43d60394c9b423879184",
+      "measuredSourceSha256": "20df3698e81d92aa39ae86bdc3cce83d7237db2555df43d60394c9b423879184",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:review-queue-health.test.ps1",
+      "elapsedMs": 2316,
+      "recordedAtUtc": "2026-10-10T08:32:47.6930960Z",
+      "sourceSha256": "38a5bf000d0d656013308e57177282c5df93115bc35be1d421315c65d4e97856",
+      "measuredSourceSha256": "38a5bf000d0d656013308e57177282c5df93115bc35be1d421315c65d4e97856",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:routing-data.test.ps1",
+      "elapsedMs": 32087,
+      "recordedAtUtc": "2026-10-10T08:33:18.2925871Z",
+      "sourceSha256": "ef150a56ea06e6c54a8aee79c86bfc90f508b5c73f9415597d5a1795f8653125",
+      "measuredSourceSha256": "ef150a56ea06e6c54a8aee79c86bfc90f508b5c73f9415597d5a1795f8653125",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:routing-ledger-issue.test.ps1",
+      "elapsedMs": 1060,
+      "recordedAtUtc": "2026-10-10T08:34:52.9227239Z",
+      "sourceSha256": "a159d331b7717ed65756be9a1dc4e7d04b6ef3f9591d66382f6c0e1a3e404345",
+      "measuredSourceSha256": "a159d331b7717ed65756be9a1dc4e7d04b6ef3f9591d66382f6c0e1a3e404345",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:runtime-retention.test.ps1",
+      "elapsedMs": 11644,
+      "recordedAtUtc": "2026-10-10T08:33:03.5788049Z",
+      "sourceSha256": "30f9504d191bde19b27d2b49971b540458a0019d819fe83c5984e8542e215f43",
+      "measuredSourceSha256": "30f9504d191bde19b27d2b49971b540458a0019d819fe83c5984e8542e215f43",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:successor-selection.test.ps1",
+      "elapsedMs": 23206,
+      "recordedAtUtc": "2026-10-10T08:33:00.0489431Z",
+      "sourceSha256": "ae9dbb88dcdad7c320ab420e96a9155461e96a3af60e09dd4a7d22d4f05479e1",
+      "measuredSourceSha256": "ae9dbb88dcdad7c320ab420e96a9155461e96a3af60e09dd4a7d22d4f05479e1",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:velocity-floor-gaps.test.ps1",
+      "elapsedMs": 2524,
+      "recordedAtUtc": "2026-10-10T08:31:35.0897141Z",
+      "sourceSha256": "1cc99f3b0f4da8551d9c9cf3dab6e1fc1d0fd6c7aa750f022924872a403e5015",
+      "measuredSourceSha256": "1cc99f3b0f4da8551d9c9cf3dab6e1fc1d0fd6c7aa750f022924872a403e5015",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    },
+    {
+      "identity": "test:velocity-metrics.test.ps1",
+      "elapsedMs": 23084,
+      "recordedAtUtc": "2026-10-10T08:32:40.5128288Z",
+      "sourceSha256": "c4155aca393ac4066dcd0af6ceff383c19741c940457a0efa3febc4010e565d8",
+      "measuredSourceSha256": "c4155aca393ac4066dcd0af6ceff383c19741c940457a0efa3febc4010e565d8",
+      "measuredControllerHead": "111a24d1aa5a06a20cb00b7e950b31bedd0072cb",
+      "runId": "38037840987"
+    }
+  ]
+}
