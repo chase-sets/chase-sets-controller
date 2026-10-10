@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "controller-ci-parts/v1",
+  "items": [
+    {
+      "identity": "test:board-hourly-scale.test.ps1",
+      "durationCompatibility": {
+        "baselineHead": "2815303128f3151e10d71bfdd351dc9b659a2b47",
+        "measuredSourceSha256": "b6ddaba00dd80074ada6ec28dd7f5b2ba20c05b59433b4a1afb6dd156c405ff6",
+        "candidateSourceSha256": "0a2c2490d1cfe91def095353b15b99bd912cb9df1b4cb68731a3bf78fb188db0",
+        "proof": "controller-ci-coverage.check.ps1: unchanged extracted source and seven-call union"
+      },
+      "selector": "-Arm",
+      "parts": [
+        {
+          "name": "candidate",
+          "weight": 96
+        },
+        {
+          "name": "baseline",
+          "weight": 190
+        },
+        {
+          "name": "issue-scan",
+          "weight": 195
+        },
+        {
+          "name": "no-linkage",
+          "weight": 200
+        },
+        {
+          "name": "ten-item",
+          "weight": 180
+        }
+      ]
+    }
+  ]
+}
