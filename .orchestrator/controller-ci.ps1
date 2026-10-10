@@ -10,6 +10,7 @@ param(
   [ValidateRange(0,9)][int]$Shard = 0
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')
 
 function Assert-Ci([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "CONTROLLER_CI: $Message" }
@@ -62,7 +63,7 @@ function Get-CiRestriction([string]$Identity, [string]$Root) {
   return $null
 }
 
-function New-CiAssignments([object[]]$Inventory, [string]$Selection) {
+function Select-CiRequiredItems([object[]]$Inventory, [string]$Selection) {
   $requested = @()
   if (-not [string]::IsNullOrWhiteSpace($Selection)) {
     $requested = @($Selection -split '[,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -73,8 +74,13 @@ function New-CiAssignments([object[]]$Inventory, [string]$Selection) {
   $selected = @($Inventory | Where-Object { $requested.Count -eq 0 -or $_.identity -cin $requested })
   Assert-Ci ($selected.Count -gt 0) 'empty battery plan'
   Assert-Ci (@($Inventory.identity | Select-Object -Unique).Count -eq $Inventory.Count) 'duplicate inventory identity'
-  for ($i=0; $i -lt $selected.Count; $i++) { $selected[$i] | Add-Member -NotePropertyName shard -NotePropertyValue ($i % 10) -Force }
   return ,$selected
+}
+
+function New-CiAssignments([object[]]$Inventory, [string]$Selection, $Manifest=$null, $Profile=$null,
+    [string]$Root='', [datetimeoffset]$Now=[datetimeoffset]::UtcNow) {
+  $selected = Select-CiRequiredItems $Inventory $Selection
+  return ,(Set-CiBalancedShards (New-CiExecutionItems $selected $Manifest $Profile $Root $Now))
 }
 
 function Merge-CiResults($Plan, [object[]]$Shards) {
@@ -87,7 +93,8 @@ function Merge-CiResults($Plan, [object[]]$Shards) {
     Assert-Ci ($part.checkoutHead -ceq $Plan.checkoutHead -and $part.controllerHead -ceq $Plan.controllerHead -and
       $part.productSha -ceq $Plan.productSha -and $part.planSha256 -ceq $Plan.planSha256) 'shard identity mismatch'
     Assert-Ci ($part.shard -ge 0 -and $part.shard -lt 10 -and $seenShards.Add([int]$part.shard)) 'duplicate/invalid shard'
-    $expected = @($Plan.selected | Where-Object shard -EQ $part.shard)
+    $executionItems = if ($null -ne $Plan.executionItems) { $Plan.executionItems } else { $Plan.selected }
+    $expected = @($executionItems | Where-Object shard -EQ $part.shard)
     Assert-Ci (@($part.results).Count -eq $expected.Count) 'shard cardinality mismatch'
     foreach ($row in $part.results) {
       Assert-Ci ($row.identity -cin @($expected.identity) -and $seen.Add([string]$row.identity)) 'extra/duplicate result'
@@ -99,8 +106,8 @@ function Merge-CiResults($Plan, [object[]]$Shards) {
       $results.Add($row)
     }
   }
-  Assert-Ci ($seen.Count -eq @($Plan.selected).Count) 'missing item result'
-  return ,@($results | Sort-Object identity)
+  Assert-Ci ($seen.Count -eq @($executionItems).Count) 'missing item result'
+  return ,(ConvertTo-CiRequiredResults $Plan @($results | Sort-Object identity))
 }
 
 if ($Mode -ceq 'Library') { return }
@@ -135,9 +142,15 @@ if ($Mode -ceq 'Plan') {
       arguments=@($item.arguments | ForEach-Object { ([string]$_).Replace($ControllerRoot, '{CONTROLLER}') })
       restriction=(Get-CiRestriction $item.identity $ControllerRoot) }
   })
-  $selected = New-CiAssignments $inventory $Items
+  $selected = Select-CiRequiredItems $inventory $Items
+  $manifestPath = Join-Path $ControllerRoot '.orchestrator/controller-ci-parts.json'
+  $manifest = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -Depth 40 } else { $null }
+  $profile = Read-CiTimingProfile (Join-Path $ControllerRoot '.orchestrator/controller-ci-durations.json')
+  $executionItems = New-CiAssignments $inventory $Items $manifest $profile $ControllerRoot
   $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=(Get-CiSourceHead $ControllerRoot $checkoutHead)
     checkoutHead=$checkoutHead; productSha=$ProductSha; runnerHead=$env:GITHUB_SHA; inventory=$inventory; selected=$selected
+    executionItems=$executionItems; planning=@{algorithm='LPT';fallbackMs=30000;maxAgeDays=30
+      shards=@(0..9 | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })}
     scope=@{kind=$capture.scope;reason=$capture.reason;baselineHead='';changedCount=0}; hostIdentity=$capture.hostIdentity
     startedUtc=[DateTime]::UtcNow.ToString('o'); requestedScope=$Scope }
   Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
@@ -154,7 +167,8 @@ if ($Mode -ceq 'Shard') {
   Assert-Ci ($checkoutHead -ceq $plan.checkoutHead -and $ProductSha -ceq $plan.productSha) 'plan checkout mismatch'
   $rows = [Collections.Generic.List[object]]::new()
   $start = [DateTime]::UtcNow
-  foreach ($item in @($plan.selected | Where-Object shard -EQ $Shard)) {
+  $executionItems = if ($null -ne $plan.executionItems) { $plan.executionItems } else { $plan.selected }
+  foreach ($item in @($executionItems | Where-Object shard -EQ $Shard)) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $started = [DateTime]::UtcNow.ToString('o')
     $logName = ('{0:d3}.log' -f $rows.Count)
@@ -212,7 +226,8 @@ $record = [ordered]@{schemaVersion='controller-battery-result/v1';controllerHead
   inventory=$plan.inventory;results=$results;rawLog=@{kind='raw-log';relativePath='.orchestrator/artifacts/controller-ci.log'
     byteLength=(Get-Item $rawPath).Length;sha256=(Get-FileHash $rawPath -Algorithm SHA256).Hash.ToLowerInvariant()}
   ci=@{checkoutHead=$plan.checkoutHead;productSha=$plan.productSha;runnerHead=$plan.runnerHead;runId=$env:GITHUB_RUN_ID
-    localOnly=$localOnly;notHermetic=$notHermetic;shards=@($parts | Select-Object shard,startedUtc,finishedUtc,elapsedMs)} }
+    localOnly=$localOnly;notHermetic=$notHermetic;shards=@($parts | Select-Object shard,startedUtc,finishedUtc,elapsedMs)
+    planning=$plan.planning;executionResults=@($parts | ForEach-Object { $_.results })} }
 if ($outcome -cne 'PASS') { $record.failureCode="CI_$outcome" }
 Write-CiJson $record (Join-Path $OutputDirectory 'final.json')
 Write-Output "BATTERY_RESULT outcome=$outcome required=$($plan.inventory.Count) results=$($results.Count) localOnly=$($localOnly.Count)"
