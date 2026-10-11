@@ -1,0 +1,34 @@
+{
+  "schema": "review-queue-health-fixture/v1",
+  "scenarios": {
+    "mixed-ready-and-enqueued": {
+      "complete": true,
+      "reason": "GITHUB_QUEUE_COMPLETE",
+      "prs": [
+        {
+          "number": 6254,
+          "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mergeQueueEntryId": null
+        },
+        {
+          "number": 6255,
+          "isDraft": false,
+          "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mergeQueueEntryId": "MQE_fixture_6255"
+        },
+        {
+          "number": 6256,
+          "isDraft": true,
+          "head": "cccccccccccccccccccccccccccccccccccccccc",
+          "mergeQueueEntryId": null
+        }
+      ]
+    },
+    "pagination-failure": {
+      "complete": false,
+      "reason": "GITHUB_QUEUE_PAGINATION_INCOMPLETE",
+      "prs": []
+    }
+  }
+}
