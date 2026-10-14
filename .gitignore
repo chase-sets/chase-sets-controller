@@ -1,0 +1,17 @@
+# This is the container meta-repo. Sibling directories are product/controller
+# worktrees or machine-local storage, not source belonging to this repository.
+/*/
+!/.orchestrator/
+
+# Machine-local files at the container root.
+/.main-worktree-write-lock.json
+/.main-directory-write-lock.json
+/*.html
+/review-*.lock
+
+# The runtime directory receives arbitrary dispatch output. Track durable
+# tooling explicitly with git add -f; existing tracked files remain tracked.
+/.orchestrator/*
+!/.orchestrator/contracts/
+!/.orchestrator/controller-skills/
+!/.orchestrator/fixtures/
