@@ -1,0 +1,315 @@
+{
+  "schemaVersion": "lane-admission-collected-input/v1",
+  "snapshotId": "receipt-fixture-6309",
+  "cycle": {
+    "cycleId": "cycle-fixture-6309",
+    "collectedAt": "2026-07-31T05:00:00Z",
+    "finalRebindAt": "2026-07-31T05:01:00Z"
+  },
+  "authorityRows": [
+    {
+      "set": "candidate-issues",
+      "coverage": {
+        "status": "complete",
+        "pages": 1,
+        "collected": 4,
+        "total": 4,
+        "providerCap": 100,
+        "hasNextPage": false,
+        "unexamined": 0,
+        "revision": "authority-candidates-r1",
+        "finalRevision": "authority-candidates-r1",
+        "revisionStable": true
+      }
+    },
+    {
+      "set": "labels",
+      "coverage": {
+        "status": "complete",
+        "pages": 1,
+        "collected": 12,
+        "total": 12,
+        "providerCap": 100,
+        "hasNextPage": false,
+        "unexamined": 0,
+        "revision": "authority-labels-r1",
+        "finalRevision": "authority-labels-r1",
+        "revisionStable": true
+      }
+    },
+    {
+      "set": "milestones",
+      "coverage": {
+        "status": "complete",
+        "pages": 1,
+        "collected": 2,
+        "total": 2,
+        "providerCap": 100,
+        "hasNextPage": false,
+        "unexamined": 0,
+        "revision": "authority-milestones-r1",
+        "finalRevision": "authority-milestones-r1",
+        "revisionStable": true
+      }
+    },
+    {
+      "set": "open-prs",
+      "coverage": {
+        "status": "complete",
+        "pages": 1,
+        "collected": 0,
+        "total": 0,
+        "providerCap": 100,
+        "hasNextPage": false,
+        "unexamined": 0,
+        "revision": "authority-prs-r1",
+        "finalRevision": "authority-prs-r1",
+        "revisionStable": true
+      }
+    },
+    {
+      "set": "active-lanes",
+      "coverage": {
+        "status": "complete",
+        "pages": 1,
+        "collected": 0,
+        "total": 0,
+        "providerCap": 100,
+        "hasNextPage": false,
+        "unexamined": 0,
+        "revision": "authority-lanes-r1",
+        "finalRevision": "authority-lanes-r1",
+        "revisionStable": true
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "number": 101,
+      "nodeId": "issue-node-101",
+      "revision": "candidate-101-r1",
+      "finalRevision": "candidate-101-r1",
+      "state": "open",
+      "issueType": "Slice",
+      "milestone": {
+        "nodeId": "milestone-wave-2",
+        "number": 100,
+        "state": "open",
+        "revision": "milestone-wave-2-r1",
+        "finalRevision": "milestone-wave-2-r1"
+      },
+      "readiness": {
+        "status": "ready",
+        "subjectRevision": "candidate-101-r1",
+        "authorityComplete": true,
+        "revisionStable": true,
+        "checkerSha": "84ddea0bfde7cf5d4280a0a1a619d246c777af35"
+      },
+      "priority": "p2",
+      "dispatchRank": null,
+      "projectItemCount": 1,
+      "dependencies": [],
+      "footprint": {
+        "declared": ["packages/ui/src/**"],
+        "observed": [],
+        "complete": true,
+        "grammarStatus": "handled"
+      },
+      "operatorLabel": false,
+      "lifecycle": { "refined": true, "executable": true },
+      "authority": {
+        "isolated": true,
+        "coverage": {
+          "status": "complete",
+          "pages": 1,
+          "collected": 1,
+          "total": 1,
+          "providerCap": 100,
+          "hasNextPage": false,
+          "unexamined": 0,
+          "revision": "candidate-101-authority-r1",
+          "finalRevision": "candidate-101-authority-r1",
+          "revisionStable": true
+        }
+      }
+    },
+    {
+      "number": 102,
+      "nodeId": "issue-node-102",
+      "revision": "candidate-102-r1",
+      "finalRevision": "candidate-102-r1",
+      "state": "open",
+      "issueType": "Slice",
+      "milestone": {
+        "nodeId": "milestone-wave-1",
+        "number": 200,
+        "state": "open",
+        "revision": "milestone-wave-1-r1",
+        "finalRevision": "milestone-wave-1-r1"
+      },
+      "readiness": {
+        "status": "ready",
+        "subjectRevision": "candidate-102-r1",
+        "authorityComplete": true,
+        "revisionStable": true,
+        "checkerSha": "84ddea0bfde7cf5d4280a0a1a619d246c777af35"
+      },
+      "priority": "p3",
+      "dispatchRank": 2,
+      "projectItemCount": 1,
+      "dependencies": [],
+      "footprint": {
+        "declared": ["packages"],
+        "observed": [],
+        "complete": true,
+        "grammarStatus": "handled"
+      },
+      "operatorLabel": false,
+      "lifecycle": { "refined": true, "executable": true },
+      "authority": {
+        "isolated": true,
+        "coverage": {
+          "status": "complete",
+          "pages": 1,
+          "collected": 1,
+          "total": 1,
+          "providerCap": 100,
+          "hasNextPage": false,
+          "unexamined": 0,
+          "revision": "candidate-102-authority-r1",
+          "finalRevision": "candidate-102-authority-r1",
+          "revisionStable": true
+        }
+      }
+    },
+    {
+      "number": 103,
+      "nodeId": "issue-node-103",
+      "revision": "candidate-103-r1",
+      "finalRevision": "candidate-103-r1",
+      "state": "open",
+      "issueType": "Slice",
+      "milestone": {
+        "nodeId": "milestone-wave-1",
+        "number": 200,
+        "state": "open",
+        "revision": "milestone-wave-1-r1",
+        "finalRevision": "milestone-wave-1-r1"
+      },
+      "readiness": {
+        "status": "ready",
+        "subjectRevision": "candidate-103-r1",
+        "authorityComplete": true,
+        "revisionStable": true,
+        "checkerSha": "84ddea0bfde7cf5d4280a0a1a619d246c777af35"
+      },
+      "priority": "p1",
+      "dispatchRank": 3,
+      "projectItemCount": 1,
+      "dependencies": [],
+      "footprint": {
+        "declared": ["services/**"],
+        "observed": [],
+        "complete": true,
+        "grammarStatus": "handled"
+      },
+      "operatorLabel": true,
+      "lifecycle": { "refined": true, "executable": true },
+      "authority": {
+        "isolated": true,
+        "coverage": {
+          "status": "complete",
+          "pages": 1,
+          "collected": 1,
+          "total": 1,
+          "providerCap": 100,
+          "hasNextPage": false,
+          "unexamined": 0,
+          "revision": "candidate-103-authority-r1",
+          "finalRevision": "candidate-103-authority-r1",
+          "revisionStable": true
+        }
+      }
+    },
+    {
+      "number": 104,
+      "nodeId": "issue-node-104",
+      "revision": "candidate-104-r1",
+      "finalRevision": "candidate-104-r1",
+      "state": "open",
+      "issueType": "Slice",
+      "milestone": {
+        "nodeId": "milestone-wave-1",
+        "number": 200,
+        "state": "open",
+        "revision": "milestone-wave-1-r1",
+        "finalRevision": "milestone-wave-1-r1"
+      },
+      "readiness": {
+        "status": "ready",
+        "subjectRevision": "candidate-104-r1",
+        "authorityComplete": true,
+        "revisionStable": true,
+        "checkerSha": "84ddea0bfde7cf5d4280a0a1a619d246c777af35"
+      },
+      "priority": "p0",
+      "dispatchRank": 1,
+      "projectItemCount": 1,
+      "dependencies": [],
+      "footprint": {
+        "declared": ["services/fallback"],
+        "observed": [],
+        "complete": true,
+        "grammarStatus": "handled"
+      },
+      "operatorLabel": false,
+      "lifecycle": { "refined": true, "executable": true },
+      "authority": {
+        "isolated": true,
+        "coverage": {
+          "status": "complete",
+          "pages": 1,
+          "collected": 1,
+          "total": 1,
+          "providerCap": 100,
+          "hasNextPage": false,
+          "unexamined": 0,
+          "revision": "candidate-104-authority-r1",
+          "finalRevision": "candidate-104-authority-r1",
+          "revisionStable": true
+        }
+      }
+    }
+  ],
+  "activeLanes": [],
+  "capacity": {
+    "decision": "option-1",
+    "queueAndDeployHealthy": true,
+    "hostCapacity": {
+      "memorySafe": true,
+      "heavyVerifierSafe": true,
+      "complete": true,
+      "authorityId": "host-capacity-fixture",
+      "capturedAt": "2026-07-31T05:00:00Z",
+      "validUntil": "2026-07-31T05:10:00Z",
+      "revision": "host-capacity-r1",
+      "finalRevision": "host-capacity-r1"
+    },
+    "ownership": {
+      "safe": true,
+      "complete": true,
+      "currentPool": 4,
+      "active": 3,
+      "authorizedMax": 8,
+      "revision": "ownership-r1",
+      "finalRevision": "ownership-r1"
+    }
+  },
+  "overrides": [],
+  "provenance": {
+    "collector": "fixture-collector",
+    "collectorVersion": "v1",
+    "repository": "chase-sets/chase-sets",
+    "subjectHead": "9bb195fdb0762d313f572d3bbab4b13ddb537c3d"
+  }
+}
