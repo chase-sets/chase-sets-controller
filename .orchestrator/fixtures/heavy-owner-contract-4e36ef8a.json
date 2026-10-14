@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "baselineHead": "4e36ef8aa627cad63f5163f619187eca1b7c069e",
+  "functions": {
+    "Test-OwnerShape": "6a7e678eaaa729a2e97618df71806eab48d4bd562a609bdb759d79e84b514483",
+    "Write-OwnerRecord": "5ab538829facc0e024eff6b7d22d3c8d76ddf0d83f8684aa6f239f929780886f",
+    "Test-ReclaimableOwner": "282faa1aab79aedccc1220bb89a186224c20241608bd60e9d822c4f6e91bddfe",
+    "Test-PossibleOwnedChild": "6c58f9a3204578fc2d2f193d5a5ac793b39d1140f9b1d6986e10cf93ed1ff215",
+    "Release-ThisLock": "1252a5551cd6cb68f4ef883eef6642b1f793c10ce665e287f5f9bc2f6d2dd776",
+    "Start-NestedOwner": "2cdb526524f2c0f5f63573f026bd2aaf0ed8d56c291e00a0120b9049fa26534a"
+  }
+}
