@@ -1,0 +1,97 @@
+{
+  "description": "Captured immutable canonical rows for #9339. raw strings are original UTF-8 JSON excluding line terminators; no historical facts are edited.",
+  "rows": [
+    {
+      "line": 28189,
+      "raw": "{\"ts\":\"2026-10-07T03:24:38.279Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"8951-namespace-protocol-g1\",\"label\":\"8951-namespace-protocol-g1\",\"lane\":\"20261006-8951-namespace-protocol-g1\",\"laneRole\":\"implementation\",\"transcript\":\"8951-namespace-protocol-g1.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261006-8951-namespace-protocol-g1\",\"branch\":\"codex/8951-namespace-protocol-g1\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"opus\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"shadow\",\"capacityDecisionDigest\":\"519cc673158c2b0f\",\"capacityFlip\":null,\"capacityShadowFlip\":null,\"capacityFlipSkip\":null,\"issue\":8951}"
+    },
+    {
+      "line": 28198,
+      "raw": "{\"ts\":\"2026-10-07T03:57:30.652Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"8951-packet-review-r1\",\"label\":\"8951-packet-review-r1\",\"lane\":\"20261007-8951-packet-review-r1\",\"laneRole\":\"review\",\"transcript\":\"8951-packet-review-r1.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261007-8951-packet-review-r1\",\"branch\":\"\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"sol\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":8951}"
+    },
+    {
+      "line": 28201,
+      "raw": "{\"ts\":\"2026-10-07T04:11:50.158Z\",\"kind\":\"lane-complete\",\"issue\":8951,\"lane\":\"8951-packet-review-r1\",\"laneRole\":\"review\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"transcript\":\"8951-packet-review-r1.jsonl\",\"outcome\":\"BLOCK_FIXABLE\",\"note\":\"COMPLETE review of #8951 packet (comment 6030432065, sha256 4f808977): F1 B-prime loses handles its unchanged continuation needs; F2 ambient helper/FD-import access unaddressed; F3 proof plan omits lifecycle/evidence controls and conflates checkpoints; F4 admission/browser caller census absent/incomplete. Author repair next (8951-namespace-protocol-g2).\"}"
+    },
+    {
+      "line": 28202,
+      "raw": "{\"ts\":\"2026-10-07T04:12:52.795Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"8951-namespace-protocol-g2\",\"label\":\"8951-namespace-protocol-g2\",\"lane\":\"20261006-8951-namespace-protocol-g1\",\"laneRole\":\"implementation\",\"transcript\":\"8951-namespace-protocol-g2.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261006-8951-namespace-protocol-g1\",\"branch\":\"codex/8951-namespace-protocol-g1\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"opus\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"shadow\",\"capacityDecisionDigest\":\"519cc673158c2b0f\",\"capacityFlip\":null,\"capacityShadowFlip\":null,\"capacityFlipSkip\":null,\"issue\":8951}"
+    },
+    {
+      "line": 28209,
+      "raw": "{\"ts\":\"2026-10-07T04:31:29.800Z\",\"kind\":\"lane-complete\",\"issue\":8951,\"lane\":\"8951-namespace-protocol-g2\",\"laneRole\":\"implementation\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"provisional\",\"transcript\":\"8951-namespace-protocol-g2.jsonl\",\"outcome\":\"PENDING_HOST_REVIEW\",\"note\":\"Revised #8951 packet comment 6030949275 (sha256 afbc6516, 34,739 bytes) superseding 6030432065; F1-F4 dispositions listed.\"}"
+    },
+    {
+      "line": 28210,
+      "raw": "{\"ts\":\"2026-10-07T04:32:29.357Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"8951-packet-delta-review-r2\",\"label\":\"8951-packet-delta-review-r2\",\"lane\":\"20261006-8951-packet-delta-review-r2\",\"laneRole\":\"review\",\"transcript\":\"8951-packet-delta-review-r2.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261006-8951-packet-delta-review-r2\",\"branch\":\"codex/8951-packet-delta-review-r2\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"sol\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":8951}"
+    },
+    {
+      "line": 28216,
+      "raw": "{\"ts\":\"2026-10-07T04:57:59.327Z\",\"kind\":\"lane-complete\",\"issue\":8951,\"lane\":\"8951-packet-delta-review-r2\",\"laneRole\":\"review\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"transcript\":\"8951-packet-delta-review-r2.jsonl\",\"outcome\":\"BLOCK_FIXABLE\",\"note\":\"DELTA on revised packet afbc6516: F1,F2,F4 closed; F3 open (ownership-refusal lifecycle states: missing/orphaned/conflicting ownership controls, B6 reap budget, installer/native status reconciliation). Second blocking round; prescribed remedy verbatim to author g3.\"}"
+    },
+    {
+      "line": 28218,
+      "raw": "{\"ts\":\"2026-10-07T04:58:49.644Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"8951-namespace-protocol-g3\",\"label\":\"8951-namespace-protocol-g3\",\"lane\":\"20261006-8951-namespace-protocol-g1\",\"laneRole\":\"implementation\",\"transcript\":\"8951-namespace-protocol-g3.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261006-8951-namespace-protocol-g1\",\"branch\":\"codex/8951-namespace-protocol-g1\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"opus\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"shadow\",\"capacityDecisionDigest\":\"519cc673158c2b0f\",\"capacityFlip\":null,\"capacityShadowFlip\":null,\"capacityFlipSkip\":null,\"issue\":8951}"
+    },
+    {
+      "line": 28232,
+      "raw": "{\"ts\":\"2026-10-07T05:42:29.502Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"8951-packet-delta-review-r3\",\"label\":\"8951-packet-delta-review-r3\",\"lane\":\"20261006-8951-packet-delta-review-r3\",\"laneRole\":\"review\",\"transcript\":\"8951-packet-delta-review-r3.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261006-8951-packet-delta-review-r3\",\"branch\":\"codex/8951-packet-delta-review-r3\",\"head\":\"77c7e42a67f01aeafdfa212e12cb98bebb61f896\",\"policyGeneration\":1,\"registryAuthorityDigest\":\"badf86370bd03dec\",\"family\":\"sol\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":8951}"
+    },
+    {
+      "line": 28248,
+      "raw": "{\"ts\":\"2026-10-07T06:28:23.166Z\",\"kind\":\"lane-complete\",\"issue\":8951,\"lane\":\"8951-packet-delta-review-r3\",\"laneRole\":\"review\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"11\",\"placement\":\"provisional\",\"transcript\":\"8951-packet-delta-review-r3.jsonl\",\"outcome\":\"PASS\",\"note\":\"DELTA PASS on r3 packet comment 6031379240 (sha 5f048815); F3 closed, N1 adopted, N2 non-blocking. Next: independent changed-boundary FINAL on Q-B (AC-D4).\"}"
+    },
+    {
+      "line": 29711,
+      "raw": "{\"ts\":\"2026-10-10T04:14:27.595Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"9259-brief-review-r1\",\"label\":\"9259-brief-review-r1\",\"lane\":\"20261010-9259-brief-review-r1\",\"laneRole\":\"review\",\"transcript\":\"9259-brief-review-r1.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"12\",\"placement\":\"override-Todd\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261010-9259-brief-review-r1\",\"branch\":\"\",\"head\":\"aa3626b07aa5feda484f8aa6dd0f272a6680f3a8\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"opus\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":9259}"
+    },
+    {
+      "line": 29718,
+      "raw": "{\"ts\":\"2026-10-10T04:36:21.037Z\",\"kind\":\"lane-complete\",\"issue\":9259,\"lane\":\"9259-brief-review-r1\",\"model\":\"claude-opus-5-5\",\"outcome\":\"BLOCK_FIXABLE_REPAIRED_IN_BODY\",\"note\":\"COMPLETE brief review of #9259 (c9d02ac0): F1 repaired in-body by reviewer, N1-N8 non-blocking; host published 25731216 (12285 B) with CAS; readiness rerun requested. Next: implementation dispatch (ops admitted: #9141 flake dequeues ready product PRs).\"}"
+    },
+    {
+      "line": 29722,
+      "raw": "{\"ts\":\"2026-10-10T04:41:26.145Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"9259-impl-g1\",\"label\":\"9259-impl-g1\",\"lane\":\"20261010-9259-impl-g1\",\"laneRole\":\"implementation\",\"transcript\":\"9259-impl-g1.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"medium\",\"row\":\"4\",\"placement\":\"override-Todd\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261010-9259-impl-g1\",\"branch\":\"codex/9259-orphan-13c-g1\",\"head\":\"c5487c6b5e8cfc7a55e993b55a47429ba74153b8\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"opus\",\"slot\":\"claude.primary\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"in-force\",\"capacityDecisionDigest\":\"cfa1715c5b5efee5\",\"capacityFlip\":{\"row\":4,\"toward\":\"claude\",\"steps\":4,\"from\":{\"harness\":\"codex\",\"family\":\"sol\",\"effort\":\"high\",\"slot\":\"explicit\"},\"to\":{\"harness\":\"claude\",\"family\":\"opus\",\"effort\":\"medium\",\"slot\":\"claude.primary\",\"placement\":\"override-Todd\"}},\"capacityShadowFlip\":null,\"capacityFlipSkip\":null,\"issue\":9259}"
+    },
+    {
+      "line": 29750,
+      "raw": "{\"ts\":\"2026-10-10T05:47:19.540Z\",\"kind\":\"lane-complete\",\"issue\":9259,\"pr\":9263,\"lane\":\"9259-impl-g1\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"4\",\"outcome\":\"PENDING_HOST_REVIEW\",\"note\":\"Draft PR #9263 at 4e940c68 (base 9099c97b) hosted green, CLEAN; PR 1 of #9259 per AC4 sequencing.\"}"
+    },
+    {
+      "line": 29824,
+      "raw": "{\"ts\":\"2026-10-10T08:16:38.782Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"9258-ac1-repair-r1\",\"label\":\"9258-ac1-repair-r1\",\"lane\":\"20261010-9258-ac1-repair-r1\",\"laneRole\":\"planning\",\"transcript\":\"9258-ac1-repair-r1.jsonl\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"8\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261010-9258-ac1-repair-r1\",\"branch\":\"codex/9258-ac1-repair-r1\",\"head\":\"81b78e2be4a57e65fd2e47faef9e860d6d789bfe\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"opus\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":9258}"
+    },
+    {
+      "line": 29832,
+      "raw": "{\"ts\":\"2026-10-10T08:36:54.224Z\",\"kind\":\"lane-complete\",\"issue\":9258,\"lane\":\"9258-ac1-repair-r1\",\"laneRole\":\"planning\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"8\",\"placement\":\"provisional\",\"transcript\":\"9258-ac1-repair-r1.jsonl\",\"outcome\":\"REPAIR_READY_FOR_REVIEW\",\"note\":\"In-place AC1 clarification per FINAL 9258-marker-decision-r1: body 8c3e26aa (12286 B), lint pass, prospective readiness ready 11/11. Next DELTA review Sol high.\"}"
+    },
+    {
+      "line": 29833,
+      "raw": "{\"ts\":\"2026-10-10T08:37:12.383Z\",\"kind\":\"lane-complete\",\"issue\":9258,\"lane\":\"9258-ac1-repair-r1\",\"laneRole\":\"planning\",\"harness\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"row\":\"8\",\"placement\":\"provisional\",\"transcript\":\"9258-ac1-repair-r1.jsonl\",\"outcome\":\"REPAIR_READY_FOR_REVIEW\",\"note\":\"In-place AC1 clarification per FINAL 9258-marker-decision-r1: body 8c3e26aa (12286 B), lint pass, prospective readiness ready 11/11. Next DELTA review Sol high.\"}"
+    },
+    {
+      "line": 29835,
+      "raw": "{\"ts\":\"2026-10-10T08:38:14.901Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v2\",\"attemptId\":\"9258-ac1-review-r1\",\"label\":\"9258-ac1-review-r1\",\"lane\":\"20261010-9258-ac1-review-r1\",\"laneRole\":\"review\",\"transcript\":\"9258-ac1-review-r1.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"12\",\"placement\":\"provisional\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261010-9258-ac1-review-r1\",\"branch\":\"codex/9258-ac1-review-r1\",\"head\":\"81b78e2be4a57e65fd2e47faef9e860d6d789bfe\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"sol\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"issue\":9258}"
+    },
+    {
+      "line": 29838,
+      "raw": "{\"ts\":\"2026-10-10T08:45:34.544Z\",\"kind\":\"lane-complete\",\"issue\":9258,\"lane\":\"9258-ac1-review-r1\",\"laneRole\":\"review\",\"harness\":\"codex\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"row\":\"12\",\"placement\":\"provisional\",\"transcript\":\"9258-ac1-review-r1.jsonl\",\"outcome\":\"PASS\",\"note\":\"DELTA brief review of 9258-ac1-repair-r1 body 8c3e26aa: PASS, 0 findings. Host published body (CAS 01485917 -> 8c3e26aa) and requested readiness.\"}"
+    },
+    {
+      "line": 30285,
+      "raw": "{\"ts\":\"2026-10-11T05:16:42.106Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"9337-declarations-plan-r1\",\"label\":\"9337-declarations-plan-r1\",\"lane\":\"20261011-9337-impl-g1\",\"laneRole\":\"planning\",\"transcript\":\"9337-declarations-plan-r1.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6-astra\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"override-Todd\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261011-9337-impl-g1\",\"branch\":\"codex/9337-impl-g1\",\"head\":\"f75bc15afbfdd7296755672ddd97b8eb5c8152c0\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"astra\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"in-force\",\"capacityDecisionDigest\":\"2180a58532d11262\",\"capacityFlip\":null,\"capacityShadowFlip\":null,\"capacityFlipSkip\":\"SLOT_NOT_ADMITTED\",\"issue\":9337}"
+    },
+    {
+      "line": 30294,
+      "raw": "{\"ts\":\"2026-10-11T05:37:02.407Z\",\"kind\":\"decision-resolved\",\"issue\":9337,\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"outcome\":\"CONTINUE\",\"note\":\"Rejected unlaunched Issue9337-only capacity Opus flip because full normative ancestor8952 Packet/AC4 author history excludes it while Sol independent of exact body remains admitted. Repeat attributed inherited DELTA under8952 lineage like predecessor, actualbody9337 remains explicit. No history/schema/routing policy exemption or second semantic sweep.\"}"
+    },
+    {
+      "line": 30317,
+      "raw": "{\"ts\":\"2026-10-11T06:42:46.058Z\",\"kind\":\"dispatch\",\"dispatchRoutingSchema\":\"watchdog-dispatch-routing/v3\",\"attemptId\":\"9339-ancestry-plan-r1\",\"label\":\"9339-ancestry-plan-r1\",\"lane\":\"20261011-routing-ancestry-plan-r1\",\"laneRole\":\"planning\",\"transcript\":\"9339-ancestry-plan-r1.jsonl\",\"harness\":\"codex\",\"model\":\"gpt-6-astra\",\"effort\":\"high\",\"row\":\"7\",\"placement\":\"override-Todd\",\"worktree\":\"D:\\\\Users\\\\ToddS\\\\Source\\\\Repos\\\\chase-sets\\\\20261011-routing-ancestry-plan-r1\",\"branch\":\"codex/routing-ancestry-plan-r1\",\"head\":\"f75bc15afbfdd7296755672ddd97b8eb5c8152c0\",\"policyGeneration\":2,\"registryAuthorityDigest\":\"f2b3d2c923541196\",\"family\":\"astra\",\"slot\":\"explicit\",\"usedLastKnownGood\":false,\"capacityForecastStatus\":\"in-force\",\"capacityDecisionDigest\":\"425f3e9e254dfb61\",\"capacityFlip\":null,\"capacityShadowFlip\":null,\"capacityFlipSkip\":\"SLOT_NOT_ADMITTED\",\"issue\":9339}"
+    },
+    {
+      "line": 30320,
+      "raw": "{\"ts\":\"2026-10-11T06:48:03.460Z\",\"kind\":\"decision-resolved\",\"issue\":9339,\"lane\":\"9339-ancestry-plan-r1\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\",\"note\":\"Applied independent FINAL9337 route decision next-action: bounded unready controller intake9339 in milestone215, no duplicateowner, separate protected Astra planning only. Existing product/controller owners continue; no routing/source/history patch or install. Actual launched lane start/progress must be confirmed.\"}"
+    }
+  ]
+}
