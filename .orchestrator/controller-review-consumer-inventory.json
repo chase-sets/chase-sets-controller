@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "controller-review-consumer-inventory/v1",
+  "projectionModule": ".orchestrator/review-head-contract.psm1",
+  "consumers": [
+    { "path": ".orchestrator/board-set.ps1", "symbol": "ReviewAuthority", "purpose": "direct-board-governing-seam", "ordinaryPrExemption": false },
+    { "path": ".orchestrator/check-controller-skill-freshness.ps1", "symbol": "dispatchReductionSha256", "purpose": "installed-head-reduction-readback", "ordinaryPrExemption": false },
+    { "path": ".orchestrator/dispatch-lane.ps1", "symbol": "Reduce-ControllerReleaseReview", "purpose": "strict-controller-review-prelaunch", "ordinaryPrExemption": true },
+    { "path": ".orchestrator/install-controller-skills.ps1", "symbol": "Reduce-ControllerReleaseReview", "purpose": "protected-install-authorization", "ordinaryPrExemption": false },
+    { "path": ".orchestrator/log-event.ps1", "symbol": "ReviewAuthority", "purpose": "closed-schema-producer", "ordinaryPrExemption": false },
+    { "path": ".orchestrator/matrix-refresh.ps1", "symbol": "Get-ControllerReviewRowClassification", "purpose": "governing-placement-telemetry", "ordinaryPrExemption": false },
+    { "path": ".orchestrator/review-head-contract.psm1", "symbol": "Reduce-ControllerReleaseReview", "purpose": "single-classification-reduction-authority", "ordinaryPrExemption": true },
+    { "path": ".orchestrator/review-queue-health.ps1", "symbol": "Reduce-ControllerReleaseReview", "purpose": "queue-audit-projection", "ordinaryPrExemption": true }
+  ]
+}

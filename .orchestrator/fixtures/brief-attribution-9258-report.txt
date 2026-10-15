@@ -1,0 +1,108 @@
+DISPOSITION: REPAIR_READY_FOR_REVIEW
+
+# 9258-ac1-repair-r1: in-place AC1 clarification of chase-sets #9258
+
+LANE: 9258-ac1-repair-r1, planning, claude-opus-5-5/high, Claude, model-routing row 8 (the same configuration that authored this brief lineage via 7940-mechanism-replan), placement provisional.
+SEAT: D:/Users/ToddS/Source/Repos/chase-sets/20261010-9258-ac1-repair-r1, branch codex/9258-ac1-repair-r1 @ 81b78e2be4a57e65fd2e47faef9e860d6d789bfe. Status is clean: no repo file was edited.
+AUTHORITY: FINAL `9258-marker-decision-r1` = IN_PLACE_AC_CLARIFICATION, #9258 comment 6095583415 (author todd-skelton, created 2026-10-10T08:15:16Z, 9856 B). I read it in full through gh api, along with `.orchestrator/logs/9258-marker-decision-r1.report.md`; the comment text matches that report's ready-to-publish block at lines 24-60. I also read the stopping preparation report `.orchestrator/logs/9258-impl-g1.report.md` in full.
+NOT PUBLISHED: no GitHub mutation, no push, no code edit, no subagent or model subprocess, no provider access, no heavy slot.
+
+## Input gate (stop condition)
+
+The live #9258 body was fetched with `gh api repos/chase-sets/chase-sets/issues/9258` and JSON-parsed:
+- Initial read: 9708 UTF-8 bytes, sha256 `01485917fc0553c625e6db2bf85c2bd0faf97e79db1337151dd9a886e953169f`. This matches the dispatch, so the gate PASSED.
+- Fresh re-read before readiness: same 9708 B and the same sha256. updated_at 2026-10-10T08:15:16Z, 2 comments.
+- origin/main (`git ls-remote`) = HEAD = `81b78e2be4a57e65fd2e47faef9e860d6d789bfe`, the same base the decision was bound to.
+
+## Planning-repair inputs (contract §Input)
+
+1. Stopped artifact: there is no closed PR. The stop was preparation STOP `9258-impl-g1`, branch `codex/9258-v1-profile-upgrade-g1` @ `81b78e2be4a57e65fd2e47faef9e860d6d789bfe`, with no implementation diff and no hosted verdict, so no attempt was consumed. The historical salvage already in the brief is unchanged: `codex/7940-coordinator-bootstrap-g1` @ `c1c35b65e621dd5f4ada09e77691ffeac77714cf`, together with its "Never reuse as proof" fence.
+2. Stopping findings: 9258-impl-g1 Stop Evidence 1-7. These are not review finding IDs. The inherited stable finding F7940-C6-3 still binds.
+3. Governing decisions: `9258-marker-decision-r1` FINAL IN_PLACE_AC_CLARIFICATION (B: a separate test-owned marker plus a native 1→3 migration witness). `7940-c9-disposition-r1` and `7940-ac6-replan-r1` are unchanged. The #8589 host binding (#7940 comment 6087950378) covers context.close and session loss. The #9257 closing comment 6095278466 records cdp-load-unpacked.
+4. Current main: 81b78e2b. Neither `e2e/connector-coordinator-upgrade.spec.ts` nor `e2e/historical-retention-product.ts` exists on main. The `extension-code-replacement-probe-chromium.spec.ts` and `extension-raw-file-retention-chromium.spec.ts` prerequisites do exist.
+
+## Output artifacts
+
+| File | UTF-8 bytes | sha256 |
+|---|---|---|
+| `.orchestrator/logs/9258-ac1-repair-r1.body.md` (repaired body) | 12286 | `8c3e26aa9cbbf59e0dff529ad60c52047cf1d67378fc75460344aac5a21e6967` |
+| `.orchestrator/logs/9258-ac1-repair-r1.diff` (`diff -u` vs live body) | 11017 | `23eaf2c46a28f6fb38a4b58d070a0de66576784482e010187e5982f9a95f7196` |
+| Live body (base) | 9708 | `01485917fc0553c625e6db2bf85c2bd0faf97e79db1337151dd9a886e953169f` |
+
+The body uses LF only and keeps the live trailing newline. The diff has 5 hunks. Edits were applied as exact, single-occurrence string replacements over the live bytes; the script asserted every old string occurred exactly once.
+
+## Change map (decision item -> repaired body lines)
+
+| Decision item | Repaired body line(s) | Change |
+|---|---|---|
+| (1) Replace AC1 with exactly the decision text | 80 | The live AC1 line is replaced with the decision comment's AC1 line, extracted programmatically from comment line 9 with only the `> ` blockquote prefix removed. It is checked verbatim: `AC1 verbatim: true`. The `- [ ] AC1:` checkbox form is kept. The text was not edited. |
+| (2) Scope 2 raw-marker clause | 29 | `observes v3 with [...] and the raw marker retained;` -> `observes the committed native 1→3 upgrade with [...], the marker unchanged and the keyless raw export removed by settled normal cleanup;` ("settled normal cleanup" deliberately avoids crediting the keyless branch alone, per the decision's deleteAll note). |
+| (2) Scope 2 seed (needed for the marker clause to stay coherent) | 27 | adds `with one synthetic raw export, and writes the separate test-owned marker once`. |
+| (2) Scope 2 "IndexedDB intact" (raw-export contradiction) | 28 | `IndexedDB intact` -> `without product-database deletion, recreation or reseeding` (AC1's wording). The mechanism clause is unchanged. |
+| (2) Repeated-boot wording | 30 | `boots again with no schema or state drift.` -> `repeats the current boot with no schema, journal, raw-export or marker drift or further product upgrade.` |
+| (2) AC1 intent surface | 88 | adds `native 1→3`, `separate marker` and `settled cleanup` to the AC1 row. The AC2 and AC3 rows are unchanged. |
+| (2) Review-packet seed | 147 | `same profile and IndexedDB` -> `same profile and product database, never reseeded`. Adds the invariants `committed native 1→3 upgrade` and `marker byte-identical`. Adds the failure modes `late observer, rewritten marker, fresh 0→3 database, inhibited cleanup`. Evidence becomes `per-round identity, migration, cleanup and marker packets`. |
+| (3) `mandated-external-assertion-contradicts-authority` | 71 | The existing text is kept, merged with the decision text (session loss and observed reasons as facts, no altering of authentic packets, the marker is never called a product raw export, exact head/run/hash). "Record the observed reason, version and identity" was folded into "Record observed reasons, version, identity and session loss as facts". |
+| (3) `retained-artifact-schema-ratchet` | 72 | The existing "v1 profile upgrades; v4 preserved" is merged with the decision text: historical creates native v1, current upgrades it, no invented fields or schema, and the newer-owner control is preserved unchanged. |
+| (3) `missing-fail-closed-regression-evidence` | 73 | The existing text is kept. Added: keep the isolated missing-key regression; unpaired deleteAll is not missing-key-branch proof; a missing or changed marker, or an absent, aborted or wrong-oldVersion migration, fails. |
+| (3) `presence-evidence-treated-as-completeness` | 74 | The existing text is kept. Added: marker survival proves only continuity; the committed native 1→3 event and full settled state are required; a surviving marker over a fresh 0→3 database fails. |
+| (3) `production-profile-failure-hidden-by-narrowed-test-profile` | 75 | The existing text is kept. Added: never skip product boot, inhibit cleanup, restore keys, alter pairing to keep raw data, or settle on a migration-only fake. |
+| (3) Evidence hygiene | 76 | New bullet: synthetic data and marker values only; key-presence booleans only, never session-key values or provider credentials. The decision's "keep the existing no-provider, hermetic harness boundary" is met by leaving the Operator actions line ("hermetic harness only; no provider credentials…") unchanged, so it is not restated. |
+| Traceability (outside items 1-3; flagged for the reviewer) | 67 | New Decisions bullet: `FINAL 9258-marker-decision-r1 (#9258 comment 6095583415) clarifies AC1, keeping raw-retention and custody law unchanged. Its seed, observation and footprint notes bind; no marker writes enter the v4 zero-write window.` Rationale: without it the body nowhere carries the decision's seed and observation design (observer installed before current product evaluation and delegating native calls unchanged; non-creating marker read; no reseed after historical cleanup), its footprint note (slice-local generated test assets, attest the complete harness), or the v4 zero-write exclusion. Restating those inline would not fit the byte bound. If the reviewer rules this out of scope, deleting the line still leaves the body lint-valid. |
+
+All five existing defect-class constraints are retained (the merged bullets contain every existing clause or its strict superset). No class was dropped. I checked that all five class names exist in `~/.claude/skills/milestone-orchestrator/references/defect-classes.md` (headings at lines 506, 880, 2813, 3079, 3132). Evidence hygiene relates to `playwright-trace-secret-exposure` (line 1417), but I kept the decision's own label rather than adding a class name the decision did not list.
+
+### Frozen items: verified byte-identical between live and repaired
+
+AC2; AC3; the whole `### Footprint & chain` section (footprint, callers, Chain/dependency lifecycle, Blocks list, parent, salvage never-reuse fence); Scope item 1; Scope item 3 (version-ordered-install conditional); Scope item 4 (witnesses); the Scope 5 old-bundle and v4 controls; Scope item 6 (N-only bump rule); Non-goals; Not built table; Verification plan; External authority probe; recoveryHypothesis; Intent rows AC2/AC3; Don't-rebuild pointers; all explicit-none quality declarations; the QUALITY_PROFILE and Tier lines. Title, labels, milestone and dependencies are not part of the body and were not touched.
+
+Contradiction sweep (live -> repaired occurrence counts): "raw marker" 2->0, "IndexedDB intact" 1->0, "same profile and IndexedDB" 1->0, "marker retained" 1->0, "no schema or state drift" 1->0.
+
+### Byte-bound compression (bound exceeded; exactly what was compressed)
+
+The first faithful draft was 13444 B against the 12288 B lint bound (`BRIEF_MAX_BYTES = 12 * 1024`). AC1 alone adds 1267 B and is verbatim. First I tightened my own added wording (Scope 2, defect-class additions, intent row, review seed, Decisions pointer), keeping it semantically faithful to the decision. Then I compressed only redundant existing wording outside the ACs:
+
+1. Removed the live Context sentence `Code may now be replaced only through the mechanism selected by \`Qualify extension code replacement over a retained Chromium profile\`.` and its blank line (-136 B). It is restated by Scope 2 ("using only the accepted packet's selectedReplacementMechanism, exactly as qualified"), the Decisions bullet "Consume the qualification packet; never self-qualify", the `mandated-external…` constraint, Non-goals ("self-qualified replacement"), the Chain (which names the qualification issue by title), and AC1 (which now names `cdp-load-unpacked`).
+2. Removed the Evidence pointers entry `deployables/tcgplayer-connector-extension/e2e/extension-raw-file-retention-chromium.spec.ts` (-96 B). It is an exact duplicate of the same path in Don't-rebuild pointers, which is unchanged.
+3. Removed the Decisions sub-bullet `AC6 is split from #7940.` (-29 B). It duplicates Context sentence 1 ("This slice is #7940's AC6, split out by FINAL `7940-c9-disposition-r1`").
+4. `**No borrowed success.** No success is borrowed between cases.` -> `**No borrowed success** between cases.` (-24 B), dropping the self-restatement.
+5. Context run sentence: `kept executing the historical \`seed.js\` after current bytes were staged at the same id and manifest version \`0.1.0\` over the retained profile.` -> `kept executing historical \`seed.js\` after current bytes were staged over the retained profile at the same id and version \`0.1.0\`.` (-13 B). The run, job, Chromium version, id and version facts are all unchanged, and the External authority probe that carries the packet evidence is untouched.
+6. The merges in the defect-class bullets at lines 71-72 (see the change map) fold overlapping existing and decision clauses together; no existing semantics were removed.
+
+The final size is 12286/12288 B. Headroom is 2 B, so any later in-place edit will need further compression or a split.
+
+## Lint and readiness
+
+`node scripts/brief-lint.mjs` (seat at 81b78e2b):
+- Live body: `Brief lint passed (9708/12288 UTF-8 bytes).` exit 0.
+- Repaired body: `Brief lint passed (12286/12288 UTF-8 bytes).` exit 0.
+
+Prospective readiness: `node scripts/issue-readiness.mjs --prospective-body <body> --prospective-metadata <metadata> --checker-sha 81b78e2be4a57e65fd2e47faef9e860d6d789bfe` (the CLI wrapper over `evaluateProspectiveIssueReadiness`). Metadata was built from a fresh live read after the gate re-check: repository chase-sets/chase-sets, #9258, node I_kwDORKgVcc8AAAABWPwTPg, updatedAt 2026-10-10T08:15:16Z, open, issueType Slice (IT_kwDOEUHTf84CHLN1, enabled), milestone 148 "Founder TCGplayer Operated Pilot" (MI_kwDORKgVcc4BD7px, open), labels priority:p1, kind:product, risk:semantic-authority, area:channels, parent #7035, dependencies blocked_by #9257 (closed, Probe). The live summary is blocked_by 0 open of 1 total, blocking 8.
+- Live body baseline: `status: ready`, reasonCodes [], 11/11 rules pass.
+- Repaired body (checkedAt 2026-10-10T08:23:58.922Z): `status: ready`, claim `structural-only-prospective`, reasonCodes []. These rules pass: ready-00-placed-classified, ready-00-dependencies-resolved, ready-01-repo-evidence, ready-02-explicit-non-goal, ready-03-acceptance-evidence, ready-04-runnable-verification, ready-05-footprint-operators, ready-06-decisions-resolved, ready-07-terms-declared, ready-08-authority-probe-timed, ready-09-review-packet. acceptanceDiagnostics show AC1, AC2 and AC3 passing. decompositionFacts: 3 ACs and 4 verification commands (unchanged). semanticPressureTest: not-evaluated. This is structural only, not a semantic PASS.
+
+## Residuals for host / reviewer (not changed; outside the dispatch fence)
+
+- recoveryHypothesis was retained verbatim. Its `lastFailure` names 7940-impl-g2-c9 / F7940-C6-3, not the 9258-impl-g1 preparation stop. I did not change it because the decision is an in-place AC clarification (not a new-hypothesis replan), the stop consumed no attempt, the decision says it "resets no lineage history", and the dispatch fenced every other change. The operative hypothesis (replace code only by the qualified mechanism) is unaffected by the marker clarification. The host or reviewer should decide whether admission needs that line updated.
+- Scope 3 (`version-ordered-install` conditional) and the `NONE` packet / version-derivation fallback are now moot because #9257 selected `cdp-load-unpacked`. They are not contradictory and were left unchanged under the fence.
+- The Chain's "At publication: Blocked by #7940 …" describes a lifecycle that has partly executed: live blocked_by is only #9257 (closed). This was not edited because dependencies are frozen.
+
+## Planning-repair/v1 completion block
+
+```text
+PLANNING_CONTRACT_VERSION: planning-repair/v1
+DISPOSITION: REPAIR_IN_PLACE
+RECOVERY_LEVEL: ISSUE
+ORIGINAL_ISSUE: #9258
+SALVAGE: codex/9258-v1-profile-upgrade-g1 @ 81b78e2be4a57e65fd2e47faef9e860d6d789bfe (preparation STOP, no implementation diff); brief salvage unchanged: codex/7940-coordinator-bootstrap-g1 @ c1c35b65e621dd5f4ada09e77691ffeac77714cf, with its never-reuse fence intact
+FINDINGS_ANSWERED: 9258-impl-g1 Stop Evidence 1 (contradicted raw-marker AC1/Scope) -> verbatim decision AC1 plus Scope 2 lines 27-30, intent row 88 and seed 147, so no raw-marker requirement survives; Evidence 2 (historical boot runs before CDP replacement) -> AC1 "Observe the historical relaunch before replacement" plus the decision pointer at line 67 for the observation design; Evidence 3 (session loss) -> AC1 asserts the key is absent, and line 71 records session loss as fact; Evidence 4-5 (identical retention law, full boot, unpaired deleteAll) -> AC1 "deletion is CORRECT behavior", lines 73 and 75 (never inhibit cleanup, restore keys or alter pairing; deleteAll is not missing-key proof); Evidence 6 (isolated missing-key regression) -> line 73 keeps it; Evidence 7 (diagnostic contradiction) -> continuity separated from raw retention (AC1, line 74). F7940-C6-3 -> unchanged: only the qualified mechanism plus executed current identity, never disk bytes (lines 28, 71, 74, AC1 "attest current executed code").
+DONT_REBUILD: on main 81b78e2b, no connector-coordinator-upgrade spec or historical-retention-product builder exists; extension-code-replacement-probe-chromium.spec.ts (#9257 qualification) and extension-raw-file-retention-chromium.spec.ts exist and are prerequisites or adjacent coverage, not replacements. No open issue matches "coordinator upgrade in:title". No new issue is needed; the repair adds no scope.
+REPLACEMENTS: none
+READY_GATE: n/a (no replacement). In-place body: brief-lint pass 12286/12288; prospective readiness ready 11/11, reasonCodes []. Risky items: the byte bound (2 B headroom); ready-03 acceptance evidence for the long verbatim AC1 (passes on its single backticked Evidence pointer); ready-06 decisions-resolved with the new FINAL decision bullet (passes).
+RESIDUAL_DECISIONS: none filed. The decision states no product question remains. Host notes: recoveryHypothesis lastFailure unchanged; moot Scope 3 and NONE fallbacks; Chain publication-time wording.
+INDEPENDENT_REVIEW: PENDING_HOST_REVIEW. No review was dispatched or run by this lane. Required scope: a complete semantic review of the whole edited body, exact revision 12286 B, sha256 8c3e26aa9cbbf59e0dff529ad60c52047cf1d67378fc75460344aac5a21e6967, against FINAL 9258-marker-decision-r1 (comment 6095583415) and the 9258-impl-g1 Stop Evidence, including whether the line-67 traceability bullet and compressions 1-6 are acceptable. Full author/repair history: the brief lineage was authored by claude-opus-5-5/high (Claude, row 8, 7940-mechanism-replan); the replacement AC1 wording and constraint text were authored by gpt-6-astra/high (Codex, 9258-marker-decision-r1, which disclosed it must not be the reviewer of this wording); the stopped implementation 9258-impl-g1 was gpt-6-astra/high (Codex, row 7); this repair is claude-opus-5-5/high (Claude, row 8, 9258-ac1-repair-r1). A reviewer eligible for this revision must not be this lane, and the host must apply the eligibility and disclosure rules given that both claude-opus-5-5 and gpt-6-astra have authored parts of this body.
+```
+
+Dispatch estimate EXPECTED_USD about 3 (telemetry only; actual billed spend not measured).
+
+WHOLE_TASK_RELEASE
