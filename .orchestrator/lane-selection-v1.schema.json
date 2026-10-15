@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/contracts/lane-selection-v1.schema.json",
+  "title": "Final host-bound lane selection and post-selection scale decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "selectionId",
+    "receiptId",
+    "cycleId",
+    "generatedAt",
+    "status",
+    "reasonCodes",
+    "eligibleCandidates",
+    "selectedBatch",
+    "serialized",
+    "scale",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "lane-selection/v1" },
+    "selectionId": { "$ref": "#/$defs/identifier" },
+    "receiptId": { "$ref": "#/$defs/identifier" },
+    "cycleId": { "$ref": "#/$defs/identifier" },
+    "generatedAt": { "$ref": "#/$defs/instant" },
+    "status": { "enum": ["selected", "no-selection"] },
+    "reasonCodes": { "$ref": "#/$defs/selectionReasons" },
+    "eligibleCandidates": { "$ref": "#/$defs/issueNumbers" },
+    "selectedBatch": { "$ref": "#/$defs/issueNumbers" },
+    "serialized": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate", "yieldsTo", "reasonCode"],
+        "properties": {
+          "candidate": { "$ref": "#/$defs/issueNumber" },
+          "yieldsTo": { "$ref": "#/$defs/identifier" },
+          "reasonCode": { "const": "CONFLICT_SERIALIZED" }
+        }
+      }
+    },
+    "scale": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "reasonCodes",
+        "gates",
+        "hostCapacityInputs",
+        "currentPool",
+        "active",
+        "idle",
+        "authorizedMax",
+        "recommendedLaneCount"
+      ],
+      "properties": {
+        "action": { "enum": ["hold", "backfill", "add"] },
+        "reasonCodes": { "$ref": "#/$defs/scaleReasons" },
+        "gates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runnableReadyDisjointWork",
+            "queueAndDeployHealthy",
+            "hostCapacitySafe",
+            "ownershipSafe"
+          ],
+          "properties": {
+            "runnableReadyDisjointWork": { "type": "boolean" },
+            "queueAndDeployHealthy": { "type": "boolean" },
+            "hostCapacitySafe": { "type": "boolean" },
+            "ownershipSafe": { "type": "boolean" }
+          }
+        },
+        "hostCapacityInputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["memorySafe", "heavyVerifierSafe"],
+          "properties": {
+            "memorySafe": { "type": ["boolean", "null"] },
+            "heavyVerifierSafe": { "type": ["boolean", "null"] }
+          }
+        },
+        "currentPool": { "$ref": "#/$defs/count" },
+        "active": { "$ref": "#/$defs/count" },
+        "idle": { "$ref": "#/$defs/count" },
+        "authorizedMax": { "$ref": "#/$defs/count" },
+        "recommendedLaneCount": { "$ref": "#/$defs/count" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptSchema",
+        "hostInputSchema",
+        "receiptGeneratedAt",
+        "hostCapturedAt"
+      ],
+      "properties": {
+        "receiptSchema": { "const": "lane-admission/v1" },
+        "hostInputSchema": { "const": "lane-selection-input/v1" },
+        "receiptGeneratedAt": { "$ref": "#/$defs/instant" },
+        "hostCapturedAt": { "$ref": "#/$defs/instant" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T.+(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "issueNumber": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "issueNumbers": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/issueNumber" }
+    },
+    "selectionReasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": {
+        "enum": [
+          "RECEIPT_NOT_COMPLETE",
+          "HOST_INPUT_RECEIPT_MISMATCH",
+          "HOST_INPUT_CYCLE_MISMATCH",
+          "HOST_INPUT_INCOMPLETE",
+          "HOST_INPUT_DUPLICATE",
+          "HOST_INPUT_AMBIGUOUS",
+          "HOST_INPUT_STALE",
+          "HOST_INPUT_MOVED",
+          "WAVE_ORDER_INCOMPLETE",
+          "WAVE_ORDER_DUPLICATE",
+          "EXECUTABLE_WAVE_UNKNOWN",
+          "CANDIDATE_REVISION_MOVED",
+          "MILESTONE_MOVED",
+          "OPERATOR_LABEL_INCONSISTENT",
+          "OPERATOR_RECORD_MISSING",
+          "OPERATOR_RECORD_EXPIRED",
+          "OPERATOR_RECORD_MOVED",
+          "NO_ELIGIBLE_CANDIDATES",
+          "CONFLICT_SERIALIZED"
+        ]
+      }
+    },
+    "scaleReasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 16,
+      "items": {
+        "enum": [
+          "SCALE_REQUIRES_SELECTION",
+          "RUNNABLE_WORK_UNKNOWN",
+          "QUEUE_DEPLOY_UNHEALTHY",
+          "HOST_CAPACITY_UNKNOWN",
+          "OWNERSHIP_UNKNOWN",
+          "NO_SCALE_CAPACITY"
+        ]
+      }
+    }
+  }
+}
