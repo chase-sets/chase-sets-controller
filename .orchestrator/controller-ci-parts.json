@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "controller-ci-parts/v1",
+  "items": [
+    {
+      "identity": "test:board-hourly-scale.test.ps1",
+      "selector": "-Arm",
+      "parts": [
+        {
+          "name": "candidate",
+          "weight": 1
+        },
+        {
+          "name": "baseline",
+          "weight": 1
+        },
+        {
+          "name": "issue-scan",
+          "weight": 1
+        },
+        {
+          "name": "no-linkage",
+          "weight": 1
+        },
+        {
+          "name": "ten-item",
+          "weight": 1
+        }
+      ]
+    }
+  ]
+}

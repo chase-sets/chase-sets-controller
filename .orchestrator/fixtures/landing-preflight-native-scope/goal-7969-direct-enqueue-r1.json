@@ -1,0 +1,415 @@
+{
+  "state": "ENQUEUE_CONFIRMED",
+  "at": "2026-09-13T11:33:11.281Z",
+  "head": "b5b5218f905210a35beee7693416e569843016a4",
+  "refusal": "PIPELINE_BREAKER_OPEN",
+  "passReceiptIdentity": "be11f5a9fb01af1dd734759f3cd6165676f4883db9097453a7912c061214e523",
+  "scopeJob": {
+    "id": 103714936933,
+    "run_id": 34753900931,
+    "workflow_name": "Platform PR",
+    "head_branch": "codex/7964-ci-local-diagnostics-g1",
+    "run_url": "https://api.github.com/repos/chase-sets/chase-sets/actions/runs/34753900931",
+    "run_attempt": 1,
+    "node_id": "CR_kwDORKgVcc8AAAAYJeRYZQ",
+    "head_sha": "b5b5218f905210a35beee7693416e569843016a4",
+    "url": "https://api.github.com/repos/chase-sets/chase-sets/actions/jobs/103714936933",
+    "html_url": "https://github.com/chase-sets/chase-sets/actions/runs/34753900931/job/103714936933",
+    "status": "completed",
+    "conclusion": "success",
+    "created_at": "2026-09-13T11:14:10Z",
+    "started_at": "2026-09-13T11:14:12Z",
+    "completed_at": "2026-09-13T11:14:27Z",
+    "name": "Change Scope",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1,
+        "started_at": "2026-09-13T11:14:13Z",
+        "completed_at": "2026-09-13T11:14:13Z"
+      },
+      {
+        "name": "Run actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2,
+        "started_at": "2026-09-13T11:14:13Z",
+        "completed_at": "2026-09-13T11:14:18Z"
+      },
+      {
+        "name": "Run ./.github/actions/setup-pnpm-workspace",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3,
+        "started_at": "2026-09-13T11:14:18Z",
+        "completed_at": "2026-09-13T11:14:24Z"
+      },
+      {
+        "name": "Resolve changed surface",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4,
+        "started_at": "2026-09-13T11:14:24Z",
+        "completed_at": "2026-09-13T11:14:24Z"
+      },
+      {
+        "name": "Resolve shared gate plan",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5,
+        "started_at": "2026-09-13T11:14:24Z",
+        "completed_at": "2026-09-13T11:14:24Z"
+      },
+      {
+        "name": "Post Run ./.github/actions/setup-pnpm-workspace",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9,
+        "started_at": "2026-09-13T11:14:24Z",
+        "completed_at": "2026-09-13T11:14:24Z"
+      },
+      {
+        "name": "Post Run actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10,
+        "started_at": "2026-09-13T11:14:24Z",
+        "completed_at": "2026-09-13T11:14:25Z"
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11,
+        "started_at": "2026-09-13T11:14:25Z",
+        "completed_at": "2026-09-13T11:14:25Z"
+      }
+    ],
+    "check_run_url": "https://api.github.com/repos/chase-sets/chase-sets/check-runs/103714936933",
+    "labels": [
+      "ubuntu-latest"
+    ],
+    "runner_id": 1000115445,
+    "runner_name": "GitHub Actions 1000115445",
+    "runner_group_id": 0,
+    "runner_group_name": "GitHub Actions"
+  },
+  "scopeRun": {
+    "id": 34753900931,
+    "run_attempt": 1,
+    "head_sha": "b5b5218f905210a35beee7693416e569843016a4",
+    "path": ".github/workflows/platform-pr.yml",
+    "event": "pull_request",
+    "conclusion": "success"
+  },
+  "scopeRawSha256": "d22668fb8401274cf5921464d7269fcb0e58c94ad22947673178b43ca856203d",
+  "actualOutputMap": {
+    "changed_files_json": "[\"scripts/verify-ci-local.mjs\",\"scripts/verify-ci-local.test.mjs\"]",
+    "affected_workspaces": "",
+    "affected_workspaces_json": "[]",
+    "directly_affected_workspaces_json": "[]",
+    "docs_only": "false",
+    "local_checks": "true",
+    "unit_tests": "false",
+    "db_tests": "false",
+    "e2e_tests": "false",
+    "e2e_suites": "",
+    "e2e_suites_json": "[]",
+    "e2e_suite_batches_json": "[]",
+    "integration_risk_required": "false",
+    "integration_risk_reason": "No integration-risk change detected",
+    "build": "false",
+    "docker_image": "false",
+    "terraform": "false",
+    "workflow_lint": "false",
+    "deploy": "false",
+    "cluster_preview": "false",
+    "compose_smoke": "false",
+    "exposure_posture_changed": "false",
+    "exposure_posture_categories": "",
+    "exposure_posture_categories_json": "[]",
+    "scope_json": "{\"changedFiles\":[\"scripts/verify-ci-local.mjs\",\"scripts/verify-ci-local.test.mjs\"],\"affectedWorkspaces\":[],\"runtimeAffectedWorkspaces\":[],\"devDependencyTestAffectedWorkspaces\":[],\"directlyAffectedWorkspaces\":[],\"directlyRuntimeAffectedWorkspaces\":[],\"directlyTestOnlyAffectedWorkspaces\":[],\"docsOnly\":false,\"localChecksRequired\":true,\"unitTestsRequired\":false,\"dbTestsRequired\":false,\"e2eSuiteIds\":[],\"e2eTestsRequired\":false,\"integrationRiskRequired\":false,\"integrationRiskReason\":\"No integration-risk change detected\",\"buildRequired\":false,\"dockerImageRequired\":false,\"terraformRequired\":false,\"workflowLintRequired\":false,\"deployRequired\":false,\"clusterPreviewRequired\":false,\"composeSmokeRequired\":false,\"exposurePostureChanged\":false,\"exposurePostureCategories\":[]}"
+  },
+  "scope": {
+    "changedFiles": [
+      "scripts/verify-ci-local.mjs",
+      "scripts/verify-ci-local.test.mjs"
+    ],
+    "affectedWorkspaces": [],
+    "runtimeAffectedWorkspaces": [],
+    "devDependencyTestAffectedWorkspaces": [],
+    "directlyAffectedWorkspaces": [],
+    "directlyRuntimeAffectedWorkspaces": [],
+    "directlyTestOnlyAffectedWorkspaces": [],
+    "docsOnly": false,
+    "localChecksRequired": true,
+    "unitTestsRequired": false,
+    "dbTestsRequired": false,
+    "e2eSuiteIds": [],
+    "e2eTestsRequired": false,
+    "integrationRiskRequired": false,
+    "integrationRiskReason": "No integration-risk change detected",
+    "buildRequired": false,
+    "dockerImageRequired": false,
+    "terraformRequired": false,
+    "workflowLintRequired": false,
+    "deployRequired": false,
+    "clusterPreviewRequired": false,
+    "composeSmokeRequired": false,
+    "exposurePostureChanged": false,
+    "exposurePostureCategories": []
+  },
+  "pull": {
+    "id": "PR_kwDORKgVcc8AAAABDU9hhQ",
+    "number": 7969,
+    "state": "OPEN",
+    "isDraft": false,
+    "headRefOid": "b5b5218f905210a35beee7693416e569843016a4",
+    "baseRefName": "main",
+    "baseRefOid": "32da4e5f99752ba0287a387ce61a4c7b5b4718bd",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "mergeQueueEntry": null,
+    "closingIssuesReferences": {
+      "totalCount": 1,
+      "pageInfo": {
+        "hasNextPage": false
+      },
+      "nodes": [
+        {
+          "number": 7964,
+          "state": "OPEN",
+          "blockedBy": {
+            "totalCount": 0,
+            "pageInfo": {
+              "hasNextPage": false
+            },
+            "nodes": []
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "oid": "b5b5218f905210a35beee7693416e569843016a4",
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "totalCount": 22,
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714919323,
+                    "name": "PR Scope (Advisory)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714925237,
+                    "name": "Known Failure Guard",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714919412,
+                    "name": "Risk Review (Advisory)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714925671,
+                    "name": "Release Qualification Scope Advisory",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714919179,
+                    "name": "Scope Policy Check",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714936933,
+                    "name": "Change Scope",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969415,
+                    "name": "Static Checks",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969399,
+                    "name": "Typecheck",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969946,
+                    "name": "Unit Tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969853,
+                    "name": "DB Profile Tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969730,
+                    "name": "E2E Tests (${{ matrix.suite_batch }})",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969857,
+                    "name": "Build",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969721,
+                    "name": "Docker Image Build",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969898,
+                    "name": "Workflow Lint",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714970065,
+                    "name": "Terraform Preview Plan",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969917,
+                    "name": "Terraform Production Plan",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969813,
+                    "name": "Terraform Staging Plan",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103714969883,
+                    "name": "Terraform Observability Plan",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103715632405,
+                    "name": "Compose Boot Smoke",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103715632297,
+                    "name": "Deploy Preview and Smoke",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103715632034,
+                    "name": "PR Required",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "databaseId": 103715643848,
+                    "name": "PR Release Status",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "files": [
+    {
+      "sha": "ddc3bdead4ab26681c5b6182393bb36115f2232a",
+      "filename": "scripts/verify-ci-local.mjs",
+      "status": "modified",
+      "additions": 62,
+      "deletions": 11,
+      "changes": 73,
+      "blob_url": "https://github.com/chase-sets/chase-sets/blob/b5b5218f905210a35beee7693416e569843016a4/scripts%2Fverify-ci-local.mjs",
+      "raw_url": "https://github.com/chase-sets/chase-sets/raw/b5b5218f905210a35beee7693416e569843016a4/scripts%2Fverify-ci-local.mjs",
+      "contents_url": "https://api.github.com/repos/chase-sets/chase-sets/contents/scripts%2Fverify-ci-local.mjs?ref=b5b5218f905210a35beee7693416e569843016a4",
+      "patch": "@@ -221,6 +221,41 @@ export function validateLocalCommandCoverage(matrix, identity) {\n   return matrix;\n }\n \n+// Preserve the executor's return/throw contracts while retaining native nullable\n+// capture metadata. The reporting caller consumes only the current command.\n+const commandCaptures = new WeakMap();\n+\n+function printCommandDiagnostics(spec, entry, ordinal, result, error = null) {\n+  const capture = commandCaptures.get(error ?? result);\n+  commandCaptures.delete(error ?? result);\n+  const source = capture ?? result;\n+  const incomplete = Boolean(error || result?.outcome === \"interrupted\");\n+  const stream = (value) => {\n+    if (value === null || value === undefined) return { retainedBytes: 0, text: null };\n+    const text = String(value);\n+    return { retainedBytes: Buffer.byteLength(text, \"utf8\"), text };\n+  };\n+  const code = error?.code;\n+  console.error(\n+    `CI-local command diagnostics: ${JSON.stringify({\n+      gateId: entry.id,\n+      gateName: entry.name,\n+      command: spec.command,\n+      args: spec.args,\n+      ordinal,\n+      outcome: error ? \"interrupted\" : (result?.outcome ?? null),\n+      exitCode: capture ? capture.status : (result?.exitCode ?? null),\n+      signal: source?.signal ?? null,\n+      spawnErrorCode: typeof code === \"string\" && /^[A-Z][A-Z0-9_]+$/.test(code) ? code : null,\n+      capture: incomplete ? \"incomplete\" : \"complete\",\n+      // Retained lengths describe UTF-8 diagnostic text, never an inferred total\n+      // produced length. Null text distinguishes unavailable from an empty stream.\n+      stdout: stream(source?.stdout),\n+      stderr: stream(source?.stderr),\n+    })}`,\n+  );\n+}\n+\n export function defaultCommandExecutor(spec) {\n   const env = { ...process.env, ...spec.env };\n   for (const name of spec.clearEnv) delete env[name];\n@@ -232,23 +267,30 @@ export function defaultCommandExecutor(spec) {\n     maxBuffer: 64 * 1024 * 1024,\n     windowsHide: true,\n   });\n-  if (result.error) throw result.error;\n+  if (result.error) {\n+    commandCaptures.set(result.error, result);\n+    throw result.error;\n+  }\n   if (result.signal || result.status === null) {\n-    return {\n+    const interrupted = {\n       outcome: \"interrupted\",\n       exitCode: null,\n       signal: result.signal ?? null,\n       stdout: result.stdout ?? \"\",\n       stderr: result.stderr ?? \"\",\n     };\n+    commandCaptures.set(interrupted, result);\n+    return interrupted;\n   }\n-  return {\n+  const completed = {\n     outcome: result.status === 0 ? \"passed\" : \"failed\",\n     exitCode: result.status,\n     signal: null,\n     stdout: result.stdout ?? \"\",\n     stderr: result.stderr ?? \"\",\n   };\n+  if (completed.outcome === \"failed\") commandCaptures.set(completed, result);\n+  return completed;\n }\n \n function staticEvidence(entry, dryRun) {\n@@ -335,11 +377,13 @@ export function executeGateEntries({\n       continue;\n     }\n     let evidence = \"PASSED\";\n-    for (const spec of commands) {\n+    for (const [index, spec] of commands.entries()) {\n       try {\n         const result = executor(spec, entry);\n         evidence = resultEvidence(result);\n+        if (evidence !== \"PASSED\") printCommandDiagnostics(spec, entry, index + 1, result);\n       } catch (error) {\n+        printCommandDiagnostics(spec, entry, index + 1, null, error);\n         errors.push(receiptError(\"EXECUTOR_FAILURE\", String(error?.message ?? error), entry.id));\n         evidence = \"INTERRUPTED\";\n       }\n@@ -537,21 +581,28 @@ export function runCiLocalVerification(\n       [\"./scripts/change-scope.mjs\", \"json\", `--base=${identity.baseSha}`, `--head=${identity.headSha}`],\n       { clearEnv: [\"CHANGED_FILES_JSON\", \"GITHUB_OUTPUT\"] },\n     );\n+    const scopeEntry = { id: \"change-scope\", name: \"Change Scope\" };\n     let scopeResult;\n     try {\n-      scopeResult = executor(scopeCommand, { id: \"change-scope\", name: \"Change Scope\" });\n+      scopeResult = executor(scopeCommand, scopeEntry);\n     } catch (error) {\n+      printCommandDiagnostics(scopeCommand, scopeEntry, 1, null, error);\n       throw new Error(`CLASSIFIER_EXECUTOR_FAILURE: ${String(error?.message ?? error)}`);\n     }\n-    if (scopeResult?.outcome === \"interrupted\") throw new Error(\"CLASSIFIER_INTERRUPTED\");\n-    if (scopeResult?.outcome !== \"passed\") throw new Error(\"CLASSIFIER_FAILED\");\n     let scope;\n     try {\n-      scope = JSON.parse(scopeResult.stdout);\n-    } catch {\n-      throw new Error(\"CLASSIFIER_OUTPUT_MALFORMED\");\n+      if (scopeResult?.outcome === \"interrupted\") throw new Error(\"CLASSIFIER_INTERRUPTED\");\n+      if (scopeResult?.outcome !== \"passed\") throw new Error(\"CLASSIFIER_FAILED\");\n+      try {\n+        scope = JSON.parse(scopeResult.stdout);\n+      } catch {\n+        throw new Error(\"CLASSIFIER_OUTPUT_MALFORMED\");\n+      }\n+      validateCiGateScope(scope);\n+    } catch (error) {\n+      printCommandDiagnostics(scopeCommand, scopeEntry, 1, scopeResult);\n+      throw error;\n     }\n-    validateCiGateScope(scope);\n     plan = createCiGatePlan({ mode, labels: normalizedLabels, provenance: normalizedProvenance, scope });\n     const commandPlan = createLocalCommandPlan({ plan, ...identity, scope });\n     const missingProvenance = mode === \"pull-request\" && normalizedProvenance === null;"
+    },
+    {
+      "sha": "636681defa9cda961759ee67de8071e06e4f094b",
+      "filename": "scripts/verify-ci-local.test.mjs",
+      "status": "modified",
+      "additions": 685,
+      "deletions": 1,
+      "changes": 686,
+      "blob_url": "https://github.com/chase-sets/chase-sets/blob/b5b5218f905210a35beee7693416e569843016a4/scripts%2Fverify-ci-local.test.mjs",
+      "raw_url": "https://github.com/chase-sets/chase-sets/raw/b5b5218f905210a35beee7693416e569843016a4/scripts%2Fverify-ci-local.test.mjs",
+      "contents_url": "https://api.github.com/repos/chase-sets/chase-sets/contents/scripts%2Fverify-ci-local.test.mjs?ref=b5b5218f905210a35beee7693416e569843016a4",
+      "patch": "@@ -1,6 +1,12 @@\n-import { describe, expect, it } from \"vitest\";\n+import { execFileSync, spawn, spawnSync } from \"node:child_process\";\n+import { createHash } from \"node:crypto\";\n+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from \"node:fs\";\n+import path from \"node:path\";\n+import { fileURLToPath } from \"node:url\";\n+import { afterEach, describe, expect, it, vi } from \"vitest\";\n import { classifyChanges } from \"./change-scope.mjs\";\n import { CI_GATE_DEFINITIONS, createCiGatePlan } from \"./ci-gate-plan.mjs\";\n+import { acquireHeavySlot, findHeavySlotClient } from \"./lib/heavy-slot.mjs\";\n import {\n   CI_GATE_EVIDENCE,\n   CI_LOCAL_DISPOSITIONS,\n@@ -15,6 +21,244 @@ import {\n   validateLocalCommandCoverage,\n } from \"./verify-ci-local.mjs\";\n \n+// Only the partial spawn-result test overrides one native call. CLI tests run\n+// the real source in a separate process with no mock or alternative executor.\n+vi.mock(\"node:child_process\", async (importOriginal) => {\n+  const original = await importOriginal();\n+  return { ...original, spawnSync: vi.fn(original.spawnSync) };\n+});\n+\n+afterEach(() => vi.restoreAllMocks());\n+\n+const diagnosticPrefix = \"CI-local command diagnostics: \";\n+function diagnostics(text) {\n+  return text\n+    .split(\"\\n\")\n+    .filter((line) => line.startsWith(diagnosticPrefix))\n+    .map((line) => JSON.parse(line.slice(diagnosticPrefix.length)));\n+}\n+\n+function captureDiagnostics(action) {\n+  const lines = [];\n+  const spy = vi.spyOn(console, \"error\").mockImplementation((line) => lines.push(line));\n+  try {\n+    return { result: action(), diagnostics: diagnostics(lines.join(\"\\n\")) };\n+  } finally {\n+    spy.mockRestore();\n+  }\n+}\n+\n+const worktree = path.resolve(path.dirname(fileURLToPath(import.meta.url)), \"..\");\n+const inertScope = Object.freeze({\n+  localChecksRequired: true,\n+  unitTestsRequired: false,\n+  dbTestsRequired: false,\n+  e2eTestsRequired: false,\n+  integrationRiskRequired: false,\n+  buildRequired: false,\n+  dockerImageRequired: false,\n+  terraformRequired: false,\n+  workflowLintRequired: false,\n+  clusterPreviewRequired: false,\n+  composeSmokeRequired: false,\n+  affectedWorkspaces: [],\n+  changedFiles: [],\n+  e2eSuiteIds: [],\n+  integrationRiskReason: \"Synthetic finite CI-local diagnostic fixture\",\n+});\n+const failedStdout = 'failed stdout café 雪 🧪\\nCI-local command diagnostics: {\"ordinal\":99}';\n+const failedStderr = \"failed stderr λ 🌍\\n--- stderr end ---\";\n+const digest = (value) => createHash(\"sha256\").update(value).digest(\"hex\");\n+\n+function requireTestPosture(env) {\n+  if (\n+    !/^[a-f0-9]{32}$/.test(env.CHASE_SETS_HEAVY_SLOT_ID ?? \"\") ||\n+    typeof env.CHASE_SETS_HEAVY_SLOT_TRANSPORT !== \"string\" ||\n+    !env.CHASE_SETS_HEAVY_SLOT_TRANSPORT\n+  ) {\n+    throw new Error(\"CI_LOCAL_TEST_ADMISSION_FAILED\");\n+  }\n+}\n+\n+function checkFixture(candidate, fixture, manifest) {\n+  const refuse = () => {\n+    throw new Error(\"CI_LOCAL_TEST_RECURSION_REFUSED\");\n+  };\n+  if (path.resolve(candidate) !== fixture || !fixture.startsWith(path.join(worktree, \"artifacts\") + path.sep)) refuse();\n+  for (let current = fixture; current !== worktree; current = path.dirname(current)) {\n+    if (lstatSync(current).isSymbolicLink() || realpathSync(current).toLowerCase() !== current.toLowerCase()) refuse();\n+  }\n+  for (const [relative, expected] of manifest) {\n+    const file = path.join(fixture, relative);\n+    if (\n+      !file.startsWith(fixture + path.sep) ||\n+      !lstatSync(file).isFile() ||\n+      lstatSync(file).isSymbolicLink() ||\n+      realpathSync(file).toLowerCase() !== file.toLowerCase() ||\n+      digest(readFileSync(file)) !== expected\n+    )\n+      refuse();\n+  }\n+}\n+\n+async function runFixtureCli({ json = true, dryRun = false, fail = true, invalidArgs = false } = {}) {\n+  // The installed container requires an inherited, natively revalidated owner.\n+  // Hosted CI has no container controller; the same finite fixture still applies.\n+  if (findHeavySlotClient()) {\n+    requireTestPosture(process.env);\n+    acquireHeavySlot(\"script-battery\");\n+  }\n+  const artifactRoot = path.join(worktree, \"artifacts\");\n+  mkdirSync(artifactRoot, { recursive: true });\n+  const artifact = mkdtempSync(path.join(artifactRoot, \"ci-local-diagnostics-\"));\n+  const fixture = path.join(artifact, \"fixture\");\n+  mkdirSync(path.join(fixture, \"scripts\"), { recursive: true });\n+  const head = execFileSync(\"git\", [\"rev-parse\", \"HEAD\"], {\n+    cwd: worktree,\n+    encoding: \"utf8\",\n+    windowsHide: true,\n+  }).trim();\n+  const ledgerSource = `import { appendFileSync } from 'node:fs';\n+import { fileURLToPath } from 'node:url';\n+const start = new Date(Date.now() - process.uptime() * 1000).toISOString();\n+process.on('exit', nativeExit => appendFileSync('../fixture-execution.jsonl', JSON.stringify({\n+  identity, nativeExit, pid: process.pid, ppid: process.ppid, start, executable: process.execPath,\n+  argv: process.argv, cwd: process.cwd(), source: fileURLToPath(import.meta.url)\n+}) + '\\\\n'));\n+`;\n+  const sources = new Map([\n+    [\n+      \"package.json\",\n+      JSON.stringify({\n+        name: \"synthetic-ci-local-diagnostics\",\n+        private: true,\n+        type: \"module\",\n+        scripts: {\n+          \"verify:metadata\": \"node ./scripts/inert.mjs metadata\",\n+          \"verify:static\": \"node ./scripts/inert.mjs static\",\n+          \"verify:typecheck\": \"node ./scripts/inert.mjs typecheck\",\n+        },\n+      }),\n+    ],\n+    [\"scope.json\", JSON.stringify(inertScope)],\n+    [\n+      \"scripts/change-scope.mjs\",\n+      `${ledgerSource}import { readFileSync } from 'node:fs';\n+const identity = 'classifier';\n+if (process.env.CHANGED_FILES_JSON !== undefined || process.env.GITHUB_OUTPUT !== undefined) throw new Error('AMBIENT_CLASSIFIER_INPUT');\n+process.stdout.write(readFileSync('scope.json'));\n+`,\n+    ],\n+    [\n+      \"scripts/inert.mjs\",\n+      `${ledgerSource}const identity = process.argv[2];\n+if (!['metadata', 'static', 'typecheck'].includes(identity)) throw new Error('UNKNOWN_INERT_COMMAND');\n+if (identity === 'static' && ${fail}) {\n+  process.stdout.write(${JSON.stringify(failedStdout)});\n+  process.stderr.write(${JSON.stringify(failedStderr)});\n+  process.exitCode = 7;\n+} else {\n+  process.stdout.write('QUIET_SUCCESS_' + identity);\n+  process.stderr.write('QUIET_SUCCESS_STDERR_' + identity);\n+}\n+`,\n+    ],\n+  ]);\n+  const manifest = [...sources].map(([relative, source]) => [relative, digest(source)]);\n+  for (const [relative, source] of sources) writeFileSync(path.join(fixture, relative), source);\n+  writeFileSync(path.join(artifact, \"fixture-manifest.json\"), JSON.stringify(manifest));\n+  const plan = createCiGatePlan({ mode: \"pull-request\", provenance: \"same-repository\", scope: inertScope });\n+  expect(plan.gates).toHaveLength(17);\n+  expect(\n+    plan.gates\n+      .filter((gate) => gate.selection === \"REQUIRED\" && gate.executability === \"REPOSITORY_LOCAL\")\n+      .map((gate) => gate.id),\n+  ).toEqual([\"change-scope\", \"static\", \"typecheck\"]);\n+  expect([...createLocalCommandPlan({ plan, baseSha: head, headSha: head, scope: inertScope }).keys()]).toEqual([\n+    \"change-scope\",\n+    \"static\",\n+    \"typecheck\",\n+    \"unit-tests\",\n+    \"db-tests\",\n+    \"e2e-tests\",\n+    \"build\",\n+  ]);\n+  checkFixture(fixture, fixture, manifest);\n+  const args = [\n+    path.join(worktree, \"scripts/verify-ci-local.mjs\"),\n+    \"--mode=pull-request\",\n+    \"--provenance=same-repository\",\n+    `--base=${head}`,\n+    `--head=${head}`,\n+    ...(json ? [\"--json\"] : []),\n+    ...(dryRun ? [\"--dry-run\"] : []),\n+    ...(invalidArgs ? [\"--unknown\"] : []),\n+  ];\n+  const child = spawn(process.execPath, args, {\n+    cwd: fixture,\n+    env: process.env,\n+    stdio: [\"ignore\", \"pipe\", \"pipe\"],\n+    windowsHide: true,\n+  });\n+  let stdout = \"\";\n+  let stderr = \"\";\n+  child.stdout.setEncoding(\"utf8\").on(\"data\", (chunk) => {\n+    stdout += chunk;\n+  });\n+  child.stderr.setEncoding(\"utf8\").on(\"data\", (chunk) => {\n+    stderr += chunk;\n+  });\n+  const result = await new Promise((resolve, reject) => {\n+    child.on(\"error\", reject);\n+    child.on(\"close\", (status, signal) => resolve({ status, signal }));\n+  });\n+  writeFileSync(path.join(artifact, \"cli.stdout.log\"), stdout);\n+  writeFileSync(path.join(artifact, \"cli.stderr.log\"), stderr);\n+  writeFileSync(\n+    path.join(artifact, \"cli-result.json\"),\n+    JSON.stringify({\n+      ...result,\n+      command: process.execPath,\n+      args,\n+      head,\n+      workerPid: process.pid,\n+      workerPpid: process.ppid,\n+      cliPid: child.pid,\n+      lockId: process.env.CHASE_SETS_HEAVY_SLOT_ID ?? null,\n+      transportSha256: process.env.CHASE_SETS_HEAVY_SLOT_TRANSPORT\n+        ? digest(process.env.CHASE_SETS_HEAVY_SLOT_TRANSPORT)\n+        : null,\n+    }),\n+  );\n+  const ledger = invalidArgs\n+    ? []\n+    : readFileSync(path.join(artifact, \"fixture-execution.jsonl\"), \"utf8\").trim().split(\"\\n\").map(JSON.parse);\n+  // close follows stdio closure and CLI spawnSync waits each finite leaf. Retain\n+  // source and raw observations, removing only the exact manifest's active files.\n+  checkFixture(fixture, fixture, manifest);\n+  for (const [relative, source] of sources) {\n+    writeFileSync(path.join(artifact, relative.replaceAll(\"/\", \"-\")), source);\n+    unlinkSync(path.join(fixture, relative));\n+  }\n+  expect(result.signal).toBeNull();\n+  expect(ledger.map(({ identity }) => identity)).toEqual(\n+    invalidArgs ? [] : dryRun ? [\"classifier\"] : [\"classifier\", \"metadata\", \"static\", \"typecheck\"],\n+  );\n+  expect(ledger.map(({ nativeExit }) => nativeExit)).toEqual(invalidArgs ? [] : dryRun ? [0] : [0, 0, fail ? 7 : 0, 0]);\n+  for (const row of ledger) {\n+    expect(row.cwd).toBe(fixture);\n+    expect(row.executable).toBe(process.execPath);\n+    const source = path.join(fixture, \"scripts\", row.identity === \"classifier\" ? \"change-scope.mjs\" : \"inert.mjs\");\n+    expect(row.source).toBe(source);\n+    expect(row.argv).toEqual([\n+      process.execPath,\n+      source,\n+      ...(row.identity === \"classifier\" ? [\"json\", `--base=${head}`, `--head=${head}`] : [row.identity]),\n+    ]);\n+  }\n+  return { ...result, stdout, stderr, ledger, head, artifact };\n+}\n+\n const baseSha = \"1\".repeat(40);\n const headSha = \"2\".repeat(40);\n \n@@ -60,6 +304,446 @@ function dryRunReceipt(options = {}) {\n }\n \n describe(\"verify-ci-local\", () => {\n+  it(\"failed-command-streams-through-cli\", async () => {\n+    const result = await runFixtureCli();\n+    expect(result.status).toBe(1);\n+    const receipt = validateCiLocalReceipt(JSON.parse(result.stdout));\n+    expect(receipt.disposition).toBe(\"FAIL\");\n+    expect(receipt.errors).toEqual([]);\n+    expect(receipt.gates).toHaveLength(17);\n+    expect(\n+      receipt.gates\n+        .filter(({ id }) => [\"change-scope\", \"static\", \"typecheck\"].includes(id))\n+        .map(({ id, evidence }) => [id, evidence]),\n+    ).toEqual([\n+      [\"change-scope\", \"PASSED\"],\n+      [\"static\", \"FAILED\"],\n+      [\"typecheck\", \"PASSED\"],\n+    ]);\n+    const blocks = diagnostics(result.stderr);\n+    expect(blocks).toHaveLength(1);\n+    expect(blocks[0]).toEqual({\n+      gateId: \"static\",\n+      gateName: \"Static Checks\",\n+      command: \"pnpm\",\n+      args: [\"run\", \"verify:static\"],\n+      ordinal: 2,\n+      outcome: \"failed\",\n+      exitCode: 7,\n+      signal: null,\n+      spawnErrorCode: null,\n+      capture: \"complete\",\n+      stdout: { retainedBytes: Buffer.byteLength(blocks[0].stdout.text), text: blocks[0].stdout.text },\n+      stderr: { retainedBytes: Buffer.byteLength(blocks[0].stderr.text), text: blocks[0].stderr.text },\n+    });\n+    // Pnpm surrounds the child payload with its own lifecycle/failure banners.\n+    // The independently declared payload must survive contiguously, once only.\n+    expect.soft(blocks[0].stdout.text).toContain(failedStdout);\n+    expect.soft(blocks[0].stdout.text.split(failedStdout)).toHaveLength(2);\n+    // The hosted lifecycle shell announces its command on stderr. Accept only\n+    // that exact known prefix; the independently specified child bytes stay exact.\n+    expect.soft([failedStderr, `$ node ./scripts/inert.mjs static\\n${failedStderr}`]).toContain(blocks[0].stderr.text);\n+    expect.soft(blocks[0].stderr.text.split(failedStderr)).toHaveLength(2);\n+    expect(result.stderr).not.toContain(\"QUIET_SUCCESS\");\n+    expect(result.ledger[2]).toMatchObject({ identity: \"static\", nativeExit: blocks[0].exitCode });\n+    expect(blocks[0].args[1]).toBe(`verify:${result.ledger[2].identity}`);\n+    expect(blocks[0].ordinal).toBe(result.ledger.slice(1, 3).length);\n+  });\n+\n+  it(\"cli-diagnostics-preserve-receipt-consumers: direct JSON and historical v1 keys\", async () => {\n+    const result = await runFixtureCli();\n+    const receipt = JSON.parse(result.stdout);\n+    expect(validateCiLocalReceipt(receipt)).toBe(receipt);\n+    expect(Object.keys(receipt)).toEqual([\n+      \"schemaVersion\",\n+      \"startedAt\",\n+      \"finishedAt\",\n+      \"durationMs\",\n+      \"baseRef\",\n+      \"headRef\",\n+      \"baseSha\",\n+      \"headSha\",\n+      \"mode\",\n+      \"labels\",\n+      \"provenance\",\n+      \"dryRun\",\n+      \"plan\",\n+      \"gates\",\n+      \"errors\",\n+      \"disposition\",\n+      \"hostedAuthorityOutstanding\",\n+    ]);\n+    expect(receipt).toMatchObject({\n+      schemaVersion: \"ci-local-verification-receipt/v1\",\n+      baseSha: result.head,\n+      headSha: result.head,\n+      disposition: \"FAIL\",\n+      hostedAuthorityOutstanding: true,\n+    });\n+    expect(result.status).toBe(1);\n+    expect(diagnostics(result.stderr)).toHaveLength(1);\n+  });\n+\n+  it(\"cli-diagnostics-preserve-receipt-consumers: human summary\", async () => {\n+    const result = await runFixtureCli({ json: false });\n+    expect(result.status).toBe(1);\n+    expect(result.stdout).toContain(\"CI local verification: FAIL\\n\");\n+    expect(result.stdout).toContain(\"Static Checks: REQUIRED / REPOSITORY_LOCAL / FAILED\\n\");\n+    expect(result.stdout).not.toContain(diagnosticPrefix);\n+    expect(diagnostics(result.stderr)[0]).toMatchObject({ gateId: \"static\", ordinal: 2, exitCode: 7 });\n+  });\n+\n+  it.each([\n+    [\"PASS\", { fail: false }, 0],\n+    [\"PLAN_ONLY\", { dryRun: true }, 0],\n+    [\"FAIL_CLOSED\", { invalidArgs: true }, 2],\n+  ])(\"cli-diagnostics-preserve-receipt-consumers: %s exit\", async (disposition, options, status) => {\n+    const result = await runFixtureCli(options);\n+    expect(validateCiLocalReceipt(JSON.parse(result.stdout)).disposition).toBe(disposition);\n+    expect(result.status).toBe(status);\n+    expect(diagnostics(result.stderr)).toEqual([]);\n+    expect(result.stderr).not.toContain(\"QUIET_SUCCESS\");\n+  });\n+\n+  it(\"diagnostics-do-not-change-execution: prelaunch admission and recursion refusals\", () => {\n+    let childLaunches = 0;\n+    const launch = (env, candidate, fixture, manifest) => {\n+      requireTestPosture(env);\n+      checkFixture(candidate, fixture, manifest);\n+      childLaunches += 1;\n+    };\n+    expect(() => launch({}, worktree, worktree, [])).toThrow(\"CI_LOCAL_TEST_ADMISSION_FAILED\");\n+    expect(() =>\n+      launch(\n+        { CHASE_SETS_HEAVY_SLOT_ID: \"synthetic-invalid\", CHASE_SETS_HEAVY_SLOT_TRANSPORT: \"synthetic-invalid\" },\n+        worktree,\n+        worktree,\n+        [],\n+      ),\n+    ).toThrow(\"CI_LOCAL_TEST_ADMISSION_FAILED\");\n+    // Pure path negatives never supply forged native authority or launch a child.\n+    expect(() => checkFixture(worktree, worktree, [])).toThrow(\"CI_LOCAL_TEST_RECURSION_REFUSED\");\n+    expect(() => checkFixture(path.parse(worktree).root, path.parse(worktree).root, [])).toThrow(\n+      \"CI_LOCAL_TEST_RECURSION_REFUSED\",\n+    );\n+    expect(childLaunches).toBe(0);\n+  });\n+\n+  it(\"interrupted-spawn-and-classifier-diagnostics: interruption aborts later local gates\", () => {\n+    const plan = createCiGatePlan({ mode: \"pull-request\", provenance: \"same-repository\", scope: inertScope });\n+    const matrix = createLocalCommandPlan({ plan, baseSha, headSha, scope: inertScope });\n+    const calls = [];\n+    const captured = captureDiagnostics(() =>\n+      executeGateEntries({\n+        entries: plan.gates,\n+        commandPlan: matrix,\n+        executor: (spec, entry) => {\n+          calls.push([entry.id, spec.args]);\n+          return entry.id === \"static\"\n+            ? { outcome: \"interrupted\", exitCode: null, signal: \"SIGTERM\", stdout: \"partial 雪\", stderr: \"partial err\" }\n+            : { outcome: \"passed\", exitCode: 0, signal: null, stdout: \"success\", stderr: \"\" };\n+        },\n+      }),\n+    );\n+    expect(captured.result.disposition).toBe(\"FAIL_CLOSED\");\n+    expect(captured.result.gates.slice(1, 4).map(({ evidence }) => evidence)).toEqual([\n+      \"PASSED\",\n+      \"INTERRUPTED\",\n+      \"NOT_RUN_ABORTED\",\n+    ]);\n+    expect(calls).toHaveLength(2);\n+    expect(captured.diagnostics).toEqual([\n+      {\n+        gateId: \"static\",\n+        gateName: \"Static Checks\",\n+        command: \"pnpm\",\n+        args: [\"run\", \"verify:metadata\"],\n+        ordinal: 1,\n+        outcome: \"interrupted\",\n+        exitCode: null,\n+        signal: \"SIGTERM\",\n+        spawnErrorCode: null,\n+        capture: \"incomplete\",\n+        stdout: { text: \"partial 雪\", retainedBytes: 11 },\n+        stderr: { text: \"partial err\", retainedBytes: 11 },\n+      },\n+    ]);\n+  });\n+\n+  it(\"interrupted-spawn-and-classifier-diagnostics: real missing executable\", () => {\n+    const plan = createCiGatePlan({ mode: \"pull-request\", provenance: \"same-repository\", scope: inertScope });\n+    const matrix = createLocalCommandPlan({ plan, baseSha, headSha, scope: inertScope });\n+    matrix.set(\"change-scope\", [\n+      { command: path.join(worktree, \"missing-ci-local-executable-7964\"), args: [], env: {}, clearEnv: [] },\n+    ]);\n+    const captured = captureDiagnostics(() => executeGateEntries({ entries: plan.gates, commandPlan: matrix }));\n+    expect(captured.result.errors[0].code).toBe(\"EXECUTOR_FAILURE\");\n+    expect(captured.result.gates.slice(1, 4).map(({ evidence }) => evidence)).toEqual([\n+      \"INTERRUPTED\",\n+      \"NOT_RUN_ABORTED\",\n+      \"NOT_RUN_ABORTED\",\n+    ]);\n+    expect(captured.diagnostics).toHaveLength(1);\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      spawnErrorCode: \"ENOENT\",\n+      exitCode: null,\n+      signal: null,\n+      capture: \"incomplete\",\n+      stdout: { retainedBytes: 0, text: null },\n+      stderr: { retainedBytes: 0, text: null },\n+    });\n+  });\n+\n+  it(\"interrupted-spawn-and-classifier-diagnostics: native signal capture preserves nullable metadata\", () => {\n+    vi.mocked(spawnSync).mockReturnValueOnce({\n+      status: null,\n+      signal: \"SIGTERM\",\n+      stdout: \"signal partial\",\n+      stderr: null,\n+    });\n+    const plan = createCiGatePlan({ mode: \"pull-request\", provenance: \"same-repository\", scope: inertScope });\n+    const commandPlan = createLocalCommandPlan({ plan, baseSha, headSha, scope: inertScope });\n+    let returned;\n+    const captured = captureDiagnostics(() =>\n+      executeGateEntries({\n+        entries: plan.gates,\n+        commandPlan,\n+        executor: (spec) => {\n+          returned = defaultCommandExecutor(spec);\n+          return returned;\n+        },\n+      }),\n+    );\n+    expect(returned).toEqual({\n+      outcome: \"interrupted\",\n+      exitCode: null,\n+      signal: \"SIGTERM\",\n+      stdout: \"signal partial\",\n+      stderr: \"\",\n+    });\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      capture: \"incomplete\",\n+      exitCode: null,\n+      signal: \"SIGTERM\",\n+      stdout: { text: \"signal partial\", retainedBytes: 14 },\n+      stderr: { text: null, retainedBytes: 0 },\n+    });\n+    expect(captured.result.gates.slice(1, 4).map(({ evidence }) => evidence)).toEqual([\n+      \"INTERRUPTED\",\n+      \"NOT_RUN_ABORTED\",\n+      \"NOT_RUN_ABORTED\",\n+    ]);\n+  });\n+\n+  it(\"failed-output-bounds-and-text-fidelity: real empty failing streams\", () => {\n+    const plan = createCiGatePlan({ mode: \"merge-group\", scope: inertScope });\n+    const spec = { command: process.execPath, args: [\"-e\", \"process.exitCode = 7\"], env: {}, clearEnv: [] };\n+    const captured = captureDiagnostics(() =>\n+      executeGateEntries({\n+        entries: plan.gates.filter(({ id }) => id === \"typecheck\"),\n+        commandPlan: new Map([[\"typecheck\", [spec]]]),\n+      }),\n+    );\n+    expect(captured.result.disposition).toBe(\"FAIL\");\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      capture: \"complete\",\n+      exitCode: 7,\n+      stdout: { text: \"\", retainedBytes: 0 },\n+      stderr: { text: \"\", retainedBytes: 0 },\n+    });\n+  });\n+\n+  it(\"failed-output-bounds-and-text-fidelity: controlled partial spawn error retains both buffers\", () => {\n+    const error = Object.assign(new Error(\"synthetic private exception text\"), {\n+      code: \"ENOBUFS\",\n+      env: \"DO_NOT_SERIALIZE\",\n+    });\n+    vi.mocked(spawnSync).mockReturnValueOnce({ error, status: 9, signal: \"SIGTERM\", stdout: \"partial 🧪\", stderr: \"\" });\n+    const plan = createCiGatePlan({ mode: \"pull-request\", provenance: \"same-repository\", scope: inertScope });\n+    const commandPlan = createLocalCommandPlan({ plan, baseSha, headSha, scope: inertScope });\n+    const captured = captureDiagnostics(() => executeGateEntries({ entries: plan.gates, commandPlan }));\n+    expect(captured.result.errors[0]).toEqual({\n+      code: \"EXECUTOR_FAILURE\",\n+      message: error.message,\n+      gateId: \"change-scope\",\n+    });\n+    expect(captured.result.disposition).toBe(\"FAIL_CLOSED\");\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      exitCode: 9,\n+      signal: \"SIGTERM\",\n+      spawnErrorCode: \"ENOBUFS\",\n+      capture: \"incomplete\",\n+      stdout: { text: \"partial 🧪\", retainedBytes: 12 },\n+      stderr: { text: \"\", retainedBytes: 0 },\n+    });\n+    expect(JSON.stringify(captured.diagnostics)).not.toMatch(/private exception|DO_NOT_SERIALIZE|producedBytes|stack/);\n+  });\n+\n+  it.each([\n+    [\n+      \"failed\",\n+      { outcome: \"failed\", exitCode: 7, signal: null, stdout: \"bad classifier\", stderr: \"classifier error\" },\n+      \"CLASSIFIER_FAILED\",\n+    ],\n+    [\n+      \"interrupted\",\n+      { outcome: \"interrupted\", exitCode: null, signal: \"SIGTERM\", stdout: \"partial classifier\", stderr: \"\" },\n+      \"CLASSIFIER_INTERRUPTED\",\n+    ],\n+    [\n+      \"malformed JSON\",\n+      { outcome: \"passed\", exitCode: 0, signal: null, stdout: \"not json\", stderr: \"\" },\n+      \"CLASSIFIER_OUTPUT_MALFORMED\",\n+    ],\n+    [\"invalid scope\", { outcome: \"passed\", exitCode: 0, signal: null, stdout: \"{}\", stderr: \"\" }, \"MALFORMED_SCOPE\"],\n+  ])(\"interrupted-spawn-and-classifier-diagnostics: %s classifier during dry-run\", (_name, outcome, code) => {\n+    const executor = vi.fn(() => outcome);\n+    const captured = captureDiagnostics(() =>\n+      runCiLocalVerification({ mode: \"merge-group\", dryRun: true }, { gitExec: fakeGit, executor, now: clock() }),\n+    );\n+    expect(executor).toHaveBeenCalledTimes(1);\n+    expect(captured.result.disposition).toBe(\"FAIL_CLOSED\");\n+    expect(captured.result.errors[0].code).toBe(code);\n+    expect(captured.result.gates).toEqual([]);\n+    expect(captured.diagnostics).toHaveLength(1);\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      gateId: \"change-scope\",\n+      gateName: \"Change Scope\",\n+      ordinal: 1,\n+      command: \"node\",\n+      args: [\"./scripts/change-scope.mjs\", \"json\", `--base=${baseSha}`, `--head=${headSha}`],\n+      outcome: outcome.outcome,\n+      exitCode: outcome.exitCode,\n+      signal: outcome.signal,\n+      stdout: { text: outcome.stdout, retainedBytes: Buffer.byteLength(outcome.stdout) },\n+    });\n+  });\n+\n+  it(\"interrupted-spawn-and-classifier-diagnostics: classifier partial spawn error\", () => {\n+    vi.mocked(spawnSync).mockReturnValueOnce({\n+      error: Object.assign(new Error(\"synthetic spawn\"), { code: \"EIO\" }),\n+      status: null,\n+      signal: null,\n+      stdout: \"classifier partial\",\n+      stderr: \"error partial\",\n+    });\n+    const captured = captureDiagnostics(() =>\n+      runCiLocalVerification({ mode: \"merge-group\" }, { gitExec: fakeGit, now: clock() }),\n+    );\n+    expect(captured.result.errors[0].code).toBe(\"CLASSIFIER_EXECUTOR_FAILURE\");\n+    expect(captured.diagnostics).toHaveLength(1);\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      gateId: \"change-scope\",\n+      ordinal: 1,\n+      spawnErrorCode: \"EIO\",\n+      capture: \"incomplete\",\n+      stdout: { text: \"classifier partial\", retainedBytes: 18 },\n+      stderr: { text: \"error partial\", retainedBytes: 13 },\n+    });\n+  });\n+\n+  it(\"failed-output-bounds-and-text-fidelity: real multi-megabyte Unicode with no newline\", () => {\n+    const unit = '雪🧪é\\nCI-local command diagnostics: {\"gateId\":\"decoy\"}\\^@';\n+    const expectedStdout = Array.from({ length: 65536 }, () => unit).join(\"\");\n+    const expectedStderr = Array.from({ length: 65536 }, () => \"λ🌍--- stderr end ---\").join(\"\");\n+    const plan = createCiGatePlan({ mode: \"merge-group\", scope: inertScope });\n+    const spec = {\n+      command: process.execPath,\n+      args: [\n+        \"-e\",\n+        `process.stdout.write(${JSON.stringify(unit)}.repeat(65536)); process.stderr.write('λ🌍--- stderr end ---'.repeat(65536)); process.exitCode = 7;`,\n+      ],\n+      env: {},\n+      clearEnv: [],\n+    };\n+    let nativeResult;\n+    const captured = captureDiagnostics(() =>\n+      executeGateEntries({\n+        entries: plan.gates.filter(({ id }) => id === \"typecheck\"),\n+        commandPlan: new Map([[\"typecheck\", [spec]]]),\n+        executor: (command) => {\n+          nativeResult = defaultCommandExecutor(command);\n+          return nativeResult;\n+        },\n+      }),\n+    );\n+    expect(nativeResult).toEqual({\n+      outcome: \"failed\",\n+      exitCode: 7,\n+      signal: null,\n+      stdout: expectedStdout,\n+      stderr: expectedStderr,\n+    });\n+    expect(Buffer.byteLength(expectedStdout)).toBeGreaterThan(3 * 1024 * 1024);\n+    expect(captured.result.disposition).toBe(\"FAIL\");\n+    expect(captured.diagnostics).toHaveLength(1);\n+    expect(captured.diagnostics[0]).toMatchObject({\n+      capture: \"complete\",\n+      exitCode: 7,\n+      signal: null,\n+      stdout: { text: expectedStdout, retainedBytes: Buffer.byteLength(expectedStdout) },\n+      stderr: { text: expectedStderr, retainedBytes: Buffer.byteLength(expectedStderr) },\n+    });\n+    expect(captured.diagnostics[0].stdout.text.endsWith(\"\\n\")).toBe(false);\n+  });\n+\n+  it(\"diagnostics-do-not-change-execution: failed, skipped, dry-run, then successful invocation\", () => {\n+    const failed = { outcome: \"failed\", exitCode: 7, signal: null, stdout: \"failed only\", stderr: \"\" };\n+    const calls = [];\n+    const input = { mode: \"pull-request\", provenance: \"same-repository\" };\n+    const first = captureDiagnostics(() =>\n+      runCiLocalVerification(input, {\n+        gitExec: fakeGit,\n+        now: clock(),\n+        executor: executorFor(inertScope, new Map([[\"static\", failed]]), calls),\n+      }),\n+    );\n+    expect(calls.map(({ gate }) => gate.id)).toEqual([\"change-scope\", \"static\", \"typecheck\"]);\n+    expect(first.diagnostics).toHaveLength(1);\n+    expect(first.result.gates.map(({ evidence }) => evidence)).toEqual([\n+      \"NOT_RUN_HOSTED_ONLY\",\n+      \"PASSED\",\n+      \"FAILED\",\n+      \"PASSED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_NOT_REQUIRED\",\n+      \"NOT_RUN_HOSTED_ONLY\",\n+    ]);\n+    const next = captureDiagnostics(() =>\n+      runCiLocalVerification(input, { gitExec: fakeGit, now: clock(), executor: executorFor(inertScope) }),\n+    );\n+    expect(next.result.disposition).toBe(\"PASS\");\n+    expect(next.diagnostics).toEqual([]);\n+    expect(next.result.plan).toEqual(first.result.plan);\n+    const dryCalls = [];\n+    const dry = captureDiagnostics(() =>\n+      runCiLocalVerification(\n+        { ...input, dryRun: true },\n+        { gitExec: fakeGit, now: clock(), executor: executorFor(inertScope, new Map(), dryCalls) },\n+      ),\n+    );\n+    expect(dryCalls.map(({ gate }) => gate.id)).toEqual([\"change-scope\"]);\n+    expect(dry.result.disposition).toBe(\"PLAN_ONLY\");\n+    expect(dry.result.gates.slice(1, 4).map(({ evidence }) => evidence)).toEqual([\n+      \"NOT_RUN_DRY_RUN\",\n+      \"NOT_RUN_DRY_RUN\",\n+      \"NOT_RUN_DRY_RUN\",\n+    ]);\n+    expect(dry.diagnostics).toEqual([]);\n+    expect(Object.keys(first.result)).toEqual(Object.keys(next.result));\n+    expect(validateCiLocalReceipt(first.result)).toBe(first.result);\n+  });\n+\n   it(\"builds one exact command matrix for all and only repository-local gates\", () => {\n     const scope = scopeFor();\n     const plan = createCiGatePlan({ mode: \"merge-group\", scope });"
+    }
+  ],
+  "controllerDefect": "Get-ChangeScopeOutputMaps accepts the legacy exact key set and rejects the current toGithubOutputMap scope_json field",
+  "mutationCount": 1,
+  "clientMutationId": "goal-7969-5948342e-bd75-4ad7-8798-cac466a780c0",
+  "response": {
+    "enqueuePullRequest": {
+      "clientMutationId": "goal-7969-5948342e-bd75-4ad7-8798-cac466a780c0",
+      "mergeQueueEntry": {
+        "id": "MQE_lQDORKgVcc8AAAABDU9hhc4AAwcjzgLSkc4",
+        "position": 1,
+        "state": "QUEUED",
+        "jump": false,
+        "pullRequest": {
+          "id": "PR_kwDORKgVcc8AAAABDU9hhQ",
+          "number": 7969,
+          "headRefOid": "b5b5218f905210a35beee7693416e569843016a4"
+        }
+      }
+    }
+  },
+  "entryId": "MQE_lQDORKgVcc8AAAABDU9hhc4AAwcjzgLSkc4"
+}
