@@ -1,0 +1,8 @@
+# Container-root directories and worktrees that container-sweep.ps1 must never
+# reclaim, one container-relative or absolute path per line. A machine-local
+# container-sweep.local.keep beside this file is read the same way.
+
+# 8838 operator probe package and operator prep material, kept at Todd's
+# 2026-10-17 sweep pending their operator actions.
+20261006-8838-probe-package
+20261011-operator-prep
