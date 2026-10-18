@@ -25,10 +25,10 @@ param(
   [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite")][string]$Gate,
   [Parameter(ParameterSetName = "Gate")][ValidatePattern('^[a-z][a-z0-9_]*$')][string]$E2eSuite,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][ValidateSet("@chase-sets/ordering")][string]$WorkspaceTest,
-  # Host-declared standalone Node diagnostics are a closed name set. The host
-  # supplies the declaration's repository-relative script, source digest and
-  # finite wall-clock budget; all three are checked before slot acquisition.
-  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidateSet("worst13-no-fit")][string]$Diagnostic,
+  # Host-declared standalone Node diagnostics are a closed, case-sensitive
+  # name set. The declaration file supplies the repository-relative script,
+  # source digest and maximum wall-clock budget.
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$Diagnostic,
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
@@ -55,6 +55,7 @@ param(
   [Parameter(DontShow)][switch]$TestReplaceOwnerBeforeReclaim,
   [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayIdentityRevalidationMilliseconds,
   [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayChildPublicationMilliseconds,
+  [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayDiagnosticLaunchMilliseconds,
   # The canonical controller release battery uses the same exact-owner lock
   # implementation, but its command and arguments are fixed here rather than
   # exposed as an arbitrary production command surface.
@@ -326,13 +327,41 @@ function Assert-HostVerifierGitState {
 }
 $diagnosticScriptFull = $null
 $diagnosticDefinition = $null
+function Assert-DiagnosticPathNoReparse([string]$Path, [string]$Description) {
+  $current = [IO.Path]::GetFullPath($Path)
+  while ($current -and (Test-Path -LiteralPath $current)) {
+    $item = Get-Item -LiteralPath $current -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::None) {
+      throw "heavy-verifier: $Description contains a reparse point"
+    }
+    $parent = Split-Path -Parent $current
+    if ($parent -eq $current) { break }
+    $current = $parent
+  }
+}
 function Assert-DiagnosticDeclaration {
   if (-not $isDiagnostic) { return }
-  $definitions = [ordered]@{
-    'worst13-no-fit' = [ordered]@{ kind = 'standalone-node'; extension = '.mjs' }
+  $declarationPath = Join-Path $container '.orchestrator\diagnostic-declarations.json'
+  if (-not (Test-Path -LiteralPath $declarationPath -PathType Leaf)) {
+    throw "heavy-verifier: diagnostic declaration file is unavailable"
   }
-  if (-not $definitions.Contains($Diagnostic)) {
+  Assert-DiagnosticPathNoReparse $declarationPath 'diagnostic declaration'
+  try {
+    $declarations = [IO.File]::ReadAllText($declarationPath) | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    throw "heavy-verifier: diagnostic declaration file is unreadable"
+  }
+  if ($declarations.schema -cne 'host-heavy-diagnostic-declarations/v1' -or $null -eq $declarations.diagnostics) {
+    throw "heavy-verifier: diagnostic declaration file has an invalid schema"
+  }
+  $definition = $declarations.diagnostics.PSObject.Properties | Where-Object Name -ceq $Diagnostic | Select-Object -First 1
+  if ($null -eq $definition) {
     throw "heavy-verifier: diagnostic name is not declared"
+  }
+  $definition = $definition.Value
+  if ($definition.enabled -ne $true -or [string]::IsNullOrWhiteSpace([string]$definition.path) -or
+      [string]$definition.sha256 -match '(?i)fill[_-]?me|placeholder') {
+    throw "heavy-verifier: diagnostic declaration is not populated"
   }
   if ([double]::IsNaN($DiagnosticBudgetSeconds) -or [double]::IsInfinity($DiagnosticBudgetSeconds) -or
       $DiagnosticBudgetSeconds -le 0 -or $DiagnosticBudgetSeconds -gt 86400) {
@@ -344,35 +373,112 @@ function Assert-DiagnosticDeclaration {
       @($DiagnosticScriptPath.Replace('\', '/').Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
     throw "heavy-verifier: diagnostic script must be a repository-relative standalone .mjs path"
   }
+  $declaredPath = ([string]$definition.path).Replace('\', '/')
+  $callerPath = $DiagnosticScriptPath.Replace('\', '/')
+  if ($callerPath -cne $declaredPath) {
+    throw "heavy-verifier: diagnostic script path does not match host declaration"
+  }
+  $declaredHash = [string]$definition.sha256
+  if ($declaredHash -cnotmatch '^[a-f0-9]{64}$') {
+    throw "heavy-verifier: diagnostic declaration has an invalid SHA-256"
+  }
+  if ($DiagnosticSha256 -cne $declaredHash) {
+    throw "heavy-verifier: diagnostic SHA-256 does not match host declaration"
+  }
+  $maximumBudget = 0.0
+  if (-not [double]::TryParse([string]$definition.maxBudgetSeconds, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$maximumBudget) -or
+      [double]::IsNaN($maximumBudget) -or [double]::IsInfinity($maximumBudget) -or $maximumBudget -le 0 -or $maximumBudget -gt 86400) {
+    throw "heavy-verifier: diagnostic declaration has an invalid maximum budget"
+  }
+  if ($DiagnosticBudgetSeconds -gt $maximumBudget) {
+    throw "heavy-verifier: diagnostic budget exceeds declared maximum"
+  }
   $relative = $DiagnosticScriptPath.Replace('/', '\')
   $candidate = [IO.Path]::GetFullPath((Join-Path $worktreeFull $relative)).TrimEnd('\', '/')
   if (-not $candidate.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "heavy-verifier: diagnostic script escaped the supplied worktree"
   }
-  $current = $candidate
-  while ($current -and (Test-Path -LiteralPath $current)) {
-    $item = Get-Item -LiteralPath $current -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::None) {
-      throw "heavy-verifier: diagnostic script path contains a reparse point"
-    }
-    $parent = Split-Path -Parent $current
-    if ($parent -eq $current) { break }
-    $current = $parent
-  }
+  Assert-DiagnosticPathNoReparse $candidate 'diagnostic script path'
   if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
     throw "heavy-verifier: declared diagnostic script was not found"
   }
   $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($candidate))).ToLowerInvariant()
-  if ($actual -cne $DiagnosticSha256.ToLowerInvariant()) {
+  if ($actual -cne $declaredHash.ToLowerInvariant()) {
     throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
   }
   $script:diagnosticDefinition = [ordered]@{
-    name = $Diagnostic; kind = $definitions[$Diagnostic].kind; scriptPath = $DiagnosticScriptPath.Replace('\', '/')
-    sha256 = $actual; budgetSeconds = $DiagnosticBudgetSeconds
+    name = $Diagnostic; kind = [string]$definition.kind; scriptPath = $declaredPath
+    sha256 = $declaredHash.ToLowerInvariant(); budgetSeconds = $DiagnosticBudgetSeconds; maxBudgetSeconds = $maximumBudget
   }
   $script:diagnosticScriptFull = $candidate
 }
 Assert-DiagnosticDeclaration
+if ($IsWindows) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class HeavyDiagnosticJob {
+  [StructLayout(LayoutKind.Sequential)] struct BasicLimit { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass, SchedulingClass; }
+  [StructLayout(LayoutKind.Sequential)] struct IoCounters { public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; }
+  [StructLayout(LayoutKind.Sequential)] struct ExtendedLimit { public BasicLimit BasicLimitInformation; public IoCounters IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
+  [StructLayout(LayoutKind.Sequential)] struct BasicAccounting { public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime; public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses; }
+  const uint KillOnClose = 0x00002000;
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out BasicAccounting info, int length, IntPtr returnLength);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+  public static IntPtr Create() {
+    var job = CreateJobObjectW(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed: " + Marshal.GetLastWin32Error());
+    var info = new ExtendedLimit { BasicLimitInformation = new BasicLimit { LimitFlags = KillOnClose } }; var size = Marshal.SizeOf<ExtendedLimit>(); var memory = Marshal.AllocHGlobal(size);
+    try { Marshal.StructureToPtr(info, memory, false); if (!SetInformationJobObject(job, 9, memory, (uint)size)) { CloseHandle(job); throw new InvalidOperationException("SetInformationJobObject failed: " + Marshal.GetLastWin32Error()); } } finally { Marshal.FreeHGlobal(memory); }
+    return job;
+  }
+  public static void Assign(IntPtr job, int pid) {
+    var opened = OpenProcess(0x0100u | 0x0001u, false, unchecked((uint)pid));
+    if (opened == IntPtr.Zero) throw new InvalidOperationException("OpenProcess failed: " + Marshal.GetLastWin32Error());
+    try { if (!AssignProcessToJobObject(job, opened)) throw new InvalidOperationException("AssignProcessToJobObject failed: " + Marshal.GetLastWin32Error()); } finally { CloseHandle(opened); }
+  }
+  public static void Terminate(IntPtr job, uint code) { if (job != IntPtr.Zero) TerminateJobObject(job, code); }
+  public static bool HasActiveProcesses(IntPtr job) { BasicAccounting info; if (!QueryInformationJobObject(job, 1, out info, Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero)) throw new InvalidOperationException("QueryInformationJobObject failed: " + Marshal.GetLastWin32Error()); return info.ActiveProcesses > 0; }
+  public static void Close(IntPtr job) { if (job != IntPtr.Zero) CloseHandle(job); }
+}
+'@
+}
+function Get-DiagnosticDescendantPids([int]$RootPid, [long]$RootStartTicks = 0) {
+  if (-not $IsWindows -or $RootPid -le 0) { return @() }
+  try {
+    $children = @{}
+    foreach ($processInfo in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+      $processId = 0; $parentId = 0
+      if ([int]::TryParse([string]$processInfo.ProcessId, [ref]$processId) -and $processId -gt 0 -and [int]::TryParse([string]$processInfo.ParentProcessId, [ref]$parentId) -and $parentId -gt 0) {
+        if ([string]$processInfo.Name -iin @('conhost.exe', 'openconsole.exe')) { continue }
+        if ($RootStartTicks -gt 0) {
+          try { if ([Management.ManagementDateTimeConverter]::ToDateTime([string]$processInfo.CreationDate).ToUniversalTime().Ticks -lt $RootStartTicks) { continue } } catch {}
+        }
+        if (-not $children.ContainsKey($parentId)) { $children[$parentId] = @() }
+        $children[$parentId] = @($children[$parentId]) + $processId
+      }
+    }
+    $pending = @($RootPid); $seen = @{}; $seen[$RootPid] = $true
+    $result = @()
+    while ($pending.Count -gt 0) {
+      $parent = $pending[0]; $pending = if ($pending.Count -gt 1) { @($pending[1..($pending.Count - 1)]) } else { @() }
+      if ($children.ContainsKey($parent)) { foreach ($childPid in @($children[$parent])) {
+        if ($childPid -gt 0 -and -not $seen.ContainsKey($childPid)) { $seen[$childPid] = $true; $result += $childPid; $pending += $childPid }
+      } }
+    }
+    return @($result)
+  } catch { return @() }
+}
+function Stop-DiagnosticTree([int]$RootPid, [long]$RootStartTicks = 0, [int[]]$KnownPids = @()) {
+  if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Terminate($diagnosticJobHandle, 124) }
+  try { if ($child -and -not $child.HasExited) { $child.Kill($true) } } catch { try { if ($child -and -not $child.HasExited) { $child.Kill() } } catch {} }
+  foreach ($descendantPid in @($KnownPids)) { try { Stop-Process -Id $descendantPid -Force -ErrorAction SilentlyContinue } catch {} }
+}
 # Read every native launch before interpreting roles or command shape. A failed
 # lookup is never evidence that the caller is a standalone host.
 function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$OldestLaunch, [int[]]$CandidatePids, [object[]]$DispatchRecords = @()) {
@@ -1546,36 +1652,6 @@ function Complete-RefusedAttachedAdmission {
     Start-Sleep -Milliseconds 100
   }
 }
-function Assert-LaneAdmissionReceipt {
-  if ($env:CHASE_SETS_LANE_MODE -ne '1' -or [string]::IsNullOrWhiteSpace($env:CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST)) { return }
-  $receiptPath = Join-Path $worktreeFull ".orchestrator/artifacts/lane-heavy-admission-$($owner.lockId)-$($owner.childPid).json"
-  if (-not (Test-SafeFile $receiptPath)) {
-    throw "heavy-verifier: lane-mode admission receipt is missing; host binding refused"
-  }
-  try { $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch {
-    throw "heavy-verifier: lane-mode admission receipt is unreadable; host binding refused"
-  }
-  $allowedKinds = @('script-battery', 'vitest-full')
-  $observedArguments = @($receipt.observedCommand.arguments)
-  if ($receipt.schema -cne 'lane-heavy-admission/v1' -or
-      $receipt.kind -cnotin $allowedKinds -or
-      $receipt.holder.owner -cne $owner.owner -or [int]$receipt.holder.pid -ne [int]$owner.pid -or
-      [int]$receipt.writer.pid -ne [int]$owner.childPid -or
-      $receipt.slot.lockId -cne $owner.lockId -or $receipt.slot.name -cne $lockDirectoryName -or
-      [IO.Path]::GetFullPath([string]$receipt.cwd) -cne $worktreeFull -or
-      [string]$receipt.head -cne [string]$acquiredGitIdentity.Head -or
-      $receipt.admittedCommand.executable -cne $command -or
-      (@($receipt.admittedCommand.arguments) -join "`n") -cne (@($arguments) -join "`n") -or
-      [string]::IsNullOrWhiteSpace([string]$receipt.observedCommand.executable) -or
-      $observedArguments.Count -eq 0 -or
-      ($observedArguments | Where-Object { [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0 -or
-      -not (Test-UtcIdentity ([string]$receipt.start)) -or -not (Test-UtcIdentity ([string]$receipt.end)) -or
-      [DateTimeOffset]::Parse([string]$receipt.end).Ticks -lt [DateTimeOffset]::Parse([string]$receipt.start).Ticks -or
-      ($receipt.exit -isnot [int] -and $receipt.exit -isnot [long])) {
-    throw "heavy-verifier: lane-mode admission receipt did not bind the admitted command; host binding refused"
-  }
-  return $receipt
-}
 function Write-OwnerRecord($Record, [switch]$CreateNew) {
   $raw = if ($Record.schemaVersion -eq 6) { $Record | ConvertTo-Json -Compress -Depth 16 } else { $Record | ConvertTo-Json -Compress }
   if ($CreateNew) {
@@ -2046,6 +2122,8 @@ $childEnded = $null
 $childElapsedMs = $null
 $childTimedOut = $false
 $childResources = $null
+$diagnosticSourceStream = $null
+$diagnosticJobHandle = [IntPtr]::Zero
 try {
   try {
     # CreateNew prevents a forged pre-existing record from being overwritten.
@@ -2087,7 +2165,6 @@ try {
       }
       $possibleDescendant = Test-PossibleOwnedChild $owner -GuardedRootOnly
       if ($possibleDescendant -eq $false) {
-        Assert-LaneAdmissionReceipt
         $attachedDeadTreeProven=$true;break
       }
       Start-Sleep -Milliseconds 100
@@ -2096,6 +2173,23 @@ try {
   } else {
     if ($TestCancelAfterAcquisition) { throw [OperationCanceledException]::new("heavy-verifier test cancellation") }
     if ($isControllerFixture) { New-ControllerFixtureEvidence }
+    if ($isDiagnostic -and $TestDelayDiagnosticLaunchMilliseconds -gt 0) {
+      Start-Sleep -Milliseconds $TestDelayDiagnosticLaunchMilliseconds
+    }
+    if ($isDiagnostic) {
+      # Census and launch are separated by a final reparse walk and a handle
+      # opened with FileShare.Read. The handle remains live until child exit,
+      # preventing a hash-to-launch replacement or deletion on Windows.
+      Assert-DiagnosticPathNoReparse $diagnosticScriptFull 'diagnostic script path'
+      $diagnosticSourceStream = [IO.File]::Open($diagnosticScriptFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+      $launchHashBytes = [Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)
+      $launchHash = [Convert]::ToHexString($launchHashBytes).ToLowerInvariant()
+      if ($launchHash -cne $diagnosticDefinition.sha256) {
+        throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
+      }
+      $diagnosticSourceStream.Position = 0
+      if ($IsWindows -and $env:DIAGNOSTIC_SKIP_JOB -ne '1') { $diagnosticJobHandle = [HeavyDiagnosticJob]::Create() }
+    }
     # ProcessStartInfo.ArgumentList preserves each argument verbatim; unlike
     # Start-Process -ArgumentList it does not re-join paths containing spaces.
     $start = [Diagnostics.ProcessStartInfo]::new()
@@ -2137,16 +2231,14 @@ try {
       $preload = Join-Path $PSScriptRoot "heavy-admission-preload.cjs"
       if (-not (Test-SafeFile $preload)) { throw "heavy-verifier: canonical admission preload unavailable or unsafe" }
       $nodeOptions = "--require=`"$($preload.Replace('\', '/'))`""
-      if (-not [string]::IsNullOrWhiteSpace($start.Environment['NODE_OPTIONS'])) {
+      if (-not $isDiagnostic -and -not [string]::IsNullOrWhiteSpace($start.Environment['NODE_OPTIONS'])) {
         $nodeOptions = $start.Environment['NODE_OPTIONS'] + ' ' + $nodeOptions
       }
+      if ($isDiagnostic) { $start.Environment['NODE_OPTIONS'] = $nodeOptions }
       $configuration = [ordered]@{
         schemaVersion = 1; guardPath = $PSCommandPath; powershellPath = $process.Path
         containerRoot = $container; worktree = $worktreeFull; lane = $Lane
-        retainAdmission = $true
-        laneMode = ($env:CHASE_SETS_LANE_MODE -eq '1')
-        workspaceTest = $(if ($isWorkspaceTest) { $WorkspaceTest } else { $null })
-        expectedCommand = [ordered]@{ executable = $command; arguments = @($arguments) }
+         retainAdmission = $true
         originalNodeOptionsPresent = $true; originalNodeOptions = $nodeOptions
         originalScriptShellPresent = $start.Environment.ContainsKey('npm_config_script_shell')
         originalScriptShell = $start.Environment['npm_config_script_shell']
@@ -2157,17 +2249,18 @@ try {
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress)))
       $start.Environment["npm_config_script_shell"] = $hostNode
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
-      if ($isWorkspaceTest) { $start.Environment["CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST"] = $WorkspaceTest }
-      else { [void]$start.Environment.Remove("CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST") }
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
     $child = [Diagnostics.Process]::Start($start)
+    if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
     if ($TestDelayChildPublicationMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $TestDelayChildPublicationMilliseconds
     }
     $childStarted = $child.StartTime.ToUniversalTime().ToString("o")
     $childInitialWorkingSet = [long]$child.WorkingSet64
+    $peakWorkingSet = $childInitialWorkingSet
+    $workingSet = $childInitialWorkingSet
     $childStopwatch = [Diagnostics.Stopwatch]::StartNew()
     $startedOwner = [ordered]@{}
     foreach ($entry in $owner.GetEnumerator()) { $startedOwner[$entry.Key] = $entry.Value }
@@ -2183,10 +2276,33 @@ try {
     }
     if ($isDiagnostic) {
       $budgetMilliseconds = [int][Math]::Ceiling($DiagnosticBudgetSeconds * 1000)
-      if (-not $child.WaitForExit($budgetMilliseconds)) {
-        $childTimedOut = $true
-        try { $child.Kill($true) } catch { try { $child.Kill() } catch {} }
-        [void]$child.WaitForExit(30000)
+      $deadline = [DateTime]::UtcNow.AddMilliseconds($budgetMilliseconds)
+      $peakWorkingSet = [long]$child.WorkingSet64
+      $workingSet = $peakWorkingSet
+      $diagnosticObservedDescendants = @()
+      while ($true) {
+        try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
+        if ($IsWindows) { $diagnosticObservedDescendants += @(Get-DiagnosticDescendantPids $child.Id $child.StartTime.ToUniversalTime().Ticks) | Select-Object -Unique }
+        if ($child.HasExited) {
+          $jobActive = $false
+          if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { try { $jobActive = [HeavyDiagnosticJob]::HasActiveProcesses($diagnosticJobHandle) } catch {} }
+          $possibleDescendant = if ($IsWindows) { $jobActive -or $diagnosticObservedDescendants.Count -gt 0 } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
+          if ($possibleDescendant -eq $false) { break }
+        }
+        $remaining = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if ($remaining -le 0) {
+          $childTimedOut = $true
+          Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
+          break
+        }
+        [void]$child.WaitForExit([Math]::Min(100, $remaining))
+      }
+      if ($childTimedOut) {
+        $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(2)
+        while (-not $child.HasExited -and [DateTime]::UtcNow -lt $cleanupDeadline) {
+          try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
+          [void]$child.WaitForExit(50)
+        }
       }
     } else {
       $child.WaitForExit()
@@ -2196,18 +2312,21 @@ try {
     $childElapsedMs = [long]$childStopwatch.ElapsedMilliseconds
     $childResources = [ordered]@{
       cpuTimeMs = [Math]::Round($child.TotalProcessorTime.TotalMilliseconds, 3)
-      peakWorkingSetBytes = [long][Math]::Max($child.PeakWorkingSet64, $childInitialWorkingSet)
-      workingSetBytes = [long][Math]::Max($child.WorkingSet64, $childInitialWorkingSet)
+      peakWorkingSetBytes = [long][Math]::Max($peakWorkingSet, $childInitialWorkingSet)
+      workingSetBytes = [long][Math]::Max($workingSet, $childInitialWorkingSet)
     }
     if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {
-      while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) {
-        Start-Sleep -Milliseconds 100
+      if ($isDiagnostic -and $childTimedOut) {
+        Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
+      } else {
+        while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) { Start-Sleep -Milliseconds 100 }
       }
     }
     if ($TestReplaceOwnerBeforeCleanup) {
       [IO.File]::WriteAllText($ownerPath, '{"forged":true}', [Text.UTF8Encoding]::new($false))
     }
-    $exitCode = $child.ExitCode
+    $nativeExitCode = $child.ExitCode
+    $exitCode = if ($childTimedOut) { 124 } else { $nativeExitCode }
     if ($isHostVerifier -or $isControllerFixture) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
@@ -2228,7 +2347,7 @@ try {
           holder = [ordered]@{ owner = $owner.owner; pid = $owner.pid; processStartUtc = $owner.processStartUtc }
           slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
           command = [ordered]@{ executable = $command; arguments = @($arguments) }
-          start = $childStarted; end = $childEnded; exit = $exitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
+           start = $childStarted; end = $childEnded; exit = $exitCode; nativeExit = $nativeExitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
           resources = $childResources
         }
       } else {
@@ -2255,6 +2374,14 @@ try {
   # The nested owner stops before release: after this point no descendant can
   # obtain a signed continuation from this wrapper, and the private key dies here.
   Stop-NestedOwner
+  if ($diagnosticSourceStream) { $diagnosticSourceStream.Dispose(); $diagnosticSourceStream = $null }
+  if ($diagnosticJobHandle -ne [IntPtr]::Zero) {
+    [HeavyDiagnosticJob]::Close($diagnosticJobHandle)
+    $diagnosticJobHandle = [IntPtr]::Zero
+  }
+  if ($isDiagnostic -and $child -and -not $child.HasExited) {
+    try { $child.Kill($true); [void]$child.WaitForExit(2000) } catch {}
+  }
   if ($isNativeDb -and $child -and -not $child.HasExited) {
     $child.StandardInput.Close()
     $child.Kill(); [void]$child.WaitForExit(30000)
