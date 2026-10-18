@@ -491,6 +491,26 @@ Assert-Mutant 'checkout-identity-dated' { Test-CheckoutIdentity ($agentsRoot -re
 Assert-Mutant 'claude-line-reverted' { Test-CheckoutIdentity $agentsRoot ($claudeRoot -replace '\A[^\r\n]*', 'This directory is the chase-sets container, not the repo itself.') $bootstrapRoot }
 Assert-Mutant 'bootstrap-codex-junction-restored' { Test-CheckoutIdentity $agentsRoot $claudeRoot ($bootstrapRoot.Replace('@{ Path = Join-Path $Root ".agents"; Target = Join-Path $MainPath ".agents" }', '@{ Path = Join-Path $Root ".agents"; Target = Join-Path $MainPath ".agents" },' + "`r`n" + '  @{ Path = Join-Path $Root ".codex"; Target = Join-Path $MainPath ".codex" }')) }
 
+# --- controller-orchestrator ships in tags but is never installed by the product --
+# The controller thread's skill is tracked so releases review it. The product
+# install inventory is the exact list the product container receives.
+Import-Module (Join-Path $controller 'controller-install-lock.psm1') -Force
+$installInventory = @(Get-ControllerSkillInstallInventory)
+function Test-ControllerSkillPlacement([string]$Skill, [object[]]$Inventory) {
+  Assert-Enforced ($Skill -match '(?m)^name: controller-orchestrator\r?$') 'controller-orchestrator skill is tracked with its name'
+  $backlog = [regex]::Match($Skill, '(?ms)^## \d+\. Backlog\r?\n(.*?)(?=^## |\z)')
+  Assert-Enforced $backlog.Success 'controller-orchestrator has a Backlog section'
+  Assert-Enforced ((Compact-Text $backlog.Groups[1].Value).StartsWith('Plan controller issues with the planning skill: the same brief standard and the same pressure test.', [StringComparison]::Ordinal)) 'Backlog section opens with the planning rule'
+  Assert-Enforced ((Compact-Text $backlog.Groups[1].Value).Contains('Check each issue against Repository routing in `main/docs/contributing/backlog-model.md` before filing it.', [StringComparison]::Ordinal)) 'Backlog section applies repository routing'
+  $listed = @($Inventory | Where-Object { $_.source -like 'controller-orchestrator/*' -or $_.destination -like 'controller-orchestrator/*' })
+  Assert-Enforced ($listed.Count -eq 0) 'product install inventory excludes controller-orchestrator'
+}
+$controllerSkill = Read-Strict 'controller-skills/controller-orchestrator/SKILL.md'
+Test-ControllerSkillPlacement $controllerSkill $installInventory
+Assert-Mutant 'controller-skill-installed-by-product' { Test-ControllerSkillPlacement $controllerSkill ($installInventory + [pscustomobject]@{ source = 'controller-orchestrator/SKILL.md'; destination = 'controller-orchestrator/SKILL.md' }) }
+Assert-Mutant 'controller-backlog-planning-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Plan controller issues with the planning skill', 'Plan controller issues freely') $installInventory }
+Assert-Mutant 'controller-backlog-routing-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Check each issue against Repository routing', 'Check each issue') $installInventory }
+
 Write-Output 'PASS 9737 AC5 pace-raise-pin=PASS dispatch-duty-pin=PASS mutants=2 survivors=0'
 Write-Output "PASS platform-supervision boundaries=$($platformRules.Count) whitespace-control=PASS"
 Write-Output "PASS contract-enforcement files=$($hygieneFiles.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
