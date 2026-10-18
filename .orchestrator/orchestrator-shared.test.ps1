@@ -1,0 +1,57 @@
+# The cross-loop contract is stated once, in orchestrator-shared. Each section's
+# anchor sentence must be there and in neither loop skill; copying one back into
+# a loop skill must fail.
+$ErrorActionPreference = "Stop"
+$skills = Join-Path $PSScriptRoot "controller-skills"
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$script:assertions = 0
+$script:mutants = 0
+
+function Read-Skill([string]$Name) { $strictUtf8.GetString([IO.File]::ReadAllBytes((Join-Path $skills "$Name/SKILL.md"))) }
+function Compact-Text([string]$Text) { ($Text -replace "\s+", " ").Trim() }
+function Assert-Shared([bool]$Condition, [string]$Message) {
+  $script:assertions += 1
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+
+$anchors = [ordered]@{
+  'Two loops' = 'It never cuts batches, runs controller batteries or precursors, dispatches controller reviews, or holds product lanes for controller work.'
+  'Repository routing' = 'Follow Repository routing in `main/docs/contributing/backlog-model.md`; work for the other loop is filed on the other loop''s repository.'
+  'Releases' = 'Release tags are the only install authority: never install an untagged commit or by any other path'
+  'Defects' = 'The product loop files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.'
+}
+
+function Test-StatedOnce([string]$Shared, [string]$Milestone, [string]$Controller) {
+  foreach ($entry in $anchors.GetEnumerator()) {
+    $section = [regex]::Match($Shared, "(?ms)^## $([regex]::Escape($entry.Key))\r?\n(.*?)(?=^## |\z)")
+    Assert-Shared $section.Success "orchestrator-shared has section $($entry.Key)"
+    Assert-Shared ((Compact-Text $section.Groups[1].Value).Contains($entry.Value, [StringComparison]::Ordinal)) "orchestrator-shared $($entry.Key) states its anchor"
+    foreach ($loop in @(@('milestone-orchestrator', $Milestone), @('controller-orchestrator', $Controller))) {
+      Assert-Shared (-not (Compact-Text $loop[1]).Contains($entry.Value, [StringComparison]::Ordinal)) "$($loop[0]) restates orchestrator-shared $($entry.Key)"
+    }
+  }
+  $frontmatter = [regex]::Match($Shared, '(?s)\A---\r?\n(.*?)\r?\n---\r?\n')
+  Assert-Shared ($frontmatter.Success -and $frontmatter.Groups[1].Value -match '(?m)^name: orchestrator-shared\r?$') 'orchestrator-shared frontmatter names the skill'
+  Assert-Shared ($Shared -notmatch '#\d|\b\d{4}-\d{2}-\d{2}\b|\bv\d+\.\d+|\bgpt-|\bclaude-|\b[0-9a-f]{8}-[0-9a-f]{4}-') 'orchestrator-shared carries no issue numbers, dates, versions, model names or thread ids'
+}
+
+function Assert-SharedMutant([string]$Name, [scriptblock]$Probe) {
+  $script:mutants += 1
+  $failure = $null
+  try { & $Probe | Out-Null } catch { $failure = $_.Exception.Message }
+  if ($null -eq $failure) { throw "MUTANT SURVIVED: $Name" }
+  if (-not $failure.StartsWith("ASSERTION FAILED:", [StringComparison]::Ordinal)) { throw "MUTANT PROBE BROKEN: $($Name): $failure" }
+}
+
+$shared = Read-Skill 'orchestrator-shared'
+$milestone = Read-Skill 'milestone-orchestrator'
+$controller = Read-Skill 'controller-orchestrator'
+Test-StatedOnce $shared $milestone $controller
+foreach ($entry in $anchors.GetEnumerator()) {
+  $anchor = $entry.Value
+  Assert-SharedMutant "copy-back-milestone-$($entry.Key)" { Test-StatedOnce $shared ($milestone + "`r`n" + $anchor + "`r`n") $controller }
+  Assert-SharedMutant "copy-back-controller-$($entry.Key)" { Test-StatedOnce $shared $milestone ($controller + "`r`n" + $anchor + "`r`n") }
+  Assert-SharedMutant "shared-drops-$($entry.Key)" { Test-StatedOnce ([regex]::Replace($shared, ((@($anchor -split ' ') | ForEach-Object { [regex]::Escape($_) }) -join '\s+'), 'removed text.')) $milestone $controller }
+}
+Assert-SharedMutant 'shared-dated' { Test-StatedOnce ($shared + "`r`nUpdated 2026-10-18.`r`n") $milestone $controller }
+Write-Output "PASS orchestrator-shared stated-once sections=$($anchors.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
