@@ -25,6 +25,13 @@ param(
   [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite")][string]$Gate,
   [Parameter(ParameterSetName = "Gate")][ValidatePattern('^[a-z][a-z0-9_]*$')][string]$E2eSuite,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][ValidateSet("@chase-sets/ordering")][string]$WorkspaceTest,
+  # Host-declared standalone Node diagnostics are a closed name set. The host
+  # supplies the declaration's repository-relative script, source digest and
+  # finite wall-clock budget; all three are checked before slot acquisition.
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidateSet("worst13-no-fit")][string]$Diagnostic,
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][ValidateSet("reconciliation-pg16/v1", IgnoreCase = $false)][string]$NativeDbProfile,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][string]$NativeRequestPath,
   [Parameter(Mandatory)][string]$Worktree,
@@ -97,13 +104,14 @@ $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
 $isControllerFixture = $PSCmdlet.ParameterSetName -ceq "ControllerFixtureEquivalence"
 $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
+$isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
 $nativeRequest = $null
 $nativeReplyWritten = $false
 $nativeCleanupProof = $null
 if ($isWorkspaceTest) { $WorkspaceTest = "@chase-sets/ordering" }
 # This closed command shape selects production command resolution. Caller
 # authority is determined independently by the native census below.
-$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest")) -and -not $CommandPath
+$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest", "Diagnostic")) -and -not $CommandPath
 $admissionResultFull = $null
 $script:admissionPendingSequence = 0
 $admissionRoot = $null
@@ -316,6 +324,55 @@ function Assert-HostVerifierGitState {
   $status = Invoke-GitIdentityProbe @("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none") "clean state"
   if ($status) { throw "heavy-verifier: host verifier requires a clean exact-head worktree" }
 }
+$diagnosticScriptFull = $null
+$diagnosticDefinition = $null
+function Assert-DiagnosticDeclaration {
+  if (-not $isDiagnostic) { return }
+  $definitions = [ordered]@{
+    'worst13-no-fit' = [ordered]@{ kind = 'standalone-node'; extension = '.mjs' }
+  }
+  if (-not $definitions.Contains($Diagnostic)) {
+    throw "heavy-verifier: diagnostic name is not declared"
+  }
+  if ([double]::IsNaN($DiagnosticBudgetSeconds) -or [double]::IsInfinity($DiagnosticBudgetSeconds) -or
+      $DiagnosticBudgetSeconds -le 0 -or $DiagnosticBudgetSeconds -gt 86400) {
+    throw "heavy-verifier: diagnostic budget must be finite and greater than zero"
+  }
+  if ([string]::IsNullOrWhiteSpace($DiagnosticScriptPath) -or
+      [IO.Path]::IsPathFullyQualified($DiagnosticScriptPath) -or
+      $DiagnosticScriptPath.Replace('\', '/') -cnotmatch '^[A-Za-z0-9._/-]+\.mjs$' -or
+      @($DiagnosticScriptPath.Replace('\', '/').Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+    throw "heavy-verifier: diagnostic script must be a repository-relative standalone .mjs path"
+  }
+  $relative = $DiagnosticScriptPath.Replace('/', '\')
+  $candidate = [IO.Path]::GetFullPath((Join-Path $worktreeFull $relative)).TrimEnd('\', '/')
+  if (-not $candidate.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "heavy-verifier: diagnostic script escaped the supplied worktree"
+  }
+  $current = $candidate
+  while ($current -and (Test-Path -LiteralPath $current)) {
+    $item = Get-Item -LiteralPath $current -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::None) {
+      throw "heavy-verifier: diagnostic script path contains a reparse point"
+    }
+    $parent = Split-Path -Parent $current
+    if ($parent -eq $current) { break }
+    $current = $parent
+  }
+  if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+    throw "heavy-verifier: declared diagnostic script was not found"
+  }
+  $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($candidate))).ToLowerInvariant()
+  if ($actual -cne $DiagnosticSha256.ToLowerInvariant()) {
+    throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
+  }
+  $script:diagnosticDefinition = [ordered]@{
+    name = $Diagnostic; kind = $definitions[$Diagnostic].kind; scriptPath = $DiagnosticScriptPath.Replace('\', '/')
+    sha256 = $actual; budgetSeconds = $DiagnosticBudgetSeconds
+  }
+  $script:diagnosticScriptFull = $candidate
+}
+Assert-DiagnosticDeclaration
 # Read every native launch before interpreting roles or command shape. A failed
 # lookup is never evidence that the caller is a standalone host.
 function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$OldestLaunch, [int[]]$CandidatePids, [object[]]$DispatchRecords = @()) {
@@ -1041,6 +1098,8 @@ $command = if ($isAttachedAdmission) {
   'C:\Windows\System32\wsl.exe'
 } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) {
   (Get-Process -Id $PID -ErrorAction Stop).Path
+} elseif ($isDiagnostic) {
+  $hostNode
 } elseif ($CommandPath) {
   [IO.Path]::GetFullPath($CommandPath)
 } else {
@@ -1094,12 +1153,14 @@ $arguments = if ($isAttachedAdmission) {
   @("-NoProfile", "-NonInteractive", "-File", $fixtureCheckPath, "-Phase", "fixture", "-EvidenceDirectory", $fixtureEvidence)
 } elseif ($CommandPath) {
   @($CommandArgumentList)
+} elseif ($isDiagnostic) {
+  @($diagnosticScriptFull)
 } else {
   if ($isWorkspaceTest) { @($pnpmScript, "--filter", $WorkspaceTest, "run", "test", "--maxWorkers=1", "--no-file-parallelism") }
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
   else { @($pnpmScript, "run", $Gate) }
 }
-$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceTest) { "test" } else { $Gate }
+$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
 $identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"
 $commandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityInput))).ToLowerInvariant()
 $lockId = [guid]::NewGuid().ToString("N")
@@ -1281,7 +1342,7 @@ function Test-OwnerShape($Record) {
   if ("$($Record.lockId)" -cnotmatch "^[a-f0-9]{32}$" -or
       "$($Record.commandIdentity)" -cnotmatch "^[a-f0-9]{64}$" -or
       "$($Record.lane)" -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" -or
-      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "repository-gate", "playwright", "vitest-full", "script-battery") -or
+      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "repository-gate", "playwright", "vitest-full", "script-battery", "diagnostic") -or
       -not (Test-PositivePid $Record.pid) -or
       -not (Test-UtcIdentity ([string]$Record.processStartUtc)) -or
       -not (Test-UtcIdentity ([string]$Record.startedUtc))) {
@@ -1484,6 +1545,29 @@ function Complete-RefusedAttachedAdmission {
     }
     Start-Sleep -Milliseconds 100
   }
+}
+function Assert-LaneAdmissionReceipt {
+  if ($env:CHASE_SETS_LANE_MODE -ne '1' -or [string]::IsNullOrWhiteSpace($env:CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST)) { return }
+  $receiptPath = Join-Path $worktreeFull ".orchestrator/artifacts/lane-heavy-admission-$($owner.lockId).json"
+  if (-not (Test-SafeFile $receiptPath)) {
+    throw "heavy-verifier: lane-mode admission receipt is missing; host binding refused"
+  }
+  try { $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch {
+    throw "heavy-verifier: lane-mode admission receipt is unreadable; host binding refused"
+  }
+  if ($receipt.schema -cne 'lane-heavy-admission/v1' -or
+      $receipt.holder.owner -cne $owner.owner -or [int]$receipt.holder.pid -ne [int]$owner.pid -or
+      $receipt.slot.lockId -cne $owner.lockId -or $receipt.slot.name -cne $lockDirectoryName -or
+      [IO.Path]::GetFullPath([string]$receipt.cwd) -cne $worktreeFull -or
+      [string]$receipt.head -cne [string]$acquiredGitIdentity.Head -or
+      $receipt.command.executable -cne $command -or
+      (@($receipt.command.arguments) -join "`n") -cne (@($arguments) -join "`n") -or
+      -not (Test-UtcIdentity ([string]$receipt.start)) -or -not (Test-UtcIdentity ([string]$receipt.end)) -or
+      [DateTimeOffset]::Parse([string]$receipt.end).Ticks -lt [DateTimeOffset]::Parse([string]$receipt.start).Ticks -or
+      ($receipt.exit -isnot [int] -and $receipt.exit -isnot [long])) {
+    throw "heavy-verifier: lane-mode admission receipt did not bind the admitted command; host binding refused"
+  }
+  return $receipt
 }
 function Write-OwnerRecord($Record, [switch]$CreateNew) {
   $raw = if ($Record.schemaVersion -eq 6) { $Record | ConvertTo-Json -Compress -Depth 16 } else { $Record | ConvertTo-Json -Compress }
@@ -1764,7 +1848,7 @@ function Invoke-NativeLaunch {
 # per-child PowerShell host probe. Controller batteries and precursors keep
 # their own continuation on the controller slot and never publish a product
 # descriptor. Non-Windows hosts are unchanged.
-$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isNativeDb
+$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isNativeDb -and -not $isDiagnostic
 $nestedOwner = $null
 $nestedBinding = $null
 $script:nestedTransport = $null
@@ -1807,6 +1891,7 @@ $nestedKindClosure = [ordered]@{
   "vitest-full" = @("vitest-full", "script-battery")
   "playwright" = @("playwright", "script-battery", "build")
   "test:e2e:suite" = @("playwright", "script-battery", "build")
+  "diagnostic" = @("diagnostic")
 }
 function Get-NestedAllowedKinds([string]$RootGate) {
   if (-not $nestedKindClosure.Contains($RootGate)) { throw "heavy-verifier: no frozen nested kind closure for gate $RootGate" }
@@ -1949,6 +2034,11 @@ try {
 $exitCode = 1
 $releaseMismatch = $false
 $child = $null
+$childStarted = $null
+$childEnded = $null
+$childElapsedMs = $null
+$childTimedOut = $false
+$childResources = $null
 try {
   try {
     # CreateNew prevents a forged pre-existing record from being overwritten.
@@ -1989,7 +2079,10 @@ try {
         continue
       }
       $possibleDescendant = Test-PossibleOwnedChild $owner -GuardedRootOnly
-      if ($possibleDescendant -eq $false) {$attachedDeadTreeProven=$true;break}
+      if ($possibleDescendant -eq $false) {
+        Assert-LaneAdmissionReceipt
+        $attachedDeadTreeProven=$true;break
+      }
       Start-Sleep -Milliseconds 100
     }
     $exitCode = 0
@@ -2044,6 +2137,9 @@ try {
         schemaVersion = 1; guardPath = $PSCommandPath; powershellPath = $process.Path
         containerRoot = $container; worktree = $worktreeFull; lane = $Lane
         retainAdmission = $true
+        laneMode = ($env:CHASE_SETS_LANE_MODE -eq '1')
+        workspaceTest = $(if ($isWorkspaceTest) { $WorkspaceTest } else { $null })
+        expectedCommand = [ordered]@{ executable = $command; arguments = @($arguments) }
         originalNodeOptionsPresent = $true; originalNodeOptions = $nodeOptions
         originalScriptShellPresent = $start.Environment.ContainsKey('npm_config_script_shell')
         originalScriptShell = $start.Environment['npm_config_script_shell']
@@ -2054,6 +2150,8 @@ try {
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress)))
       $start.Environment["npm_config_script_shell"] = $hostNode
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
+      if ($isWorkspaceTest) { $start.Environment["CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST"] = $WorkspaceTest }
+      else { [void]$start.Environment.Remove("CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST") }
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
@@ -2062,6 +2160,8 @@ try {
       Start-Sleep -Milliseconds $TestDelayChildPublicationMilliseconds
     }
     $childStarted = $child.StartTime.ToUniversalTime().ToString("o")
+    $childInitialWorkingSet = [long]$child.WorkingSet64
+    $childStopwatch = [Diagnostics.Stopwatch]::StartNew()
     $startedOwner = [ordered]@{}
     foreach ($entry in $owner.GetEnumerator()) { $startedOwner[$entry.Key] = $entry.Value }
     $startedOwner.state = "started"
@@ -2074,7 +2174,24 @@ try {
     if ($nestedOwnerEligible) {
       Start-NestedOwner $ownedRaw $child.Id $childStarted "started" $nestedBinding
     }
-    $child.WaitForExit()
+    if ($isDiagnostic) {
+      $budgetMilliseconds = [int][Math]::Ceiling($DiagnosticBudgetSeconds * 1000)
+      if (-not $child.WaitForExit($budgetMilliseconds)) {
+        $childTimedOut = $true
+        try { $child.Kill($true) } catch { try { $child.Kill() } catch {} }
+        [void]$child.WaitForExit(30000)
+      }
+    } else {
+      $child.WaitForExit()
+    }
+    $childStopwatch.Stop()
+    $childEnded = [DateTime]::UtcNow.ToString("o")
+    $childElapsedMs = [long]$childStopwatch.ElapsedMilliseconds
+    $childResources = [ordered]@{
+      cpuTimeMs = [Math]::Round($child.TotalProcessorTime.TotalMilliseconds, 3)
+      peakWorkingSetBytes = [long][Math]::Max($child.PeakWorkingSet64, $childInitialWorkingSet)
+      workingSetBytes = [long][Math]::Max($child.WorkingSet64, $childInitialWorkingSet)
+    }
     if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {
       while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) {
         Start-Sleep -Milliseconds 100
@@ -2095,15 +2212,28 @@ try {
       if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
         throw "heavy-verifier: receipt directory is unsafe"
       }
-      $receiptPath = Join-Path $receiptRoot "host-heavy-verifier-$lockId.json"
-      $receipt = [ordered]@{
-        schema = "host-heavy-verifier/v1"; authority = "host-verifier"
-        worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
-        identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
-        workspace = $(if ($isWorkspaceTest) { $WorkspaceTest } else { $null })
-        commandIdentity = $commandIdentity; executable = $command; arguments = @($arguments)
-        lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
-        root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
+      $receiptPath = if ($isDiagnostic) { Join-Path $receiptRoot "host-heavy-diagnostic-$lockId.json" } else { Join-Path $receiptRoot "host-heavy-verifier-$lockId.json" }
+      $receipt = if ($isDiagnostic) {
+        [ordered]@{
+          schema = "host-heavy-diagnostic/v1"; authority = "host-verifier"
+          diagnostic = $diagnosticDefinition; worktree = $worktreeFull; cwd = $worktreeFull
+          head = $acquiredGitIdentity.Head; lane = $Lane; identityMode = $identityMode; branch = $owner.branch
+          holder = [ordered]@{ owner = $owner.owner; pid = $owner.pid; processStartUtc = $owner.processStartUtc }
+          slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
+          command = [ordered]@{ executable = $command; arguments = @($arguments) }
+          start = $childStarted; end = $childEnded; exit = $exitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
+          resources = $childResources
+        }
+      } else {
+        [ordered]@{
+          schema = "host-heavy-verifier/v1"; authority = "host-verifier"
+          worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
+          identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
+          workspace = $(if ($isWorkspaceTest) { $WorkspaceTest } else { $null })
+          commandIdentity = $commandIdentity; executable = $command; arguments = @($arguments)
+          lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
+          root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
+        }
       }
       $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
       try { $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 5)); $stream.Write($bytes); $stream.Flush($true) }

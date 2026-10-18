@@ -1217,6 +1217,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   $modes = @{
     Gate=@{Gate='verify:static'}
     WorkspaceTest=@{WorkspaceTest='@chase-sets/ordering'}
+    Diagnostic=@{Diagnostic='worst13-no-fit';DiagnosticScriptPath='.orchestrator/artifacts/diagnostic.mjs';DiagnosticSha256=('a'*64);DiagnosticBudgetSeconds=1}
     NativeDb=@{NativeDbProfile='reconciliation-pg16/v1';NativeRequestPath=(Join-Path $root 'absent-request.json')}
     ControllerBattery=@{ControllerBattery=$true}
     ControllerPrecursor=@{ControllerPrecursor='fail-closed-guard-evidence';ControllerPrecursorArtifactPath='.orchestrator/artifacts/denied.json';ControllerPrecursorScenario='ReceiptClaims'}

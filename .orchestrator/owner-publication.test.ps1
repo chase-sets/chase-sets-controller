@@ -276,7 +276,7 @@ function Invoke-ReaderInventory {
     'install-controller-skills.test.ps1'=@(191,208,213,233)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(304,307,429,499,903,947,959,973,1008,1012,1017,1029,1048,1078,1082,1093,1118,1129,1200,1474,1479,1498,1504,1635,1715,1725,1731,1738,1739,1750,1753,1763,1774,1796,1801,1813,1818,1835,1849,1950,1955,1974,1980,2207,2214,2226,2229,2239,2250,2272,2277,2289,2294,2311,2325)
+    'invoke-heavy-verifier.test.ps1'=@(304,307,429,499,903,947,959,973,1008,1012,1017,1029,1048,1078,1082,1093,1118,1129,1200,1474,1479,1498,1504,1635,1636,1715,1716,1725,1726,1731,1738,1739,1740,1750,1753,1763,1774,1796,1801,1813,1818,1835,1849,1950,1951,1955,1956,1974,1975,1980,1981,2207,2208,2214,2215,2226,2227,2229,2230,2239,2240,2250,2251,2272,2273,2277,2278,2289,2290,2294,2295,2311,2312,2325,2326)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(509)
     'interrupted-integration-test-support.ps1'=@(878,889)
@@ -322,8 +322,9 @@ function Invoke-ReaderInventory {
   # tied to the production operation and expression rather than treating them
   # as generic fixture exceptions.
   $productionSites=@{
-    'invoke-heavy-verifier.ps1:1492'=@{site='invoke-heavy-verifier.ps1:1492';api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
-    'invoke-heavy-verifier.ps1:1543'=@{site='invoke-heavy-verifier.ps1:1543';api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
+    'heavy-admission-preload.cjs:271'=@{site='heavy-admission-preload.cjs:271';api='lane receipt owner read';shareBefore='new lane receipt owner read';shareAfter='unchanged';decoder='JSON.parse';callers='readLaneOwner';owner='lane receipt binding, not slot authority'}
+    'invoke-heavy-verifier.ps1:1576'=@{site='invoke-heavy-verifier.ps1:1576';api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
+    'invoke-heavy-verifier.ps1:1627'=@{site='invoke-heavy-verifier.ps1:1627';api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
   }
   foreach($relative in @(& git -C $root ls-files '.orchestrator/*.ps1' '.orchestrator/*.psm1' '.orchestrator/*.cs' '.orchestrator/*.cjs' '.orchestrator/*.py' '.orchestrator/*.mjs' '.orchestrator/*.js')) {
     $name=[IO.Path]::GetFileName($relative); $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
@@ -331,10 +332,10 @@ function Invoke-ReaderInventory {
       $text=$lines[$index]
       if($text-match$readPattern -and $text-match$pathPattern) {
         $key="${name}:$($index+1)"
-        if($key-ceq'invoke-heavy-verifier.ps1:1337') {
+        if($key-ceq'invoke-heavy-verifier.ps1:1576') {
           $table.Add(@{site=$key;api='CreateNew / Write';shareBefore=0;shareAfter=0;decoder='none';callers='initial acquisition';owner='writer, not a snapshot reader'}); continue
         }
-        if($key-ceq'invoke-heavy-verifier.ps1:1388') {
+        if($key-ceq'invoke-heavy-verifier.ps1:1627') {
           $table.Add(@{site=$key;api='claim File.Open';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}); continue
         }
         if($productionSites.ContainsKey($key)) { $table.Add($productionSites[$key]); continue }

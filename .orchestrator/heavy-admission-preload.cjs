@@ -262,6 +262,59 @@ function refuse(message) {
   process.exit(73);
 }
 
+function readLaneOwner(config, slot) {
+  if (!config?.laneMode || config.workspaceTest === null || config.workspaceTest === undefined) return null;
+  const ownerPath = path.join(config.containerRoot, ".orchestrator", "verify-lock.d", "owner.json");
+  try {
+    const stat = fs.lstatSync(ownerPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    return owner.lockId === slot ? owner : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLaneReceipt(config, kind, slot, startedUtc, startedAt, exitCode, resources) {
+  if (!config?.laneMode || config.workspaceTest === null || config.workspaceTest === undefined) return;
+  const owner = readLaneOwner(config, slot);
+  if (!owner) throw new Error("lane-mode admission owner was unavailable for receipt binding");
+  const receiptRoot = path.join(config.worktree, ".orchestrator", "artifacts");
+  fs.mkdirSync(receiptRoot, { recursive: true });
+  const rootStat = fs.lstatSync(receiptRoot);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("lane-mode receipt root was unsafe");
+  const endedAt = Date.now();
+  const endedUtc = new Date(endedAt).toISOString();
+  const expected = config.expectedCommand;
+  const command = expected && typeof expected.executable === "string" && Array.isArray(expected.arguments)
+    ? { executable: expected.executable, arguments: [...expected.arguments] }
+    : { executable: process.execPath, arguments: process.argv.slice(1) };
+  const receipt = {
+    schema: "lane-heavy-admission/v1",
+    workspaceTest: config.workspaceTest,
+    kind,
+    holder: { owner: owner.owner, pid: owner.pid, processStartUtc: owner.processStartUtc },
+    slot: { name: "verify-lock.d", lockId: owner.lockId },
+    command,
+    cwd: process.cwd(),
+    head: typeof config.immutableHead === "string" ? config.immutableHead : config.head,
+    start: startedUtc,
+    end: endedUtc,
+    exit: typeof exitCode === "number" ? exitCode : 0,
+    elapsedMs: Math.max(0, endedAt - startedAt),
+    resources,
+  };
+  const receiptPath = path.join(receiptRoot, `lane-heavy-admission-${owner.lockId}.json`);
+  const temporaryPath = `${receiptPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(receipt), { encoding: "utf8", flag: "wx" });
+  try {
+    fs.renameSync(temporaryPath, receiptPath);
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch {}
+  }
+  process.stderr.write(`heavy-admission: receipt=${receiptPath} exit=${receipt.exit}\n`);
+}
+
 function runAdmission(kind, config) {
   acquireHeavySlot(kind, { configuration: config });
   restoreOriginalNodeEnvironment(config);
@@ -353,7 +406,27 @@ function main() {
   } catch {
     refuse("heavy-command classification failed; command body was not executed");
   }
-  if (kind) runAdmission(kind, config);
+  if (kind) {
+    const admissionStartedAt = Date.now();
+    runAdmission(kind, config);
+    if (config.laneMode === true && config.workspaceTest !== null && config.workspaceTest !== undefined) {
+      const owner = readLaneOwner(config, process.env.CHASE_SETS_HEAVY_SLOT_ID);
+      const startedUtc = owner?.childProcessStartUtc ?? new Date(admissionStartedAt).toISOString();
+      process.on("exit", (exitCode) => {
+        try {
+          const usage = process.resourceUsage();
+          writeLaneReceipt(config, kind, process.env.CHASE_SETS_HEAVY_SLOT_ID, startedUtc, admissionStartedAt,
+            exitCode, {
+              userCpuMicroseconds: usage.userCPUTime,
+              systemCpuMicroseconds: usage.systemCPUTime,
+              maxRssBytes: usage.maxRSS * 1024,
+            });
+        } catch (error) {
+          process.stderr.write(`heavy-admission: lane-mode receipt failed: ${error instanceof Error ? error.message : "unknown error"}\n`);
+        }
+      });
+    }
+  }
 }
 
 module.exports = {
@@ -363,6 +436,8 @@ module.exports = {
   classifyPnpm,
   classifyScriptText,
   classifyVitest,
+  readLaneOwner,
+  writeLaneReceipt,
 };
 
 main();
