@@ -3,7 +3,7 @@ name: controller-orchestrator
 description: Run the chase-sets controller loop - improve and release the orchestration controller (the .orchestrator runtime, the milestone-orchestrator and model-routing skills), own the orchestration-platform migration, and work routing, velocity and capacity, without taking capacity the product loop needs. Use in the controller dev container for controller code, controller releases, the controller issue backlog, or platform supervision.
 ---
 
-# Controller Orchestrator (v1.0, 2026-10-18)
+# Controller Orchestrator (v1.1, 2026-10-18)
 
 Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 

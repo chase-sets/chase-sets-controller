@@ -3,7 +3,7 @@ name: milestone-orchestrator
 description: "Product loop only (Chase Sets delivery from the product container): Run the chase-sets delivery loop — complete all committed, non-parked outcomes by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, sending Todd only product priority or scope questions and packaged operator actions. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline."
 ---
 
-# Milestone Orchestrator (v2.116, 2026-10-18)
+# Milestone Orchestrator (v2.117, 2026-10-18)
 
 Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 

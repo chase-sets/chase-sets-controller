@@ -76,7 +76,7 @@ function Test-ReleaseIdentity([string]$Milestone, [string]$Routing) {
   $routingHeaders = [regex]::Matches($Routing, "(?m)^# Model Routing \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)$")
   return (
     $milestoneHeaders.Count -eq 1 -and
-    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.116, 2026-10-18)" -and
+    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.117, 2026-10-18)" -and
     $routingHeaders.Count -eq 1 -and
     $routingHeaders[0].Value -ceq "# Model Routing (v4.26, 2026-10-16)" -and
     -not $Routing.Contains("v4.5", [StringComparison]::Ordinal) -and
@@ -430,7 +430,7 @@ Add-MutantClaim "quality-verdict-not-retro-input" $true (Test-PreservedSections 
 $sectionTitleMutant = $milestone.Replace("## 8. Landing and deploy", "## 8. Landing, deploy, and manual attempts", [StringComparison]::Ordinal)
 Add-MutantClaim "section-title-moved" $true (Test-PreservedSections $sectionTitleMutant $baseMilestone) "section titles preserved in order"
 
-Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.116/v4.26 release identity is invalid"
+Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.117/v4.26 release identity is invalid"
 # v2.58: no live train authority. The only permitted mentions of a release train are the
 # section-7 retirement sentence and the v2.58 header retirement list.
 function Test-NoTrainAuthority([string]$Milestone) {
@@ -443,9 +443,9 @@ function Test-NoTrainAuthority([string]$Milestone) {
 Assert-6997 (Test-NoTrainAuthority $milestone) "live skill retains release-train authority outside its retirement text"
 $trainMutant = $milestone.Replace("Controller releases are not part of this loop.", "Controller releases ship on the next weekly train.", [StringComparison]::Ordinal)
 Add-MutantClaim "train-authority-reintroduced" (Test-NoTrainAuthority $milestone) (Test-NoTrainAuthority $trainMutant) "v2.58 no live train authority"
-$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.116, 2026-10-18)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
+$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
 Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing) "milestone release header"
-$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.116, 2026-10-18)", "# Milestone Orchestrator (v2.115, 2026-10-16)")
+$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.116, 2026-10-18)")
 Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing) "milestone release header"
 
 # v2.116: controller release proof, including the #9373 CI-sourced reuse rule,
