@@ -144,6 +144,13 @@ setTimeout(() => {}, 10000);
   [IO.File]::WriteAllText((Join-Path $lockRoot 'owner.json'), ($owner | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
   $node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
   $command = [ordered]@{ executable=$node; arguments=@('fixture.mjs', 'run') }
+  $laneWriterScript = Join-Path $artifactRoot 'lane-writer.cjs'
+  Set-Content -LiteralPath $laneWriterScript -Value @'
+const p = require(process.env.LANE_RECEIPT_PRELOAD);
+p.writeLaneReceipt(JSON.parse(process.env.LANE_RECEIPT_CONFIG), "script-battery", process.env.LANE_RECEIPT_SLOT,
+  process.env.LANE_RECEIPT_START, Date.now() - 100, 0,
+  { userCpuMicroseconds: 1, systemCpuMicroseconds: 2, maxRssBytes: 3 });
+'@
   $configuration = [ordered]@{ laneMode=$true; workspaceTest='@chase-sets/ordering'; containerRoot=$container; worktree=$worktree; immutableHead=('a' * 40); expectedCommand=$command }
   $startUtc = '2026-10-18T00:00:00.0000000Z'
   $env:LANE_RECEIPT_CONFIG = $configuration | ConvertTo-Json -Compress -Depth 8
@@ -151,11 +158,13 @@ setTimeout(() => {}, 10000);
   $env:LANE_RECEIPT_SLOT = $slot
   $env:LANE_RECEIPT_PRELOAD = $preload
   Push-Location $worktree
-  try { $laneWriterOutput = @(& node -e 'const p=require(process.env.LANE_RECEIPT_PRELOAD); p.writeLaneReceipt(JSON.parse(process.env.LANE_RECEIPT_CONFIG), "script-battery", process.env.LANE_RECEIPT_SLOT, process.env.LANE_RECEIPT_START, Date.now()-100, 0, {userCpuMicroseconds:1,systemCpuMicroseconds:2,maxRssBytes:3});' 2>&1) }
+  try { $laneWriterOutput = @(& node $laneWriterScript 2>&1) }
   finally { Pop-Location }
   Remove-Item Env:LANE_RECEIPT_CONFIG,Env:LANE_RECEIPT_START,Env:LANE_RECEIPT_SLOT,Env:LANE_RECEIPT_PRELOAD
-  $laneReceiptPath = Join-Path $artifactRoot "lane-heavy-admission-$slot.json"
-  Assert-True (Test-Path $laneReceiptPath) "preload retains a durable lane-mode receipt ($($laneWriterOutput -join ' '))"
+  $laneReceipt = @(Get-ChildItem -LiteralPath $artifactRoot -Filter "lane-heavy-admission-$slot-*.json" -File)
+  Assert-True ($laneReceipt.Count -eq 1) "preload retains one per-process lane-mode receipt ($($laneWriterOutput -join ' '))"
+  $laneReceiptPath = $laneReceipt[0].FullName
+  $laneRecord = Get-Content -LiteralPath $laneReceiptPath -Raw | ConvertFrom-Json -DateKind String
 
   $sourceTokens = $null; $sourceErrors = $null
   $ast = [Management.Automation.Language.Parser]::ParseFile($guard, [ref]$sourceTokens, [ref]$sourceErrors)
@@ -167,17 +176,37 @@ setTimeout(() => {}, 10000);
   $env:CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST = '@chase-sets/ordering'
   $worktreeFull = $worktree; $lockDirectoryName = 'verify-lock.d'; $command = $node; $arguments = @('fixture.mjs', 'run')
   $acquiredGitIdentity = [pscustomobject]@{ Head=('a' * 40) }
-  $owner = [pscustomobject]@{ owner='fixture@host'; pid=1234; lockId=$slot }
+  $owner = [pscustomobject]@{ owner='fixture@host'; pid=1234; childPid=$laneRecord.writer.pid; lockId=$slot }
   try { Assert-LaneAdmissionReceipt | Out-Null } catch {
     $debugReceipt = Get-Content -LiteralPath $laneReceiptPath -Raw | ConvertFrom-Json -DateKind String
-    throw "positive lane receipt binding failed: $($_.Exception.Message) checks=holder:$($debugReceipt.holder.owner -ceq $owner.owner),pid:$([int]$debugReceipt.holder.pid -eq [int]$owner.pid),slot:$($debugReceipt.slot.lockId -ceq $owner.lockId),name:$($debugReceipt.slot.name -ceq $lockDirectoryName),cwd:$([IO.Path]::GetFullPath([string]$debugReceipt.cwd) -ceq $worktreeFull),head:$([string]$debugReceipt.head -ceq [string]$acquiredGitIdentity.Head),exe:$($debugReceipt.command.executable -ceq $command),args:$((@($debugReceipt.command.arguments) -join "`n") -ceq (@($arguments) -join "`n")),start:$(Test-UtcIdentity ([string]$debugReceipt.start)),end:$(Test-UtcIdentity ([string]$debugReceipt.end)),exit:$($debugReceipt.exit.GetType().FullName) raw=$([IO.File]::ReadAllText($laneReceiptPath))"
+    throw "positive lane receipt binding failed: $($_.Exception.Message) checks=holder:$($debugReceipt.holder.owner -ceq $owner.owner),pid:$([int]$debugReceipt.holder.pid -eq [int]$owner.pid),writer:$([int]$debugReceipt.writer.pid -eq [int]$owner.childPid),slot:$($debugReceipt.slot.lockId -ceq $owner.lockId),name:$($debugReceipt.slot.name -ceq $lockDirectoryName),cwd:$([IO.Path]::GetFullPath([string]$debugReceipt.cwd) -ceq $worktreeFull),head:$([string]$debugReceipt.head -ceq [string]$acquiredGitIdentity.Head),exe:$($debugReceipt.admittedCommand.executable -ceq $command),args:$((@($debugReceipt.admittedCommand.arguments) -join "`n") -ceq (@($arguments) -join "`n")),observed:$(-not [string]::IsNullOrWhiteSpace([string]$debugReceipt.observedCommand.executable)),start:$(Test-UtcIdentity ([string]$debugReceipt.start)),end:$(Test-UtcIdentity ([string]$debugReceipt.end)),exit:$($debugReceipt.exit.GetType().FullName) raw=$([IO.File]::ReadAllText($laneReceiptPath))"
+  }
+  $env:LANE_RECEIPT_CONFIG = $configuration | ConvertTo-Json -Compress -Depth 8
+  $env:LANE_RECEIPT_START = $startUtc
+  $env:LANE_RECEIPT_SLOT = $slot
+  $env:LANE_RECEIPT_PRELOAD = $preload
+  Push-Location $worktree
+  try { $secondLaneWriterOutput = @(& node $laneWriterScript 2>&1) }
+  finally { Pop-Location }
+  Remove-Item Env:LANE_RECEIPT_CONFIG,Env:LANE_RECEIPT_START,Env:LANE_RECEIPT_SLOT,Env:LANE_RECEIPT_PRELOAD
+  $allLaneReceipts = @(Get-ChildItem -LiteralPath $artifactRoot -Filter "lane-heavy-admission-$slot-*.json" -File)
+  Assert-True ($allLaneReceipts.Count -eq 2) "per-process lane receipts retain both writers ($($secondLaneWriterOutput -join ' '))"
+  foreach ($mutant in @('admitted-command', 'observed-command')) {
+    $mutantRecord = Get-Content -LiteralPath $laneReceiptPath -Raw | ConvertFrom-Json -DateKind String
+    if ($mutant -ceq 'admitted-command') { $mutantRecord.admittedCommand.arguments = @('wrong-command') }
+    else { $mutantRecord.PSObject.Properties.Remove('observedCommand') }
+    [IO.File]::WriteAllText($laneReceiptPath, ($mutantRecord | ConvertTo-Json -Compress -Depth 8), [Text.UTF8Encoding]::new($false))
+    $refused = $false
+    try { Assert-LaneAdmissionReceipt | Out-Null } catch { $refused = $true }
+    Assert-True $refused "$mutant lane receipt mutant is refused"
+    [IO.File]::WriteAllText($laneReceiptPath, ($laneRecord | ConvertTo-Json -Compress -Depth 8), [Text.UTF8Encoding]::new($false))
   }
   Remove-Item -LiteralPath $laneReceiptPath -Force
   $missingReceiptRefused = $false
   try { Assert-LaneAdmissionReceipt | Out-Null } catch { $missingReceiptRefused = $_.Exception.Message -match 'receipt is missing.*binding refused' }
   Assert-True $missingReceiptRefused 'missing receipt fails lane binding'
   Remove-Item Env:CHASE_SETS_LANE_MODE,Env:CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST
-  Write-Output 'PASS lane preload receipt holder=1 slot=1 command=1 cwd=1 head=1 missing-receipt-refused=1'
+  Write-Output 'PASS lane preload receipt holder=1 slot=1 admitted-command=1 observed-command=1 writer=1 cwd=1 head=1 per-process=2 mutants=2 missing-receipt-refused=1'
 } finally {
   Remove-Item Env:CHASE_SETS_LANE_MODE,Env:LANE_RECEIPT_CONFIG,Env:LANE_RECEIPT_START,Env:LANE_RECEIPT_SLOT,Env:LANE_RECEIPT_PRELOAD -ErrorAction SilentlyContinue
   if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }

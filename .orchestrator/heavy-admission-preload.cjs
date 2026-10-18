@@ -286,16 +286,19 @@ function writeLaneReceipt(config, kind, slot, startedUtc, startedAt, exitCode, r
   const endedAt = Date.now();
   const endedUtc = new Date(endedAt).toISOString();
   const expected = config.expectedCommand;
-  const command = expected && typeof expected.executable === "string" && Array.isArray(expected.arguments)
+  const admittedCommand = expected && typeof expected.executable === "string" && Array.isArray(expected.arguments)
     ? { executable: expected.executable, arguments: [...expected.arguments] }
     : { executable: process.execPath, arguments: process.argv.slice(1) };
+  const observedCommand = { executable: process.execPath, arguments: process.argv.slice(1) };
   const receipt = {
     schema: "lane-heavy-admission/v1",
     workspaceTest: config.workspaceTest,
     kind,
     holder: { owner: owner.owner, pid: owner.pid, processStartUtc: owner.processStartUtc },
+    writer: { pid: process.pid },
     slot: { name: "verify-lock.d", lockId: owner.lockId },
-    command,
+    admittedCommand,
+    observedCommand,
     cwd: process.cwd(),
     head: typeof config.immutableHead === "string" ? config.immutableHead : config.head,
     start: startedUtc,
@@ -304,7 +307,7 @@ function writeLaneReceipt(config, kind, slot, startedUtc, startedAt, exitCode, r
     elapsedMs: Math.max(0, endedAt - startedAt),
     resources,
   };
-  const receiptPath = path.join(receiptRoot, `lane-heavy-admission-${owner.lockId}.json`);
+  const receiptPath = path.join(receiptRoot, `lane-heavy-admission-${owner.lockId}-${process.pid}.json`);
   const temporaryPath = `${receiptPath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(temporaryPath, JSON.stringify(receipt), { encoding: "utf8", flag: "wx" });
   try {

@@ -1548,20 +1548,27 @@ function Complete-RefusedAttachedAdmission {
 }
 function Assert-LaneAdmissionReceipt {
   if ($env:CHASE_SETS_LANE_MODE -ne '1' -or [string]::IsNullOrWhiteSpace($env:CHASE_SETS_HEAVY_ADMISSION_WORKSPACE_TEST)) { return }
-  $receiptPath = Join-Path $worktreeFull ".orchestrator/artifacts/lane-heavy-admission-$($owner.lockId).json"
+  $receiptPath = Join-Path $worktreeFull ".orchestrator/artifacts/lane-heavy-admission-$($owner.lockId)-$($owner.childPid).json"
   if (-not (Test-SafeFile $receiptPath)) {
     throw "heavy-verifier: lane-mode admission receipt is missing; host binding refused"
   }
   try { $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch {
     throw "heavy-verifier: lane-mode admission receipt is unreadable; host binding refused"
   }
+  $allowedKinds = @('script-battery', 'vitest-full')
+  $observedArguments = @($receipt.observedCommand.arguments)
   if ($receipt.schema -cne 'lane-heavy-admission/v1' -or
+      $receipt.kind -cnotin $allowedKinds -or
       $receipt.holder.owner -cne $owner.owner -or [int]$receipt.holder.pid -ne [int]$owner.pid -or
+      [int]$receipt.writer.pid -ne [int]$owner.childPid -or
       $receipt.slot.lockId -cne $owner.lockId -or $receipt.slot.name -cne $lockDirectoryName -or
       [IO.Path]::GetFullPath([string]$receipt.cwd) -cne $worktreeFull -or
       [string]$receipt.head -cne [string]$acquiredGitIdentity.Head -or
-      $receipt.command.executable -cne $command -or
-      (@($receipt.command.arguments) -join "`n") -cne (@($arguments) -join "`n") -or
+      $receipt.admittedCommand.executable -cne $command -or
+      (@($receipt.admittedCommand.arguments) -join "`n") -cne (@($arguments) -join "`n") -or
+      [string]::IsNullOrWhiteSpace([string]$receipt.observedCommand.executable) -or
+      $observedArguments.Count -eq 0 -or
+      ($observedArguments | Where-Object { [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0 -or
       -not (Test-UtcIdentity ([string]$receipt.start)) -or -not (Test-UtcIdentity ([string]$receipt.end)) -or
       [DateTimeOffset]::Parse([string]$receipt.end).Ticks -lt [DateTimeOffset]::Parse([string]$receipt.start).Ticks -or
       ($receipt.exit -isnot [int] -and $receipt.exit -isnot [long])) {
