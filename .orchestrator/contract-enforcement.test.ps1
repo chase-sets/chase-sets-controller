@@ -459,6 +459,38 @@ Assert-Mutant 'pacing-unknown-authorizes' {Test-PacingPolicy ([regex]::Replace($
 Assert-Mutant 'pacing-reserve-drifted' {Test-PacingPolicy $milestoneText ($pacingReducer.Replace('reserve = 0.10','reserve = 0.05'))}
 Assert-Mutant 'pacing-credit-raise-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'(?s)The pace target\s+.*?per run\.','')) $pacingReducer}
 Assert-Mutant 'pacing-dispatch-duty-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'A positive allowance with ready work is a reason to dispatch,\s+not a ceiling to stay under\.','')) $pacingReducer}
+# --- checkout identity and container bootstrap --------------------------------
+# One AGENTS.md serves both the product container (tag install target) and every
+# controller development checkout, so it must open by telling them apart.
+$repoRoot = Split-Path -Parent $controller
+function Read-RootStrict([string]$Name) { return $strictUtf8.GetString([IO.File]::ReadAllBytes((Join-Path $repoRoot $Name))) }
+function Test-CheckoutIdentity([string]$Agents, [string]$Claude, [string]$Bootstrap) {
+  $lines = @($Agents -split "\r?\n" | Where-Object { $_.Trim() -ne '' })
+  Assert-Enforced ($lines.Count -gt 0 -and $lines[0] -ceq '## Which checkout is this') 'AGENTS.md opens with the checkout identity section'
+  $section = [regex]::Match($Agents, '(?ms)\A## Which checkout is this\r?\n(.*?)(?=^#{1,2} |\z)')
+  Assert-Enforced $section.Success 'checkout identity section present'
+  $text = Compact-Text $section.Groups[1].Value
+  Assert-Enforced ($text.Contains('In the product container, `main/` beside this file is a chase-sets checkout', [StringComparison]::Ordinal)) 'checkout identity names the observable fact'
+  Assert-Enforced ($text.Contains('never edit or install into the product container from a development checkout', [StringComparison]::Ordinal)) 'checkout identity forbids product-container edits'
+  Assert-Enforced ($text.Contains('An issue lives in the repository its change merges into (Repository routing in the chase-sets `docs/contributing/backlog-model.md`).', [StringComparison]::Ordinal)) 'checkout identity states the routing rule'
+  Assert-Enforced ($text -notmatch '#\d|\b\d{4}-\d{2}-\d{2}\b|\bv\d+\.\d+') 'checkout identity carries no issue numbers, dates or versions'
+  Assert-Enforced ((Compact-Text $Agents).Contains('# chase-sets container', [StringComparison]::Ordinal)) 'product-container guidance kept'
+  $claudeFirst = ($Claude -split "\r?\n")[0]
+  Assert-Enforced ($claudeFirst -ceq 'In the product container this directory is the chase-sets container, not the repo itself; elsewhere it is a controller checkout (see the opening section of AGENTS.md).') 'CLAUDE.md first line names both checkouts'
+  Assert-Enforced ($Claude.Contains('@AGENTS.md') -and $Claude.Contains('@main/AGENTS.md')) 'CLAUDE.md keeps both imports'
+  $junctions = @([regex]::Matches($Bootstrap, '@\{ Path = Join-Path \$Root "([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+  Assert-Enforced ($junctions.Count -eq 1 -and $junctions[0] -ceq '.agents') "bootstrap creates only the .agents junction (found: $($junctions -join ','))"
+}
+$agentsRoot = Read-RootStrict 'AGENTS.md'
+$claudeRoot = Read-RootStrict 'CLAUDE.md'
+$bootstrapRoot = Read-RootStrict 'bootstrap-container.ps1'
+Test-CheckoutIdentity $agentsRoot $claudeRoot $bootstrapRoot
+Assert-Mutant 'checkout-identity-section-not-first' { Test-CheckoutIdentity ($agentsRoot -replace '\A## Which checkout is this', '## Something else') $claudeRoot $bootstrapRoot }
+Assert-Mutant 'checkout-identity-routing-deleted' { Test-CheckoutIdentity ($agentsRoot -replace 'An issue lives in the repository its change merges into', 'Issues live anywhere') $claudeRoot $bootstrapRoot }
+Assert-Mutant 'checkout-identity-dated' { Test-CheckoutIdentity ($agentsRoot -replace 'Tell the checkouts apart', 'As of 2026-10-18, tell the checkouts apart') $claudeRoot $bootstrapRoot }
+Assert-Mutant 'claude-line-reverted' { Test-CheckoutIdentity $agentsRoot ($claudeRoot -replace '\A[^\r\n]*', 'This directory is the chase-sets container, not the repo itself.') $bootstrapRoot }
+Assert-Mutant 'bootstrap-codex-junction-restored' { Test-CheckoutIdentity $agentsRoot $claudeRoot ($bootstrapRoot.Replace('@{ Path = Join-Path $Root ".agents"; Target = Join-Path $MainPath ".agents" }', '@{ Path = Join-Path $Root ".agents"; Target = Join-Path $MainPath ".agents" },' + "`r`n" + '  @{ Path = Join-Path $Root ".codex"; Target = Join-Path $MainPath ".codex" }')) }
+
 Write-Output 'PASS 9737 AC5 pace-raise-pin=PASS dispatch-duty-pin=PASS mutants=2 survivors=0'
 Write-Output "PASS platform-supervision boundaries=$($platformRules.Count) whitespace-control=PASS"
 Write-Output "PASS contract-enforcement files=$($hygieneFiles.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"

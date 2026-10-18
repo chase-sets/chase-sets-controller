@@ -1,3 +1,18 @@
+## Which checkout is this
+
+Tell the checkouts apart by what sits beside this file. In the product
+container, `main/` beside this file is a chase-sets checkout; that is where
+`controller-v*` release tags are installed, and the rest of this file applies
+as written. Any other clone or worktree of `chase-sets/chase-sets-controller`
+has no `main/` beside this file and is a controller development checkout.
+There, `main/`, the lanes and the other paths named below belong to the product
+container, not to this checkout. Follow the controller dev container's
+`AGENTS.md` and the controller-orchestrator skill, and never edit or install
+into the product container from a development checkout.
+
+An issue lives in the repository its change merges into (Repository routing in
+the chase-sets `docs/contributing/backlog-model.md`).
+
 # chase-sets container
 
 This directory is NOT the chase-sets repository. It is the container that holds the repo and all of its worktrees, so selecting this one directory grants an agent access to everything.
@@ -8,7 +23,7 @@ This directory is NOT the chase-sets repository. It is the container that holds 
 - `lane-01/` … `lane-NN/` — persistent delivery-lane worktrees.
 - `YYYYMMDD-<topic>/` — ad-hoc worktrees. Spawn siblings with `git -C main worktree add ../<name> <ref>` or `node main/scripts/worktree-add.mjs`.
 - `.orchestrator/` — delivery-loop state. Scripts and reviewed controller-skill releases under `.orchestrator/controller-skills/` are tracked; logs, lease, and salvage are machine-local. Install controller releases only with `.orchestrator/install-controller-skills.ps1 -ReleaseTag controller-vX.Y` (annotated tags on `chase-sets/chase-sets-controller`, approved by Todd); never edit this checkout of `.orchestrator` directly. Controller work happens in `D:\Users\ToddS\Source\Repos\chase-sets-controller`.
-- `.agents/`, `.codex/` — directory junctions into `main/`, so Codex launched at the container root sees the repo's skills and config. Recreate with `./bootstrap-container.ps1` if missing. Never copy files into them; edit the repo instead.
+- `.agents/` — directory junction into `main/`, so Codex launched at the container root sees the repo's skills. Recreate with `./bootstrap-container.ps1` if missing. Never copy files into it; edit the repo instead.
 - `.claude/` — real directory reserved for container-level Claude Code settings (currently holds only machine-local state; no settings file exists yet). Repo skills are auto-discovered from `main/.claude/skills` (they appear scoped as `main:<skill>`).
 
 ## Git identity
