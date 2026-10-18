@@ -15,6 +15,13 @@ $sandbox = Join-Path ([IO.Path]::GetTempPath()) "controller-installer-$([guid]::
 $publisher = Join-Path $sandbox "publisher"
 $container = Join-Path $sandbox "container"
 $destinationRoot = Join-Path $sandbox "live"
+$codexRoot = Join-Path $sandbox "codex-skills"
+$realCodexRoot = Join-Path $HOME ".codex/skills"
+function Get-CodexRootSnapshot([string]$Root) {
+  if (-not (Test-Path -LiteralPath $Root)) { return '' }
+  (@(Get-ChildItem -LiteralPath $Root -Force | Sort-Object Name | ForEach-Object { "$($_.Name)|$($_.LinkType)|$(@($_.Target)[0])" }) -join "`n")
+}
+$realCodexBefore = Get-CodexRootSnapshot $realCodexRoot
 try {
   $relativeFiles = @(
     "model-routing/SKILL.md",
@@ -27,7 +34,9 @@ try {
     "milestone-orchestrator/references/controller-defect-classes.md",
     "milestone-orchestrator/scripts/query-ledgers.ps1",
     "milestone-orchestrator/scripts/query-ledgers.test.ps1",
-    "milestone-orchestrator/agents/openai.yaml"
+    "milestone-orchestrator/agents/openai.yaml",
+    "orchestrator-shared/SKILL.md",
+    "orchestrator-shared/agents/openai.yaml"
   )
   $runtimeFixtures = @(
     "landed-integration-evidence.psm1", "integration-dispatch-contract.ps1", "dispatch-lane.ps1",
@@ -81,7 +90,7 @@ landing-preflight/v1
   function Get-ContainerHead { (& git -C $container rev-parse HEAD).Trim() }
   function Invoke-Installer([string]$Tag) {
     $installer = Join-Path $container ".orchestrator/install-controller-skills.ps1"
-    $output = @(& pwsh -NoProfile -NonInteractive -File $installer -ReleaseTag $Tag -ReleaseRepository $publisher -DestinationRoot $destinationRoot 2>&1)
+    $output = @(& pwsh -NoProfile -NonInteractive -File $installer -ReleaseTag $Tag -ReleaseRepository $publisher -DestinationRoot $destinationRoot -CodexSkillRoot $codexRoot 2>&1)
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output -join "`n") }
   }
   function Assert-Refused([string]$Tag, [string]$Expected) {
@@ -152,10 +161,16 @@ landing-preflight/v1
     Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $destinationRoot $relative)).Trim() -eq "old:$relative") "refusal must not copy $relative"
   }
 
+  # An entry the user already has in the Codex skill root is never replaced.
+  $userCodexEntry = Join-Path $codexRoot "model-routing"
+  New-Item -ItemType Directory -Path $userCodexEntry -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $userCodexEntry "user.txt") -Value "user entry"
+
   # --- first install by tag ------------------------------------------------
   $missingDirectory = Join-Path $destinationRoot "milestone-orchestrator"
   Remove-Item -LiteralPath $missingDirectory -Recurse -Force
   [void](Assert-Refused "controller-v1.1" "live skill directory missing")
+  [void](Assert-Refused "controller-v1.1" "cannot prove the skill is new: no installed release record")
   foreach ($relative in $relativeFiles | Where-Object { $_ -like "model-routing/*" }) {
     Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $destinationRoot $relative)).Trim() -eq "old:$relative") "preflight refusal must not partially copy $relative"
   }
@@ -349,6 +364,48 @@ landing-preflight/v1
   [void](Assert-Refused "controller-v1.6" "release tag controller-v1.6 moved")
   Assert-True ((Get-ContainerHead) -ceq $installedBeforeMove) "a moved tag leaves the checkout unchanged"
 
+  # --- a skill new to the release inventory ----------------------------------
+  # The installed release decides what is new: a directory is created only for a
+  # skill the installed release's inventory did not list.
+  $lockModule = Join-Path $publisher ".orchestrator/controller-install-lock.psm1"
+  $lockText = [IO.File]::ReadAllText($lockModule)
+  $withoutShared = [regex]::Replace($lockText, ',\r?\n[ \t]*\[pscustomobject\]\[ordered\]@\{ source = "orchestrator-shared/SKILL\.md"[^\r\n]*\r?\n[ \t]*\[pscustomobject\]\[ordered\]@\{ source = "orchestrator-shared/agents/openai\.yaml"[^\r\n]*', '')
+  Assert-True ($withoutShared -cne $lockText -and -not $withoutShared.Contains('orchestrator-shared')) 'fixture removes orchestrator-shared from the earlier inventory'
+  $v20 = Publish-Release "controller-v2.0" { [IO.File]::WriteAllText($lockModule, $withoutShared) }
+  $earlier = Invoke-Installer "controller-v2.0"
+  Assert-True ($earlier.ExitCode -eq 0) "release without the shared skill installs: $($earlier.Output)"
+  $sharedLive = Join-Path $destinationRoot "orchestrator-shared"
+  Remove-Item -LiteralPath $sharedLive -Recurse -Force
+  $sharedCodexPath = Join-Path $codexRoot "orchestrator-shared"
+  if (Get-Item -LiteralPath $sharedCodexPath -Force -ErrorAction SilentlyContinue) { [IO.Directory]::Delete($sharedCodexPath) }
+  $v21 = Publish-Release "controller-v2.1" { [IO.File]::WriteAllText($lockModule, $lockText) }
+  $added = Invoke-Installer "controller-v2.1"
+  Assert-True ($added.ExitCode -eq 0) "a skill new to the inventory installs: $($added.Output)"
+  Assert-Installed "controller-v2.1" $v21
+  $sharedCodex = Get-Item -LiteralPath (Join-Path $codexRoot "orchestrator-shared") -Force
+  Assert-True ($sharedCodex.LinkType -eq "Junction" -and [IO.Path]::GetFullPath(@($sharedCodex.Target)[0]).TrimEnd('\') -ieq [IO.Path]::GetFullPath($sharedLive).TrimEnd('\')) "the new skill is linked into the Codex skill root"
+  $userEntry = Get-Item -LiteralPath $userCodexEntry -Force
+  Assert-True (-not $userEntry.LinkType -and (Get-Content -Raw -LiteralPath (Join-Path $userCodexEntry "user.txt")).Trim() -eq "user entry") "an existing Codex entry is left alone"
+
+  # A shipped skill whose directory is missing is still refused.
+  $routingLive = Join-Path $destinationRoot "model-routing"
+  $routingAside = Join-Path $sandbox "model-routing-aside"
+  Move-Item -LiteralPath $routingLive -Destination $routingAside
+  [void](Assert-Refused "controller-v2.1" "live skill directory missing")
+  Assert-True (-not (Test-Path -LiteralPath $routingLive)) "refusal does not create a shipped skill's directory"
+  Move-Item -LiteralPath $routingAside -Destination $routingLive
+
+  # Without a release record nothing proves a skill is new.
+  $recordPath = Join-Path $destinationRoot "native-db/release.json"
+  $recordAside = Join-Path $sandbox "release-aside.json"
+  Move-Item -LiteralPath $recordPath -Destination $recordAside
+  Remove-Item -LiteralPath $sharedLive -Recurse -Force
+  [void](Assert-Refused "controller-v2.1" "no installed release record")
+  Assert-True (-not (Test-Path -LiteralPath $sharedLive)) "refusal without a release record creates no directory"
+  Move-Item -LiteralPath $recordAside -Destination $recordPath
+  Write-Output 'PASS install-controller-skills new skill directory and Codex link; shipped-skill and no-record refusals; user Codex entry kept'
+
+  Assert-True ((Get-CodexRootSnapshot $realCodexRoot) -ceq $realCodexBefore) "the real Codex skill root is unchanged"
   Write-Output "PASS install-controller-skills release-tag authority, fetch-only container, and install coverage"
 } finally {
   Exit-RoutingDataTestScope $routingScope

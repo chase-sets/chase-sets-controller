@@ -18,7 +18,9 @@ try {
     "milestone-orchestrator/references/controller-defect-classes.md",
     "milestone-orchestrator/scripts/query-ledgers.ps1",
     "milestone-orchestrator/scripts/query-ledgers.test.ps1",
-    "milestone-orchestrator/agents/openai.yaml"
+    "milestone-orchestrator/agents/openai.yaml",
+    "orchestrator-shared/SKILL.md",
+    "orchestrator-shared/agents/openai.yaml"
   )
   foreach ($relative in $relativeFiles) {
     foreach ($root in @($source, $destination)) {

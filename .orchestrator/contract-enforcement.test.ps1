@@ -67,7 +67,8 @@ function Test-BatteryInstallProof([string]$Skill, [string]$Review) {
   $section = [regex]::Match($Skill, '(?ms)^## 7\.[^\r\n]*\r?\n.*?(?=^## \d+\.|\z)')
   # v2.116: controller release proof belongs to the controller repository; the
   # product skill only applies released tags and must say so in section 7.
-  $skillRule = 'Controller releases are not part of this loop. The controller thread authors, verifies and tags them on `chase-sets/chase-sets-controller`, and Todd approves them; this orchestrator applies a new tag at cycle start (§2) and does nothing else with them.'
+  # The release ownership sentence moved to orchestrator-shared Releases.
+  $skillRule = 'Controller releases are not part of this loop.'
   $contractRule = 'The initial candidate always uses the installed controller baseline and full runtime proof.'
   Assert-Enforced ($section.Success -and (Compact-Text $section.Value).Contains($skillRule, [StringComparison]::Ordinal)) 'skill section 7 lacks the controller release boundary'
   Assert-Enforced ((Compact-Text $Review).Contains($contractRule, [StringComparison]::Ordinal)) 'review-v2 lacks initial full install proof'
@@ -76,6 +77,22 @@ function Test-BatteryInstallProof([string]$Skill, [string]$Review) {
 Test-BatteryInstallProof $milestoneText $reviewContract
 Assert-Mutant 'skill-release-boundary-deleted' { Test-BatteryInstallProof ($milestoneText -replace 'Controller releases are not part of this loop\.\s+', '') $reviewContract }
 Assert-Mutant 'review-initial-full-proof-deleted' { Test-BatteryInstallProof $milestoneText ($reviewContract -replace 'The initial candidate always\s+uses the installed controller baseline and full runtime proof\.', '') }
+$sharedText = Read-Strict 'controller-skills/orchestrator-shared/SKILL.md'
+function Test-SharedReleaseOwnership([string]$Shared) {
+  $section = [regex]::Match($Shared, '(?ms)^## Releases\r?\n(.*?)(?=^## |\z)')
+  Assert-Enforced $section.Success 'orchestrator-shared has a Releases section'
+  $text = Compact-Text $section.Groups[1].Value
+  foreach ($rule in @(
+      'The controller loop authors, verifies and tags it, and Todd approves it.',
+      'The product loop applies a new tag at the start of its next cycle with `.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>` and does nothing else with releases.',
+      'Release tags are the only install authority: never install an untagged commit or by any other path, never edit the product container checkout (it changes only through tag installs), and never copy a live edit over a mismatch.',
+      'Rollback is the product loop reinstalling the previous tag with the same command.')) {
+    Assert-Enforced ($text.Contains($rule, [StringComparison]::Ordinal)) "orchestrator-shared Releases lacks: $rule"
+  }
+}
+Test-SharedReleaseOwnership $sharedText
+Assert-Mutant 'shared-release-ownership-deleted' { Test-SharedReleaseOwnership ($sharedText -replace 'The controller loop authors, verifies and\s+tags it, and Todd approves it\.\s*', '') }
+Assert-Mutant 'shared-install-authority-deleted' { Test-SharedReleaseOwnership ($sharedText -replace 'Release tags are the only install authority', 'Release tags are one install path') }
 Assert-Enforced (($milestoneText.ToCharArray() | Where-Object { [int]$_ -gt 127 }).Count -gt 0) "mutant needs a non-ASCII character in the milestone skill"
 Assert-Mutant "cp1252-encoded-skill" { Test-ByteHygiene ([Text.Encoding]::GetEncoding(1252).GetBytes($milestoneText)) "mutant" }
 Assert-Mutant "bare-lf" { Test-ByteHygiene ($strictUtf8.GetBytes($milestoneText.Remove($milestoneText.IndexOf("`r`n"), 1))) "mutant" }
@@ -510,6 +527,24 @@ Test-ControllerSkillPlacement $controllerSkill $installInventory
 Assert-Mutant 'controller-skill-installed-by-product' { Test-ControllerSkillPlacement $controllerSkill ($installInventory + [pscustomobject]@{ source = 'controller-orchestrator/SKILL.md'; destination = 'controller-orchestrator/SKILL.md' }) }
 Assert-Mutant 'controller-backlog-planning-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Plan controller issues with the planning skill', 'Plan controller issues freely') $installInventory }
 Assert-Mutant 'controller-backlog-routing-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Check each issue against Repository routing', 'Check each issue') $installInventory }
+
+# --- both loop skills point to the shared contract -------------------------------
+$sharedPointer = 'Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.'
+function Test-SharedPointers([string]$Milestone, [string]$Controller) {
+  foreach ($pair in @(@('milestone-orchestrator', $Milestone, '# Milestone Orchestrator'), @('controller-orchestrator', $Controller, '# Controller Orchestrator'))) {
+    $lines = @($pair[1] -split "\r?\n" | Where-Object { $_.Trim() -ne '' })
+    $title = [Array]::FindIndex($lines, [Predicate[string]]{ param($l) $l.StartsWith($pair[2], [StringComparison]::Ordinal) })
+    Assert-Enforced ($title -ge 0 -and $title + 1 -lt $lines.Count -and $lines[$title + 1] -ceq $sharedPointer) "$($pair[0]) opens with the orchestrator-shared pointer"
+  }
+  Assert-Enforced ($Milestone -match '(?m)^description: "Product loop only \(Chase Sets delivery from the product container\): ') 'milestone-orchestrator description says product loop only'
+  Assert-Enforced ((Compact-Text $Milestone).Contains('then re-read this skill and `orchestrator-shared`.', [StringComparison]::Ordinal)) 'post-install re-read includes orchestrator-shared'
+  Assert-Enforced ((Compact-Text $Controller).Contains('Never load milestone-orchestrator; it is the product loop''s skill.', [StringComparison]::Ordinal)) 'controller-orchestrator never loads milestone-orchestrator'
+}
+Test-SharedPointers $milestoneText $controllerSkill
+Assert-Mutant 'milestone-shared-pointer-deleted' { Test-SharedPointers ($milestoneText.Replace($sharedPointer, '')) $controllerSkill }
+Assert-Mutant 'controller-shared-pointer-deleted' { Test-SharedPointers $milestoneText ($controllerSkill.Replace($sharedPointer, '')) }
+Assert-Mutant 'milestone-product-only-deleted' { Test-SharedPointers ($milestoneText.Replace('Product loop only (Chase Sets delivery from the product container): ', '')) $controllerSkill }
+Assert-Mutant 'controller-loads-milestone' { Test-SharedPointers $milestoneText ($controllerSkill.Replace('Never load milestone-orchestrator; it is the product loop''s skill. ', '')) }
 
 Write-Output 'PASS 9737 AC5 pace-raise-pin=PASS dispatch-duty-pin=PASS mutants=2 survivors=0'
 Write-Output "PASS platform-supervision boundaries=$($platformRules.Count) whitespace-control=PASS"

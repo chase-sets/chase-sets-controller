@@ -1,9 +1,11 @@
 ---
 name: milestone-orchestrator
-description: Run the chase-sets delivery loop — complete all committed, non-parked outcomes by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, sending Todd only product priority or scope questions and packaged operator actions. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
+description: "Product loop only (Chase Sets delivery from the product container): Run the chase-sets delivery loop — complete all committed, non-parked outcomes by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, sending Todd only product priority or scope questions and packaged operator actions. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline."
 ---
 
 # Milestone Orchestrator (v2.116, 2026-10-18)
+
+Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 
 Version 2.116 makes this skill product-only (Todd, 2026-10-17/18). Controller
 code and releases, the orchestration-platform migration, and routing,
@@ -63,15 +65,9 @@ Standing invariants:
   work in the host context; dispatch a bounded lane.
 
 Scope boundary: this orchestrator builds the Chase Sets platform and nothing
-else. It never edits, dispatches, reviews, batteries or installs controller
-work (the `.orchestrator` runtime, contracts and controller skills, and
-routing, velocity or capacity policy), and it never supervises the
-orchestration platform loop. It files a controller defect as an issue on
-`chase-sets/chase-sets-controller` and continues product work. One
-exception: a controller defect that blocks product delivery right now may be
-handled here, first by reinstalling the previous release tag (§2); a forward
-fix follows the controller repository's own release process. Record each use
-of the exception as `escaped-defect`.
+else. It never supervises the orchestration platform loop. Controller work and
+controller defects follow `orchestrator-shared` (Two loops, Defects). Record
+each use of the `orchestrator-shared` Defects exception as `escaped-defect`.
 
 Astra (`gpt-6-astra`) is selectable for Codex tasks and as the registered
 `astra-high` host arm. Sol high remains the default. Model selection does not
@@ -102,10 +98,7 @@ installed release tag, the newest `controller-v*` tag on
 match the container checkout. When a newer tag exists, apply it before
 dispatching with `.orchestrator/install-controller-skills.ps1 -ReleaseTag
 <tag>` (it refuses while a heavy verifier owns the host; retry next cycle),
-then re-read this skill. Rollback is the same command with the previous tag.
-Release tags are the only install authority: never install an untagged
-commit, never edit the container checkout, and never copy a live edit over a
-mismatch. A `stale` report with no newer tag is a controller defect: file
+then re-read this skill and `orchestrator-shared`. A `stale` report with no newer tag is a controller defect: file
 it and continue product work.
 
 Publish no routine narration while the board and generated digest are healthy.
@@ -741,12 +734,8 @@ explicitly matching the requested positive PR still poisons that PR. This
 boundary uses closed fields only, never dates, issue lists, prose, lanes, or
 model aliases.
 
-Controller releases are not part of this loop. The controller thread
-authors, verifies and tags them on `chase-sets/chase-sets-controller`, and
-Todd approves them; this orchestrator applies a new tag at cycle start (§2)
-and does nothing else with them. It never cuts batches, runs controller
-batteries or precursors, dispatches controller reviews, or holds product
-lanes for controller work.
+Controller releases are not part of this loop. `orchestrator-shared`
+Releases and Two loops state what this loop does with them.
 
 Retired by v2.58 and archived in `references/rule-provenance-v2.24.md`: the
 three-packet lifecycle, the #7495 bootstrap authority, the H1/H2/H3
@@ -800,7 +789,7 @@ with GitHub `enqueuePullRequest` (exact PR node ID, expected head OID,
 and actual enqueue result. An unknown mutation response is reconciled against
 the queue before any retry; intent never becomes an enqueue fact. Manual
 fallback on #4388 is used only when the direct mutation fails. File the gate
-refusal as a controller defect (§1). A non-authority-complete PR is never mutated,
+refusal as a controller defect (`orchestrator-shared` Defects). A non-authority-complete PR is never mutated,
 and the direct enqueue is reconciled as landed with no bypass finding.
 Landings are ordered by the merge queue alone. A pipeline breaker holds only
 landings that can change a deployable, as judged by the PR's Change Scope
@@ -1331,10 +1320,9 @@ failed irreversible operations, and remedy recurrence.
   a parallel routine. Use existing issue/PR and execution evidence to check
   whether the action, wait or failure disappeared; add no report, approval
   stage or delivery gate.
-- Standing behavior change to this skill or any controller runtime: file it
-  on `chase-sets/chase-sets-controller` for the controller thread; never
-  edit the skill or runtime from this loop. A Todd ruling that changes runtime
-  behavior goes to the controller thread the same way.
+- Standing behavior change to this skill or any controller runtime, or a Todd
+  ruling that changes runtime behavior: `orchestrator-shared` Repository
+  routing.
 - Recurrent pattern after remedy: mark the remedy ineffective and re-diagnose.
 - Quality verdicts are retro input: recalibration reads `NOTE` counts by
   key, side, profile, and author model from the review receipts and tunes the

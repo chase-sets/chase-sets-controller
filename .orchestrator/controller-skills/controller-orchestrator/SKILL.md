@@ -5,6 +5,8 @@ description: Run the chase-sets controller loop - improve and release the orches
 
 # Controller Orchestrator (v1.0, 2026-10-18)
 
+Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
+
 This thread owns the controller. The product orchestrator ("Chase Sets
 orchestrator") owns Chase Sets product delivery and only applies released
 controller tags. Todd approves every release.
@@ -17,10 +19,10 @@ migration and platform supervision (`references/platform-supervision.md`);
 routing, velocity and capacity improvement; the controller issue backlog on
 `chase-sets/chase-sets-controller`.
 
-Not owned: Chase Sets product issues, product lanes, the merge queue and
-deploys. Never write the container's `lease.json` or `dispatch-log.jsonl`,
-never dispatch into the product loop, and never edit `main/`. Reading the
-container's logs and state for evidence is fine.
+Never load milestone-orchestrator; it is the product loop's skill. Never write
+the container's `lease.json` or `dispatch-log.jsonl`, never dispatch into the
+product loop, and never edit `main/`. Reading the container's logs and state
+for evidence is fine.
 
 ## 2. Backlog
 
@@ -80,25 +82,19 @@ controller battery runs only in a window with no product heavy work queued.
    `release/.orchestrator/controller-skills/controller-orchestrator`, so the
    thread runs the released skill, never a working branch.
 
-Rollback is the product orchestrator reinstalling the previous tag; tags
-older than `controller-v2.116` cannot be installed by tag. Hosted CI
+Tags older than `controller-v2.116` cannot be installed by tag. Hosted CI
 (`controller-battery.yml`) is informational until its LOCAL_ONLY items are
 resolved; it is not a release gate.
 
 ## 6. Defects and rulings
 
-A controller defect filed by the product orchestrator is top priority when it
-blocks product delivery; fix it forward through section 5. Each product-side
-emergency rollback is logged by that loop as `escaped-defect`; find the
-cause here. A Todd ruling that changes controller behavior is implemented
-within seven days; never park it or condition it on an empty product frontier.
+A Todd ruling that changes controller behavior is implemented within seven
+days; never park it or condition it on an empty product frontier.
 
 ## 7. Hard rules
 
 - Never push container history, never add a push remote to the container,
   never force push anything.
-- Never install by any path other than a release tag, and never edit the
-  container checkout directly; it changes only through tag installs.
 - Never print secret values; secrets come only through
   `.orchestrator/with-secrets.ps1` in the container.
 - Background processes never open console windows (container `AGENTS.md`).

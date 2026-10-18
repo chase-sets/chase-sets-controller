@@ -1,0 +1,4 @@
+interface:
+  display_name: "Orchestrator Shared Contract"
+  short_description: "Contract between the product and controller orchestrator loops"
+  default_prompt: "Read $orchestrator-shared with the orchestrator skill you are running: it states who owns which work, where issues are filed, release tags, and the controller-defect hand-off."

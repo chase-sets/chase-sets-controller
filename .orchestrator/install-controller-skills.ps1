@@ -22,7 +22,10 @@ param(
   [string]$ReleaseRepository = 'https://github.com/chase-sets/chase-sets-controller.git',
   # Test seam: production callers omit it and install into the live user skill root.
   [Parameter(DontShow)]
-  [string]$DestinationRoot
+  [string]$DestinationRoot,
+  # Test seam: production callers omit it and link skills into the user Codex skill root.
+  [Parameter(DontShow)]
+  [string]$CodexSkillRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,6 +84,7 @@ if ($head -cne $releaseCommit) {
   $handover = @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'install-controller-skills.ps1'),
     '-ReleaseTag', $ReleaseTag, '-ReleaseRepository', $ReleaseRepository)
   if ($DestinationRoot) { $handover += @('-DestinationRoot', $DestinationRoot) }
+  if ($CodexSkillRoot) { $handover += @('-CodexSkillRoot', $CodexSkillRoot) }
   & (Get-Process -Id $PID).Path @handover
   exit $LASTEXITCODE
 }
@@ -119,6 +123,38 @@ function Merge-GeneratedBlocks {
 
 $sourceRoot = Join-Path $PSScriptRoot "controller-skills"
 $destinationRoot = if ($DestinationRoot) { [IO.Path]::GetFullPath($DestinationRoot) } else { Join-Path $HOME ".claude/skills" }
+$codexSkillRoot = if ($CodexSkillRoot) { [IO.Path]::GetFullPath($CodexSkillRoot) } else { Join-Path $HOME ".codex/skills" }
+
+# A skill directory may be created only for a skill the installed release did
+# not ship. Its inventory is read from the installed release commit, which the
+# container already holds. Any failure to prove the skill is new refuses, so a
+# missing directory for a shipped skill is still reported, never papered over.
+$script:previousReleaseSkills = $null
+function Get-PreviousReleaseSkills {
+  if ($null -ne $script:previousReleaseSkills) { return $script:previousReleaseSkills }
+  $recordPath = Join-Path $destinationRoot 'native-db/release.json'
+  if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { throw 'no installed release record' }
+  $previousCommit = [string](Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).commit
+  if ($previousCommit -notmatch '^[a-f0-9]{40}$') { throw 'installed release record names no commit' }
+  $previousModule = Invoke-ContainerGit @('show', "$($previousCommit):.orchestrator/controller-install-lock.psm1") -AllowFailure
+  if ($previousModule.ExitCode -ne 0) { throw "installed release $previousCommit is unreadable" }
+  $scratch = Join-Path ([IO.Path]::GetTempPath()) "controller-previous-inventory-$([guid]::NewGuid().ToString('N'))"
+  [void][IO.Directory]::CreateDirectory($scratch)
+  $module = $null
+  try {
+    $modulePath = Join-Path $scratch 'previous-release-install-lock.psm1'
+    [IO.File]::WriteAllText($modulePath, ($previousModule.Lines -join [Environment]::NewLine))
+    $module = Import-Module $modulePath -Prefix 'PreviousRelease' -PassThru -Force -DisableNameChecking
+    $skills = @(& (Get-Command -Module $module.Name -Name 'Get-PreviousReleaseControllerSkillInstallInventory') |
+      ForEach-Object { ([string]$_.destination -split '[/\\]')[0] } | Sort-Object -Unique)
+    if ($skills.Count -eq 0) { throw 'installed release inventory is empty' }
+    $script:previousReleaseSkills = $skills
+    return $skills
+  } finally {
+    if ($module) { Remove-Module -ModuleInfo $module -Force }
+    Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 
 # The skill is the human-governing contract and these scripts are the execution
 # surface. They ship from one released container commit, but semantic
@@ -192,7 +228,13 @@ foreach ($file in $files) {
   $skillName = ($file.Destination -split "[/\\]")[0]
   $liveSkillRoot = Join-Path $destinationRoot $skillName
   if (-not (Test-Path -LiteralPath $liveSkillRoot -PathType Container)) {
-    throw "controller skill install refused: live skill directory missing: $liveSkillRoot"
+    $previousSkills = $null
+    try { $previousSkills = Get-PreviousReleaseSkills } catch {
+      throw "controller skill install refused: live skill directory missing: $liveSkillRoot (cannot prove the skill is new: $($_.Exception.Message))"
+    }
+    if ($previousSkills -contains $skillName) {
+      throw "controller skill install refused: live skill directory missing: $liveSkillRoot"
+    }
   }
   $installPlan += [pscustomobject]@{
     Source = $source
@@ -294,6 +336,16 @@ foreach ($file in $installPlan) {
         throw "controller skill install verification failed for $destination"
       }
     }
+    }
+  }
+  # Codex reads skills from its own root. Link each installed skill there when
+  # nothing exists at that path; an existing entry is the user's and is left alone.
+  foreach ($skillName in @($installPlan | ForEach-Object { ($_.Destination.Substring($destinationRoot.Length).TrimStart('\', '/') -split '[/\\]')[0] } | Sort-Object -Unique)) {
+    $codexEntry = Join-Path $codexSkillRoot $skillName
+    if (Get-Item -LiteralPath $codexEntry -Force -ErrorAction SilentlyContinue) { continue }
+    if ($PSCmdlet.ShouldProcess($codexEntry, 'link installed skill for Codex')) {
+      [void][IO.Directory]::CreateDirectory($codexSkillRoot)
+      New-Item -ItemType Junction -Path $codexEntry -Target (Join-Path $destinationRoot $skillName) | Out-Null
     }
   }
   if ($PSCmdlet.ShouldProcess($releaseDestination, 'record installed release')) {

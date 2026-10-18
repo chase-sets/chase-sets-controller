@@ -249,12 +249,25 @@ $script:requiredMilestoneStatements = @(
   # path and runtime rule changes moved to the controller repository; the product
   # skill keeps only the boundary below. The removed rules remain in v2.115 history.
   'Scope boundary: this orchestrator builds the Chase Sets platform and nothing else.',
-  'It files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.',
-  'Record each use of the exception as `escaped-defect`.',
-  'Release tags are the only install authority: never install an untagged commit, never edit the container checkout, and never copy a live edit over a mismatch.',
+  # The defect hand-off and install authority moved to orchestrator-shared; they
+  # are pinned there by $script:requiredSharedStatements below.
+  'Record each use of the `orchestrator-shared` Defects exception as `escaped-defect`.',
   'Controller releases are not part of this loop.',
   'is not a product finding is a controller defect'
 )
+
+$script:requiredSharedStatements = @(
+  'The product loop files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.',
+  'One exception: a controller defect that blocks product delivery right now may be handled by the product loop, first by reinstalling the previous release tag; a forward fix follows the controller loop''s release process.',
+  'Release tags are the only install authority: never install an untagged commit or by any other path, never edit the product container checkout (it changes only through tag installs), and never copy a live edit over a mismatch.'
+)
+function Test-SharedStatements([string]$Shared) {
+  $compact = Compact-Text $Shared
+  foreach ($statement in $script:requiredSharedStatements) {
+    if (-not $compact.Contains((Compact-Text $statement), [StringComparison]::Ordinal)) { return $false }
+  }
+  return $true
+}
 
 function Get-SectionTitles([string]$Text) {
   return @([regex]::Matches((Normalize-Text $Text), "(?m)^## (\d+)\. (.*)$") | ForEach-Object { $_.Value })
@@ -352,6 +365,12 @@ Assert-6997 (Test-DescendantFootprint $expectedPaths $syntheticActualPaths) "cor
 Assert-6997 (@(Compare-Object ($expectedPaths | Sort-Object) $syntheticActualPaths).Count -gt 0) "positive descendant fixture must actually differ from the frozen footprint, or it proves nothing against the old fixed-equality clause"
 
 Assert-6997 (Test-PreservedSections $milestone $baseMilestone) "a milestone section title moved or a required statement is missing"
+$shared = Get-RepoText ".orchestrator/controller-skills/orchestrator-shared/SKILL.md"
+Assert-6997 (Test-SharedStatements $shared) "orchestrator-shared lacks a required defect or install-authority statement"
+$sharedDefectMutant = $shared.Replace("files a controller defect as an issue on", "may fix a controller defect directly on", [StringComparison]::Ordinal)
+Add-MutantClaim "shared-defect-handoff-removed" $true (Test-SharedStatements $sharedDefectMutant) "orchestrator-shared defect hand-off"
+$sharedAuthorityMutant = $shared.Replace("Release tags are the only install authority", "Release tags are one install authority", [StringComparison]::Ordinal)
+Add-MutantClaim "shared-install-authority-weakened" $true (Test-SharedStatements $sharedAuthorityMutant) "orchestrator-shared install authority"
 $section13Mutant = $milestone.Replace("## 13. Bookkeeping and digest", "## 13. Bookkeeping and altered digest")
 Add-MutantClaim "unowned-byte" $true (Test-PreservedSections $section13Mutant $baseMilestone) "section 13 byte"
 $astraParagraphMutant = $milestone.Replace(

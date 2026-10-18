@@ -42,7 +42,7 @@ function Test-AgentOutcomePolicy([string]$Text) {
   )
 
   return (
-    $Text.Contains('description: Run the chase-sets delivery loop — complete all committed, non-parked outcomes', [StringComparison]::Ordinal) -and
+    $Text.Contains('description: "Product loop only (Chase Sets delivery from the product container): Run the chase-sets delivery loop — complete all committed, non-parked outcomes', [StringComparison]::Ordinal) -and
     [regex]::Matches($Text, "(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$").Count -eq 1 -and
     [regex]::Matches($script:archiveText, "(?m)^Version 2\.63 implements Todd's 2026-09-11 outcome-planning ruling\.").Count -eq 1 -and
     $mission.Contains('Terminal condition: every committed, non-parked milestone is closed and no issue globally remains `status:needs-replan`', [StringComparison]::Ordinal) -and

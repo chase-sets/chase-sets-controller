@@ -42,7 +42,9 @@ function Get-ControllerSkillInstallInventory {
     [pscustomobject][ordered]@{ source = "milestone-orchestrator/references/controller-defect-classes.md"; destination = "milestone-orchestrator/references/controller-defect-classes.md"; preserveGenerated = $false; transportText = $true },
     [pscustomobject][ordered]@{ source = "milestone-orchestrator/scripts/query-ledgers.ps1"; destination = "milestone-orchestrator/scripts/query-ledgers.ps1"; preserveGenerated = $false; transportText = $true },
     [pscustomobject][ordered]@{ source = "milestone-orchestrator/scripts/query-ledgers.test.ps1"; destination = "milestone-orchestrator/scripts/query-ledgers.test.ps1"; preserveGenerated = $false; transportText = $true },
-    [pscustomobject][ordered]@{ source = "milestone-orchestrator/agents/openai.yaml"; destination = "milestone-orchestrator/agents/openai.yaml"; preserveGenerated = $false; transportText = $true }
+    [pscustomobject][ordered]@{ source = "milestone-orchestrator/agents/openai.yaml"; destination = "milestone-orchestrator/agents/openai.yaml"; preserveGenerated = $false; transportText = $true },
+    [pscustomobject][ordered]@{ source = "orchestrator-shared/SKILL.md"; destination = "orchestrator-shared/SKILL.md"; preserveGenerated = $false; transportText = $true },
+    [pscustomobject][ordered]@{ source = "orchestrator-shared/agents/openai.yaml"; destination = "orchestrator-shared/agents/openai.yaml"; preserveGenerated = $false; transportText = $true }
   )
 }
 
