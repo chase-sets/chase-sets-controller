@@ -2,11 +2,11 @@
   "schema": "host-heavy-diagnostic-declarations/v1",
   "diagnostics": {
     "worst13-no-fit": {
-      "enabled": false,
+      "enabled": true,
       "kind": "standalone-node",
-      "path": ".orchestrator/artifacts/worst13-no-fit.mjs",
-      "sha256": "FILL_ME_WITH_THE_PRODUCT_ARTIFACT_SHA256",
-      "maxBudgetSeconds": 86400
+      "path": "artifacts/8803-verifier/worst13-no-fit.mjs",
+      "sha256": "754f1f81014683af4be1463d15b04278e9d84aea7e8176b2f019a3e3df95183b",
+      "maxBudgetSeconds": 600
     }
   }
 }
