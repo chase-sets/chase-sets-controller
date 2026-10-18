@@ -19,6 +19,7 @@ $controllerRoot = Split-Path -Parent $PSScriptRoot
 $battery = Join-Path $PSScriptRoot "controller-release-battery.ps1"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("controller-release-battery-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $testRoot ".orchestrator") | Out-Null
 # #8102: synthetic fleet-holder helpers. Their lock directory lives under this
 # test's temp root only; the live container's verify-lock.d is never touched.
 . (Join-Path $PSScriptRoot "interrupted-integration-test-support.ps1")
@@ -468,10 +469,42 @@ function Invoke-ScopeControl {
   foreach ($pair in @(
       @('-ControllerBatteryScope $Scope', '"-Scope", $ControllerBatteryScope'),
       @('-ControllerBatteryPriorResultPath $PriorResultPath', '"-PriorResultPath", $ControllerBatteryPriorResultPath'),
+      @('-ControllerBatteryNoReuseIdentity $NoReuseIdentity', '"-NoReuseIdentity", $ControllerBatteryNoReuseIdentity'),
       @('-ControllerBatteryOnFailure $OnFailure', '"-OnFailure", $ControllerBatteryOnFailure')
     )) {
     Assert-BatteryTest ($batterySource -match [regex]::Escape($pair[0]) -and $verifierSource -match [regex]::Escape($pair[1])) "scope or prior result is dropped before the admitted child: $($pair[1])"
   }
+  # -NoReuseIdentity (#9373): '' (the verifier's forwarded default) and listed
+  # required identities plan; an empty segment or an identity not ordinally in
+  # the required inventory refuses before any item runs.
+  foreach ($accepted in @('', 'test:finite-extra.test.ps1;test:fail-closed-guard-evidence-aggregate.test.ps1')) {
+    $plan = & (Join-Path $fixture.root ".orchestrator/controller-release-battery.ps1") -ControllerRoot $fixture.root `
+      -ExpectedControllerHead $runtimeHead -EvidenceReceiptPath $receipt -NoReuseIdentity $accepted -ValidatePlanOnly 2>&1 | Out-String
+    Assert-BatteryTest ($LASTEXITCODE -eq 0 -and $plan -match 'BATTERY_PLAN_END') "-NoReuseIdentity '$accepted' was refused: $plan"
+  }
+  $unknownIdentity = 'test:synthetic-unknown-9373.test.ps1'
+  foreach ($refused in @($unknownIdentity, 'test:finite-extra.test.ps1;', ';test:finite-extra.test.ps1',
+      'test:finite-extra.test.ps1;;test:fail-closed-guard-evidence-aggregate.test.ps1', 'TEST:finite-extra.test.ps1', ' test:finite-extra.test.ps1')) {
+    $observed = ''
+    try {
+      & (Join-Path $fixture.root ".orchestrator/controller-release-battery.ps1") -ControllerRoot $fixture.root `
+        -ExpectedControllerHead $runtimeHead -EvidenceReceiptPath $receipt -NoReuseIdentity $refused -ValidatePlanOnly 2>&1 | Out-Null
+    } catch { $observed = $_.Exception.Message }
+    Assert-BatteryTest ($observed -match 'BATTERY_NO_REUSE_IDENTITY_UNKNOWN') "-NoReuseIdentity '$refused' did not refuse: $observed"
+  }
+  # Named unknown-identity bypass mutant: without the inventory check, the same
+  # unknown identity plans silently.
+  $refusalTerm = 'if (-not $identitySet.Contains($noReuse)) { Stop-Battery "BATTERY_NO_REUSE_IDENTITY_UNKNOWN:$noReuse" }'
+  Assert-BatteryTest (@([regex]::Matches($batterySource, [regex]::Escape($refusalTerm))).Count -eq 1) 'unknown-identity bypass mutant needs the exact refusal'
+  $bypassMutant = Join-Path $testRoot 'no-reuse-identity-bypass-mutant.ps1'
+  [IO.File]::WriteAllText($bypassMutant, $batterySource.Replace($refusalTerm, ''), [Text.UTF8Encoding]::new($false))
+  $mutantObserved = ''
+  $mutantPlan = ''
+  try {
+    $mutantPlan = & $bypassMutant -ControllerRoot $fixture.root -ExpectedControllerHead $runtimeHead -EvidenceReceiptPath $receipt `
+      -NoReuseIdentity $unknownIdentity -ValidatePlanOnly 2>&1 | Out-String
+  } catch { $mutantObserved = $_.Exception.Message }
+  Assert-BatteryTest ($mutantObserved -eq '' -and $mutantPlan -match 'BATTERY_PLAN_END') "unknown-identity bypass mutant did not plan silently: $mutantObserved"
   Write-Output "PASS controller battery initial/repair baselines select impact or full and malformed/nonancestor/nonBF repair authority fails closed"
 }
 
@@ -623,6 +656,9 @@ function New-AdmissionFixture([hashtable]$ExtraRuntimeFiles = @{}, [string]$Pref
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
   Copy-RuntimeFile $root "controller-release-battery.ps1"
   Copy-RuntimeFile $root "invoke-heavy-verifier.ps1"
+  Copy-RuntimeFile $root "dispatch-ownership.ps1"
+  Copy-RuntimeFile $root "heavy-nested-owner.cs"
+  Copy-RuntimeFile $root "heavy-nested-client.cjs"
   [IO.File]::WriteAllText(
     (Join-Path $runtime "fail-closed-guard-evidence.ps1"),
     @'
@@ -828,13 +864,15 @@ function Start-BatteryFixtureProcess($Fixture, [switch]$AdmissionOwned, [string]
 }
 
 function Complete-BatteryFixtureProcess([Diagnostics.Process]$Process, [int]$Seconds = 30) {
+  $standardOutput = $Process.StandardOutput.ReadToEndAsync()
+  $standardError = $Process.StandardError.ReadToEndAsync()
   if (-not $Process.WaitForExit($Seconds * 1000)) {
     try { $Process.Kill($true) } catch {}
     throw "ASSERTION FAILED: battery fixture process did not exit"
   }
   return [pscustomobject]@{
     exitCode = $Process.ExitCode
-    output = (($Process.StandardOutput.ReadToEnd() + "`n" + $Process.StandardError.ReadToEnd()).Trim())
+    output = (($standardOutput.Result + "`n" + $standardError.Result).Trim())
   }
 }
 
@@ -1319,7 +1357,7 @@ function Test-RenameImpactAndReuse {
 function Test-FailingBatteryResultWriteOmission {
   $mutantId = 'omit-failing-battery-result-write'
   $source = [IO.File]::ReadAllText($battery).Replace("`r`n", "`n")
-  $writeBoundary = "try {`n  if (`$executionStarted -and `$resolvedResult) {"
+  $writeBoundary = "try {`n  if ((`$executionStarted -or `$results.Count -gt 0) -and `$resolvedResult) {"
   # The same committed fixture contains both orderings. Only this ignored
   # control file changes; source/head/receipt/arguments/result path stay fixed.
   $throwBeforeWrite = @'
@@ -1516,6 +1554,7 @@ function Invoke-HostRun($Fixture, [string]$Label, [string]$Entry = 'Wrapper', [s
     if (-not (Test-Path -LiteralPath $scriptPath)) {
       [IO.Directory]::CreateDirectory((Split-Path -Parent $scriptPath)) | Out-Null
       [IO.File]::Copy((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'), $scriptPath)
+      [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), (Join-Path (Split-Path -Parent $scriptPath) 'dispatch-ownership.ps1'))
     }
     $branch = (& git -C $Fixture.root branch --show-current | Out-String).Trim()
     $arguments = @('-ControllerBattery', '-Worktree', $Fixture.root, '-Lane', 'host-fixture',

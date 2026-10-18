@@ -7,7 +7,10 @@ Idempotent. Run from any PowerShell prompt after cloning the container meta-repo
 (or whenever the junctions are missing):
   1. Clones the chase-sets repo into main/ if it is not present.
   2. Recreates the .agents and .codex directory junctions into main/.
-  3. Reports layout status.
+  3. Sets the user-scoped CHASE_SETS_LANE_MODE=1 that main/AGENTS.md requires for
+     local Vitest runs on this concurrent-lane host (lane-safe timeouts and capped
+     workers). Hosted CI never sees it and keeps the strict profile.
+  4. Reports layout status.
 
 Junctions (not symlinks) are used on purpose: they need no admin rights or
 Developer Mode and look like real directories to every tool.
@@ -43,6 +46,11 @@ foreach ($junction in @(
   }
   New-Item -ItemType Junction -Path $junction.Path -Target $junction.Target | Out-Null
   Write-Host "Created junction $($junction.Path) -> $($junction.Target)"
+}
+
+if ([Environment]::GetEnvironmentVariable("CHASE_SETS_LANE_MODE", "User") -ne "1") {
+  [Environment]::SetEnvironmentVariable("CHASE_SETS_LANE_MODE", "1", "User")
+  Write-Host "Set user CHASE_SETS_LANE_MODE=1 (new processes only; restart long-running agent hosts to inherit it)."
 }
 
 Write-Host "main: $(git -C $MainPath log --oneline -1 HEAD)"

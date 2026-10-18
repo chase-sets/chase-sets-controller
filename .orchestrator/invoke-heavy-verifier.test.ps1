@@ -3,9 +3,15 @@ param(
   [switch]$NativeDbOnly,
   [switch]$DiscriminatorOnly,
   [switch]$RulingFourOnly,
+  [switch]$EligibilityOnly,
+  [switch]$RoleAdmissionOnly,
+  [ValidateSet('', 'role-spoof', 'missing-role', 'host-denied', 'bypass-check')][string]$EligibilityMutant = '',
   [switch]$PrecursorAdmissionDiscriminatorOnly,
   [switch]$PrecursorOnly,
   [switch]$LegacyOnly,
+  [switch]$FixtureEquivalenceOnly,
+  # #9627 named bypass mutants of the ControllerFixtureEquivalence route.
+  [ValidateSet('', 'arbitrary-phase', 'forward-baseline', 'unchecked-evidence', 'untracked-check', 'unbound-source-bytes', 'unchecked-ancestry', 'platform-slot', 'early-release', 'bypass-eligibility')][string]$FixtureMutant = '',
   [string]$GuardRevision = ""
 )
 
@@ -13,6 +19,95 @@ $ErrorActionPreference = "Stop"
 $guard = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+if ($EligibilityOnly) {
+  $source = if ($GuardRevision) {
+    (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/invoke-heavy-verifier.ps1") -join "`n")
+  } else { [IO.File]::ReadAllText($guard) }
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+  $functions = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
+  $eligibility = @($functions | Where-Object Name -eq 'Assert-HeavyCallerEligibility')
+  Assert-True ($eligibility.Count -eq 1) 'all modes require native caller eligibility before reservation'
+  $snapshotRead = @($ast.FindAll({param($n)
+    $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$snapshots[$path]'
+  }, $true))
+  Assert-True ($snapshotRead.Count -eq 1) 'one native ownership snapshot read'
+  $reader = $snapshotRead[0].Right.Extent.Text
+  Assert-True ($source.Split([string[]]@($reader), [StringSplitOptions]::None).Count -eq 3) 'snapshot and revalidation use the same byte-preserving reader'
+  $path = Join-Path ([IO.Path]::GetTempPath()) ('heavy-encoding-' + [guid]::NewGuid().ToString('N'))
+  try {
+    [IO.File]::WriteAllText($path, '{"laneRole":"implementation"}', [Text.UTF8Encoding]::new($false))
+    $before = & ([scriptblock]::Create($reader))
+    $normalizedBefore = [IO.File]::ReadAllText($path)
+    [IO.File]::WriteAllText($path, '{"laneRole":"implementation"}', [Text.UTF8Encoding]::new($true))
+    $after = & ([scriptblock]::Create($reader))
+    Assert-True (-not [string]::Equals($before, $after, [StringComparison]::Ordinal)) 'encoding-only ownership replacement changes exact snapshot'
+    Assert-True ($normalizedBefore -ceq [IO.File]::ReadAllText($path)) 'normalizing-reader mutant loses the changed bytes'
+    Write-Output 'PASS ownership encoding-only replacement detected; normalizing-reader mutant loses byte identity'
+  } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+  foreach ($definition in $functions) { . ([scriptblock]::Create($definition.Extent.Text)) }
+  & {
+    $instant = [datetime]::SpecifyKind([datetime]'2026-01-01', [DateTimeKind]::Utc)
+    $script:ancestryTimes = @{ 101 = $instant.AddSeconds(3); 102 = $instant.AddSeconds(2); 103 = $instant; 104 = $instant.AddSeconds(-1) }
+    $script:ancestrySnapshots = 0
+    $script:heavyCallerAncestry = $null
+    function Get-Process([int]$Id) {
+      if (-not $script:ancestryTimes.ContainsKey($Id)) { throw 'fixture process exited' }
+      return [pscustomobject]@{ StartTime = $script:ancestryTimes[$Id] }
+    }
+    function Get-CimInstance {
+      $script:ancestrySnapshots++
+      foreach ($id in @(101, 102, 103, 104)) {
+        if ($script:ancestryTimes.ContainsKey($id)) {
+          [pscustomobject]@{ ProcessId = $id; ParentProcessId = $id + 1; CreationDate = $script:ancestryTimes[$id] }
+        }
+      }
+    }
+    $start = $script:ancestryTimes[101].ToString('o')
+    $oldest = $script:ancestryTimes[102].Ticks
+    $first = Get-HeavyCallerAncestry 101 $start $oldest @(102)
+    $second = Get-HeavyCallerAncestry 101 $start $oldest @(102)
+    Assert-True ($script:ancestrySnapshots -eq 1 -and $second[102] -eq $first[102]) 'exact live ancestry reuses immutable edges'
+    Get-HeavyCallerAncestry 101 $start $oldest @(102, 103) | Out-Null
+    Assert-True ($script:ancestrySnapshots -eq 2) 'new candidate forces a fresh ancestry snapshot'
+    $script:ancestryTimes[102] = $instant.AddSeconds(4)
+    $refused = $false
+    try { Get-HeavyCallerAncestry 101 $start $oldest @(102, 103) | Out-Null } catch { $refused = $_.Exception.Message -match 'PID reused' }
+    Assert-True ($refused -and $script:ancestrySnapshots -eq 3) 'reused ancestor invalidates cached edges and refuses'
+    $script:ancestryTimes[102] = $instant.AddSeconds(2)
+    Get-HeavyCallerAncestry 101 $start $oldest @(102) | Out-Null
+    $script:ancestryTimes.Remove(102)
+    $refused = $false
+    try { Get-HeavyCallerAncestry 101 $start $oldest @(102) | Out-Null } catch { $refused = $_.Exception.Message -match 'lookup failed' }
+    Assert-True $refused 'exited ancestor invalidates cached edges and refuses'
+    $script:heavyCallerAncestry = $null
+    Write-Output 'PASS immutable ancestry reuse revalidates exact starts; new candidates, PID reuse and exit invalidate'
+  }
+  function Get-HeavyCallerBinding { return $script:fixtureBinding }
+  $isHostVerifier = $true
+  foreach ($role in @('planning', 'review', 'implementation', '', 'observer')) {
+    foreach ($row in @(7, 13)) {
+      $script:fixtureBinding = [pscustomobject]@{ Record = [pscustomobject]@{ laneRole = $role }; Row = $row; Reason = $null }
+      $refused = $false
+      try { Assert-HeavyCallerEligibility | Out-Null } catch { $refused = $_.Exception.Message -match 'heavy-verifier: caller eligibility:' }
+      Assert-True ($refused -eq ($role -cne 'implementation' -or $row -eq 13)) "role=$role row=$row ignores host-shaped spoof"
+    }
+  }
+  $script:fixtureBinding = [pscustomobject]@{ Record = $null; Row = $null; Reason = $null }
+  Assert-HeavyCallerEligibility | Out-Null
+  Write-Output 'PASS healthy standalone host remains eligible'
+  $expected = [pscustomobject]@{Path='synthetic';Raw=$before;RoutingRaw='synthetic-row'}
+  $script:fixtureBinding = [pscustomobject]@{Record=$null;Row=$null;Reason=$null;Path='synthetic';Raw=$after;RoutingRaw='synthetic-row'}
+  $refused = $false
+  try { Assert-HeavyCallerEligibility $expected | Out-Null } catch { $refused = $_.Exception.Message -match 'launch or routing identity changed' }
+  Assert-True $refused 'encoding-only replacement refuses authority revalidation'
+  $script:fixtureBinding.Reason = 'synthetic failed census'
+  $refused = $false
+  try { Assert-HeavyCallerEligibility | Out-Null } catch { $refused = $true }
+  Assert-True $refused 'missing/failed census is not host authority'
+  Write-Output 'PASS role-spoof, missing-role fail-closed and host controls'
+  return
 }
 if ($NativeDbOnly) {
   $tokens = $null; $errors = $null
@@ -246,7 +341,7 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
   Write-Output 'PASS native DB closed entry'
   return
 }
-if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly)) {
+if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly)) {
   & $PSCommandPath -NativeDbOnly
 }
 function Assert-PrecursorAdmissionSurface([string]$Source) {
@@ -290,6 +385,73 @@ $testWrapperIdentities = [Collections.Generic.List[object]]::new()
 $worktreeOrchestrator = Join-Path $worktree ".orchestrator"
 $artifacts = Join-Path $worktreeOrchestrator "artifacts"
 New-Item -ItemType Directory -Path $worktree, $orchestrator, $worktreeOrchestrator -Force | Out-Null
+# #9627: the closed evidence root sits beside the disposable container.
+$fixtureEvidenceRoot = Join-Path $root "container with spaces-heavy-evidence"
+# Inert tracked stand-ins for the H-only #9275 check and harness. They record
+# exactly how the route invoked them; they are never fixture-equivalence proof.
+$fixtureStandInCheck = @'
+param([string]$BaselineHead, [string]$EvidenceDirectory, [string]$Phase, [string]$RunDirectory)
+$self = Get-Process -Id $PID
+$controllerOwner = Join-Path $env:HV_FIXTURE_RUNTIME 'controller-verify-lock.d/owner.json'
+$platformOwner = Join-Path $env:HV_FIXTURE_RUNTIME 'verify-lock.d/owner.json'
+$record = [ordered]@{
+  argv = @([Environment]::GetCommandLineArgs() | Select-Object -Skip 1)
+  bound = @($PSBoundParameters.Keys | Sort-Object)
+  unbound = @($args).Count
+  script = $PSCommandPath
+  pid = $PID; processStartUtc = $self.StartTime.ToUniversalTime().ToString('o')
+  slot = $env:CHASE_SETS_HEAVY_SLOT_ID
+  owner = $(if (Test-Path -LiteralPath $controllerOwner) { [IO.File]::ReadAllText($controllerOwner) } else { $null })
+  platformOwner = $(if (Test-Path -LiteralPath $platformOwner) { [IO.File]::ReadAllText($platformOwner) } else { $null })
+  evidenceEntries = $(if ($EvidenceDirectory -and (Test-Path -LiteralPath $EvidenceDirectory)) { @(Get-ChildItem -LiteralPath $EvidenceDirectory -Force).Count } else { -1 })
+}
+[IO.File]::WriteAllText($env:HV_FIXTURE_BODY, ($record | ConvertTo-Json -Compress -Depth 4))
+if ($env:HV_FIXTURE_STANDIN -ceq 'fail') { exit 29 }
+if ($env:HV_FIXTURE_STANDIN -ceq 'descendant') {
+  $start = [Diagnostics.ProcessStartInfo]::new($self.Path)
+  $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+  foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'cleanup-scale-fixture-harness.ps1'), $env:HV_FIXTURE_GRANDCHILD, $env:HV_FIXTURE_RELEASE)) { [void]$start.ArgumentList.Add($argument) }
+  [void][Diagnostics.Process]::Start($start)
+}
+exit 0
+'@
+$fixtureStandInHarness = @'
+param([string]$IdentityPath, [string]$ReleasePath)
+$self = Get-Process -Id $PID
+[IO.File]::WriteAllText($IdentityPath, ([ordered]@{ pid = $PID; processStartUtc = $self.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress))
+$deadline = [DateTime]::UtcNow.AddSeconds(90)
+while (-not (Test-Path -LiteralPath $ReleasePath) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+exit 0
+'@
+# Each mutant is one exact edit of the candidate route; an absent anchor fails
+# the test rather than silently running the unmutated route.
+$fixtureMutantEdits = @{
+  'arbitrary-phase' = @(, @('"-Phase", "fixture"', '"-Phase", "all"'))
+  'forward-baseline' = @(, @('"-EvidenceDirectory", $fixtureEvidence)', '"-EvidenceDirectory", $fixtureEvidence, "-BaselineHead", $acquiredGitIdentity.Head)'))
+  'unchecked-evidence' = @(, @('$insideRoot = [string]::Equals(', '$insideRoot = $true -or [string]::Equals('))
+  'untracked-check' = @(, @('if (-not $blob) {', 'if ($false) {'))
+  'unbound-source-bytes' = @(, @('if (-not (Test-ControllerFixtureSourceBytes $sourcePath $blob)) {', 'if ($false) {'))
+  'unchecked-ancestry' = @(, @('if ((Test-PathEntry $ancestor) -and -not (Test-PrecursorSafeDirectory $ancestor)) {', 'if ($false) {'))
+  'platform-slot' = @(, @('$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture)', '$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor)'))
+  'early-release' = @(
+    @('if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {', 'if ($isControllerPrecursor -or $isHostVerifier) {'),
+    @('if (($isHostVerifier -or $isControllerFixture) -and $null -ne $child -and', 'if ($isHostVerifier -and $null -ne $child -and'))
+  'bypass-eligibility' = @(, @('$binding = Get-HeavyCallerBinding', '$binding = Get-HeavyCallerBinding; if ($isControllerFixture) { return [pscustomobject]@{ Record = $null; Path = $null; Raw = $null; RoutingRaw = $null } }'))
+}
+function Get-FixtureMutantSource([string]$Source) {
+  if (-not $FixtureMutant) { return $Source }
+  Assert-True (-not $EligibilityMutant) 'FixtureMutant and EligibilityMutant are mutually exclusive'
+  foreach ($edit in $fixtureMutantEdits[$FixtureMutant]) {
+    $count = ([regex]::Matches($Source, [regex]::Escape($edit[0]))).Count
+    Assert-True ($count -eq 1) "fixture mutant $FixtureMutant anchor occurs once (observed $count): $($edit[0])"
+    $Source = $Source.Replace($edit[0], $edit[1])
+  }
+  return $Source
+}
+function Get-GuardSource {
+  if ($GuardRevision) { return (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/invoke-heavy-verifier.ps1") -join "`n") }
+  return [IO.File]::ReadAllText($guard)
+}
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1)
   if ($LASTEXITCODE -ne 0) {
@@ -960,8 +1122,657 @@ function Assert-RulingFourForCurrentSlot([ValidateSet("platform", "controller")]
   Write-Output "PASS heavy verifier ruling 4 reclamation and ambiguity controls ($Slot slot)"
 }
 
+function Test-NativeRoleAdmission {
+  $nativeTree = Join-Path $container 'role-fixture'
+  $cloneOutput = @(& git clone --quiet $worktree $nativeTree 2>&1)
+  Assert-True ($LASTEXITCODE -eq 0) 'native role fixture clone'
+  $nativeHead = (& git -C $nativeTree rev-parse HEAD).Trim()
+  $nativeBranch = (& git -C $nativeTree branch --show-current).Trim()
+  $copyRoot = $orchestrator
+  foreach ($dependency in @('dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs',
+      'heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) {
+    Copy-Item (Join-Path $PSScriptRoot $dependency) $copyRoot
+  }
+  $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/invoke-heavy-verifier.ps1") -join "`n") } else { [IO.File]::ReadAllText($guard) }
+  switch ($EligibilityMutant) {
+    'role-spoof' { $source = $source.Replace('$binding = Get-HeavyCallerBinding', '$binding = Get-HeavyCallerBinding; if ($isHostVerifier -and $binding.Record.laneRole -ceq "review") { return [pscustomobject]@{ Record=$null } }') }
+    'missing-role' { $source = $source.Replace("if (`$null -eq `$record) { throw 'dispatch record malformed or missing role' }", 'if ($null -eq $record) { return [pscustomobject]@{Record=$null;Reason=$null} }').Replace("throw 'dispatch census unknown or incomplete'", 'return [pscustomobject]@{Record=$null;Reason=$null}') }
+    'host-denied' { $source = $source.Replace('$binding = Get-HeavyCallerBinding', '$binding = Get-HeavyCallerBinding; if (-not $binding.Record) { throw "heavy-verifier: caller eligibility: host denied mutant" }') }
+    'bypass-check' { $source = $source.Replace('$callerBinding = Assert-HeavyCallerEligibility', '$callerBinding = $null # Assert-HeavyCallerEligibility') }
+  }
+  $source = Get-FixtureMutantSource $source
+  $reservationMarker=Join-Path $root 'role-reservation.marker'
+  $reservationAnchor='$coordinationMutex = [Threading.Mutex]'
+  Assert-True ($source.Contains($reservationAnchor)) 'reservation probe has its exact acquisition boundary'
+  $source=$source.Replace($reservationAnchor,"[IO.File]::WriteAllText('$reservationMarker','entered')`n$reservationAnchor")
+  $nativeGuard = Join-Path $copyRoot 'invoke-heavy-verifier.ps1'
+  [IO.File]::WriteAllText($nativeGuard, $source)
+  $roleRunner=Join-Path $copyRoot 'run.ps1'
+  [IO.File]::WriteAllText($roleRunner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
+  function Invoke-RoleWrapper($Parameters) {
+    $inputPath=Join-Path $copyRoot 'input.json'
+    [IO.File]::WriteAllText($inputPath,($Parameters | ConvertTo-Json -Depth 8))
+    $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+    $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+    foreach($arg in @('-NoProfile','-File',$roleRunner,$nativeGuard,$inputPath)){[void]$start.ArgumentList.Add($arg)}
+    $child=[Diagnostics.Process]::Start($start)
+    $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
+    if(-not $child.WaitForExit(60000)){ $child.Kill($true); $child.WaitForExit(); throw 'inert role wrapper exceeded existing bounded fixture window' }
+    return @{Code=$child.ExitCode;Output=$stdout.GetAwaiter().GetResult()+$stderr.GetAwaiter().GetResult()}
+  }
+  $self = Get-Process -Id $PID
+  $parentId = [int](Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId
+  $parent = Get-Process -Id $parentId
+  $launchId = [guid]::NewGuid().ToString()
+  $recordPath = Join-Path $orchestrator "dispatch-launch-$launchId.json"
+  $label = 'role-admission-fixture'
+  $transcript = Join-Path $orchestrator "$label.jsonl"
+  $record = [ordered]@{
+    schemaVersion=4; launchId=$launchId; laneRole='implementation'
+    promptPath=(Join-Path $orchestrator "dispatch-heavy-verifier-$launchId.prompt.txt"); reviewIsolationRoot=$null
+    launcherPid=$parentId; launcherStartIdentity=$parent.StartTime.ToUniversalTime().ToString('o')
+    recordedAt=$self.StartTime.ToUniversalTime().AddSeconds(-1).ToString('o'); state='started'
+    childPid=$PID; childStartIdentity=$self.StartTime.ToUniversalTime().ToString('o')
+    worktree=$nativeTree; lane='role-fixture'; identityMode='branch'; branch=$nativeBranch; head=$nativeHead
+    label=$label; transcriptPath=$transcript
+  }
+  $route = [ordered]@{
+    ts=$self.StartTime.ToUniversalTime().AddMilliseconds(-1).ToString('o'); kind='dispatch'; dispatchRoutingSchema='watchdog-dispatch-routing/v1'
+    attemptId=$label; label=$label; lane='role-fixture'; laneRole='implementation'; transcript="$label.jsonl"
+    harness='codex'; model='gpt-6-astra'; effort='high'; row='13'; placement='override-Todd'
+    worktree=$nativeTree; branch=$nativeBranch; head=$nativeHead
+  }
+  $history = Join-Path $orchestrator 'dispatch-log.jsonl'
+  [IO.File]::WriteAllText($history, ($route | ConvertTo-Json -Compress) + "`n")
+  [IO.File]::WriteAllText($record.promptPath, 'synthetic inert role test')
+  [IO.File]::WriteAllText($transcript, "{`"type`":`"item.completed`"}`n")
+  $body = Join-Path $root 'role-body.txt'
+  [IO.File]::WriteAllText((Join-Path $nativeTree 'package.json'),'{"name":"synthetic-role-admission","private":true,"scripts":{"verify:static":"node role-body.cjs"}}')
+  [IO.File]::WriteAllText((Join-Path $nativeTree 'pnpm-lock.yaml'), "lockfileVersion: '9.0'`n`nsettings:`n  autoInstallPeers: true`n  excludeLinksFromLockfile: false`n`nimporters:`n`n  .: {}`n")
+  [IO.File]::WriteAllText((Join-Path $nativeTree 'role-body.cjs'),("require('node:fs').writeFileSync(" + ($body|ConvertTo-Json -Compress) + ", 'forbidden');"))
+  $batteryFixture = Join-Path $nativeTree '.orchestrator/controller-release-battery.ps1'
+  # #9373: the fake records the -NoReuseIdentity value and any unbound argument.
+  $noReuseReceipt = Join-Path $root 'no-reuse-identity.json'
+  $noReuseList = 'test:synthetic-a-9373.test.ps1;test:synthetic-b-9373.test.ps1'
+  [IO.File]::WriteAllText($batteryFixture, @"
+param(`$ControllerRoot,`$ExpectedControllerHead,`$EvidenceReceiptPath,`$ResultPath,`$BaselineHead,`$RepairIssue,`$RepairHistoryPath,`$Scope,`$PriorResultPath,`$NoReuseIdentity,`$OnFailure,[switch]`$AdmissionOwned)
+`$owner=Get-Content -LiteralPath '$((Join-Path $orchestrator 'controller-verify-lock.d/owner.json').Replace("'","''"))' -Raw | ConvertFrom-Json
+if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID){throw 'fixture battery requires exact singleton owner'}
+[IO.File]::WriteAllText('$noReuseReceipt',(@{value=`$NoReuseIdentity;unbound=@(`$args).Count} | ConvertTo-Json -Compress))
+[IO.File]::WriteAllText('$body','allowed')
+"@)
+  # #9627: the inert fixture-equivalence stand-in records its body at $body.
+  [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-equivalence.check.ps1'), $fixtureStandInCheck)
+  [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-harness.ps1'), $fixtureStandInHarness)
+  $env:HV_FIXTURE_BODY = $body
+  $env:HV_FIXTURE_RUNTIME = $orchestrator
+  & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 package.json role-body.cjs pnpm-lock.yaml
+  & git -C $nativeTree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert standalone battery'
+  Assert-True ($LASTEXITCODE -eq 0) 'inert battery committed in disposable fixture'
+  $nativeHead=(& git -C $nativeTree rev-parse HEAD).Trim()
+  $record.head=$nativeHead; $route.head=$nativeHead
+  [IO.File]::WriteAllText($history, ($route | ConvertTo-Json -Compress) + "`n")
+  $base = @{ Worktree=$nativeTree; Lane='erased-lane'; Branch=$nativeBranch; ClaimedHead=$nativeHead; ContainerRoot=$container }
+  $modes = @{
+    Gate=@{Gate='verify:static'}
+    WorkspaceTest=@{WorkspaceTest='@chase-sets/ordering'}
+    NativeDb=@{NativeDbProfile='reconciliation-pg16/v1';NativeRequestPath=(Join-Path $root 'absent-request.json')}
+    ControllerBattery=@{ControllerBattery=$true}
+    ControllerPrecursor=@{ControllerPrecursor='fail-closed-guard-evidence';ControllerPrecursorArtifactPath='.orchestrator/artifacts/denied.json';ControllerPrecursorScenario='ReceiptClaims'}
+    Attach=@{AdmissionKind='build';GuardedPid=$PID;GuardedProcessStartUtc=$record.childStartIdentity;AdmissionNonce=('a'*32);AdmissionCommand='build'}
+    ControllerFixtureEquivalence=@{ControllerFixtureEquivalence=$true;ControllerFixtureEvidenceDirectory=(Join-Path $fixtureEvidenceRoot 'role-denied')}
+  }
+  # Derive mode completeness from the production parameter declaration.
+  $tokens=$null; $errors=$null
+  $modeAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+  $declaredModes=@($modeAst.ParamBlock.Parameters.Attributes.NamedArguments | Where-Object ArgumentName -CEQ 'ParameterSetName' | ForEach-Object {$_.Argument.Value} | Sort-Object -Unique)
+  Assert-True (($declaredModes -join ',') -ceq ((@($modes.Keys | Sort-Object)) -join ',')) 'matrix covers every declared wrapper mode'
+  foreach($mode in @('Gate','ControllerBattery')) {
+    # ControllerBattery runs with -ControllerBatteryNoReuseIdentity omitted, whose
+    # '' default the admitted child must still receive, and then with the list.
+    $cases=if($mode -eq 'ControllerBattery'){@(@{},@{ControllerBatteryNoReuseIdentity=$noReuseList})}else{@(@{})}
+    foreach($case in $cases) {
+      $parameters=$base + $modes[$mode] + $case + @{CommandPath=(Join-Path $PSHOME 'pwsh.exe');CommandArgumentList=@('-NoProfile','-Command',"[IO.File]::WriteAllText('$body','allowed')")}
+      $result=Invoke-RoleWrapper $parameters; $output=$result.Output; $code=$result.Code
+      Assert-True ($code -eq 0 -and (Test-Path $body)) "standalone $mode executes under ownership (exit=$code $($output -join ' '))"
+      if($mode -eq 'ControllerBattery') {
+        $expected=if($case.Count){$noReuseList}else{''}
+        $received=[IO.File]::ReadAllText($noReuseReceipt)
+        $observed=$received | ConvertFrom-Json
+        Assert-True ($observed.value -is [string] -and $observed.value -ceq $expected -and $observed.unbound -eq 0) "admitted battery child receives -NoReuseIdentity '$expected' as one argument: $received"
+        Remove-Item -LiteralPath $noReuseReceipt
+      }
+      Remove-Item -LiteralPath $body
+      Remove-Item -LiteralPath $reservationMarker
+      Write-Output "PASS standalone-$mode exit=0 marker=1"
+    }
+  }
+  # The closed fixture route has no command seam: its standalone positive runs
+  # the tracked inert stand-in with the fixed grammar into a fresh directory.
+  function Invoke-FixtureRolePositive([string]$Name) {
+    $evidence = Join-Path $fixtureEvidenceRoot $Name
+    $result = Invoke-RoleWrapper ($base + @{ControllerFixtureEquivalence=$true;ControllerFixtureEvidenceDirectory=$evidence})
+    $ran = if (Test-Path $body) { [IO.File]::ReadAllText($body) | ConvertFrom-Json } else { $null }
+    Assert-True ($result.Code -eq 0 -and $ran -and ($ran.argv -join '|') -ceq ((@('-NoProfile','-NonInteractive','-File',[IO.Path]::GetFullPath((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-equivalence.check.ps1')),'-Phase','fixture','-EvidenceDirectory',$evidence)) -join '|') -and
+      (Test-Path (Join-Path $evidence 'heavy-verifier-receipt.json')) -and -not (Test-Path (Join-Path $orchestrator 'controller-verify-lock.d'))) "$Name ControllerFixtureEquivalence executes its fixed command under ownership (exit=$($result.Code) $($result.Output))"
+    Remove-Item -LiteralPath $body
+    Remove-Item -LiteralPath $reservationMarker
+  }
+  Invoke-FixtureRolePositive 'standalone-fixture'
+  Write-Output 'PASS standalone-ControllerFixtureEquivalence exit=0 marker=1 fixed-command=1 receipt=1'
+  $roles=if($EligibilityMutant -ceq 'role-spoof'){@('review','missing','planning','implementation')}else{@('missing','review','planning','implementation')}
+  foreach ($role in $roles) {
+    $record.laneRole=$role
+    $record.reviewIsolationRoot=if($role -cin @('review','planning')) { Join-Path ([IO.Path]::GetTempPath()) "chase-sets-$role-$launchId" } else { $null }
+    $raw=$record | ConvertTo-Json -Compress
+    if($role -eq 'missing') { $raw=$raw.Replace('"laneRole":"missing",','') }
+    [IO.File]::WriteAllText($recordPath,$raw)
+    foreach ($occupancy in @('idle','foreign-live')) {
+      $foreign = @{}
+      if($occupancy -eq 'foreign-live') {
+        foreach($slot in @('verify-lock.d','controller-verify-lock.d')) {
+          $directory=Join-Path $orchestrator $slot
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          $ownerFile=Join-Path $directory 'owner.json'
+          $ownerRaw=(New-OwnerRecord ('f'*32) $PID $record.childStartIdentity -ChildPid $PID -ChildStart $record.childStartIdentity) | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText($ownerFile,$ownerRaw); $foreign[$ownerFile]=$ownerRaw
+        }
+      }
+      foreach($mode in @('GateFixture','Gate','WorkspaceTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence')) {
+        $parameters=$base + $(if($mode -eq 'GateFixture'){$modes.Gate}else{$modes[$mode]})
+        if($mode -eq 'GateFixture') {
+          $parameters.CommandPath=Join-Path $PSHOME 'pwsh.exe'
+          $parameters.CommandArgumentList=@('-NoProfile','-Command',"[IO.File]::WriteAllText('$body','forbidden')")
+        }
+        $admissionDirectory=$null
+        if($mode -eq 'Attach') {
+          $admissionDirectory=Join-Path ([IO.Path]::GetTempPath()) ('chase-sets-heavy-admission-'+[guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $admissionDirectory | Out-Null
+          $parameters.AdmissionResultPath=Join-Path $admissionDirectory 'result.json'
+        }
+        $result=Invoke-RoleWrapper $parameters; $output=$result.Output; $code=$result.Code
+        $reason=if($role -eq 'implementation'){'role=implementation routing-row=13'}elseif($role -eq 'missing'){'census unknown|malformed or missing role'}else{"role=$role"}
+        Assert-True ($code -eq 73 -and ($output -join "`n") -match 'caller eligibility:' -and ($output -join "`n") -match $reason) "$role/$mode/$occupancy refuses by role/routing before command resolution (exit=$code body=$(Test-Path $body) $($output -join ' '))"
+        Assert-True (-not (Test-Path $body) -and -not (Test-Path $reservationMarker) -and -not (Test-Path (Join-Path $nativeTree '.orchestrator/artifacts/denied.json')) -and
+          -not (Test-Path $modes.ControllerFixtureEquivalence.ControllerFixtureEvidenceDirectory)) 'denial enters no reservation/wait/body/precursor/evidence boundary'
+        foreach($entry in $foreign.GetEnumerator()) { Assert-True ([IO.File]::ReadAllText($entry.Key) -ceq $entry.Value) 'foreign record byte-identical' }
+        if($occupancy -eq 'idle') { foreach($slot in @('verify-lock.d','controller-verify-lock.d')) { Assert-True (-not (Test-Path (Join-Path $orchestrator $slot))) 'denied caller creates no reservation' } }
+        if($admissionDirectory) { Remove-Item -LiteralPath $admissionDirectory -Recurse -Force }
+        Write-Output "PASS role=$role mode=$mode occupancy=$occupancy exit=73 no-reservation"
+      }
+      foreach($entry in $foreign.GetEnumerator()) { Remove-Item -LiteralPath (Split-Path -Parent $entry.Key) -Recurse -Force }
+    }
+  }
+  $record.laneRole='implementation'; $record.reviewIsolationRoot=$null
+  $route.row='7'
+  [IO.File]::WriteAllText($recordPath,($record | ConvertTo-Json -Compress))
+  [IO.File]::WriteAllText($history,($route | ConvertTo-Json -Compress)+"`n")
+  $positive=$base + $modes.Gate + @{CommandPath=(Join-Path $PSHOME 'pwsh.exe');CommandArgumentList=@('-NoProfile','-Command',"[IO.File]::WriteAllText('$body','allowed')")}
+  $result=Invoke-RoleWrapper $positive
+  Assert-True ($result.Code -eq 0 -and (Test-Path $body)) "non-doc implementation executes (exit=$($result.Code) $($result.Output))"
+  Remove-Item -LiteralPath $body
+  Remove-Item -LiteralPath $reservationMarker
+  Write-Output 'PASS implementation-row7 exit=0 marker=1'
+  Invoke-FixtureRolePositive 'implementation-row7-fixture'
+  Write-Output 'PASS implementation-row7 ControllerFixtureEquivalence exit=0 marker=1 fixed-command=1 receipt=1'
+  $provenance=@{policyGeneration=1;registryAuthorityDigest='synthetic-8528';family='astra';slot='explicit';usedLastKnownGood=$false}
+  foreach($name in $provenance.Keys){$record[$name]=$provenance[$name];$route[$name]=$provenance[$name]}
+  $route.dispatchRoutingSchema='watchdog-dispatch-routing/v2'
+  [IO.File]::WriteAllText($recordPath,($record|ConvertTo-Json -Compress))
+  foreach($row in @(13,7)) {
+    $route.row=[string]$row
+    [IO.File]::WriteAllText($history,($route|ConvertTo-Json -Compress)+"`n")
+    if($row -eq 7) {
+      $unrelated=$route | ConvertTo-Json -Compress | ConvertFrom-Json -AsHashtable -DateKind String
+      $unrelated.label='unrelated-newer-docs';$unrelated.transcript='unrelated-newer-docs.jsonl';$unrelated.row='13'
+      [IO.File]::AppendAllText($history,((($unrelated|ConvertTo-Json -Compress)+"`n") * 2048))
+    }
+    $result=Invoke-RoleWrapper $positive
+    if($row -eq 13){Assert-True ($result.Code -eq 73 -and $result.Output -match 'routing-row=13' -and -not(Test-Path $reservationMarker)) 'shared v2 row validator denies docs before reservation'}
+    else {
+      Assert-True ($result.Code -eq 0 -and (Test-Path $body)) "shared v2 row validator retains implementation: $($result.Output)"
+      Remove-Item -LiteralPath $body,$reservationMarker
+    }
+    Write-Output "PASS native-v2 row=$row exit=$($result.Code) complete-history-unrelated-tail=$($row -eq 7)"
+  }
+  foreach($case in @('missing-row','ambiguous-row','wrong-head','provenance-mismatch','terminal','launching','PID-reused','missing-transcript')) {
+    $originalRoute=$route | ConvertTo-Json -Compress
+    $originalRecord=$record | ConvertTo-Json -Compress
+    switch($case) {
+      'missing-row' { [IO.File]::WriteAllText($history,'') }
+      'ambiguous-row' { [IO.File]::WriteAllText($history,"$originalRoute`n$originalRoute`n") }
+      'wrong-head' { $bad=$originalRoute|ConvertFrom-Json -AsHashtable -DateKind String;$bad.head='f'*40;[IO.File]::WriteAllText($history,($bad|ConvertTo-Json -Compress)+"`n") }
+      'provenance-mismatch' { $bad=$originalRoute|ConvertFrom-Json -AsHashtable -DateKind String;$bad.registryAuthorityDigest='synthetic-foreign';[IO.File]::WriteAllText($history,($bad|ConvertTo-Json -Compress)+"`n") }
+      'terminal' { [IO.File]::WriteAllText($transcript,"{`"type`":`"turn.completed`"}`n") }
+      'launching' { $bad=$originalRecord|ConvertFrom-Json -AsHashtable -DateKind String;$bad.state='launching';$bad.childPid=$null;$bad.childStartIdentity=$null;[IO.File]::WriteAllText($recordPath,($bad|ConvertTo-Json -Compress)) }
+      'PID-reused' { $bad=$originalRecord|ConvertFrom-Json -AsHashtable -DateKind String;$bad.childStartIdentity=$self.StartTime.ToUniversalTime().AddSeconds(-1).ToString('o');[IO.File]::WriteAllText($recordPath,($bad|ConvertTo-Json -Compress)) }
+      'missing-transcript' { Remove-Item -LiteralPath $transcript }
+    }
+    $result=Invoke-RoleWrapper $positive
+    Assert-True ($result.Code -eq 73 -and $result.Output -match 'caller eligibility:' -and -not (Test-Path $body) -and -not (Test-Path $reservationMarker) -and -not (Test-Path $lock)) "native $case fails closed"
+    [IO.File]::WriteAllText($recordPath,$originalRecord)
+    [IO.File]::WriteAllText($history,"$originalRoute`n")
+    [IO.File]::WriteAllText($transcript,"{`"type`":`"item.completed`"}`n")
+    Write-Output "PASS native $case exit=73 marker=0 owner=0"
+  }
+  Remove-Item -LiteralPath $recordPath
+  $unrelatedStart=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+  $unrelatedStart.UseShellExecute=$false; $unrelatedStart.CreateNoWindow=$true
+  foreach($arg in @('-NoProfile','-Command','Start-Sleep -Seconds 60')){[void]$unrelatedStart.ArgumentList.Add($arg)}
+  $unrelated=[Diagnostics.Process]::Start($unrelatedStart)
+  $unrelatedIdentity=$unrelated.StartTime.ToUniversalTime().Ticks
+  try {
+    $record.laneRole='review';$record.reviewIsolationRoot=Join-Path ([IO.Path]::GetTempPath()) "chase-sets-review-$launchId"
+    $record.launcherPid=$PID;$record.launcherStartIdentity=$self.StartTime.ToUniversalTime().ToString('o')
+    $record.childPid=$unrelated.Id;$record.childStartIdentity=$unrelated.StartTime.ToUniversalTime().ToString('o')
+    [IO.File]::WriteAllText($recordPath,($record|ConvertTo-Json -Compress))
+    $result=Invoke-RoleWrapper $positive
+    Assert-True ($result.Code -eq 0 -and (Test-Path $body)) "unrelated healthy review does not deny host: $($result.Output)"
+    Remove-Item -LiteralPath $body
+    Write-Output 'PASS unrelated-review host exit=0 marker=1'
+  } finally {
+    if(-not $unrelated.HasExited -and $unrelated.StartTime.ToUniversalTime().Ticks -eq $unrelatedIdentity){$unrelated.Kill();$unrelated.WaitForExit()}
+    Remove-Item -LiteralPath $recordPath
+  }
+  Remove-Item -LiteralPath $reservationMarker
+  $reader=Join-Path $copyRoot 'dispatch-ownership.ps1'
+  $readerBytes=[IO.File]::ReadAllBytes($reader)
+  try {
+    Remove-Item -LiteralPath $reader
+    $result=Invoke-RoleWrapper ($base + $modes.ControllerBattery)
+    Assert-True ($result.Code -eq 73 -and $result.Output -match 'caller eligibility: ownership reader unavailable' -and
+      -not(Test-Path $body) -and -not(Test-Path $reservationMarker)) 'missing reader never grants standalone host authority'
+    Write-Output 'PASS missing-ownership-reader host-ControllerBattery exit=73 body=0 reservation=0'
+  } finally { [IO.File]::WriteAllBytes($reader,$readerBytes) }
+}
+
+# #9627 AC1/AC2: the closed ControllerFixtureEquivalence route, end to end
+# through a disposable standalone-host container and an inert tracked stand-in.
+function Test-ControllerFixtureEquivalence {
+  $tree = Join-Path $container 'fixture-equivalence'
+  $cloneOutput = @(& git clone --quiet $worktree $tree 2>&1)
+  Assert-True ($LASTEXITCODE -eq 0) "fixture route clone: $cloneOutput"
+  function Invoke-TreeGit([string[]]$Arguments) {
+    $output = @(& git -C $tree -c user.name=Fixture -c user.email=fixture@example.invalid @Arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "fixture route git $($Arguments -join ' ') failed: $($output -join ' ')" }
+    return ($output -join "`n").Trim()
+  }
+  # Pin the CRLF checkout the source-byte binding must accept on Windows.
+  Invoke-TreeGit @('config', 'core.autocrlf', 'true') | Out-Null
+  $checkRelative = '.orchestrator/cleanup-scale-fixture-equivalence.check.ps1'
+  $harnessRelative = '.orchestrator/cleanup-scale-fixture-harness.ps1'
+  $checkFull = [IO.Path]::GetFullPath((Join-Path $tree $checkRelative))
+  [IO.File]::WriteAllText($checkFull, $fixtureStandInCheck)
+  [IO.File]::WriteAllText((Join-Path $tree $harnessRelative), $fixtureStandInHarness)
+  Invoke-TreeGit @('add', '--', $checkRelative, $harnessRelative) | Out-Null
+  Invoke-TreeGit @('commit', '--quiet', '-m', 'inert fixture-equivalence stand-in') | Out-Null
+  $branch = Invoke-TreeGit @('branch', '--show-current')
+  # Heads whose check or harness is ignored but present: clean status, untracked source.
+  $untracked = [ordered]@{}
+  foreach ($relative in @($checkRelative, $harnessRelative)) {
+    $name = if ($relative -ceq $checkRelative) { 'codex/fixture-untracked-check' } else { 'codex/fixture-untracked-harness' }
+    Invoke-TreeGit @('checkout', '--quiet', '-b', $name) | Out-Null
+    Invoke-TreeGit @('rm', '--quiet', '--cached', '--', $relative) | Out-Null
+    [IO.File]::AppendAllText((Join-Path $tree '.gitignore'), "$relative`n")
+    Invoke-TreeGit @('add', '--', '.gitignore') | Out-Null
+    Invoke-TreeGit @('commit', '--quiet', '-m', "ignore $relative") | Out-Null
+    $untracked[$relative] = [pscustomobject]@{ Branch = $name; Head = Invoke-TreeGit @('rev-parse', 'HEAD') }
+    Invoke-TreeGit @('checkout', '--quiet', '-f', $branch) | Out-Null
+  }
+  Assert-True ((Invoke-TreeGit @('status', '--porcelain=v1', '--untracked-files=all')) -ceq '') 'fixture route tree is clean on its main branch'
+
+  $fixtureGuardRoot = Join-Path $root 'fixture-guard'
+  New-Item -ItemType Directory -Path $fixtureGuardRoot | Out-Null
+  Copy-Item (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') $fixtureGuardRoot
+  $fixtureGuard = Join-Path $fixtureGuardRoot 'invoke-heavy-verifier.ps1'
+  [IO.File]::WriteAllText($fixtureGuard, (Get-FixtureMutantSource (Get-GuardSource)))
+  $fixtureRunner = Join-Path $fixtureGuardRoot 'run.ps1'
+  # An uncaught refusal still exits 1; its message stays unwrapped for matching.
+  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')
+  $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'
+  $platformLock = Join-Path $orchestrator 'verify-lock.d'
+  $fixtureBody = Join-Path $root 'fixture-route-body.json'
+  $grandchildIdentity = Join-Path $root 'fixture-route-grandchild.json'
+  $grandchildRelease = Join-Path $root 'fixture-route-grandchild.release'
+  $script:fixtureSequence = 0
+  function New-FixtureEvidence { $script:fixtureSequence++; return (Join-Path $fixtureEvidenceRoot "route-$script:fixtureSequence") }
+  function Get-FixtureParameters([string]$Evidence, [hashtable]$Extra = @{}) {
+    $parameters = @{
+      ControllerFixtureEquivalence = $true; ControllerFixtureEvidenceDirectory = $Evidence
+      Worktree = $tree; Lane = 'fixture-route'; Branch = (Invoke-TreeGit @('branch', '--show-current'))
+      ClaimedHead = (Invoke-TreeGit @('rev-parse', 'HEAD')); ContainerRoot = $container
+    }
+    foreach ($entry in $Extra.GetEnumerator()) {
+      if ($null -eq $entry.Value) { [void]$parameters.Remove($entry.Key) } else { $parameters[$entry.Key] = $entry.Value }
+    }
+    return $parameters
+  }
+  function Start-FixtureRoute([hashtable]$Parameters, [string]$Mode = '') {
+    $inputPath = Join-Path $fixtureGuardRoot ('input-' + [guid]::NewGuid().ToString('N') + '.json')
+    [IO.File]::WriteAllText($inputPath, ($Parameters | ConvertTo-Json -Depth 8))
+    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+    foreach ($argument in @('-NoProfile', '-File', $fixtureRunner, $fixtureGuard, $inputPath)) { [void]$start.ArgumentList.Add($argument) }
+    $start.Environment['HV_FIXTURE_STANDIN'] = $Mode
+    $start.Environment['HV_FIXTURE_BODY'] = $fixtureBody
+    $start.Environment['HV_FIXTURE_RUNTIME'] = $orchestrator
+    $start.Environment['HV_FIXTURE_GRANDCHILD'] = $grandchildIdentity
+    $start.Environment['HV_FIXTURE_RELEASE'] = $grandchildRelease
+    $process = [Diagnostics.Process]::Start($start)
+    $testWrapperIdentities.Add([pscustomobject]@{ pid = $process.Id; processStartUtc = $process.StartTime.ToUniversalTime().ToString('o') })
+    return [pscustomobject]@{ Process = $process; Out = $process.StandardOutput.ReadToEndAsync(); Err = $process.StandardError.ReadToEndAsync() }
+  }
+  function Complete-FixtureRoute($Route) {
+    if (-not $Route.Process.WaitForExit(90000)) { try { $Route.Process.Kill($true) } catch {}; throw 'ASSERTION FAILED: fixture route wrapper did not exit' }
+    $Route.Process.WaitForExit()
+    return [pscustomobject]@{ exitCode = $Route.Process.ExitCode; output = ($Route.Out.GetAwaiter().GetResult() + "`n" + $Route.Err.GetAwaiter().GetResult()).Trim() }
+  }
+  function Invoke-FixtureRoute([hashtable]$Parameters, [string]$Mode = '') { return Complete-FixtureRoute (Start-FixtureRoute $Parameters $Mode) }
+  function Read-FixtureBody { if (Test-Path -LiteralPath $fixtureBody) { return [IO.File]::ReadAllText($fixtureBody) | ConvertFrom-Json -DateKind String } return $null }
+  function Get-ExpectedArgv([string]$Evidence) { return @('-NoProfile', '-NonInteractive', '-File', $checkFull, '-Phase', 'fixture', '-EvidenceDirectory', $Evidence) -join '|' }
+  # A refused route runs no body, leaves no controller owner and creates no evidence.
+  function Assert-FixtureRefused($Result, [string]$Evidence, [string]$Pattern, [string]$Name, [int]$ExitCode = -1) {
+    Assert-True ($Result.exitCode -ne 0 -and ($ExitCode -lt 0 -or $Result.exitCode -eq $ExitCode) -and $Result.output -match $Pattern -and
+      -not (Test-Path -LiteralPath $fixtureBody) -and -not (Test-Path -LiteralPath $controllerLock) -and
+      -not (Test-Path -LiteralPath $Evidence)) "fixture route $Name refuses before body (exit=$($Result.exitCode) body=$(Test-Path -LiteralPath $fixtureBody) lock=$(Test-Path -LiteralPath $controllerLock) evidence=$(Test-Path -LiteralPath $Evidence) output=$($Result.output))"
+    Write-Output "PASS fixture-route $Name refused exit=$($Result.exitCode) body=0 owner=0 evidence=0"
+  }
+  function Assert-FixtureCompleted($Result, [string]$Evidence, [string]$Name, [int]$ExitCode = 0, [string]$IdentityMode = 'branch') {
+    $ran = Read-FixtureBody
+    Assert-True ($Result.exitCode -eq $ExitCode -and $ran) "fixture route $Name runs its body once and returns the child exit (exit=$($Result.exitCode) output=$($Result.output))"
+    Assert-True (($ran.argv -join '|') -ceq (Get-ExpectedArgv $Evidence) -and ($ran.bound -join ',') -ceq 'EvidenceDirectory,Phase' -and $ran.unbound -eq 0 -and
+      [IO.Path]::GetFullPath($ran.script) -ceq $checkFull) "fixture route $Name child is exactly the tracked check, -Phase fixture and the validated evidence (argv=$($ran.argv -join '|'))"
+    Assert-True ($ran.evidenceEntries -eq 0) "fixture route $Name evidence was fresh and empty at child start"
+    Assert-True (-not [string]::IsNullOrEmpty($ran.owner)) "fixture route $Name child runs under a published controller-slot owner (platform owner present=$(-not [string]::IsNullOrEmpty($ran.platformOwner)))"
+    $owner = $ran.owner | ConvertFrom-Json -DateKind String
+    $head = Invoke-TreeGit @('rev-parse', 'HEAD')
+    Assert-True ($owner.lockId -ceq $ran.slot -and $owner.gate -ceq 'script-battery' -and $owner.state -ceq 'started' -and
+      [int]$owner.childPid -eq [int]$ran.pid -and $owner.lane -ceq 'fixture-route' -and $owner.head -ceq $head -and
+      $owner.identityMode -ceq $IdentityMode -and [IO.Path]::GetFullPath($owner.worktree) -ceq [IO.Path]::GetFullPath($tree)) "fixture route $Name child runs under its exact controller-slot owner ($($ran.owner))"
+    $receiptPath = Join-Path $Evidence 'heavy-verifier-receipt.json'
+    $receipt = if (Test-Path -LiteralPath $receiptPath) { [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -DateKind String } else { $null }
+    Assert-True ($receipt -and $receipt.exit -eq $ExitCode -and $receipt.head -ceq $head -and $receipt.lane -ceq 'fixture-route' -and
+      $receipt.slot -ceq 'controller-verify-lock.d' -and $receipt.lockId -ceq $owner.lockId -and [int]$receipt.child.pid -eq [int]$ran.pid -and
+      ($receipt.arguments -join '|') -ceq (Get-ExpectedArgv $Evidence) -and $receipt.released -eq $true -and
+      $receipt.sources.$checkRelative -ceq (Invoke-TreeGit @('rev-parse', "HEAD:$checkRelative")) -and
+      $receipt.sources.$harnessRelative -ceq (Invoke-TreeGit @('rev-parse', "HEAD:$harnessRelative")) -and
+      $receipt.wrapper.sha256 -ceq [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($fixtureGuard))).ToLowerInvariant()) "fixture route $Name writes its post-release owner receipt"
+    Assert-True (-not (Test-Path -LiteralPath $controllerLock)) "fixture route $Name releases its exact controller owner"
+    Remove-Item -LiteralPath $fixtureBody
+    $script:fixtureLastBody = $ran
+    Write-Output "PASS fixture-route $Name exit=$ExitCode fixed-command=1 controller-owner=1 receipt=1 released=1"
+  }
+  # Observes one refusal without asserting, so a failing-first run reports every
+  # boundary case; a stray body record is cleared so the next case starts clean.
+  function Get-FixtureRefusalState($Result, [string]$Evidence, [string]$Pattern, [string]$Name, [string]$Untouched = '') {
+    $state = [pscustomobject]@{
+      Name = $Name; Exit = $Result.exitCode; Matched = $Result.output -match $Pattern; Output = $Result.output
+      Body = Test-Path -LiteralPath $fixtureBody; Owner = Test-Path -LiteralPath $controllerLock
+      Evidence = Test-Path -LiteralPath $Evidence; Written = [bool]$Untouched -and (Test-Path -LiteralPath $Untouched)
+    }
+    if ($state.Body) { Remove-Item -LiteralPath $fixtureBody }
+    return $state
+  }
+
+  try {
+    # AC1: the eligible standalone host selects exactly the fixed full-phase command.
+    $evidence = New-FixtureEvidence
+    Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'branch-positive'
+    Assert-True ($null -eq $script:fixtureLastBody.platformOwner -and -not (Test-Path -LiteralPath $platformLock)) 'fixture route never takes the platform slot'
+    Invoke-TreeGit @('checkout', '--quiet', '--detach') | Out-Null
+    $evidence = New-FixtureEvidence
+    Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ Branch = $null; ClaimedHead = $null; ImmutableHead = (Invoke-TreeGit @('rev-parse', 'HEAD')) })) $evidence 'immutable-head-positive' 0 'immutable-head'
+    Invoke-TreeGit @('checkout', '--quiet', $branch) | Out-Null
+
+    # AC1 one-variable selector, head and source controls.
+    $evidence = New-FixtureEvidence
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ ControllerFixturePhase = 'all' })) $evidence 'ControllerFixturePhase' 'unknown-selector'
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ CommandPath = (Join-Path $PSHOME 'pwsh.exe'); CommandArgumentList = @('-NoProfile', '-Command', 'exit 0') })) $evidence 'parameter set' 'command-seam'
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ Gate = 'verify:static' })) $evidence 'parameter set' 'mixed-selector'
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ ClaimedHead = ('0' * 40) })) $evidence 'exact launch-time HEAD' 'wrong-head'
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ Branch = 'codex/not-live' })) $evidence 'does not match the live Git branch' 'wrong-branch'
+    $dirty = Join-Path $tree 'dirty.txt'
+    [IO.File]::WriteAllText($dirty, 'dirty')
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'clean exact-head worktree' 'dirty-worktree'
+    Remove-Item -LiteralPath $dirty
+    [IO.File]::AppendAllText($checkFull, "`n# substituted`n")
+    Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'clean exact-head worktree' 'modified-check'
+    Invoke-TreeGit @('checkout', '--quiet', '--', $checkRelative) | Out-Null
+    foreach ($relative in $untracked.Keys) {
+      Invoke-TreeGit @('checkout', '--quiet', $untracked[$relative].Branch) | Out-Null
+      [IO.File]::WriteAllText((Join-Path $tree $relative), $(if ($relative -ceq $checkRelative) { $fixtureStandInCheck } else { $fixtureStandInHarness }))
+      Assert-True ((Invoke-TreeGit @('status', '--porcelain=v1', '--untracked-files=all')) -ceq '') "ignored $relative leaves a clean status"
+      Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'not one exact tracked regular script' "untracked-$(Split-Path -Leaf $relative)"
+      Invoke-TreeGit @('checkout', '--quiet', '-f', $branch) | Out-Null
+    }
+
+    # AC1 evidence-path controls: one closed root beside the container, one fresh leaf.
+    foreach ($case in @(
+        @('relative', 'fixture-relative', 'absolute directory below the closed evidence root'),
+        @('inside-worktree', (Join-Path $tree 'fixture-evidence'), 'directly below the closed evidence root'),
+        @('inside-runtime', (Join-Path $orchestrator 'fixture-evidence'), 'directly below the closed evidence root'),
+        @('system-temp', (Join-Path $systemTemp ('fixture-evidence-' + [guid]::NewGuid().ToString('N'))), 'directly below the closed evidence root'),
+        @('nested', (Join-Path $fixtureEvidenceRoot 'nested\leaf'), 'directly below the closed evidence root'),
+        @('traversal', ($fixtureEvidenceRoot + '\up\..\traversal'), 'directly below the closed evidence root'),
+        @('leaf-space', (Join-Path $fixtureEvidenceRoot 'bad name'), 'directly below the closed evidence root'),
+        @('leaf-dot', (Join-Path $fixtureEvidenceRoot 'dotted.leaf'), 'directly below the closed evidence root'))) {
+      Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $case[1])) $case[1] $case[2] "evidence-$($case[0])"
+    }
+    $reused = Join-Path $fixtureEvidenceRoot 'reused'
+    New-Item -ItemType Directory -Path $reused | Out-Null
+    [IO.File]::WriteAllText((Join-Path $reused 'prior.txt'), 'prior')
+    $result = Invoke-FixtureRoute (Get-FixtureParameters $reused)
+    Assert-True ($result.exitCode -ne 0 -and $result.output -match 'already exists' -and -not (Test-Path -LiteralPath $fixtureBody) -and
+      @(Get-ChildItem -LiteralPath $reused -Force).Count -eq 1 -and -not (Test-Path -LiteralPath $controllerLock)) "fixture route refuses a reused evidence directory and preserves it ($($result.output))"
+    Write-Output 'PASS fixture-route evidence-reused refused body=0 owner=0 preserved=1'
+    $reparseTarget = Join-Path $root 'fixture-reparse-target'
+    New-Item -ItemType Directory -Path $reparseTarget | Out-Null
+    $leafJunction = Join-Path $fixtureEvidenceRoot 'junction-leaf'
+    New-Item -ItemType Junction -Path $leafJunction -Target $reparseTarget | Out-Null
+    $result = Invoke-FixtureRoute (Get-FixtureParameters $leafJunction)
+    Assert-True ($result.exitCode -ne 0 -and $result.output -match 'already exists' -and -not (Test-Path -LiteralPath $fixtureBody) -and
+      @(Get-ChildItem -LiteralPath $reparseTarget -Force).Count -eq 0) "fixture route refuses a reparse evidence leaf without writing through it ($($result.output))"
+    Remove-Item -LiteralPath $leafJunction -Force
+    Write-Output 'PASS fixture-route evidence-reparse-leaf refused body=0 target-untouched=1'
+    $asideRoot = Join-Path $root 'fixture-evidence-root-aside'
+    [IO.Directory]::Move($fixtureEvidenceRoot, $asideRoot)
+    try {
+      New-Item -ItemType Junction -Path $fixtureEvidenceRoot -Target $reparseTarget | Out-Null
+      $evidence = Join-Path $fixtureEvidenceRoot 'through-root-junction'
+      $result = Invoke-FixtureRoute (Get-FixtureParameters $evidence)
+      Assert-True ($result.exitCode -ne 0 -and $result.output -match 'reparse point' -and -not (Test-Path -LiteralPath $fixtureBody) -and
+        @(Get-ChildItem -LiteralPath $reparseTarget -Force).Count -eq 0 -and -not (Test-Path -LiteralPath $controllerLock)) "fixture route refuses a reparse evidence root before admission ($($result.output))"
+      Remove-Item -LiteralPath $fixtureEvidenceRoot -Force
+    } finally {
+      if (-not (Test-Path -LiteralPath $fixtureEvidenceRoot)) { [IO.Directory]::Move($asideRoot, $fixtureEvidenceRoot) }
+    }
+    Write-Output 'PASS fixture-route evidence-reparse-root refused body=0 owner=0 target-untouched=1'
+    $gitMarker = Join-Path $root '.git'
+    New-Item -ItemType Directory -Path $gitMarker | Out-Null
+    try {
+      $evidence = New-FixtureEvidence
+      Assert-FixtureRefused (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'inside a Git worktree' 'evidence-inside-git'
+    } finally { Remove-Item -LiteralPath $gitMarker -Recurse -Force }
+
+    # AC1 executed bytes: a fresh LF checkout (the exact HEAD blob) and a fresh
+    # core.autocrlf CRLF checkout both run.
+    foreach ($ending in @('lf', 'crlf')) {
+      Invoke-TreeGit @('config', 'core.autocrlf', $(if ($ending -ceq 'crlf') { 'true' } else { 'false' })) | Out-Null
+      foreach ($relative in @($checkRelative, $harnessRelative)) { Remove-Item -LiteralPath (Join-Path $tree $relative) }
+      Invoke-TreeGit @('checkout', '--quiet', '--', $checkRelative, $harnessRelative) | Out-Null
+      foreach ($relative in @($checkRelative, $harnessRelative)) {
+        $raw = Invoke-TreeGit @('hash-object', '--no-filters', '--', $relative)
+        Assert-True (($raw -ceq (Invoke-TreeGit @('rev-parse', "HEAD:$relative"))) -eq ($ending -ceq 'lf')) "$ending $relative is $(if ($ending -ceq 'lf') { 'the exact blob' } else { 'a CRLF rendering, not the blob' })"
+      }
+      Assert-True ((Invoke-TreeGit @('status', '--porcelain=v1', '--untracked-files=all')) -ceq '') "$ending sources leave a clean status"
+      $evidence = New-FixtureEvidence
+      Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence "$ending-sources-positive"
+    }
+
+    # AC1 boundary cases (#9627 gov-r1 F1/F2), judged together after all ran.
+    $boundary = [Collections.Generic.List[object]]::new()
+    # F1: an index flag hides substituted check or harness bytes from status.
+    foreach ($flag in @('assume-unchanged', 'skip-worktree')) {
+      foreach ($relative in @($checkRelative, $harnessRelative)) {
+        Invoke-TreeGit @('update-index', "--$flag", '--', $relative) | Out-Null
+        try {
+          [IO.File]::AppendAllText((Join-Path $tree $relative), "`n# substituted under $flag`n")
+          Assert-True ((Invoke-TreeGit @('status', '--porcelain=v1', '--untracked-files=all')) -ceq '') "$flag hides substituted $relative from status"
+          $evidence = New-FixtureEvidence
+          $boundary.Add((Get-FixtureRefusalState (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'do not match the exact HEAD blob' "$flag-$(Split-Path -Leaf $relative)"))
+        } finally {
+          Invoke-TreeGit @('update-index', "--no-$flag", '--', $relative) | Out-Null
+          Invoke-TreeGit @('checkout', '--quiet', '--', $relative) | Out-Null
+        }
+      }
+    }
+    # F1 on the existing post-acquisition recheck: bytes hidden after admission.
+    $evidence = New-FixtureEvidence
+    $route = Start-FixtureRoute (Get-FixtureParameters $evidence @{ TestDelayIdentityRevalidationMilliseconds = 1500 })
+    try {
+      Wait-Condition { $o = if (Test-Path -LiteralPath (Join-Path $controllerLock 'owner.json')) { try { [IO.File]::ReadAllText((Join-Path $controllerLock 'owner.json')) | ConvertFrom-Json } catch { $null } }; $o -and $o.state -ceq 'launching' } 'fixture route acquisition before hidden substitution'
+      Invoke-TreeGit @('update-index', '--skip-worktree', '--', $checkRelative) | Out-Null
+      [IO.File]::AppendAllText($checkFull, "`n# substituted after admission`n")
+      $boundary.Add((Get-FixtureRefusalState (Complete-FixtureRoute $route) $evidence 'do not match the exact HEAD blob' 'recheck-skip-worktree-check'))
+    } finally {
+      Invoke-TreeGit @('update-index', '--no-skip-worktree', '--', $checkRelative) | Out-Null
+      Invoke-TreeGit @('checkout', '--quiet', '--', $checkRelative) | Out-Null
+    }
+    Assert-True ((Invoke-TreeGit @('status', '--porcelain=v1', '--untracked-files=all')) -ceq '') 'index-flag cases restore a clean tree'
+    # F2: one variable, the evidence ancestry. The container is spelled through an
+    # ancestor junction into a synthetic Git worktree whose .git lies outside the
+    # lexical ancestry; a nested junction keeps the physical container, lock and
+    # census unchanged.
+    $gitTarget = Join-Path $root 'fixture-ancestor-git'
+    $gitNested = Join-Path $gitTarget 'nested'
+    New-Item -ItemType Directory -Path $gitNested | Out-Null
+    $initOutput = @(& git init --quiet $gitTarget 2>&1)
+    Assert-True ($LASTEXITCODE -eq 0) "synthetic ancestor-junction Git worktree: $initOutput"
+    $containerLeaf = Split-Path -Leaf $container
+    $containerLink = Join-Path $gitNested $containerLeaf
+    $ancestorJunction = Join-Path $root 'fixture-ancestor-junction'
+    $aliasContainer = Join-Path $ancestorJunction $containerLeaf
+    $aliasEvidenceRoot = Join-Path $ancestorJunction "$containerLeaf-heavy-evidence"
+    $physicalEvidenceRoot = Join-Path $gitNested "$containerLeaf-heavy-evidence"
+    # Runs only the evidence-path functions of the guard under test, so the
+    # ancestry is the single variable even though route identity refuses first.
+    $evidenceProbe = Join-Path $fixtureGuardRoot 'evidence-probe.ps1'
+    [IO.File]::WriteAllText($evidenceProbe, @'
+param([string]$Guard, [string]$Container, [string]$Evidence)
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Guard, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'guard parse failed' }
+$names = @('Test-PathEntry', 'Test-PrecursorSafeDirectory', 'Resolve-ControllerFixtureEvidence', 'Assert-ControllerFixtureEvidencePath', 'Assert-ControllerFixtureEvidenceFresh', 'New-ControllerFixtureEvidence')
+foreach ($function in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $names -ccontains $node.Name }, $true)) {
+  . ([scriptblock]::Create($function.Extent.Text))
+}
+$container = $Container
+try { Resolve-ControllerFixtureEvidence $Evidence; New-ControllerFixtureEvidence; 'evidence guard accepted'; exit 0 }
+catch { $_.Exception.Message; exit 1 }
+'@)
+    function Invoke-EvidenceGuardProbe([string]$ContainerPath, [string]$Evidence) {
+      $output = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $evidenceProbe $fixtureGuard $ContainerPath $Evidence 2>&1)
+      return [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($output -join "`n").Trim() }
+    }
+    $evidence = Join-Path $fixtureEvidenceRoot 'guard-plain'
+    $result = Invoke-EvidenceGuardProbe $container $evidence
+    Assert-True ($result.exitCode -eq 0 -and (Test-Path -LiteralPath $evidence -PathType Container)) "evidence guard accepts the plain container spelling ($($result.output))"
+    Write-Output 'PASS fixture-route guard-plain-ancestry accepted=1 created=1'
+    try {
+      New-Item -ItemType Junction -Path $containerLink -Target $container | Out-Null
+      New-Item -ItemType Junction -Path $ancestorJunction -Target $gitNested | Out-Null
+      # End to end the worktree must sit below that container too, and Git names
+      # its junction-resolved root, so worktree identity refuses first.
+      $evidence = Join-Path $aliasEvidenceRoot 'route-ancestor-junction'
+      $parameters = Get-FixtureParameters $evidence @{ ContainerRoot = $aliasContainer; Worktree = (Join-Path $aliasContainer (Split-Path -Leaf $tree)) }
+      $boundary.Add((Get-FixtureRefusalState (Invoke-FixtureRoute $parameters) $evidence 'canonical Git worktree root' 'route-ancestor-junction' $physicalEvidenceRoot))
+      $evidence = Join-Path $aliasEvidenceRoot 'guard-ancestor-junction'
+      $boundary.Add((Get-FixtureRefusalState (Invoke-EvidenceGuardProbe $aliasContainer $evidence) $evidence 'evidence ancestor is a symlink, reparse point' 'guard-ancestor-junction' $physicalEvidenceRoot))
+    } finally {
+      # Delete only the links, never through them.
+      foreach ($link in @($ancestorJunction, $containerLink)) { if (Test-Path -LiteralPath $link) { [IO.Directory]::Delete($link, $false) } }
+    }
+    foreach ($state in $boundary) {
+      $flat = $state.Output -replace '\s+', ' '
+      Write-Output "CASE fixture-route $($state.Name) exit=$($state.Exit) matched=$($state.Matched) body=$([int]$state.Body) owner=$([int]$state.Owner) evidence=$([int]$state.Evidence) target-write=$([int]$state.Written) output=$($flat.Substring(0, [Math]::Min(240, $flat.Length)))"
+    }
+    foreach ($state in $boundary) {
+      Assert-True ($state.Exit -ne 0 -and $state.Matched -and -not ($state.Body -or $state.Owner -or $state.Evidence -or $state.Written)) "fixture route $($state.Name) refuses before body, owner, evidence or target write ($($state.Output))"
+      Write-Output "PASS fixture-route $($state.Name) refused exit=$($state.Exit) body=0 owner=0 evidence=0 target-write=0"
+    }
+
+    # AC2: controller-slot exclusivity and independence from the platform slot.
+    $live = Get-ProcessIdentity $PID
+    foreach ($slot in @('controller', 'platform')) {
+      $slotLock = if ($slot -ceq 'controller') { $controllerLock } else { $platformLock }
+      New-Item -ItemType Directory -Path $slotLock | Out-Null
+      $foreign = New-OwnerRecord ('7' * 32) $live.pid $live.processStartUtc 'launching'
+      $foreign.startedUtc = [DateTime]::UtcNow.ToString('o')
+      [IO.File]::WriteAllText((Join-Path $slotLock 'owner.json'), ($foreign | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+      $foreignRaw = [IO.File]::ReadAllText((Join-Path $slotLock 'owner.json'))
+      $evidence = New-FixtureEvidence
+      $result = Invoke-FixtureRoute (Get-FixtureParameters $evidence)
+      if ($slot -ceq 'controller') {
+        Assert-True ($result.exitCode -eq 73 -and $result.output -match 'lock unavailable \(live-owner' -and -not (Test-Path -LiteralPath $fixtureBody) -and
+          -not (Test-Path -LiteralPath $evidence)) "live controller owner refuses the fixture route with 73 before evidence or body (exit=$($result.exitCode) $($result.output))"
+        Write-Output 'PASS fixture-route live-controller-owner exit=73 body=0 evidence=0'
+      } else {
+        Assert-FixtureCompleted $result $evidence 'beside-live-platform-owner'
+      }
+      Assert-True ([IO.File]::ReadAllText((Join-Path $slotLock 'owner.json')) -ceq $foreignRaw) "foreign $slot owner stays byte-exact"
+      Remove-Item -LiteralPath $slotLock -Recurse -Force
+    }
+
+    # AC2: native failure exit, cancellation and HEAD movement after acquisition.
+    $evidence = New-FixtureEvidence
+    Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence) 'fail') $evidence 'child-failure' 29
+    $evidence = New-FixtureEvidence
+    $result = Invoke-FixtureRoute (Get-FixtureParameters $evidence @{ TestCancelAfterAcquisition = $true })
+    Assert-True ($result.exitCode -ne 0 -and $result.output -match 'test cancellation' -and -not (Test-Path -LiteralPath $fixtureBody) -and
+      -not (Test-Path -LiteralPath $controllerLock) -and -not (Test-Path -LiteralPath (Join-Path $evidence 'heavy-verifier-receipt.json'))) "fixture route cancellation runs no body and releases its exact owner ($($result.output))"
+    Write-Output 'PASS fixture-route cancellation body=0 released=1 receipt=0'
+    $evidence = New-FixtureEvidence
+    $mover = Start-FixtureRoute (Get-FixtureParameters $evidence @{ TestDelayIdentityRevalidationMilliseconds = 1500 })
+    Wait-Condition { $o = if (Test-Path -LiteralPath (Join-Path $controllerLock 'owner.json')) { try { [IO.File]::ReadAllText((Join-Path $controllerLock 'owner.json')) | ConvertFrom-Json } catch { $null } }; $o -and $o.state -ceq 'launching' } 'fixture route acquisition before HEAD movement'
+    Invoke-TreeGit @('commit', '--quiet', '--allow-empty', '-m', 'fixture route head movement') | Out-Null
+    $result = Complete-FixtureRoute $mover
+    Assert-FixtureRefused $result $evidence 'branch or HEAD changed after acquisition' 'head-moved-after-acquisition'
+
+    # AC2: a surviving descendant keeps the exact owner until the whole tree exits.
+    $evidence = New-FixtureEvidence
+    $route = Start-FixtureRoute (Get-FixtureParameters $evidence) 'descendant'
+    try {
+      Wait-Condition { (Test-Path -LiteralPath $grandchildIdentity) -and (Test-Path -LiteralPath $fixtureBody) } 'fixture route descendant publication'
+      $standIn = Read-FixtureBody
+      Wait-Condition { -not (Test-ExactProcess ([pscustomobject]@{ pid = $standIn.pid; processStartUtc = $standIn.processStartUtc })) } 'fixture route child exit'
+      $grandchild = Read-ChildIdentity $grandchildIdentity
+      for ($sample = 0; $sample -lt 8; $sample++) {
+        Start-Sleep -Milliseconds 250
+        Assert-True ((Test-ExactProcess $grandchild) -and -not $route.Process.HasExited -and (Test-Path -LiteralPath (Join-Path $controllerLock 'owner.json'))) "fixture route retains its exact owner while a descendant survives its child (sample $sample)"
+      }
+    } finally {
+      [IO.File]::WriteAllText($grandchildRelease, 'release')
+    }
+    $result = Complete-FixtureRoute $route
+    Remove-Item -LiteralPath $grandchildRelease, $grandchildIdentity
+    Assert-FixtureCompleted $result $evidence 'surviving-descendant'
+    Write-Output 'PASS fixture-route surviving-descendant owner-retained=1 released-after-tree=1'
+  } finally {
+    if (Test-Path -LiteralPath $grandchildIdentity) {
+      try { $identity = Read-ChildIdentity $grandchildIdentity; if (Test-ExactProcess $identity) { Stop-ExactProcess $identity } } catch {}
+    }
+  }
+  Write-Output "PASS heavy verifier ControllerFixtureEquivalence closed route (mutant=$(if ($FixtureMutant) { $FixtureMutant } else { 'none' }))"
+}
 try {
   Assert-DisposableRoot
+  if ($RoleAdmissionOnly -or $RulingFourOnly -or -not ($DiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly)) { Test-NativeRoleAdmission }
+  if ($RoleAdmissionOnly) { return }
+  if ($FixtureEquivalenceOnly -or -not ($DiscriminatorOnly -or $RulingFourOnly -or $PrecursorOnly -or $LegacyOnly)) { Test-ControllerFixtureEquivalence }
+  if ($FixtureEquivalenceOnly) { return }
   Assert-True (-not ($PrecursorOnly -and $LegacyOnly)) "PrecursorOnly and LegacyOnly are mutually exclusive"
   if ($RulingFourOnly) {
     $platformLock = $lock

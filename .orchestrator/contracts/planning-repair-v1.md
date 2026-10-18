@@ -96,54 +96,62 @@ work, not parked work.
   read, and an explicit statement of what from the closed artifact must not be
   reused.
 
-## Accepted terminal-park replan
+## Recovery level and re-entry
 
-A terminal item is eligible for re-entry only when a fresh replan body contains
-exactly this ordered section, with each label appearing once and carrying a
-non-space payload:
+Every planning-repair dispatch names the recovery level that the host or a
+step-back review assigned (milestone-orchestrator section 7; Todd,
+4388/6022146271):
+
+- `ISSUE`: repair or replace this brief.
+- `SET`: re-cut this issue together with the named siblings that share the
+  failure's cause. Read every named sibling's findings; you may re-split,
+  merge, or reorder them.
+- `EPIC`: re-derive the parent's approach or file one bounded design spike;
+  you may replace the slice plan under the epic.
+
+A product scope conflict is not a planning disposition. Report it under
+`RESIDUAL_DECISIONS` for one section 11 question and finish everything else.
+
+A replan of a previously stopped artifact carries exactly this ordered section,
+with each label appearing once and carrying a non-space payload:
 
 ```markdown
-### changedSinceLastFailure
-terminalReceipt: <exact terminal comment URL; comment ID; lineage root; issue/PR/head/attempt identity>
-changedFact: <external|architectural|dependency|evidence|scope> - <specific changed fact; source URL/identity; observed UTC instant>
-invalidationReason: <why the fact invalidates the prior failure or enables a different bounded approach>
-newCeiling: attempts=<positive absolute integer>; nonPass=PARK; authority=<existing binding URL/ID or separate governing ruling URL/comment ID>
+### recoveryHypothesis
+lastFailure: <stopping review/run identity; failure class; root cause in one line>
+priorHypotheses: <each earlier recovery hypothesis for this lineage, or none>
+newHypothesis: <what this plan changes about the work, and why that addresses the root cause>
+level: <ISSUE|SET|EPIC> - <named siblings or epic when not ISSUE>
 ```
 
-The changed fact must postdate the terminal receipt or directly invalidate its
-recorded failure. A new model, more effort, elapsed time, renewed willingness,
-restated evidence, or a larger ceiling alone is immaterial.
+`newHypothesis` must differ from every `priorHypotheses` entry in what the
+work does. A new model, more effort, elapsed time, renewed willingness,
+restated evidence, or new wording alone is not a new hypothesis. A plan that
+can only repeat a prior hypothesis returns `level` one step higher instead of
+re-entering at the same level.
 
-The packet is accepted only when a `planning-repair/v1` completion receipt and
-a fresh independent complete-sweep semantic PASS both bind its exact current
-body revision/hash, terminal receipt ID/URL, and immutable artifact identity.
-Prose, the section alone, `changedSinceLastFailure=true`, a label, or a
-readiness-only receipt cannot reopen terminal park.
+The packet is accepted when a `planning-repair/v1` completion receipt and a
+fresh independent semantic PASS both bind its exact current body
+revision/hash. Acceptance re-enters the work. It needs no attempt-ceiling
+authority and no Todd or decision-lane ceiling ruling, and it resets no
+lineage history or consumed count. The consumed count is the number of pushed
+heads that received a hosted CI verdict or an exact-head review verdict
+(milestone-orchestrator section 7); a local-only,
+preparation, harness or lane-tooling stop consumed no attempt.
+Consumed counts are history and step-back triggers, never a stop. Billed USD is recorded telemetry and is never a
+ceiling. The controller never files a cap-only Decision.
 
-Acceptance establishes only a material changed fact and a possible bounded
-approach. It grants no attempt authority, resets no lineage history or
-consumed count, and never makes `newCeiling` incremental. The consumed count
-is the number of pushed heads that received a hosted CI verdict or an
-exact-head review verdict (milestone-orchestrator section 7); a local-only,
-preparation, harness or lane-tooling stop consumed no attempt. Billed USD is
-recorded telemetry and is never a ceiling. If the requested absolute attempt
-ceiling exceeds the binding attempt ceiling, `authority` must resolve at
-admission to separate already-governing authority that explicitly names the
-lineage root, terminal receipt, and exact attempt ceiling. Attempt-ceiling
-authority must already govern before admission. It is either a Todd-authored
-ruling or a recorded final independent decision-lane verdict under
-milestone-orchestrator section 11: a `decision-resolved` row plus its report, bound
-to that lineage root, terminal receipt, and exact absolute ceiling. That
-decision lane is separate from this replan's author, repairer, and reviewers.
-Neither this replan nor its semantic PASS can supply it. Missing, stale, broader, self-authored, unreadable,
-or merely recommended authority leaves the item parked. The controller never
-files a cap-only Decision to obtain it.
+When no fully independent admitted semantic reviewer remains, the host
+dispatches the best available admitted reviewer that did not author or repair
+this exact body revision, and the receipt discloses that reviewer's earlier
+participation. Reviewer exhaustion never parks or stalls the artifact, and it
+is never self-review.
 
 ## Required completion report
 
 ```text
 PLANNING_CONTRACT_VERSION: planning-repair/v1
 DISPOSITION: REPAIR_IN_PLACE | REPLACED | RECOMMEND_NOT_COMPLETING
+RECOVERY_LEVEL: ISSUE | SET | EPIC
 ORIGINAL_ISSUE: #<n>
 SALVAGE: <branch> @ <40-char sha>
 FINDINGS_ANSWERED: <finding IDs from the stopping reviews, each with how the plan answers it>

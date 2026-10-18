@@ -70,7 +70,7 @@ still rejects the generic dispatch. This API is not a review-start workaround.
 Semantic implementation identity and strict participant identity are separate.
 The semantic implementation G1 identity and attempt count persist across a
 repair; review, repair, and planning rounds do not consume another implementation
-attempt or change the four-implementation-attempt ceiling. The lane name
+attempt or change the fourth-attempt step-back trigger. The lane name
 identifies the current author or reviewer execution and is unique while live
 through ownership-v4, not globally single-use across historical receipts.
 Historical attempt fields remain readable audit evidence and are never

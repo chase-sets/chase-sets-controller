@@ -354,10 +354,143 @@ No resume or conflict completion produces PASS, a no-conflict continuation,
 provider, CI, queue or landing authority. Owed identities unrelated to this
 exact integration are not acknowledged by the resume.
 
+### Ordinary author variant (#9334)
+
+`interrupted-canonical-integration/v2` recovers an ordinary schema-4
+implementation author that stopped inside the canonical helper's native rebase
+with no landed obligation, start acknowledgement or runtime prompt. Its closed
+`obligation` is `ordinary-integration/v1` (`pr`, `targetHead`, `newBase`,
+`branch`, `worktree`, `integrationLane`); `sources` bind the prior label and
+launch, the semantic attempt, the retained watchdog, original prompt (any
+fully qualified path containing the helper name), complete transcript, the
+canonical routing row, and the nullable helper conflict capture and native-stop
+checkpoint hashes; `state` is unchanged. The watchdog must be v2 (first launch)
+or v4 (retained retry), implementation, on the eligible author route
+(astra/codex or fable/claude, high, row 7, override-Todd, historical read), with
+its routing row joined by label, attempt, route, worktree, branch, head and
+causal timestamps. The transcript is data: exactly one actual canonical helper
+conflict in the ordinary grammar proves the first stop unless the helper's own
+`ordinary-integration-conflict/v1` capture does. The grammar accepts `-File`,
+the historical outer `-Command`, and the actual wrapper shape (`"<pwsh.exe>"
+-Command '<file shape> [one file redirection]; $v=$LASTEXITCODE; [Get-Content
+<same log> -Tail n;] exit $v'`) with `-NoPush` and a relative helper resolved
+only against the bound worktree; every other statement, redirection, parameter
+or value is not evidence. Later successful `rebase --continue/--abort/--skip`
+or a push of the branch in the same transcript contradicts a preserved stop.
+
+The native merge plan is the sequencer's: `rev-list --reverse --topo-order
+--no-merges oldBase..orig-head` equals `done` plus `git-rebase-todo`; raw
+reverse history (which lists merge commits and date order) is never the plan.
+Historical first stops and helper-captured first stops are reproduced by the
+same scratch native replay; a later checkpoint must equal the current bytes.
+
+The helper records its own first conflict under an authenticated live
+schema-4 implementation owner as `integration-ordinary-conflict-<launchId>.json`
+(no owner or landed start: nothing is written, the historical route remains).
+A live owner or an admitted v2 resume continues through
+`-ContinueInterruptedIntegration -NoPush`; ordinary continuation without NoPush
+refuses before any native continuation or push, including later stops. The first
+capture retains typed `noPush:true`; historical transcript admission also requires
+NoPush. Landed continuation retains its default-push behavior. A clean finish writes
+`integration-resume-finish/v1` (R, tree, reflog bytes, pushed flag). Under
+`-NoPush` that is finished-unpublished: no completion, acknowledgement or
+acceptance exists. The same bound execution then commits repair/test changes as
+plain commits and calls `-PublishInterruptedIntegration` exactly once: it
+requires its own finish proof, a nonempty plain-commit descendant chain R->P on
+the same branch, the remote still at the original head (lease
+`--force-with-lease=<branch>:<originalHead>`) or already at P, and writes
+`integration-resume-publication/v1`. Bare R, early, duplicate, non-descendant,
+foreign-movement (reset, amend of R, rebase, update-ref) and lease-mismatch
+publications refuse and preserve bytes and history.
+
+Before dispatch the host derives the exact repair files and enumerates directly
+corresponding focused tests from the governing FINAL. It includes exactly one
+JSON fence tagged `ordinary-integration-repair-authority/v1` in the actual
+execution's original prompt. Its closed fields are `schemaVersion` (same tag),
+`obligationIdentity`, `decisionPath`, `decisionSha256`, `firstLine`, `lastLine`,
+`repairPaths` (nonempty exact repository paths), and `focusedTests` (closed
+`path,repairPath` pairs). The decision is retained under the trusted runtime's
+`logs`; its digest and cited lines bind the host's derivation, not a new decision.
+The exact canonical watchdog/routing/owner chain authenticates the prompt. A
+resumed execution receives its own host prompt; no old prompt is rewritten.
+There is no helper scope argument, wildcard grant or hardcoded product issue.
+For the existing consumer FINAL, the host must enumerate the two named Channels
+connector-client domain files and only their directly corresponding focused
+tests, never executor work. Synthetic fixtures grant only synthetic paths and
+make no claim about actual product test-path authority.
+
+Publication and completion retain `repairAuthority` (the closed grant plus
+`promptSha256,routingIdentity`) and completion retains `executionLabel`. Both
+readers reauthenticate it. Every R..P commit and every recorded amended tip is
+checked against that exact set with renames disabled; edit-then-revert cannot
+hide a forbidden file. `commitCount` counts retained reflog movements (including
+repair amendments), not distinct reachable commits. Lock/generated resolution
+belongs before R. Pushed finish records and zero-movement completion refuse.
+
+Completion is `landed-integration-rebase-complete/v3`, mode
+`ORDINARY_OWNER_RELEASE`, origin `resume` (schema 5, v2 binding) or `live`
+(schema 4 with the helper capture). It binds the finish-time native proof
+`original -> R`, the recorded movement `R -> P`, the actual owner, remote == P
+and the clean attached result; its validator reads retained bytes, so later
+ordinary movement never reopens or changes it. Resume gives no PASS,
+continuation, provider, CI, queue or landing authority. Landed v1 bindings,
+ack/v3 and completion/v1-v2 are unchanged.
+
+### Finished-unpublished successor (#9411)
+
+When the bound execution that wrote a NoPush `integration-resume-finish/v1`
+exits before publishing, `interrupted-canonical-integration/v3` lets one
+host-dispatched successor publish that retained result. The producer versions
+the attached state in `New-InterruptedIntegrationResume -Successor` before any
+native read; without `-Successor` (the watchdog's automatic resume) the attached
+state refuses as `RESUME_REFUSED` and is never relaunched. The prior must be an
+exited v4 resume launch: the launch that wrote the finish (v2 binding) or a dead
+successor (v3 binding) that recursively names it, within the same three-predecessor
+bound counted from the successor launch itself (the chain its child walks to
+authenticate its own prompt), so a successor that could not publish refuses at
+admission instead of launching. A schema-4 live-origin finish stays a stranded refusal.
+
+The closed obligation is unchanged. `sources` are the prior launch's ordinary
+sources plus its `dispatch-start-ack/v2` hash, `finishLabel`, `finishLaunchId`,
+the finish file hash and record identity, and the prior FINAL grant identity.
+`state` is `branch`, `originalHead`, `onto`, `finishHead` (R), `attachedHead`,
+`attachedTree` and the branch reflog hash; it never carries `stoppedHead`.
+Production and admission require a `pushed:false` finish no later than the
+prior exit, every chain owner tree-dead, no publication record under any chain
+launch, no completion, no later successor of the same prior, a clean worktree
+attached to the obligation branch, branch movement after R limited to plain
+commits inside the prior grant (any `commit (amend):` row after R refuses; the
+same-execution repair-amendment handling above does not extend to a successor),
+and remote branch and PR head still at the
+original head; a remote at R or a granted commit is pushed-unrecorded and is
+never pushed again. Retained records are never rewritten.
+
+Only the host dispatches it (`-WatchdogRelaunchCount` refuses), with exactly the
+prior tuple and semantic attempt, a host prompt whose grant equals the prior
+FINAL grant, a live-HEAD fleet/heavy claim, the existing capacity exemption and
+a single-use start acknowledgement. Ownership v5, start-ack v2 and watchdog v4
+join `attachedHead`; v1/v2 keep `stoppedHead`. The successor child may not
+continue a rebase; it may add plain commits inside the prior grant and publishes
+once through `-PublishInterruptedIntegration`, which reads the prior finish
+through the binding and reuses the canonical descendant, movement, grant, lease
+and remote checks; an amendment made after admission refuses before the push,
+and the successor completion writer and reader refuse an amended row as well.
+Launcher finalization writes
+`landed-integration-rebase-complete/v4`, origin `successor`, which adds
+`finishOwner` and `finishLabel` to the v3 fields: the prior finish owner, the
+successor owner, R, P, the tree, the original-head lease and remote == P. An
+unpublished successor exit leaves the obligation finished-unpublished; the next
+successor binds the latest dead successor. Completion replay is inert.
+
 The registered dispatch, ownership, rebase, watchdog and R3 test carriers load
 `interrupted-integration-test-support.ps1`. Their native repositories reproduce
 the original 7906 and 7927 stage/path shapes with unmistakably synthetic content;
 they inspect actual stage blob bodies and every staged nonconflict body, retain
 raw process results and entry snapshots, and run within the canonical full
-controller battery. Installation remains a separate host action after exact
+controller battery. The ordinary-author carriers (`ordinary-dispatch` from the
+R3 test, `ordinary-rebase`, `ordinary-watchdog`) reproduce the 9285 merge-graph
+first stop (six raw commits, five picks), the baseline refusals, the wrapper
+transcript, live capture, dead-root admission, second-stop readmission, the
+finished-unpublished state, leased publication and each single-variable
+publication refusal. Installation remains a separate host action after exact
 independent governing review; this source contract grants no live recovery.

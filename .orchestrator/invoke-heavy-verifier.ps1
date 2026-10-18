@@ -3,6 +3,22 @@
 Runs one supported repository-wide heavy verification gate under the container
 exclusive verifier lock. This is deliberately the only command entrypoint;
 callers cannot supply an arbitrary shell string or bypass the gate inventory.
+
+.DESCRIPTION
+-ControllerFixtureEquivalence (#9627) is the closed controller-slot route for
+the existing full #9275 cleanup-scale fixture-equivalence check. It resolves
+only the target's tracked .orchestrator/cleanup-scale-fixture-equivalence.check.ps1
+and tracked harness at the clean exact HEAD, whose on-disk bytes must equal
+their HEAD blobs (exactly or as the uniform CRLF checkout), and runs exactly
+  pwsh -NoProfile -NonInteractive -File <check> -Phase fixture -EvidenceDirectory <dir>
+<dir> is -ControllerFixtureEvidenceDirectory: one absolute, new [A-Za-z0-9_-]
+directory directly below <container-parent>\<container-name>-heavy-evidence.
+That root is anchored to the wrapper's existing container context, the same
+one that selects its lock slot and ownership census; this route does not
+harden that shared seam. The root and every existing ancestor must be plain
+directories outside every Git worktree and the runtime root. After exact owner
+release the wrapper writes heavy-verifier-receipt.json there. The check's own
+verdict belongs to #9275.
 #>
 [CmdletBinding(DefaultParameterSetName = "Gate")]
 param(
@@ -46,6 +62,8 @@ param(
   # Impact or full scope and an optional prior result for reuse (#8207).
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][ValidateSet("impact", "full")][string]$ControllerBatteryScope = "impact",
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryPriorResultPath = "",
+  # Per-item reuse stop (#9373), forwarded verbatim as one argument.
+  [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryNoReuseIdentity = "",
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][ValidateSet("stop", "all")][string]$ControllerBatteryOnFailure = "stop",
   # Guard-evidence precursor producers are a closed production surface. The
   # selected value resolves to one tracked script and one fixed grammar below.
@@ -56,6 +74,10 @@ param(
   [Parameter(ParameterSetName = "ControllerPrecursor")]
   [ValidateSet("ReceiptClaims")]
   [string]$ControllerPrecursorScenario,
+  # The full fixture-equivalence check is one closed route: a tracked script,
+  # fixed -Phase fixture and one validated evidence directory (#9627).
+  [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][switch]$ControllerFixtureEquivalence,
+  [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][string]$ControllerFixtureEvidenceDirectory,
   # The lane-injected Node preload pauses a classified heavy process before its
   # command body and starts this same lock owner in attached mode.
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)]
@@ -72,16 +94,18 @@ $ErrorActionPreference = "Stop"
 $isAttachedAdmission = $PSCmdlet.ParameterSetName -ceq "Attach"
 $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
+$isControllerFixture = $PSCmdlet.ParameterSetName -ceq "ControllerFixtureEquivalence"
 $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $nativeRequest = $null
 $nativeReplyWritten = $false
 $nativeCleanupProof = $null
 if ($isWorkspaceTest) { $WorkspaceTest = "@chase-sets/ordering" }
-# Host authority is granted only to a closed production launch, never Attach
-# or the arbitrary-command fixture seam. No omitted dispatch becomes authority.
+# This closed command shape selects production command resolution. Caller
+# authority is determined independently by the native census below.
 $isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest")) -and -not $CommandPath
 $admissionResultFull = $null
+$script:admissionPendingSequence = 0
 $admissionRoot = $null
 $attachedDeadTreeProven = $false
 $admissionCleanupDiagnostic = 'not-attempted'
@@ -148,7 +172,11 @@ trap {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
-  if ($isControllerPrecursor -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
+  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal)) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if (($isControllerPrecursor -or $isControllerFixture) -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
@@ -288,6 +316,307 @@ function Assert-HostVerifierGitState {
   $status = Invoke-GitIdentityProbe @("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none") "clean state"
   if ($status) { throw "heavy-verifier: host verifier requires a clean exact-head worktree" }
 }
+# Read every native launch before interpreting roles or command shape. A failed
+# lookup is never evidence that the caller is a standalone host.
+function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$OldestLaunch, [int[]]$CandidatePids, [object[]]$DispatchRecords = @()) {
+  $dispatchRootKey = @($DispatchRecords | ForEach-Object {
+    "$($_.state)|$($_.launcherPid)|$($_.launcherStartIdentity)|$($_.childPid)|$($_.childStartIdentity)"
+  } | Sort-Object) -join ';'
+  $key = "$RootPid|$RootStart|$OldestLaunch|$(@($CandidatePids | Sort-Object -Unique) -join ',')|$dispatchRootKey"
+  $cached = $script:heavyCallerAncestry
+  if ($cached -and $cached.Key -ceq $key) {
+    $unchanged = $true
+    foreach ($id in $cached.Starts.Keys) {
+      try { $ticks = (Get-Process -Id $id -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
+      catch { $unchanged = $false; break }
+      if ($ticks -ne $cached.Starts[$id]) { $unchanged = $false; break }
+    }
+    # Windows parent edges are immutable within exact live process identities.
+    # Cache only those edges, never census, ownership, routing or Git authority.
+    if ($unchanged) { return $cached.Chain }
+  }
+  $script:heavyCallerAncestry = $null
+  $chain = @{}
+  $snapshot = @{}
+  foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)) {
+    $id = [int]$row.ProcessId
+    if ($snapshot.ContainsKey($id)) { throw 'ambiguous process snapshot' }
+    $snapshot[$id] = $row
+  }
+  foreach ($id in $CandidatePids) {
+    if ($snapshot.ContainsKey($id) -and $snapshot[$id].CreationDate) {
+      # A reused PID's current start may precede a forged/stale claim. It must
+      # not disappear behind a cutoff derived solely from the claimed time.
+      $OldestLaunch = [Math]::Min($OldestLaunch, $snapshot[$id].CreationDate.ToUniversalTime().Ticks)
+    }
+  }
+  $expected = [DateTimeOffset]::Parse($RootStart).UtcTicks
+  $childTicks = [long]::MaxValue
+  while ($RootPid -gt 0) {
+    if ($chain.ContainsKey($RootPid) -or $chain.Count -ge 128) { throw 'ambiguous process ancestry' }
+    $row = $snapshot[$RootPid]
+    if ($null -eq $row -or $null -eq $row.CreationDate) { throw 'process ancestry lookup failed' }
+    $snapshotTicks = $row.CreationDate.ToUniversalTime().Ticks
+    # WMI truncates to microseconds. An ancestor provably older than every
+    # published launch cannot be a containing launch; do not demand access to
+    # a privileged service ancestor beyond that evidence boundary.
+    if ($chain.Count -gt 0 -and $snapshotTicks + 9 -lt $OldestLaunch) {
+      if ($snapshotTicks -gt $childTicks) { throw 'process ancestry PID reused' }
+      break
+    }
+    $process = Get-Process -Id $RootPid -ErrorAction Stop
+    $ticks = $process.StartTime.ToUniversalTime().Ticks
+    if (($ticks - ($ticks % 10)) -ne $row.CreationDate.ToUniversalTime().Ticks -or $ticks -gt $childTicks -or
+        ($chain.Count -eq 0 -and $ticks -ne $expected)) { throw 'process ancestry PID reused' }
+    $chain[$RootPid] = $ticks
+    $boundDispatchRoot = $false
+    foreach ($record in $DispatchRecords) {
+      if ($record.state -cne 'started' -or [int]$record.launcherPid -ne $RootPid -or
+          -not $chain.ContainsKey([int]$record.childPid)) { continue }
+      if ($ticks -ne [DateTimeOffset]::Parse($record.launcherStartIdentity).UtcTicks -or
+          $chain[[int]$record.childPid] -ne [DateTimeOffset]::Parse($record.childStartIdentity).UtcTicks) {
+        throw 'dispatch root PID reused'
+      }
+      $boundDispatchRoot = $true
+    }
+    # A validated published launch binds both the native child in this chain
+    # and its dispatch-lane root. The short-lived wrapper above that root is
+    # not launch authority; census, Git, routing and byte checks still follow.
+    if ($boundDispatchRoot) { break }
+    if ($ticks -lt $OldestLaunch) { break }
+    $childTicks = $ticks
+    $RootPid = [int]$row.ParentProcessId
+  }
+  $starts = @{}
+  foreach ($id in @($CandidatePids) + @($chain.Keys)) {
+    if (-not $snapshot.ContainsKey($id) -or -not $snapshot[$id].CreationDate) { $starts = $null; break }
+    try { $ticks = (Get-Process -Id $id -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
+    catch { $starts = $null; break }
+    if ($ticks - ($ticks % 10) -ne $snapshot[$id].CreationDate.ToUniversalTime().Ticks) { $starts = $null; break }
+    $starts[$id] = $ticks
+  }
+  if ($starts) { $script:heavyCallerAncestry = @{ Key = $key; Starts = $starts; Chain = $chain } }
+  return $chain
+}
+function Get-HeavyRoutingRow($Record, [string]$RuntimeRoot) {
+  $path = Join-Path $RuntimeRoot 'dispatch-log.jsonl'
+  $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  if ($file.PSIsContainer -or $file.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { throw 'routing history missing or unsafe' }
+  if (-not ('ChaseSets.HeavyAdmission.RoutingHistory' -as [type])) {
+    # Stream the complete history in managed code, not one PowerShell pipeline
+    # per ledger property. Authority still comes from the shared closed validator.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+namespace ChaseSets.HeavyAdmission {
+  public static class RoutingHistory {
+    public static IEnumerable<string> RelevantRows(string path, string label, string transcript) {
+      foreach (string line in File.ReadLines(path)) {
+        if (String.IsNullOrWhiteSpace(line)) continue;
+        using (JsonDocument document = JsonDocument.Parse(line)) {
+          JsonElement schema;
+          if (!document.RootElement.TryGetProperty("dispatchRoutingSchema", out schema)) continue;
+          bool relevant = false;
+          foreach (JsonProperty property in document.RootElement.EnumerateObject()) {
+            if ((property.Name == "label" && property.Value.GetString() == label) ||
+                (property.Name == "transcript" && property.Value.GetString() == transcript)) relevant = true;
+          }
+          if (relevant) yield return line;
+        }
+      }
+    }
+  }
+}
+'@
+  }
+  $candidates = @()
+  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows($path, $Record.label, (Split-Path -Leaf $Record.transcriptPath))) {
+    $row = ConvertFrom-DispatchClosedJson $line
+    if ($null -eq $row) { throw 'routing history malformed' }
+    $keys = @(Get-DispatchRoutingLedgerKeys $row.dispatchRoutingSchema $row)
+    $actual = @($row.PSObject.Properties.Name)
+    if (-not (Test-DispatchRoutingLedgerEvidence $row) -or $keys.Count -ne $actual.Count -or
+        @($keys | Where-Object { $_ -cnotin $actual }).Count -gt 0) { throw 'routing row invalid' }
+    $instant = [DateTimeOffset]::Parse([string]$row.ts).UtcTicks
+    # Historical reuse of a label is not this launch's authority.
+    if ($instant -lt [DateTimeOffset]::Parse($Record.launcherStartIdentity).UtcTicks -or
+        $instant -gt [DateTimeOffset]::Parse($Record.childStartIdentity).UtcTicks) { continue }
+    $number = 0
+    if ($row.kind -cne 'dispatch' -or $row.laneRole -cne 'implementation' -or
+        $row.label -cne $Record.label -or $row.lane -cne $Record.lane -or
+        $row.transcript -cne (Split-Path -Leaf $Record.transcriptPath) -or
+        -not (Test-DispatchSamePath $row.worktree $Record.worktree) -or
+        [string]$row.branch -cne [string]$Record.branch -or $row.head -cne $Record.head -or
+        [string]::IsNullOrWhiteSpace($row.attemptId) -or $row.harness -cnotin @('codex','claude') -or
+        [string]::IsNullOrWhiteSpace($row.model) -or [string]::IsNullOrWhiteSpace($row.effort) -or
+        $row.placement -cnotmatch '^(measured|provisional|override-[A-Za-z0-9._-]+)$' -or
+        -not [int]::TryParse([string]$row.row, [ref]$number) -or $number -lt 1 -or $number -gt 15) {
+      throw 'routing row differs from original dispatch identity'
+    }
+    foreach ($name in @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')) {
+      if ($Record.PSObject.Properties[$name] -and
+          (-not $row.PSObject.Properties[$name] -or $Record.$name -cne $row.$name)) { throw 'routing provenance mismatch' }
+    }
+    $candidates += [pscustomobject]@{ Row = $number; Raw = $line }
+  }
+  if ($candidates.Count -ne 1) { throw 'routing row missing or ambiguous for current launch' }
+  return $candidates[0]
+}
+function Write-AdmissionPending([int]$BudgetMs) {
+  if (-not $isAttachedAdmission -or -not $admissionResultFull) { return }
+  # Progress selects waiting time only. Acceptance still requires the final
+  # nonce-bound result after every unchanged eligibility/identity check.
+  $script:admissionPendingSequence++
+  $pending = [ordered]@{
+    schemaVersion = 1
+    nonce = $AdmissionNonce
+    sequence = $script:admissionPendingSequence
+    budgetMs = $BudgetMs
+  }
+  $temporaryPath = "$admissionResultFull.$([guid]::NewGuid().ToString('N')).tmp"
+  try {
+    [IO.File]::WriteAllText($temporaryPath, ($pending | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+      try {
+        [IO.File]::Move($temporaryPath, "$admissionResultFull.pending", $true)
+        break
+      } catch [IO.IOException], [UnauthorizedAccessException] {
+        # The waiter can hold the target open during replacement. Progress
+        # is time-only: skip an exhausted heartbeat, never refuse eligibility.
+        if ($attempt -lt 10) { Start-Sleep -Milliseconds 10 }
+      }
+    }
+  } finally {
+    if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+      Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+function Get-HeavyOwnershipCensusDeadlineMs([int]$CandidateCount) {
+  # Serial Git identity probes need fleet-sized time, not fleet-sized authority.
+  # Allow 2s per candidate (reported throughput: 3-8 records/5s), retaining the
+  # 5s floor and a 30s census budget ceiling. No retry or cached identity proof.
+  return [int][Math]::Min([long]30000, [Math]::Max([long]5000, 2000 * [long]$CandidateCount))
+}
+function Get-HeavyCallerBinding([switch]$Recheck) {
+  $result = [ordered]@{ Record = $null; Raw = $null; Path = $null; Row = $null; RoutingRaw = $null; Reason = $null }
+  try {
+    $runtime = Join-Path $container '.orchestrator'
+    $rootPid = if ($isAttachedAdmission) { $GuardedPid } else { $PID }
+    $rootStart = if ($isAttachedAdmission) { $GuardedProcessStartUtc } else { (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') }
+    $observedGitIdentities = @{}
+    # This bounded sample selects time only; the census and subsequent exact
+    # record enumeration still prove completeness. Other census callers retain
+    # their own budgets, including the separate product-census proof allowance.
+    $candidateCount = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Select-Object -First 15).Count
+    $censusDeadlineMs = Get-HeavyOwnershipCensusDeadlineMs $candidateCount
+    Write-AdmissionPending $censusDeadlineMs
+    $live = Get-LiveDispatchOwnership -RuntimeRoot $runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $container -DeadlineMs $censusDeadlineMs -GitIdentityResolver {
+      param($Worktree)
+      $identity = Get-DispatchGitIdentity $Worktree
+      $observedGitIdentities[$Worktree] = $identity
+      return $identity
+    }
+    if ($live.health.counts.truncated -gt 0 -or $live.health.counts.rejected -gt 0 -or
+        $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0) { throw 'dispatch census unknown or incomplete' }
+    $paths = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Sort-Object)
+    if ($paths.Count -ne $live.health.counts.examined) { throw 'dispatch census changed' }
+    $snapshots = @{}
+    $records = @{}
+    $oldestLaunch = [long]::MaxValue
+    foreach ($path in $paths) {
+      $snapshots[$path] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path))
+      $record = Get-ValidatedDispatchOwnershipRecord $path $runtime ([IO.Path]::GetTempPath())
+      if ($null -eq $record) { throw 'dispatch record malformed or missing role' }
+      $records[$path] = $record
+      $startIdentity = if ($record.childPid) { $record.childStartIdentity } else { $record.launcherStartIdentity }
+      $oldestLaunch = [Math]::Min($oldestLaunch, [DateTimeOffset]::Parse($startIdentity).UtcTicks)
+    }
+    $candidatePids = @($records.Values | ForEach-Object { [int]$_.launcherPid; if ($_.childPid) { [int]$_.childPid } })
+    $before = Get-HeavyCallerAncestry $rootPid $rootStart $oldestLaunch $candidatePids @($records.Values)
+    $matches = @()
+    $pendingLaunches = @()
+    foreach ($path in $paths) {
+      $raw = $snapshots[$path]
+      $record = $records[$path]
+      $contained = $false
+      $pair = if ($record.childPid) { @('childPid','childStartIdentity') } else { @('launcherPid','launcherStartIdentity') }
+      $id = [int]$record.($pair[0])
+      if ($before.ContainsKey($id)) {
+        if ($before[$id] -ne [DateTimeOffset]::Parse($record.($pair[1])).UtcTicks) { throw 'dispatch ancestor PID reused' }
+        $contained = $true
+      }
+      if ($contained) {
+        if (-not $record.childPid) { $pendingLaunches += $record; continue }
+        $current = @($live.activeLanes | Where-Object launchId -CEQ $record.launchId)
+        if ($record.state -cne 'started' -or $current.Count -ne 1 -or
+            @($live.health.diagnostics | Where-Object { $_.lane -ceq $record.lane }).Count -gt 0) { throw 'containing dispatch is stale, terminal or unknown' }
+        # The census may expose a logical branch during native rebase. Bind the
+        # actual Git mode as well, without confusing it with that occupancy key.
+        $git = $observedGitIdentities[$current[0].worktree]
+        if ($git.status -cne 'ok' -or -not (Test-DispatchSamePath $record.worktree $acquiredGitIdentity.Worktree) -or
+            $current[0].head -cne $acquiredGitIdentity.Head -or
+            $git.head -cne $acquiredGitIdentity.Head -or
+            [string]$git.branch -cne [string]$acquiredGitIdentity.Branch) { throw 'dispatch identity differs from admitted identity' }
+        $matches += [pscustomobject]@{ Record = $record; Path = $path; Raw = $raw }
+      }
+    }
+    if ($matches.Count -gt 1) { throw 'ambiguous containing dispatches' }
+    # A shared launcher is not a second native child. Only an exact started
+    # child can disambiguate a healthy pending launch in another worktree.
+    foreach ($pending in $pendingLaunches) {
+      if ($matches.Count -ne 1 -or (Test-DispatchSamePath $pending.worktree $matches[0].Record.worktree)) {
+        throw 'containing dispatch is launching or ambiguous'
+      }
+    }
+    if ($matches.Count -eq 1) {
+      $result.Record = $matches[0].Record; $result.Path = $matches[0].Path; $result.Raw = $matches[0].Raw
+      if ($result.Record.laneRole -ceq 'implementation') {
+        $routing = Get-HeavyRoutingRow $result.Record $runtime
+        $result.Row = $routing.Row; $result.RoutingRaw = $routing.Raw
+      }
+    }
+    # Windows parentage cannot change within one exact process identity. Probe
+    # every captured ancestor again without repeating the full CIM enumeration.
+    foreach ($id in $before.Keys) {
+      $process = Get-Process -Id $id -ErrorAction Stop
+      if ($process.StartTime.ToUniversalTime().Ticks -ne $before[$id]) { throw 'ancestry changed' }
+    }
+    $afterPaths = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Sort-Object)
+    $foreignChanged = ($paths -join "`n") -cne ($afterPaths -join "`n")
+    foreach ($path in $paths) {
+      if (-not [IO.File]::Exists($path) -or -not [string]::Equals([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path)), $snapshots[$path], [StringComparison]::Ordinal)) {
+        if ($path -ceq $result.Path) { throw 'selected dispatch bytes changed' }
+        $foreignChanged = $true
+      }
+    }
+    if ($foreignChanged) {
+      if ($Recheck) { throw 'dispatch census kept changing' }
+      # Foreign lifecycle bytes are not selected authority. Re-census their
+      # semantics once instead of denying an unrelated healthy transition.
+      $fresh = Get-HeavyCallerBinding -Recheck
+      if ($fresh.Reason -or $fresh.Path -cne $result.Path -or -not [string]::Equals($fresh.Raw, $result.Raw, [StringComparison]::Ordinal) -or
+          -not [string]::Equals($fresh.RoutingRaw, $result.RoutingRaw, [StringComparison]::Ordinal)) { throw "dispatch census changed authority: $($fresh.Reason)" }
+      return $fresh
+    }
+  } catch { $result.Reason = $_.Exception.Message }
+  return [pscustomobject]$result
+}
+function Assert-HeavyCallerEligibility($Expected = $null) {
+  $binding = Get-HeavyCallerBinding
+  if ($binding.Reason) { throw "heavy-verifier: caller eligibility: $($binding.Reason)" }
+  if ($binding.Record -and ($binding.Record.laneRole -cne 'implementation' -or $binding.Row -eq 13)) {
+    throw "heavy-verifier: caller eligibility: role=$($binding.Record.laneRole) routing-row=$($binding.Row) cannot reserve heavy verification"
+  }
+  if ($Expected -and ($Expected.Path -cne $binding.Path -or -not [string]::Equals($Expected.Raw, $binding.Raw, [StringComparison]::Ordinal) -or
+      -not [string]::Equals($Expected.RoutingRaw, $binding.RoutingRaw, [StringComparison]::Ordinal))) { throw 'heavy-verifier: caller eligibility: launch or routing identity changed' }
+  return $binding
+}
+try { . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') }
+catch { throw "heavy-verifier: caller eligibility: ownership reader unavailable: $($_.Exception.Message)" }
+$callerBinding = Assert-HeavyCallerEligibility
 Assert-HostVerifierGitState
 if (($Gate -ceq 'test:e2e:suite') -ne $PSBoundParameters.ContainsKey('E2eSuite')) {
   throw 'heavy-verifier: test:e2e:suite requires one E2eSuite; other gates do not accept E2eSuite'
@@ -553,9 +882,139 @@ if ($isControllerPrecursor) {
   Assert-ControllerPrecursorArtifactState
 }
 
+# #9275's full fixture-equivalence check is host heavy verification, never a
+# battery item (#9627). Only its tracked script and harness at the clean exact
+# HEAD resolve; evidence goes to one fresh directory below a closed root beside
+# the existing container context, so outside the runtime root and every
+# container worktree.
+$fixtureCheckScript = ".orchestrator/cleanup-scale-fixture-equivalence.check.ps1"
+$fixtureCheckFiles = @($fixtureCheckScript, ".orchestrator/cleanup-scale-fixture-harness.ps1")
+$fixtureCheckPath = $null
+$fixtureCheckBlobs = [ordered]@{}
+$fixtureEvidenceRoot = $null
+$fixtureEvidence = $null
+$fixtureWrapperDigest = $null
+function Test-PathEntry([string]$Path) {
+  # File attributes describe a link itself, so a dangling junction still exists.
+  try { [void][IO.File]::GetAttributes($Path); return $true }
+  catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return $false }
+}
+function Get-GitBlobId([byte[]]$Bytes) {
+  $hash = [Security.Cryptography.IncrementalHash]::CreateHash([Security.Cryptography.HashAlgorithmName]::SHA1)
+  try {
+    $hash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($Bytes.Length)`0"))
+    $hash.AppendData($Bytes)
+    return [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+  } finally { $hash.Dispose() }
+}
+# Status trusts the index, so an assume-unchanged or skip-worktree entry hides
+# edited bytes. The file pwsh will execute must instead be the HEAD blob itself
+# or its uniform CRLF checkout (core.autocrlf on a CR-free blob), with no Git
+# filter or index flag consulted.
+function Test-ControllerFixtureSourceBytes([string]$Path, [string]$Blob) {
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  if ((Get-GitBlobId $bytes) -ceq $Blob) { return $true }
+  # Latin-1 maps each byte to one char, so only line endings are rewritten.
+  $text = [Text.Encoding]::Latin1.GetString($bytes)
+  $lf = $text.Replace("`r`n", "`n")
+  return -not $lf.Contains("`r") -and $lf.Replace("`n", "`r`n") -ceq $text -and
+    (Get-GitBlobId ([Text.Encoding]::Latin1.GetBytes($lf))) -ceq $Blob
+}
+function Assert-ControllerFixtureGitState {
+  $status = @(& git -C $worktreeFull status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    throw "heavy-verifier: unable to verify the controller fixture worktree is clean"
+  }
+  if ($status.Count -ne 0) {
+    throw "heavy-verifier: controller fixture equivalence requires a clean exact-head worktree"
+  }
+  if (-not (Test-PrecursorSafeDirectory $worktreeFull) -or -not (Test-PrecursorSafeDirectory (Join-Path $worktreeFull ".orchestrator"))) {
+    throw "heavy-verifier: controller fixture worktree or runtime root is unsafe"
+  }
+  # The container ignores .orchestrator/*, so a clean status alone cannot rule
+  # out an ignored substitute; each file must be tracked at the exact HEAD.
+  foreach ($relative in $fixtureCheckFiles) {
+    $tracked = Invoke-GitIdentityProbe @("ls-tree", $acquiredGitIdentity.Head, "--", $relative) "fixture check"
+    $blob = if ($tracked -cmatch "^100(?:644|755) blob ([a-f0-9]{40})`t$([regex]::Escape($relative))$") { $Matches[1] } else { $null }
+    if (-not $blob) {
+      throw "heavy-verifier: controller fixture check is not one exact tracked regular script: $relative"
+    }
+    $sourcePath = Join-Path $worktreeFull $relative
+    if (-not (Test-PrecursorSafeFile $sourcePath)) {
+      throw "heavy-verifier: controller fixture check is absent or unsafe: $relative"
+    }
+    if (-not (Test-ControllerFixtureSourceBytes $sourcePath $blob)) {
+      throw "heavy-verifier: controller fixture check bytes do not match the exact HEAD blob: $relative"
+    }
+    $script:fixtureCheckBlobs[$relative] = $blob
+  }
+  $script:fixtureCheckPath = [IO.Path]::GetFullPath((Join-Path $worktreeFull $fixtureCheckScript))
+}
+function Resolve-ControllerFixtureEvidence([string]$Value) {
+  $parent = Split-Path -Parent $container
+  if ([string]::IsNullOrEmpty($parent)) { throw "heavy-verifier: controller fixture evidence root is unavailable" }
+  $root = [IO.Path]::GetFullPath((Join-Path $parent ((Split-Path -Leaf $container) + "-heavy-evidence"))).TrimEnd('\','/')
+  if ([string]::IsNullOrWhiteSpace($Value) -or -not [IO.Path]::IsPathFullyQualified($Value)) {
+    throw "heavy-verifier: controller fixture evidence must be an absolute directory below the closed evidence root $root"
+  }
+  $full = [IO.Path]::GetFullPath($Value).TrimEnd('\','/')
+  # The supplied spelling must already be canonical: no relative segments,
+  # alternate roots or names that Windows would silently rewrite.
+  $canonical = [string]::Equals($Value.Replace([IO.Path]::AltDirectorySeparatorChar, [IO.Path]::DirectorySeparatorChar).TrimEnd([IO.Path]::DirectorySeparatorChar), $full, [StringComparison]::OrdinalIgnoreCase)
+  $insideRoot = [string]::Equals((Split-Path -Parent $full), $root, [StringComparison]::OrdinalIgnoreCase)
+  if (-not $canonical -or -not $insideRoot -or (Split-Path -Leaf $full) -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$') {
+    throw "heavy-verifier: controller fixture evidence must be one new [A-Za-z0-9_-] directory directly below the closed evidence root $root"
+  }
+  $script:fixtureEvidenceRoot = $root
+  $script:fixtureEvidence = $full
+}
+function Assert-ControllerFixtureEvidencePath {
+  # GetFullPath fixes spelling, not reparse traversal: a junction anywhere above
+  # the root could redirect it into a worktree whose .git is outside this
+  # lexical ancestry. Every existing ancestor must be a plain directory.
+  for ($ancestor = Split-Path -Parent $fixtureEvidenceRoot; $ancestor; $ancestor = Split-Path -Parent $ancestor) {
+    if ((Test-PathEntry $ancestor) -and -not (Test-PrecursorSafeDirectory $ancestor)) {
+      throw "heavy-verifier: controller fixture evidence ancestor is a symlink, reparse point, or unsafe directory: $ancestor"
+    }
+  }
+  for ($ancestor = $fixtureEvidenceRoot; $ancestor; $ancestor = Split-Path -Parent $ancestor) {
+    if (Test-PathEntry (Join-Path $ancestor ".git")) {
+      throw "heavy-verifier: controller fixture evidence root is inside a Git worktree"
+    }
+  }
+  if ((Test-PathEntry $fixtureEvidenceRoot) -and -not (Test-PrecursorSafeDirectory $fixtureEvidenceRoot)) {
+    throw "heavy-verifier: controller fixture evidence root is a symlink, reparse point, or unsafe directory"
+  }
+}
+function Assert-ControllerFixtureEvidenceFresh {
+  Assert-ControllerFixtureEvidencePath
+  if (Test-PathEntry $fixtureEvidence) {
+    throw "heavy-verifier: controller fixture evidence directory already exists; evidence is never reused"
+  }
+}
+function New-ControllerFixtureEvidence {
+  Assert-ControllerFixtureEvidenceFresh
+  if (-not (Test-PathEntry $fixtureEvidenceRoot)) { [void][IO.Directory]::CreateDirectory($fixtureEvidenceRoot) }
+  if (-not (Test-PrecursorSafeDirectory $fixtureEvidenceRoot)) {
+    throw "heavy-verifier: controller fixture evidence root is a symlink, reparse point, or unsafe directory"
+  }
+  [void][IO.Directory]::CreateDirectory($fixtureEvidence)
+  if (-not (Test-PrecursorSafeDirectory $fixtureEvidence) -or @(Get-ChildItem -LiteralPath $fixtureEvidence -Force).Count -ne 0) {
+    throw "heavy-verifier: controller fixture evidence directory is unsafe or not fresh"
+  }
+}
+
+if ($isControllerFixture) {
+  Assert-ControllerFixtureGitState
+  Resolve-ControllerFixtureEvidence $ControllerFixtureEvidenceDirectory
+  Assert-ControllerFixtureEvidenceFresh
+  $fixtureWrapperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($PSCommandPath))).ToLowerInvariant()
+}
+
 # Controller release batteries and precursors own a separate slot (Todd ruling
 # 2026-09-10): they never wait on, and never block, the platform heavy verifier.
-$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor) { "controller-verify-lock.d" } else { "verify-lock.d" }
+# The fixture-equivalence route shares that controller slot.
+$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "controller-verify-lock.d" } else { "verify-lock.d" }
 $lockPath = Join-Path $container (".orchestrator\" + $lockDirectoryName)
 $ownerPath = Join-Path $lockPath "owner.json"
 $process = Get-Process -Id $PID -ErrorAction Stop
@@ -580,7 +1039,7 @@ $command = if ($isAttachedAdmission) {
   $guarded.Path
 } elseif ($isNativeDb) {
   'C:\Windows\System32\wsl.exe'
-} elseif ($isControllerBattery -or $isControllerPrecursor) {
+} elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) {
   (Get-Process -Id $PID -ErrorAction Stop).Path
 } elseif ($CommandPath) {
   [IO.Path]::GetFullPath($CommandPath)
@@ -610,6 +1069,7 @@ $arguments = if ($isAttachedAdmission) {
     "-RepairHistoryPath", $ControllerBatteryRepairHistoryPath,
     "-Scope", $ControllerBatteryScope,
     "-PriorResultPath", $ControllerBatteryPriorResultPath,
+    "-NoReuseIdentity", $ControllerBatteryNoReuseIdentity,
     "-OnFailure", $ControllerBatteryOnFailure,
     "-AdmissionOwned"
   )
@@ -628,6 +1088,10 @@ $arguments = if ($isAttachedAdmission) {
     }
   }
   $fixed
+} elseif ($isControllerFixture) {
+  # Never -BaselineHead or -RunDirectory: the check keeps its immutable oracle
+  # and runs every fixture step in one call.
+  @("-NoProfile", "-NonInteractive", "-File", $fixtureCheckPath, "-Phase", "fixture", "-EvidenceDirectory", $fixtureEvidence)
 } elseif ($CommandPath) {
   @($CommandArgumentList)
 } else {
@@ -635,7 +1099,7 @@ $arguments = if ($isAttachedAdmission) {
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
   else { @($pnpmScript, "run", $Gate) }
 }
-$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor) { "script-battery" } elseif ($isWorkspaceTest) { "test" } else { $Gate }
+$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceTest) { "test" } else { $Gate }
 $identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"
 $commandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityInput))).ToLowerInvariant()
 $lockId = [guid]::NewGuid().ToString("N")
@@ -697,10 +1161,14 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
   try {
     $entries = @(Get-ChildItem -LiteralPath $lockPath -Force -ErrorAction Stop)
     if ($entries.Count -ne 1 -or -not (Test-SamePath $entries[0].FullName $RecordPath)) { return $null }
-    $raw = [IO.File]::ReadAllText($RecordPath, [Text.Encoding]::UTF8)
+    $stream = [IO.File]::Open($RecordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $buffer = [IO.MemoryStream]::new()
+    try { $stream.CopyTo($buffer); $bytes = $buffer.ToArray() } finally { $stream.Dispose(); $buffer.Dispose() }
+    $buffer = [IO.MemoryStream]::new($bytes, $false)
+    $reader = [IO.StreamReader]::new($buffer, [Text.Encoding]::UTF8, $true)
+    try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($record.schemaVersion -eq 6) {
-      $bytes = [IO.File]::ReadAllBytes($RecordPath)
       if ($bytes.Length -gt 16384) { return $null }
       $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
       $record = Read-NativeJson $raw 16384
@@ -1040,7 +1508,7 @@ function Write-OwnerRecord($Record, [switch]$CreateNew) {
     } finally {
       $stream.Dispose()
     }
-    [IO.File]::Move($temporaryPath, $ownerPath, $true)
+    [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
     return $raw
   } finally {
     if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
@@ -1071,7 +1539,12 @@ function Remove-ClaimedOwnerLock([string]$ClaimPath, [string]$ExpectedRaw, [swit
     $share = [IO.FileShare]::Delete
     $nativeOwner = ($ExpectedRaw | ConvertFrom-Json -DateKind String -ErrorAction Stop).schemaVersion -eq 6
     if ($nativeOwner) { $share = $share -bor [IO.FileShare]::Read }
-    $stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try {
+      $stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    } catch [IO.IOException] {
+      if (($_.Exception.GetBaseException().HResult -band 0xffff) -eq 32) { return $false }
+      throw
+    }
     try {
       $encoding = if ($nativeOwner) { [Text.UTF8Encoding]::new($false, $true) } else { [Text.Encoding]::UTF8 }
       $reader = [IO.StreamReader]::new($stream, $encoding, (-not $nativeOwner), 1024, $true)
@@ -1152,6 +1625,7 @@ function Assert-LiveGitIdentityUnchanged([switch]$AfterExecution) {
     Assert-ControllerPrecursorGitState
     Assert-ControllerPrecursorArtifactState
   }
+  if ($isControllerFixture) { Assert-ControllerFixtureGitState }
 }
 function Test-ThisOwner {
   $snapshot = Get-OwnerSnapshot
@@ -1237,6 +1711,7 @@ function Complete-NativeReconciliation($Record) {
   }
 }
 function Invoke-NativeLaunch {
+  $callerBinding = Assert-HeavyCallerEligibility $callerBinding
   if (Test-Path -LiteralPath $nativeEvidencePath) { throw 'native-db: correlation already consumed' }
   $evidenceStream = [IO.File]::Open($nativeEvidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
   try {
@@ -1254,6 +1729,7 @@ function Invoke-NativeLaunch {
     $owner.native.linux = $publication.linux
     $script:ownedRaw = Write-OwnerRecord $owner
     if (-not (Test-ThisOwner)) { throw 'native-db: published tuple no longer owned' }
+    $callerBinding = Assert-HeavyCallerEligibility $callerBinding
     $child.StandardInput.WriteLine(($publication | ConvertTo-Json -Compress -Depth 8))
     $child.StandardInput.Close()
     # The fixed runner owns its ordinary execution duration. Only control
@@ -1288,7 +1764,7 @@ function Invoke-NativeLaunch {
 # per-child PowerShell host probe. Controller batteries and precursors keep
 # their own continuation on the controller slot and never publish a product
 # descriptor. Non-Windows hosts are unchanged.
-$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isNativeDb
+$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isNativeDb
 $nestedOwner = $null
 $nestedBinding = $null
 $script:nestedTransport = $null
@@ -1351,79 +1827,9 @@ function Initialize-NestedOwner {
   $script:nestedOwner = [ChaseSets.HeavyAdmission.NestedOwnerServer]::Reserve($lockId)
   $nestedInitialization.reserveMs = $watch.ElapsedMilliseconds
 }
-function Resolve-NestedDispatchBinding([int]$RootPid, [string]$RootStartUtc) {
-  # Binds the unique closed live dispatch ownership-v4 record whose actual
-  # child tree contains the guarded root. Planning/observer roles, terminal or
-  # unknown attempts, truncation, and ambiguity all yield no binding.
-  $watch = [Diagnostics.Stopwatch]::StartNew()
-  $runtimeRoot = Join-Path $container ".orchestrator"
-  $tempRoot = [IO.Path]::GetTempPath()
-  $result = [ordered]@{ Record = $null; Raw = $null; Path = $null; Reason = $null }
-  try {
-    $beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)
-    $live = Get-LiveDispatchOwnership -RuntimeRoot $runtimeRoot -TempRoot $tempRoot -ContainerRoot $container
-    if ([int]$live.health.counts.truncated -gt 0 -or [int]$live.health.counts.rejected -gt 0 -or
-        [int]$live.health.counts.probeFailures -gt 0 -or [int]$live.health.counts.legacyLiveOwners -gt 0) {
-      $result.Reason = "dispatch ownership census was unknown, ambiguous or truncated"
-    } else {
-      $excludedLanes = @($live.health.diagnostics | Where-Object {
-          [string]$_.code -cin @("terminal-transcript-live-process", "transcript-state-unknown")
-        } | ForEach-Object { [string]$_.lane })
-      $matches = @()
-      foreach ($activeLane in @($live.activeLanes)) {
-        if ([string]$activeLane.laneRole -cnotin @("implementation", "review")) { continue }
-        if ($excludedLanes -ccontains [string]$activeLane.lane) { continue }
-        $record = Get-ValidatedDispatchOwnershipRecord ([string]$activeLane.ownershipRecordPath) $runtimeRoot $tempRoot
-        if ($null -eq $record -or [string]$record.state -cne "started") { continue }
-        $probe = [ChaseSets.HeavyAdmission.ProcessTree]::Probe(
-          $RootPid, $RootStartUtc, [int]$record.childPid, [string]$record.childStartIdentity)
-        if ($probe.Contained) {
-          $matches += [pscustomobject]@{ Record = $record; Current = $activeLane; Path = [string]$activeLane.ownershipRecordPath }
-        }
-      }
-      if ($matches.Count -eq 0) {
-        $result.Reason = "no live implementation or review dispatch ownership contains the guarded root"
-      } elseif ($matches.Count -gt 1) {
-        $result.Reason = "ambiguous: $($matches.Count) live dispatch ownerships contain the guarded root"
-      } else {
-        $record = $matches[0].Record
-        $current = $matches[0].Current
-        # The canonical reader has already enforced the launch identity mode.
-        # Branch launch snapshots remain telemetry across commands; the current
-        # resolved branch (or transient detached state) must match this admission.
-        # Immutable launches reach here only at their original detached head.
-        $currentMode = if ([string]::IsNullOrWhiteSpace([string]$current.branch)) { "immutable-head" } else { "branch" }
-        if ([string]$record.lane -cne $Lane -or
-            [IO.Path]::GetFullPath([string]$record.worktree).TrimEnd('\', '/') -ine $acquiredGitIdentity.Worktree.TrimEnd('\', '/') -or
-            [string]$current.head -cne $acquiredGitIdentity.Head -or
-            $currentMode -cne $identityMode -or
-            ($identityMode -ceq "branch" -and [string]$current.branch -cne $acquiredGitIdentity.Branch)) {
-          throw "dispatch identity differs from admitted identity"
-        }
-        $result.Record = $matches[0].Record
-        $result.Path = $matches[0].Path
-        $afterCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)
-        $result.Raw = [Text.UTF8Encoding]::new($false).GetString($afterCensus[$result.Path])
-        # Both complete snapshots must retain the selected bytes and have fresh
-        # semantic ownership. Foreign lifecycle bytes are not selected authority.
-        foreach ($census in @($beforeCensus, $afterCensus)) {
-          $failure = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CheckDispatchCensus(
-            $census, $result.Path, [Text.UTF8Encoding]::new($false).GetBytes($result.Raw),
-            $acquiredGitIdentity.Worktree, $tempRoot)
-          if ($null -ne $failure) { throw "dispatch census changed during admission: $failure" }
-        }
-      }
-    }
-  } catch {
-    $result.Reason = "dispatch ownership census failed: $($_.Exception.Message)"
-    $result.Record = $null
-  }
-  $nestedInitialization.bindMs = $watch.ElapsedMilliseconds
-  return $result
-}
 function New-NestedTransportDescriptor {
   $descriptor = [ordered]@{ schemaVersion = 1; lockId = $lockId; publicKey = $nestedOwner.PublicKey; launchId = $null; laneRole = $null }
-  if ($isHostVerifier) { $descriptor.schemaVersion = 2; $descriptor.authority = "host-verifier"; $descriptor.commandIdentity = $commandIdentity }
+  if ($isHostVerifier -and -not $callerBinding.Record) { $descriptor.schemaVersion = 2; $descriptor.authority = "host-verifier"; $descriptor.commandIdentity = $commandIdentity }
   if ($nestedBinding.Record) {
     $descriptor.launchId = [string]$nestedBinding.Record.launchId
     $descriptor.laneRole = [string]$nestedBinding.Record.laneRole
@@ -1452,7 +1858,7 @@ function Start-NestedOwner([string]$OwnerRawCurrent, [int]$RootPid, [string]$Roo
   if ($identityMode -ceq "branch") { $bound.Branch = $acquiredGitIdentity.Branch }
   $bound.Head = $acquiredGitIdentity.Head
   $bound.IdentityMode = $identityMode
-  $bound.HostVerifier = $isHostVerifier
+  $bound.HostVerifier = $isHostVerifier -and -not $callerBinding.Record
   if ($Binding.Record) {
     $bound.DispatchRecordPath = $Binding.Path
     $bound.DispatchRecordRaw = $Binding.Raw
@@ -1466,18 +1872,44 @@ function Start-NestedOwner([string]$OwnerRawCurrent, [int]$RootPid, [string]$Roo
   $nestedOwner.Arm($bound)
   $nestedInitialization.armMs = $watch.ElapsedMilliseconds
 }
+function Format-NestedFailure($Failure, $Connections) {
+  if ($null -eq $Failure) { return 'failure=none' }
+  # This is a diagnostic boundary, not an exception formatter. Reject unknown
+  # shapes rather than interpolating any native/request-derived string.
+  try {
+    $fields = @('Connection', 'Head', 'ExceptionClass', 'Category', 'Phase',
+      'ExchangeCancellationRequested', 'OwnerShutdownRequested')
+    $names = @($Failure.PSObject.Properties.Name)
+    $valid = $names.Count -eq $fields.Count
+    foreach ($name in $names) { if ($name -cnotin $fields) { $valid = $false } }
+    foreach ($name in $fields) { if ($name -cnotin $names) { $valid = $false } }
+    $valid = $valid -and $Failure.Connection -is [long] -and $Failure.Connection -gt 0 -and $Failure.Connection -le $Connections -and
+      $Failure.Head -is [string] -and $Failure.Head.Length -eq 40 -and $Failure.Head -cmatch '^[a-f0-9]{40}$' -and
+      $Failure.ExceptionClass -is [string] -and $Failure.ExceptionClass -cin @('none', 'unknown', 'OperationCanceledException',
+        'TaskCanceledException', 'IOException', 'ObjectDisposedException', 'UnauthorizedAccessException', 'InvalidOperationException', 'JsonException') -and
+      $Failure.Category -is [string] -and $Failure.Category -cin @('unknown', 'cancellation', 'peer-disconnect', 'io', 'disposed',
+        'access', 'invalid-operation', 'json', 'protocol-refusal', 'authority-refusal') -and
+      $Failure.Phase -is [string] -and $Failure.Phase -cin @('unknown', 'request-read', 'request-parse', 'authority', 'reply-write', 'reply-flush', 'reply-drain') -and
+      $Failure.ExchangeCancellationRequested -is [bool] -and $Failure.OwnerShutdownRequested -is [bool]
+    if (-not $valid) { return 'failure=unavailable' }
+    $safe = [ordered]@{}
+    foreach ($name in $fields) { $safe[$name] = $Failure.$name }
+    return 'failure=' + ($safe | ConvertTo-Json -Compress)
+  } catch { return 'failure=unavailable' }
+}
 function Stop-NestedOwner {
   if ($null -eq $nestedOwner) { return }
   $statistics = $null
-  try { $statistics = $nestedOwner.Statistics() } catch {}
   try { $nestedOwner.Stop() } catch {}
-  $bindingSummary = if ($isHostVerifier) { "host-verifier command=$commandIdentity" } elseif ($nestedBinding -and $nestedBinding.Record) {
+  try { $statistics = $nestedOwner.Statistics() } catch {}
+  $bindingSummary = if ($isHostVerifier -and -not $callerBinding.Record) { "host-verifier command=$commandIdentity" } elseif ($nestedBinding -and $nestedBinding.Record) {
     "launch=$($nestedBinding.Record.launchId) role=$($nestedBinding.Record.laneRole)"
   } else {
     "unbound($(if ($nestedBinding) { $nestedBinding.Reason } else { 'not-resolved' }))"
   }
   $served = if ($statistics) { "served=$($statistics.Served) refused=$($statistics.Refused) connections=$($statistics.Connections) lastServiceMs=$([Math]::Round($statistics.LastServiceMs, 1)) totalServiceMs=$([Math]::Round($statistics.TotalServiceMs, 1))" } else { "statistics=unavailable" }
-  [Console]::Error.WriteLine("heavy-verifier: nested-owner pipe=$($nestedOwner.PipeName) compileMs=$($nestedInitialization.compileMs) reserveMs=$($nestedInitialization.reserveMs) bindMs=$($nestedInitialization.bindMs) armMs=$($nestedInitialization.armMs) binding=$bindingSummary $served")
+  $failure = if ($statistics) { Format-NestedFailure $statistics.LastFailure $statistics.Connections } else { 'failure=unavailable' }
+  [Console]::Error.WriteLine("heavy-verifier: nested-owner pipe=$($nestedOwner.PipeName) compileMs=$($nestedInitialization.compileMs) reserveMs=$($nestedInitialization.reserveMs) bindMs=$($nestedInitialization.bindMs) armMs=$($nestedInitialization.armMs) binding=$bindingSummary $served $failure")
 }
 
 
@@ -1486,7 +1918,7 @@ function Stop-NestedOwner {
 # acquisition or stale-owner reclamation never delays them (Todd ruling
 # 2026-09-10, review r3 F3).
 $coordinationKey = $container.ToUpperInvariant()
-if ($isControllerBattery -or $isControllerPrecursor) { $coordinationKey += "`n" + $lockDirectoryName }
+if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { $coordinationKey += "`n" + $lockDirectoryName }
 $mutexHash = [Convert]::ToHexString(
   [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($coordinationKey))
 ).ToLowerInvariant()
@@ -1498,6 +1930,7 @@ try {
   } catch [Threading.AbandonedMutexException] {
     $mutexHeld = $true
   }
+  $callerBinding = Assert-HeavyCallerEligibility $callerBinding
   try {
     New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
   } catch {
@@ -1538,7 +1971,7 @@ try {
     Invoke-NativeLaunch
   } elseif ($isAttachedAdmission) {
     if ($nestedOwnerEligible) {
-      $nestedBinding = Resolve-NestedDispatchBinding $GuardedPid $GuardedProcessStartUtc
+      $nestedBinding = Assert-HeavyCallerEligibility $callerBinding
       Start-NestedOwner $ownedRaw $GuardedPid $GuardedProcessStartUtc "attached" $nestedBinding
       $script:nestedTransport = New-NestedTransportDescriptor
     }
@@ -1562,6 +1995,7 @@ try {
     $exitCode = 0
   } else {
     if ($TestCancelAfterAcquisition) { throw [OperationCanceledException]::new("heavy-verifier test cancellation") }
+    if ($isControllerFixture) { New-ControllerFixtureEvidence }
     # ProcessStartInfo.ArgumentList preserves each argument verbatim; unlike
     # Start-Process -ArgumentList it does not re-join paths containing spaces.
     $start = [Diagnostics.ProcessStartInfo]::new()
@@ -1595,7 +2029,7 @@ try {
     # owner publishes its own descriptor only in the guarded environment.
     [void]$start.Environment.Remove("CHASE_SETS_HEAVY_SLOT_TRANSPORT")
     if ($nestedOwnerEligible) {
-      if (-not $isHostVerifier) { $nestedBinding = Resolve-NestedDispatchBinding $PID $started }
+      $nestedBinding = $callerBinding
       $script:nestedTransport = New-NestedTransportDescriptor
       $start.Environment["CHASE_SETS_HEAVY_SLOT_TRANSPORT"] = $script:nestedTransport
     }
@@ -1622,6 +2056,7 @@ try {
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
+    $callerBinding = Assert-HeavyCallerEligibility $callerBinding
     $child = [Diagnostics.Process]::Start($start)
     if ($TestDelayChildPublicationMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $TestDelayChildPublicationMilliseconds
@@ -1640,7 +2075,7 @@ try {
       Start-NestedOwner $ownedRaw $child.Id $childStarted "started" $nestedBinding
     }
     $child.WaitForExit()
-    if ($isControllerPrecursor -or $isHostVerifier) {
+    if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {
       while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) {
         Start-Sleep -Milliseconds 100
       }
@@ -1649,10 +2084,12 @@ try {
       [IO.File]::WriteAllText($ownerPath, '{"forged":true}', [Text.UTF8Encoding]::new($false))
     }
     $exitCode = $child.ExitCode
-    if ($isHostVerifier) {
+    if ($isHostVerifier -or $isControllerFixture) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
       if (-not (Test-ThisOwner)) { throw "heavy-verifier: receipt refused because exact owner changed" }
+    }
+    if ($isHostVerifier -and -not $callerBinding.Record) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator/artifacts"
       if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
       if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
@@ -1685,7 +2122,7 @@ try {
     $child.StandardInput.Close()
     $child.Kill(); [void]$child.WaitForExit(30000)
   }
-  if ($isHostVerifier -and $null -ne $child -and
+  if (($isHostVerifier -or $isControllerFixture) -and $null -ne $child -and
       ($owner.state -cne 'started' -or
        (Get-ProcessIdentityState $owner.childPid $owner.childProcessStartUtc) -cne 'dead' -or
        (Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false)) {
@@ -1700,6 +2137,26 @@ if ($releaseMismatch) {
   [Console]::Error.WriteLine("heavy-verifier: refusing cleanup because lock ownership no longer matches this caller (admission-root=$admissionCleanupDiagnostic)")
   if ($isNativeDb) { Write-NativeReply 'unknown' 'Exact owner, Windows descendants, Linux init and root absence were not all established; cleanup refused.' }
   exit 1
+}
+if ($isControllerFixture -and $null -ne $child) {
+  # Written only after the exact owner and its whole process tree are released.
+  # It records the route and the check's native exit, never the check verdict.
+  Assert-ControllerFixtureEvidencePath
+  if (-not (Test-PrecursorSafeDirectory $fixtureEvidence)) { throw "heavy-verifier: controller fixture evidence directory became unsafe; receipt refused" }
+  $receiptPath = Join-Path $fixtureEvidence "heavy-verifier-receipt.json"
+  $receipt = [ordered]@{
+    schema = "controller-fixture-equivalence-route/v1"
+    wrapper = [ordered]@{ path = $PSCommandPath; sha256 = $fixtureWrapperDigest; pid = $PID; processStartUtc = $started }
+    lane = $Lane; worktree = $acquiredGitIdentity.Worktree; identityMode = $identityMode; branch = $owner.branch; head = $acquiredGitIdentity.Head
+    sources = $fixtureCheckBlobs; slot = $lockDirectoryName; lockId = $lockId; gate = $ownerGate
+    executable = $command; arguments = @($arguments); commandIdentity = $commandIdentity
+    child = [ordered]@{ pid = $owner.childPid; processStartUtc = $owner.childProcessStartUtc }
+    exit = $exitCode; released = $true; releasedUtc = [DateTime]::UtcNow.ToString("o")
+  }
+  $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($receipt | ConvertTo-Json -Depth 5)); $stream.Write($bytes); $stream.Flush($true) }
+  finally { $stream.Dispose() }
+  [Console]::Error.WriteLine("heavy-verifier: fixture-equivalence receipt=$receiptPath exit=$exitCode")
 }
 if ($isNativeDb) {
   if ($null -eq $nativeCleanupProof) { throw 'native-db: cleanup proof unavailable after release' }

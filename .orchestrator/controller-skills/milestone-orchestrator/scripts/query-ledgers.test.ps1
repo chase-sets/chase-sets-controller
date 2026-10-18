@@ -93,12 +93,17 @@ Structural guard: visual test.
   Assert-True ($LASTEXITCODE -eq 0) "source skill without mutable ledgers should use the installed reference root"
   $fallback = $fallbackText | ConvertFrom-Json
   Assert-True ($fallback.stallEntries -eq 2) "installed fallback counts stall entries"
-  Assert-True ($fallback.defectEntries -eq 4) "installed fallback preserves two mutable entries and adds two reviewed controller constraints"
+  Assert-True ($fallback.defectEntries -eq 5) "installed fallback preserves two mutable entries and adds three reviewed controller constraints"
   $planningText=@(& pwsh -NoProfile -NonInteractive -File $script -InstalledReferenceRoot $sandbox `
     -Mode dispatch -Text 'planning-repair unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json) -join "`n"
   Assert-True ($LASTEXITCODE -eq 0) 'planning dispatch query succeeds with reviewed supplement'
   $planning=$planningText|ConvertFrom-Json
   Assert-True (@($planning.entries|Where-Object slug -eq 'unattributed-nested-model-dispatch').Count -eq 1) 'planning dispatch retrieves host-review constraint'
+  $foregroundText=@(& pwsh -NoProfile -NonInteractive -File $script -InstalledReferenceRoot $sandbox `
+    -Mode dispatch -Text 'Claude lane gate exceeds tool timeout auto-background' -Footprint '.orchestrator/dispatch-lane.ps1' -Json) -join "`n"
+  Assert-True ($LASTEXITCODE -eq 0) 'Claude foreground dispatch query succeeds with reviewed supplement'
+  $foreground=$foregroundText|ConvertFrom-Json
+  Assert-True ($foreground.entries[0].slug -eq 'claude-foreground-gate-exceeds-tool-limit' -and $foreground.entries[0].instruction -match 'No auto-backgrounding' -and $foreground.entries[0].instruction -match 'claude-background-task-dies-on-session-exit') 'Claude lane dispatch ranks the foreground-gate constraint first with its overlapping constraints'
 
   Write-Output "PASS query-ledgers relevance and audit coverage"
 } finally {

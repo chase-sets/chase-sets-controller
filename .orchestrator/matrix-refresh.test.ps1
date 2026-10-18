@@ -1,6 +1,8 @@
+param([switch]$CapacityOnly,[switch]$CapacityQuarantineOnly,[string]$RefreshPath,[string]$EvidenceDir)
 $ErrorActionPreference = "Stop"
 
 $refresh = Join-Path $PSScriptRoot "matrix-refresh.ps1"
+if($RefreshPath){$refresh=$RefreshPath}
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("matrix-refresh-test-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
@@ -91,6 +93,268 @@ function New-StrictMatrixPair([string]$Authority,[string]$Outcome,[string]$Label
   $receipt.findings=[ordered]@{blocking=$blocking;candidates=0;nonBlocking=0}
   [pscustomobject]$dispatch;[pscustomobject]$receipt
 }
+
+function Test-CapacityClosedEvidence {
+  . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
+  $fields=@('capacityForecastStatus','capacityDecisionDigest','capacityFlip','capacityShadowFlip','capacityFlipSkip',
+    'label','policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood','model','effort','row','attemptId','branch')
+  $cases=@('active-valid','shadow-valid','exact-duplicate','reordered-duplicate','historical-v1','historical-v2','missing-schema') +
+    @($fields | ForEach-Object {"missing-$_"}) + @('missing-all-capacity','missing-mixed-status') +
+    @('conflicting-active','conflicting-shadow','conflicting-digest','conflicting-skip','conflicting-head',
+      'conflicting-registry','conflicting-generation','conflicting-lkg','conflicting-label','conflicting-time','conflicting-mechanical')
+  foreach($case in $cases) {
+    Reset-Fixtures
+    $events=[Collections.Generic.List[object]]::new();$costs=[Collections.Generic.List[object]]::new()
+    $now=[DateTimeOffset]::UtcNow.AddMinutes(-2)
+    $shadow=$case -in @('shadow-valid','conflicting-shadow')
+    foreach($n in 1..3) {
+      $attempt="synthetic-$case-$n";$branch="synthetic/$attempt"
+      $flip=@{row=4;toward='claude';steps=3;from=@{harness='codex';family='sol';effort='high';slot='codex.primary'}
+        to=@{harness='claude';family='opus';effort='medium';slot='claude.primary';placement='override-Todd'}}
+      $d=@{ts=$now.ToString('o');kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v3';attemptId=$attempt;label=$attempt
+        lane='synthetic';laneRole='implementation';transcript="$attempt.jsonl";harness='claude';model='claude-opus-5-5';effort='medium';row='4'
+        placement='override-Todd';worktree='D:\synthetic-capacity';branch=$branch;head=('a'*40);policyGeneration=1
+        registryAuthorityDigest='synthetic';family='opus';slot='claude.primary';usedLastKnownGood=$false
+        capacityForecastStatus='in-force';capacityDecisionDigest='0123456789abcdef';capacityFlip=$flip;capacityShadowFlip=$null;capacityFlipSkip=$null}
+      if($shadow){
+        $d.harness='codex';$d.model='gpt-6.1-sol';$d.effort='high';$d.family='sol';$d.slot='codex.primary';$d.placement='provisional'
+        $d.capacityForecastStatus='shadow';$d.capacityFlip=$null;$d.capacityShadowFlip=$flip
+      }
+      if($case -ceq 'conflicting-skip'){$d.capacityFlip=$null;$d.capacityFlipSkip='SLOT_NOT_ADMITTED'}
+      if($case -like 'historical-*'){
+        $d.dispatchRoutingSchema="watchdog-dispatch-routing/$($case.Split('-')[-1])"
+        foreach($field in @($d.Keys | Where-Object {$_ -like 'capacity*'})){$d.Remove($field)}
+        if($case -ceq 'historical-v1'){foreach($field in @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')){$d.Remove($field)}}
+      }
+      $authorModel=$d.model;$authorEffort=$d.effort
+      if($case -ceq 'missing-mixed-status'){$events.Add($d.Clone())}
+      if($case -ceq 'missing-all-capacity'){
+        foreach($field in @($d.Keys|Where-Object{$_ -like 'capacity*'})){$d.Remove($field)}
+      } elseif($case -like 'missing-*'){
+        $d.Remove($(switch($case){'missing-schema'{'dispatchRoutingSchema'} 'missing-mixed-status'{'capacityForecastStatus'} default{$case.Substring(8)}}))
+      }
+      $events.Add($d)
+      if($case -like '*duplicate' -or $case -like 'conflicting-*'){
+        $copy=$d | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable -DateKind String
+        switch($case){
+          'conflicting-active' {$copy.capacityFlip.steps=4}
+          'conflicting-shadow' {$copy.capacityShadowFlip.steps=4}
+          'conflicting-digest' {$copy.capacityDecisionDigest='fedcba9876543210'}
+          'conflicting-skip' {$copy.capacityFlipSkip='REVIEWER_INDEPENDENCE'}
+          'conflicting-head' {$copy.head='b'*40}
+          'conflicting-registry' {$copy.registryAuthorityDigest='other-synthetic'}
+          'conflicting-generation' {$copy.policyGeneration=2}
+          'conflicting-lkg' {$copy.usedLastKnownGood=$true}
+          'conflicting-label' {$copy.label='other-synthetic'}
+          'conflicting-time' {$copy.ts=$now.AddMilliseconds(1).ToString('o')}
+          'conflicting-mechanical' {
+            $copy.transcript="$attempt-retry.jsonl";$copy.ts=$now.AddMilliseconds(1).ToString('o')
+            $copy.capacityForecastStatus='not-evaluated';$copy.capacityDecisionDigest=$null;$copy.capacityFlip=$null
+            $events.Add($copy.Clone());$copy.head='b'*40
+          }
+          'reordered-duplicate' {
+            $copy=[ordered]@{};foreach($field in @($d.Keys|Sort-Object -Descending)){$copy[$field]=$d[$field]}
+            $copy.capacityFlip=[ordered]@{to=[ordered]@{placement=$flip.to.placement;slot=$flip.to.slot;effort=$flip.to.effort;family=$flip.to.family;harness=$flip.to.harness}
+              from=$flip.from;steps=$flip.steps;toward=$flip.toward;row=$flip.row}
+          }
+        }
+        $events.Add($copy)
+      }
+      $costs.Add(@{ts=$now.ToString('o');transcript=$d.transcript;model=$authorModel;usdCurrent=10;usd=10;durationSec=60})
+      $events.Add(@{ts=$now.AddSeconds(1).ToString('o');kind='review-complete';authorAttempt=$attempt;branch=$branch;authorModel=$authorModel;authorEffort=$authorEffort;outcome='PASS'})
+    }
+    foreach($reverse in @($false,$true)) {
+      $rows=@($events);if($reverse){[array]::Reverse($rows)}
+      Set-Content $dispatchPath -Value @($rows|ForEach-Object{$_|ConvertTo-Json -Depth 20 -Compress})
+      Set-Content $ledgerPath -Value @($costs|ForEach-Object{$_|ConvertTo-Json -Compress})
+      $validators=@(Get-Content $dispatchPath|ConvertFrom-Json -DateKind String|Where-Object kind -EQ 'dispatch'|ForEach-Object{Test-DispatchRoutingLedgerEvidence $_})
+      if($case -notlike 'missing-*'){Assert-True ($validators -notcontains $false) "valid closed evidence $case"}
+      Invoke-Refresh|Out-Null;$m=Get-Matrix
+      $key=if($shadow){"row4`u{001f}gpt-6.1-sol`u{001f}high"}else{"row4`u{001f}claude-opus-5-5`u{001f}medium"}
+      $modelKey=if($shadow){"row4`u{001f}gpt-6.1-sol"}else{"row4`u{001f}claude-opus-5-5"}
+      if($case -like 'missing-*' -or $case -like 'conflicting-*'){
+        foreach($table in @($m.measuredAt,$m.measuredAt.capacityFlipped)){
+          Assert-True ($null -eq $table.byRowConfig.$key -and $null -eq $table.blockRateByRow.$modelKey -and
+            $null -eq $table.blockRateByRowConfig.$key) "closed evidence excluded $case reverse=$reverse"
+        }
+        $suffix=if($case -like 'missing-*'){'Unresolved'}else{'Ambiguous'}
+        Assert-True ($m.measuredAt.capacityIdentity."costRows$suffix" -eq 3 -and
+          $m.measuredAt.capacityIdentity."reviewRows$suffix" -eq 3) "closed evidence diagnostics $case reverse=$reverse"
+      } else {
+        $ordinary=$shadow -or $case -like 'historical-*'
+        $table=if($ordinary){$m.measuredAt}else{$m.measuredAt.capacityFlipped}
+        $other=if($ordinary){$m.measuredAt.capacityFlipped}else{$m.measuredAt}
+        Assert-True ($table.byRowConfig.$key.runs -eq 3 -and $table.blockRateByRow.$modelKey.reviews -eq 3 -and
+          $table.blockRateByRowConfig.$key.reviews -eq 3) "closed evidence control $case reverse=$reverse"
+        Assert-True ($null -eq $other.byRowConfig.$key -and $null -eq $other.blockRateByRow.$modelKey -and
+          $null -eq $other.blockRateByRowConfig.$key -and
+          @($m.measuredAt.capacityIdentity.PSObject.Properties.Value|Where-Object{$_ -ne 0}).Count -eq 0) "closed evidence exclusive cohort $case"
+      }
+    }
+    Write-Output "PASS capacity closed evidence $case both-orders"
+  }
+}
+function Test-CapacityQuarantine {
+  . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
+  # Planning and review flip rows calibrate like implementation flips (#9282); an unflipped role v3 row is an
+  # ordinary-cohort calibration record; an unknown role is still quarantined.
+  foreach($case in @('valid-with-history','missing-kind','extra-author-model','wrong-kind','review-role','planning-role','planning-role-unflipped',
+      'unknown-role','marker-extra-author','missing-transcript','unmatched-transcript','ambiguous-branch','ambiguous-issue')) {
+    Reset-Fixtures
+    $events=[Collections.Generic.List[object]]::new();$costs=[Collections.Generic.List[object]]::new()
+    $now=[DateTimeOffset]::UtcNow.AddMinutes(-2)
+    foreach($n in 1..3){
+      $attempt="synthetic-quarantine-$case-$n";$branch="synthetic/$attempt";$issue=908494+$n
+      $transcript="synthetic-required-$n--claude-opus-5-5--medium.jsonl"
+      $d=@{ts=$now.ToString('o');kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v3';attemptId=$attempt;label=$attempt
+        lane='synthetic';laneRole='implementation';transcript=$transcript;harness='claude';model='claude-opus-5-5';effort='medium';row='4'
+        placement='override-Todd';worktree='D:\synthetic-capacity';branch=$branch;head=('a'*40);policyGeneration=1
+        registryAuthorityDigest='synthetic';family='opus';slot='claude.primary';usedLastKnownGood=$false
+        capacityForecastStatus='in-force';capacityDecisionDigest='0123456789abcdef';capacityShadowFlip=$null;capacityFlipSkip=$null
+        capacityFlip=@{row=4;toward='claude';steps=3;from=@{harness='codex';family='sol';effort='high';slot='codex.primary'}
+          to=@{harness='claude';family='opus';effort='medium';slot='claude.primary';placement='override-Todd'}}}
+      Assert-True (Test-DispatchRoutingLedgerEvidence ($d|ConvertTo-Json -Depth 20|ConvertFrom-Json -DateKind String)) 'quarantine valid synthetic seed'
+      # The issue is deliberately absent from v3. Only structured historical
+      # branch/issue evidence can prevent the legacy fallback in this fixture.
+      $history=@{ts=$now.AddMinutes(-1).ToString('o');kind='dispatch';issue=$issue;branch=$branch
+        model=$d.model;effort=$d.effort;row='4';laneRole='implementation';attemptId="synthetic-historical-$n";transcript="synthetic-historical-$n.jsonl"}
+      $events.Add($history)
+      switch($case){
+        'missing-kind' {$d.Remove('kind')}
+        'extra-author-model' {$d.authorModel=$d.model}
+        'wrong-kind' {$d.kind='verify-complete'}
+        'review-role' {$d.laneRole='review'}
+        'planning-role' {$d.laneRole='planning'}
+        'planning-role-unflipped' {$d.laneRole='planning';$d.capacityFlip=$null}
+        'unknown-role' {$d.laneRole='synthetic-unsupported'}
+        'marker-extra-author' {$d.Remove('dispatchRoutingSchema');$d.authorModel=$d.model}
+        'missing-transcript' {$d.Remove('transcript')}
+        'unmatched-transcript' {$transcript="synthetic-unmatched-$n--claude-opus-5-5--medium.jsonl"}
+        'ambiguous-branch' {$d.Remove('transcript');$other=$history.Clone();$other.issue=918494+$n;$events.Add($other)}
+        'ambiguous-issue' {$d.Remove('transcript');$other=$history.Clone();$other.branch="synthetic/other-$n";$events.Add($other)}
+      }
+      $events.Add($d)
+      $costs.Add(@{ts=$now.ToString('o');issue=$issue;transcript=$transcript;model='claude-opus-5-5';usdCurrent=10;usd=10;durationSec=60})
+      $events.Add(@{ts=$now.AddSeconds(1).ToString('o');kind='review-complete';authorAttempt=$attempt;branch=$branch
+        authorModel='claude-opus-5-5';authorEffort='medium';outcome='PASS'})
+    }
+    foreach($reverse in @($false,$true)){
+      $rows=@($events);if($reverse){[array]::Reverse($rows)}
+      Set-Content $dispatchPath -Value @($rows|ForEach-Object{$_|ConvertTo-Json -Depth 20 -Compress})
+      Set-Content $ledgerPath -Value @($costs|ForEach-Object{$_|ConvertTo-Json -Compress})
+      Invoke-Refresh|Out-Null;$m=Get-Matrix
+      $key="row4`u{001f}claude-opus-5-5`u{001f}medium";$modelKey="row4`u{001f}claude-opus-5-5"
+      if($case -ceq 'planning-role-unflipped'){
+        Assert-True ($m.measuredAt.byRowConfig.$key.runs -eq 3 -and $m.measuredAt.blockRateByRowConfig.$key.reviews -eq 3) "unflipped planning v3 row calibrates in the ordinary cohort reverse=$reverse"
+      } else {
+        Assert-True ($null -eq $m.measuredAt.byRowConfig.$key -and $null -eq $m.measuredAt.blockRateByRowConfig.$key) "quarantine ordinary excluded $case reverse=$reverse"
+      }
+      if($case -in @('valid-with-history','review-role','planning-role')){
+        Assert-True ($m.measuredAt.capacityFlipped.byRowConfig.$key.runs -eq 3 -and
+          @($m.measuredAt.capacityIdentity.PSObject.Properties.Value|Where-Object{$_ -ne 0}).Count -eq 0) "quarantine valid exact transcript retains flipped costs $case"
+      } elseif($case -ceq 'planning-role-unflipped'){
+        Assert-True ($null -eq $m.measuredAt.capacityFlipped.byRowConfig.$key -and $m.measuredAt.byRowModel.$modelKey.runs -eq 3 -and
+          @($m.measuredAt.capacityIdentity.PSObject.Properties.Value|Where-Object{$_ -ne 0}).Count -eq 0) 'unflipped planning row stays outside the flipped cohort'
+      } else {
+        Assert-True ($null -eq $m.measuredAt.capacityFlipped.byRowConfig.$key -and $null -eq $m.measuredAt.byRowModel.$modelKey) "quarantine costs excluded $case reverse=$reverse"
+        $suffix=if($case -like 'ambiguous-*'){'Ambiguous'}else{'Unresolved'}
+        Assert-True ($m.measuredAt.capacityIdentity."costRows$suffix" -eq 3) "quarantine cost diagnostics $case reverse=$reverse"
+      }
+      if($case -in @('valid-with-history','unmatched-transcript','review-role','planning-role')){
+        Assert-True ($m.measuredAt.capacityFlipped.blockRateByRowConfig.$key.reviews -eq 3) "quarantine valid review join $case"
+      } elseif($case -ceq 'planning-role-unflipped'){
+        Assert-True ($null -eq $m.measuredAt.capacityFlipped.blockRateByRowConfig.$key) 'unflipped planning reviews stay outside the flipped cohort'
+      } else {
+        Assert-True ($null -eq $m.measuredAt.capacityFlipped.blockRateByRowConfig.$key -and
+          $m.measuredAt.capacityIdentity.reviewRowsUnresolved -eq 3) "quarantine reviews excluded $case reverse=$reverse"
+      }
+    }
+    Write-Output "PASS capacity quarantine $case both-orders"
+  }
+}
+function Test-CapacityCalibration {
+  Reset-Fixtures
+  $events=[Collections.Generic.List[object]]::new();$costs=[Collections.Generic.List[object]]::new()
+  $now=[DateTimeOffset]::UtcNow.AddMinutes(-5)
+  foreach($n in 1..3) {
+    foreach($cohort in @('flipped','ordinary','shadow')) {
+      $attempt="synthetic-$cohort-$n";$branch="synthetic/$attempt"
+      $d=@{ts=$now.ToString('o');kind='dispatch';attemptId=$attempt;branch=$branch;head=('a'*40)
+        model='claude-opus-5-5';effort='medium';row='4';transcript="$attempt.jsonl";laneRole='implementation'
+        dispatchRoutingSchema='watchdog-dispatch-routing/v3';label=$attempt;lane='synthetic';harness='claude';placement='override-Todd'
+        worktree='D:\synthetic-capacity';policyGeneration=1;registryAuthorityDigest='synthetic';family='opus';slot='claude.primary';usedLastKnownGood=$false
+        capacityForecastStatus=$(if($cohort -eq 'shadow'){'shadow'}else{'in-force'});capacityFlip=$null
+        capacityDecisionDigest='0123456789abcdef';capacityShadowFlip=$null;capacityFlipSkip=$null}
+      if($cohort -eq 'flipped'){$d.capacityFlip=@{row=4;toward='claude';steps=3;from=@{harness='codex';family='sol';effort='high';slot='codex.primary'};to=@{harness='claude';family='opus';effort='medium';slot='claude.primary';placement='override-Todd'}}}
+      $events.Add($d);$events.Add($d) # exact duplicate evidence never doubles a root
+      $costs.Add(@{ts=$now.ToString('o');transcript=$d.transcript;issue=$d.issue;model=$d.model;usdCurrent=10;usd=10;durationSec=60})
+      $mechanical=$d.Clone();$mechanical.ts=$now.AddSeconds(1).ToString('o');$mechanical.transcript="$attempt-retry.jsonl"
+      $mechanical.capacityForecastStatus='not-evaluated';$mechanical.capacityFlip=$null;$mechanical.capacityDecisionDigest=$null;$events.Add($mechanical)
+      $costs.Add(@{ts=$now.ToString('o');transcript=$mechanical.transcript;issue=$d.issue;model=$d.model;usdCurrent=2;usd=2;durationSec=60})
+      $quota=$mechanical.Clone();$quota.ts=$now.AddSeconds(2).ToString('o');$quota.model='gpt-6.1-sol';$quota.effort='high';$quota.transcript="$attempt-quota.jsonl"
+      $quota.harness='codex';$quota.family='sol';$quota.slot='codex.primary';$events.Add($quota)
+      foreach($author in @(@('claude-opus-5-5','medium'),@('gpt-6.1-sol','high'))) {
+        $events.Add(@{ts=$now.AddSeconds(3).ToString('o');kind='review-complete';authorAttempt=$attempt;branch=$branch;authorModel=$author[0];authorEffort=$author[1];effort='max';outcome='PASS';issue=$d.issue})
+      }
+    }
+  }
+  $events.Add(@{ts=$now.AddSeconds(3).ToString('o');kind='review-complete';authorAttempt='unmatched';branch='synthetic/unmatched';authorModel='claude-opus-5-5';authorEffort='medium';outcome='BLOCK';issue=908495})
+  function Save-CapacityFixture($Rows) {
+    Set-Content $dispatchPath -Value @($Rows|ForEach-Object{$_|ConvertTo-Json -Depth 20 -Compress})
+    Set-Content $ledgerPath -Value @($costs|ForEach-Object{$_|ConvertTo-Json -Compress})
+  }
+  Save-CapacityFixture $events;Invoke-Refresh|Out-Null;$m=Get-Matrix
+  $key="row4`u{001f}claude-opus-5-5`u{001f}medium";$modelKey="row4`u{001f}claude-opus-5-5"
+  Assert-True ($m.measuredAt.capacityFlipped.byRowConfig.$key.runs -eq 6 -and $m.measuredAt.capacityFlipped.byRowConfig.$key.usd -eq 36) 'flipped cost cohort joins exact transcript and retains mechanical continuation'
+  Assert-True ($m.measuredAt.byRowConfig.$key.runs -eq 12 -and $m.measuredAt.byRowConfig.$key.usd -eq 72) 'ordinary and shadow costs exclude flips'
+  Assert-True ($m.measuredAt.capacityFlipped.blockRateByRowConfig.$key.reviews -eq 3 -and
+    $m.measuredAt.capacityFlipped.blockRateByRow.$modelKey.reviews -eq 3 -and
+    $m.measuredAt.blockRateByRowConfig.$key.reviews -eq 6 -and $m.measuredAt.blockRateByRow.$modelKey.reviews -eq 6) 'multi-valued attempt join uses actual author configuration'
+  Assert-True ($m.measuredAt.blockRateByRowConfig."row4`u{001f}gpt-6.1-sol`u{001f}high".reviews -eq 9 -and
+    $m.measuredAt.capacityIdentity.reviewRowsUnresolved -eq 1) 'quota configuration remains ordinary; unmatched receipt visibly unresolved'
+  $reversed=@($events);[array]::Reverse($reversed);Save-CapacityFixture $reversed;Invoke-Refresh|Out-Null;$other=Get-Matrix
+  Assert-True ($other.measuredAt.capacityFlipped.byRowConfig.$key.usd -eq 36 -and $other.measuredAt.capacityFlipped.blockRateByRowConfig.$key.reviews -eq 3 -and $other.measuredAt.blockRateByRowConfig.$key.reviews -eq 6) 'capacity classification independent of log order'
+  $conflict=$events[0].Clone();$conflict.transcript='synthetic-conflicting-root.jsonl';$conflict.capacityFlip=$null;$events.Add($conflict)
+  $unbound=@{ts=$now.AddSeconds(4).ToString('o');kind='review-complete';branch='synthetic/synthetic-flipped-1';issue=908495;authorModel='claude-opus-5-5';authorEffort='medium';outcome='BLOCK'}
+  $events.Add($unbound);Save-CapacityFixture $events;Invoke-Refresh|Out-Null;$ambiguous=Get-Matrix
+  Assert-True ($ambiguous.measuredAt.capacityIdentity.reviewRowsAmbiguous -ge 1 -and $ambiguous.measuredAt.capacityIdentity.costRowsAmbiguous -ge 2 -and
+    $ambiguous.measuredAt.capacityIdentity.reviewRowsUnresolved -ge 2) 'conflicting roots and unbound receipts visibly excluded'
+  Assert-True ($null -eq $ambiguous.measuredAt.capacityFlipped.blockRateByRowConfig.$key) 'capacity cells retain the three-review minimum after ambiguous exclusion'
+  $events[0].capacityFlip.to.effort='high';Save-CapacityFixture $events;Invoke-Refresh|Out-Null;$malformed=Get-Matrix
+  Assert-True ($malformed.measuredAt.capacityIdentity.costRowsUnresolved -ge 2 -and $malformed.measuredAt.capacityIdentity.reviewRowsUnresolved -ge 3) 'malformed retained v3 cannot supply calibration authority'
+  Write-Output 'PASS capacity calibration exact transcript, multi-valued attempts, mechanical/quota continuation, shadow, unmatched and reordered controls'
+  Test-CapacityClosedEvidence
+  Test-CapacityQuarantine
+  if(-not $RefreshPath){
+    $mutantRoot=if($EvidenceDir){[IO.Path]::GetFullPath($EvidenceDir)}else{Join-Path $testRoot 'capacity-mutant'}
+    [void][IO.Directory]::CreateDirectory($mutantRoot)
+    Get-ChildItem -LiteralPath $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $mutantRoot
+    $source=[IO.File]::ReadAllText($refresh)
+    foreach($mutation in @(
+      @{name='last-dispatch-wins';old='$origin=$roots[0]';new='$origin=@($unique.Values|Sort-Object ts)[-1]';assertion='flipped cost cohort'},
+      @{name='missing-status-ordinary';old='modern=(@($rows|Where-Object{Test-CapacityRoutingRecord $_}).Count -gt 0)';new='modern=(@($rows|Where-Object{$_.PSObject.Properties[''capacityForecastStatus'']}).Count -gt 0)';assertion='closed evidence excluded missing-capacityForecastStatus'},
+      @{name='partial-evidence-dedup';old='$identity=ConvertTo-CapacityCanonicalValue $e | ConvertTo-Json -Depth 100 -Compress';new='$identity=@($e.ts,$e.transcript,$e.head,$e.capacityForecastStatus,(ConvertTo-CapacityCanonicalValue $e.capacityFlip|ConvertTo-Json -Depth 12 -Compress)) -join "`u{001f}"';assertion='closed evidence excluded conflicting-shadow'},
+      @{name='quarantine-after-author-filter';old="if(-not (Test-CapacityRoutingRecord `$e) -and (`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning') -or `$e.authorModel)){continue}";new="if(`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning') -or `$e.authorModel){continue}";assertion='quarantine ordinary excluded missing-kind';quarantineOnly=$true},
+      @{name='legacy-issue-fallback';old='foreach($branch in $capacityModernBranches){';new='foreach($branch in @()){';assertion='quarantine ordinary excluded missing-transcript';quarantineOnly=$true}
+    )){
+      Assert-True ($source.Contains($mutation.old)) "calibration mutation seam $($mutation.name)"
+      $mutant=Join-Path $mutantRoot 'matrix-refresh.ps1'
+      [IO.File]::WriteAllText($mutant,$source.Replace($mutation.old,$mutation.new))
+      $log=Join-Path $mutantRoot "$($mutation.name).log"
+      if($mutation.quarantineOnly){
+        & pwsh -NoProfile -NonInteractive -File $PSCommandPath -CapacityQuarantineOnly -RefreshPath $mutant *> $log
+      } else {
+        & pwsh -NoProfile -NonInteractive -File $PSCommandPath -CapacityOnly -RefreshPath $mutant *> $log
+      }
+      $code=$LASTEXITCODE
+      Copy-Item $mutant (Join-Path $mutantRoot "$($mutation.name).ps1")
+      Assert-True ($code -eq 1 -and ([IO.File]::ReadAllText($log)).Contains("ASSERTION FAILED: $($mutation.assertion)")) "$($mutation.name) mutant killed"
+      Write-Output "PASS capacity calibration mutant=$($mutation.name) exit=$code"
+    }
+  }
+}
+if($CapacityQuarantineOnly){Test-CapacityQuarantine;return}
+if($CapacityOnly){Test-CapacityCalibration;return}
 
 # --- 1. measured facts are generated from telemetry ------------------------
 Reset-Fixtures
@@ -464,6 +728,7 @@ try {
   Write-Output 'PASS F2 matrix-refresh counts explicit max configuration without live max admission'
 } finally { Restore-RoutingRegistryBytes $f2MatrixRegistrySnapshot }
 
+Test-CapacityCalibration
 Write-Output "ALL matrix-refresh tests passed"
 } finally {
   $env:CHASE_SETS_ROUTING_DATA_ROOT=$oldRoutingRoot

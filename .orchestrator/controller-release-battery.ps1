@@ -29,9 +29,18 @@ param(
   # Optional machine-readable battery result output.
   [string]$ResultPath = "",
 
-  # Optional earlier result for this worktree. Its passing test items that the
-  # earlier..candidate diff cannot reach are reused instead of re-executed.
+  # Optional local prior or downloaded controller CI final.json. CI imports
+  # authenticate the run, artifact ZIP digest and orphan source trailer against
+  # GitHub (gh read access required), then execute only the missing/ineligible
+  # and changed items. Import evidence is retained in this seat's artifacts.
   [string]$PriorResultPath = "",
+
+  # Per-item stop (#9373): one ';'-separated string of required identities that
+  # execute under any prior instead of being lent, such as open CI reuse
+  # safeguard items (milestone-orchestrator section 7). '' names none. An empty
+  # segment or an identity not ordinally in the required inventory refuses
+  # BATTERY_NO_REUSE_IDENTITY_UNKNOWN before any item runs.
+  [string]$NoReuseIdentity = "",
 
   # stop (default): end at the first failure that is not PREEXISTING; the
   # remaining items are recorded as not run. all: run every item regardless.
@@ -99,7 +108,12 @@ function Get-BatteryFleetLoad {
   $ownerPath = Join-Path (Split-Path -Parent $controller) ".orchestrator\verify-lock.d\owner.json"
   if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return "none" }
   try {
-    $owner = Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+      $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+      try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } finally { $stream.Dispose() }
+    $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
     return "none"
   }
@@ -135,8 +149,12 @@ function Assert-BatteryAdmission {
           (Test-SameBatteryPath $entries[0].FullName $ownerPath) -and
           -not $entries[0].PSIsContainer -and
           (($entries[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)) {
-        $owner = [IO.File]::ReadAllText($ownerPath, [Text.Encoding]::UTF8) |
-          ConvertFrom-Json -DateKind String -ErrorAction Stop
+        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+          $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+          try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+        $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
         if ($owner.schemaVersion -eq 4 -and
             $owner.lockId -ceq $token -and
             $owner.gate -ceq "script-battery" -and
@@ -410,6 +428,117 @@ function Get-BatteryFailureSignature([string]$Output, [string]$Root) {
   return (@($lines) -join "`n")
 }
 
+function Get-BatteryCiApi([string]$Endpoint) {
+  $json = @(& gh api --method GET "repos/chase-sets/chase-sets-controller/$Endpoint" 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw 'CI_API_FAILED' }
+  return (($json -join "`n") | ConvertFrom-Json -Depth 40 -DateKind String -ErrorAction Stop)
+}
+
+function Save-BatteryCiArtifact([string]$ArtifactId, [string]$Path) {
+  # Native stdout redirection preserves the downloaded ZIP bytes (PS 7.4+).
+  & gh api --method GET "repos/chase-sets/chase-sets-controller/actions/artifacts/$ArtifactId/zip" > $Path 2>$null
+  if ($LASTEXITCODE -ne 0) { throw 'CI_DOWNLOAD_FAILED' }
+}
+
+function Test-BatteryCiArguments($CiArguments, $LocalArguments, $Prior) {
+  if ($CiArguments -isnot [array] -or $LocalArguments -isnot [array] -or
+      $CiArguments.Count -eq 0 -or $CiArguments.Count -ne $LocalArguments.Count) { return $false }
+  for ($i = 0; $i -lt $CiArguments.Count; $i++) {
+    if ($CiArguments[$i] -isnot [string] -or $LocalArguments[$i] -isnot [string]) { return $false }
+    $ciArg = $CiArguments[$i].Replace('{CONTROLLER}', $controller)
+    if ($ciArg -ceq $Prior.ci.checkoutHead) { $ciArg = [string]$Prior.controllerHead }
+    $localArg = $LocalArguments[$i]
+    # Normalize only path-valued elements. Switches, case, order, and empty
+    # argument values (notably EvidenceReceiptPath) retain ordinal semantics.
+    if ($ciArg -cmatch '^(?:[A-Za-z]:[\\/]|[/\\]|\.\.?[\\/])') { $ciArg = $ciArg.Replace('\', '/') }
+    if ($localArg -cmatch '^(?:[A-Za-z]:[\\/]|[/\\]|\.\.?[\\/])') { $localArg = $localArg.Replace('\', '/') }
+    if ($ciArg -cne $localArg) { return $false }
+  }
+  return $true
+}
+
+function Import-BatteryCiPrior($Prior, [byte[]]$ReceiptBytes) {
+  $runId = [string]$Prior.ci.runId
+  if ($runId -cnotmatch '^[1-9][0-9]*$' -or
+      [string]$Prior.ci.checkoutHead -cnotmatch '^[a-f0-9]{40}$' -or
+      [string]$Prior.ci.runnerHead -cnotmatch '^[a-f0-9]{40}$' -or
+      [string]$Prior.ci.productSha -cnotmatch '^[a-f0-9]{40}$') { throw 'CI_IDENTITY_INVALID' }
+  $run = Get-BatteryCiApi "actions/runs/$runId"
+  if ([string]$run.id -cne $runId -or $run.status -cne 'completed' -or
+      $run.repository.full_name -cne 'chase-sets/chase-sets-controller' -or
+      $run.head_repository.full_name -cne 'chase-sets/chase-sets-controller' -or
+      $run.path -cne '.github/workflows/controller-battery.yml' -or
+      $run.head_branch -cne 'main' -or $run.event -cnotin @('push', 'workflow_dispatch') -or
+      $run.head_sha -cne $Prior.ci.runnerHead) { throw 'CI_RUN_INVALID' }
+  # The path alone does not authenticate a workflow: an arbitrary dispatch
+  # branch can rewrite it. Only runners on the trusted main lineage qualify.
+  $lineage = Get-BatteryCiApi "compare/$($run.head_sha)...main"
+  if ($lineage.status -cnotin @('identical', 'ahead')) { throw 'CI_RUN_INVALID' }
+  # A failed run is still useful per-item. Neither its conclusion nor the
+  # receipt's aggregate outcome can convert FAIL/LOCAL_ONLY into reusable PASS.
+  $listing = Get-BatteryCiApi "actions/runs/$runId/artifacts?per_page=100"
+  if ($listing.total_count -gt 100) { throw 'CI_ARTIFACT_LIST_INCOMPLETE' }
+  $artifacts = @($listing.artifacts | Where-Object { $_.name -ceq 'controller-battery-result' })
+  if ($artifacts.Count -ne 1) { throw 'CI_ARTIFACT_INVALID' }
+  $artifact = $artifacts[0]
+  if ([string]$artifact.id -cnotmatch '^[1-9][0-9]*$' -or $artifact.expired -ne $false -or
+      [string]$artifact.workflow_run.id -cne $runId -or $artifact.workflow_run.head_sha -cne $run.head_sha -or
+      [string]$artifact.digest -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'CI_ARTIFACT_INVALID' }
+  $importRoot = Join-Path $runtime 'artifacts'
+  [void][IO.Directory]::CreateDirectory($importRoot)
+  $archivePath = Join-Path $importRoot ("controller-ci-$runId-$($artifact.id)-" + [guid]::NewGuid().ToString('N') + '.zip')
+  try {
+    Save-BatteryCiArtifact ([string]$artifact.id) $archivePath
+    $digest = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (('sha256:' + $digest) -cne $artifact.digest) { throw 'CI_DIGEST_MISMATCH' }
+    $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    try {
+      # Do not extract untrusted paths. Compare the exact receipt bytes, not a
+      # caller-editable imported JSON envelope or just its self-reported hash.
+      $entries = @($archive.Entries | Where-Object { $_.FullName -ceq 'final.json' })
+      if ($entries.Count -ne 1) { throw 'CI_RECEIPT_MISMATCH' }
+      $stream = $entries[0].Open()
+      $memory = [IO.MemoryStream]::new()
+      try { $stream.CopyTo($memory); $original = $memory.ToArray() } finally { $stream.Dispose(); $memory.Dispose() }
+      if ([Convert]::ToBase64String($original) -cne [Convert]::ToBase64String($ReceiptBytes)) { throw 'CI_RECEIPT_MISMATCH' }
+      $logs = @($archive.Entries | Where-Object { $_.FullName -ceq 'controller-ci.log' })
+      if ($logs.Count -ne 1) { throw 'CI_RAW_LOG_MISMATCH' }
+      $stream = $logs[0].Open()
+      try { $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant() }
+      finally { $stream.Dispose() }
+      if ($rawHash -cne [string]$Prior.rawLog.sha256 -or $logs[0].Length -ne $Prior.rawLog.byteLength) { throw 'CI_RAW_LOG_MISMATCH' }
+    } finally { $archive.Dispose() }
+    $snapshot = Get-BatteryCiApi "git/commits/$($Prior.ci.checkoutHead)"
+    if ($snapshot.sha -cne $Prior.ci.checkoutHead -or @($snapshot.parents).Count -ne 0) { throw 'CI_SNAPSHOT_NOT_ORPHAN' }
+    $localTree = & git -C $controller rev-parse "$($Prior.controllerHead)^{tree}" 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]$snapshot.tree.sha -cne [string]$localTree) { throw 'CI_TREE_MISMATCH' }
+    $trailers = [regex]::Matches([string]$snapshot.message, '(?m)^Source-Controller-Head: ([a-f0-9]{40})\s*$')
+    if ($trailers.Count -ne 1 -or $trailers[0].Groups[1].Value -cne $Prior.controllerHead) { throw 'CI_TRAILER_MISMATCH' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($row in @($Prior.results)) {
+      if ([string]::IsNullOrWhiteSpace([string]$row.identity) -or -not $seen.Add([string]$row.identity)) { throw 'CI_DUPLICATE_ITEM' }
+    }
+    $seen.Clear()
+    foreach ($item in @($Prior.inventory)) {
+      if ([string]::IsNullOrWhiteSpace([string]$item.identity) -or -not $seen.Add([string]$item.identity)) { throw 'CI_DUPLICATE_ITEM' }
+    }
+    $import = [ordered]@{
+      schemaVersion='controller-battery-ci-import/v1'; repository='chase-sets/chase-sets-controller'
+      workflow='.github/workflows/controller-battery.yml'; runId=$runId; artifactId=[string]$artifact.id
+      artifactPath=$archivePath; artifactSha256=$digest; checkoutHead=[string]$Prior.ci.checkoutHead
+      controllerHead=[string]$Prior.controllerHead; productSha=[string]$Prior.ci.productSha
+      importedUtc=[DateTime]::UtcNow.ToString('o')
+    }
+    $importPath = [IO.Path]::ChangeExtension($archivePath, '.import.json')
+    [IO.File]::WriteAllText($importPath, ($import | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    return [pscustomobject]$import
+  } catch {
+    # Delete only this attempt's generated archive, never caller-supplied paths.
+    if (Test-Path -LiteralPath $archivePath -PathType Leaf) { Remove-Item -LiteralPath $archivePath -Force }
+    throw
+  }
+}
+
 if ($ExpectedControllerHead -cnotmatch "^[a-f0-9]{40}$") {
   Stop-Battery "BATTERY_EXPECTED_HEAD_INVALID"
 }
@@ -444,6 +573,7 @@ if (-not $ValidatePlanOnly) {
       -ControllerBatteryRepairHistoryPath $RepairHistoryPath `
       -ControllerBatteryScope $Scope `
       -ControllerBatteryPriorResultPath $PriorResultPath `
+      -ControllerBatteryNoReuseIdentity $NoReuseIdentity `
       -ControllerBatteryOnFailure $OnFailure
     exit $LASTEXITCODE
   }
@@ -631,6 +761,14 @@ foreach ($requiredDiscriminator in @("discriminator:issue-6254")) {
     Stop-Battery "BATTERY_DISCRIMINATOR_OMITTED:$($requiredDiscriminator.Substring('discriminator:'.Length))"
   }
 }
+# The reuse block below never lends a -NoReuseIdentity item.
+$noReuseIdentities = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+if ($NoReuseIdentity.Length -gt 0) {
+  foreach ($noReuse in $NoReuseIdentity.Split(';')) {
+    if (-not $identitySet.Contains($noReuse)) { Stop-Battery "BATTERY_NO_REUSE_IDENTITY_UNKNOWN:$noReuse" }
+    [void]$noReuseIdentities.Add($noReuse)
+  }
+}
 
 $selectedItems = [Collections.Generic.List[object]]::new()
 foreach ($item in $requiredItems) {
@@ -696,7 +834,10 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
 # Reuse (#8207). A prior result from this worktree lends its PASS test items to
 # this run when the prior head is an ancestor, the host binary and raw log still
 # match, the item ran within 24 hours, and the prior..candidate diff reaches
-# neither the item nor anything it references. Guard items always execute.
+# neither the item nor anything it references. Under either prior, guards and
+# -NoReuseIdentity items always execute (#9373).
+# CI priors replace that host/path anchor with authenticated GitHub bytes;
+# fresh, argument/scope-equivalent items may be carried across an empty impact.
 $reusable = @{}
 $priorOrder = @{}
 if (-not [string]::IsNullOrWhiteSpace($PriorResultPath)) {
@@ -704,49 +845,76 @@ if (-not [string]::IsNullOrWhiteSpace($PriorResultPath)) {
   try {
     $resolvedPrior = if ([IO.Path]::IsPathRooted($PriorResultPath)) { [IO.Path]::GetFullPath($PriorResultPath) } else { [IO.Path]::GetFullPath((Join-Path $controller $PriorResultPath)) }
     $priorArtifactRoot = [IO.Path]::GetFullPath((Join-Path $runtime "artifacts")).TrimEnd("\", "/")
-    if ((Split-Path -Parent $resolvedPrior).TrimEnd("\", "/") -cne $priorArtifactRoot -or
-        -not (Test-Path -LiteralPath $resolvedPrior -PathType Leaf)) { throw "PATH" }
+    if (-not (Test-Path -LiteralPath $resolvedPrior -PathType Leaf)) { throw "PATH" }
     $priorBytes = [IO.File]::ReadAllBytes($resolvedPrior)
     $prior = [Text.Encoding]::UTF8.GetString($priorBytes) | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($prior.schemaVersion -cne "controller-battery-result/v1" -or [string]$prior.controllerHead -cnotmatch "^[a-f0-9]{40}$") { throw "SCHEMA" }
+    $isCiPrior = $null -ne $prior.PSObject.Properties['ci']
+    if (-not $isCiPrior -and (Split-Path -Parent $resolvedPrior).TrimEnd("\", "/") -cne $priorArtifactRoot) { throw "PATH" }
     & git -C $controller merge-base --is-ancestor $prior.controllerHead $ExpectedControllerHead 2>$null
     if ($LASTEXITCODE -ne 0) { throw "NOT_ANCESTOR" }
-    if ([string]$hostIdentity.sha256 -ceq "unavailable" -or [string]$prior.hostIdentity.sha256 -cne [string]$hostIdentity.sha256) { throw "HOST_CHANGED" }
-    $priorRawPath = Join-Path $controller ([string]$prior.rawLog.relativePath)
-    $priorRawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($priorRawPath)))).ToLowerInvariant()
-    if ($priorRawHash -cne [string]$prior.rawLog.sha256) { throw "RAW_LOG_MISMATCH" }
+    $ciImport = $null
+    if ($isCiPrior) {
+      $ciImport = Import-BatteryCiPrior $prior $priorBytes
+    } else {
+      if ([string]$hostIdentity.sha256 -ceq "unavailable" -or [string]$prior.hostIdentity.sha256 -cne [string]$hostIdentity.sha256) { throw "HOST_CHANGED" }
+      $priorRawPath = Join-Path $controller ([string]$prior.rawLog.relativePath)
+      $priorRawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($priorRawPath)))).ToLowerInvariant()
+      if ($priorRawHash -cne [string]$prior.rawLog.sha256) { throw "RAW_LOG_MISMATCH" }
+    }
     $priorResultHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($priorBytes))).ToLowerInvariant()
     $priorDiff = @(& git -C $controller diff --no-renames --name-only "$($prior.controllerHead)..$ExpectedControllerHead" 2>&1)
     if ($LASTEXITCODE -ne 0) { throw "DIFF_UNREADABLE" }
     $priorDiff = @($priorDiff | ForEach-Object { ([string]$_).Replace("\", "/").Trim() } | Where-Object { $_ })
     $priorImpactTests = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     if ($priorDiff.Count -gt 0) {
-      if ($priorDiff -ccontains ".orchestrator/controller-release-battery.ps1") { throw "BATTERY_CHANGED" }
+      if (-not $isCiPrior -and $priorDiff -ccontains ".orchestrator/controller-release-battery.ps1") { throw "BATTERY_CHANGED" }
       if ($null -eq $referenceIndex) { $referenceIndex = New-BatteryReferenceIndex $treePaths }
       $priorImpact = Get-BatteryImpact $priorDiff $referenceIndex ([string[]]@($tracked)) $treePaths
-      if ($priorImpact.unreached.Count -gt 0) { throw "UNREACHED" }
+      if ($priorImpact.unreached.Count -gt 0) {
+        if (-not $isCiPrior) { throw "UNREACHED" }
+        # The existing conservative fallback is the whole selected inventory.
+        foreach ($item in $selectedItems) { [void]$priorImpactTests.Add($item.path) }
+      }
       foreach ($impactTest in $priorImpact.tests) { [void]$priorImpactTests.Add($impactTest) }
+      if ($isCiPrior -and $priorDiff -ccontains '.orchestrator/controller-release-battery.ps1') {
+        [void]$priorImpactTests.Add('.orchestrator/controller-release-battery.test.ps1')
+      }
     }
     $cutoff = [DateTimeOffset]::UtcNow.AddHours(-24)
     foreach ($row in @($prior.results)) {
       $priorOrder[[string]$row.identity] = [long]$row.elapsedMs
       $item = @($selectedItems | Where-Object { $_.identity -ceq [string]$row.identity })
-      if ($item.Count -ne 1 -or $item[0].identity -cnotlike "test:*" -or
-          $item[0].identity -ceq "test:controller-release-battery.test.ps1" -or
-          [string]$row.result -cne "PASS" -or $row.exitCode -ne 0 -or
+      if ($item.Count -ne 1 -or [string]$row.result -cne "PASS" -or $row.exitCode -ne 0 -or
           $priorImpactTests.Contains($item[0].path)) { continue }
+      # Guards (direct:*, discriminator:*) and -NoReuseIdentity items execute.
+      if ($item[0].identity -cnotlike 'test:*' -or $noReuseIdentities.Contains($item[0].identity)) { continue }
       $ranAt = [DateTimeOffset]::MinValue
       if (-not [DateTimeOffset]::TryParse([string]$row.startedUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$ranAt) -or
           $ranAt -lt $cutoff) { continue }
+      if ($isCiPrior) {
+        $ciItem = @($prior.inventory | Where-Object { $_.identity -ceq $row.identity })
+        if ($ciItem.Count -ne 1 -or $ciItem[0].path -cne $item[0].path -or
+            $prior.scope.kind -cnotin @('full', 'impact') -or $prior.scope.kind -cne $batteryScope -or
+            -not (Test-BatteryCiArguments $ciItem[0].arguments $item[0].arguments $prior)) { continue }
+        $restricted = $null -ne $ciItem[0].restriction -or $row.identity -cin @($prior.ci.notHermetic)
+        $localOnly = $row.identity -cin @($prior.ci.localOnly | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.identity } })
+        $loaded = [string]$row.fleetLoad -cne 'none'
+        if ($restricted -or $localOnly -or $loaded -or [string]$row.provenance.kind -cne 'execution') { continue }
+      } else {
+        if ($item[0].identity -ceq 'test:controller-release-battery.test.ps1') { continue }
+      }
       $reusable[$item[0].identity] = [pscustomobject]@{
         row = $row; priorHead = [string]$prior.controllerHead; priorResultSha256 = $priorResultHash
+        ciImport = $ciImport
       }
     }
   } catch {
     $priorFailure = if ($_.Exception.Message -cmatch "^[A-Z_]+$") { $_.Exception.Message } else { "UNREADABLE" }
   }
   if ($priorFailure) { Stop-Battery "BATTERY_PRIOR_RESULT_INVALID:$priorFailure" }
-  Write-Output "REUSE prior=$($prior.controllerHead) reusable=$($reusable.Count) of=$($selectedItems.Count)"
+  $reuseSource = if ($isCiPrior) { "ci:$($ciImport.runId)" } else { 'local' }
+  Write-Output "REUSE prior=$($prior.controllerHead) reusable=$($reusable.Count) of=$($selectedItems.Count) source=$reuseSource"
 }
 # Fast items run first so an early failure is seen early. Timings come from the
 # prior result, else from the newest battery result in this worktree's
@@ -843,8 +1011,11 @@ try {
         finishedUtc = [string]$reuse.row.finishedUtc
         elapsedMs = [long]$reuse.row.elapsedMs
         output = "REUSED from $($reuse.priorHead)"
-        provenance = [ordered]@{ kind = 'receipt-reuse'; command = $item.command; attempt = 'local-battery'; priorHead = $reuse.priorHead; priorResultSha256 = $reuse.priorResultSha256 }
+        provenance = [ordered]@{ kind = 'receipt-reuse'; command = $item.command; attempt = 'local-battery'; priorHead = $reuse.priorHead; priorResultSha256 = $reuse.priorResultSha256
+          source = $(if ($null -ne $reuse.ciImport) { 'ci:' + $reuse.ciImport.runId } elseif ($reuse.row.provenance.source -clike 'ci:*') { $reuse.row.provenance.source } else { 'local' }) }
       }
+      if ($null -ne $reuse.ciImport) { $result.provenance.ci = $reuse.ciImport }
+      elseif ($null -ne $reuse.row.provenance.ci) { $result.provenance.ci = $reuse.row.provenance.ci }
       $results.Add($result)
       Write-Output "RESULT identity=$($result.identity) exitCode=0 result=PASS fleetLoad=$($result.fleetLoad) startedUtc=$($result.startedUtc) finishedUtc=$($result.finishedUtc) elapsedMs=$($result.elapsedMs) provenance=receipt-reuse prior=$($reuse.priorHead)"
       continue
@@ -870,7 +1041,7 @@ try {
     # MEASURED_LOAD line. It is never PASS; unlike FAIL it marks the battery
     # INCOMPLETE_MEASURED_LOAD rather than failed.
     $measuredLoad = ($exitCode -eq 75) -and ($childOutput -cmatch '(?m)^MEASURED_LOAD ')
-    $provenance = [ordered]@{kind='execution';command=$item.command;attempt='local-battery'}
+    $provenance = [ordered]@{kind='execution';command=$item.command;attempt='local-battery';source='local'}
     $result = [pscustomobject][ordered]@{
       identity = $item.identity
       command = $item.command
@@ -969,7 +1140,7 @@ try {
 $measuredLoadItems = @($results | Where-Object { $_.result -ceq "MEASURED_LOAD" } | ForEach-Object { $_.identity })
 
 try {
-  if ($executionStarted -and $resolvedResult) {
+  if (($executionStarted -or $results.Count -gt 0) -and $resolvedResult) {
     $rawText = @($results | ForEach-Object {
       "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=$($_.fleetLoad) startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)`n$($_.output)"
     }) -join "`n"

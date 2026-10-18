@@ -89,6 +89,10 @@ try{
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 Test-7963ResumeCarrier 'rebase'
+Test-9334OrdinaryCarrier 'ordinary-rebase'
+Test-9334OrdinaryCarrier 'successor-rebase'
+Test-9334OrdinaryCarrier 'successor-publication'
+Test-9334OrdinaryCarrier 'successor-amend'
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

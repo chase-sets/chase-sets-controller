@@ -222,8 +222,14 @@ try {
   $production = Join-Path $cloneRoot ".orchestrator/landing-preflight.ps1"
   $candidateSource = Get-Content -LiteralPath $production -Raw
   $candidateBlob = (& git -C $cloneRoot hash-object -- ".orchestrator/landing-preflight.ps1" 2>&1 | Out-String).Trim()
+  # #8526 AC12: f18054a65a959fd1fa681ad9f4061801580db9b8, reviewed by
+  # controller-8526-review-r1 (AC12 PASS), inherited by governing DELTA r3
+  # PASS at 01ca863b7907c77cad26eb7d0b1acd1d1e167594. No v2.94 merge change.
+  # #8797 pagination: controller-8797-pagination-g4 revalidated this blob
+  # against the unchanged 16-mutation manifest (all applied once and killed).
+  # #9123: controller-9123 repair revalidated this blob (Report velocityLanding projection and -Projection branch removed) against the unchanged 16-mutation manifest (all applied once and killed).
   Assert-6254Evidence ($LASTEXITCODE -eq 0 -and
-    $candidateBlob -ceq "666042cd2c8d27176b80ec30926d852f2e47d977") `
+    $candidateBlob -ceq "839de71884b764ae3b7cd77db8602169ca7f3c62") `
     "production landing-preflight blob changed (observed=$candidateBlob)"
 
   $applied = 0

@@ -668,11 +668,35 @@ function acquire(kind, options = {}) {
     refuse("admission holder launcher could not start; command body was not executed");
   }
 
-  const deadline = Date.now() + 15000;
-  while (!fs.existsSync(resultPath) && Date.now() < deadline) sleep(20);
+  const started = performance.now();
+  // Attach performs three eligibility censuses, each with at most one recheck.
+  // Six maximum 30s budgets plus 30s total holder overhead is the hard ceiling.
+  // A pending heartbeat carries the actual budget from the holder, not authority.
+  const hardDeadline = started + 210000;
+  let deadline = started + 15000;
+  let pendingSequence = 0;
+  const pendingPath = `${resultPath}.pending`;
+  while (!fs.existsSync(resultPath) && performance.now() < deadline) {
+    const now = performance.now();
+    try {
+      const stat = fs.lstatSync(pendingPath);
+      if (stat.isFile() && !stat.isSymbolicLink() && stat.size <= 1024) {
+        const pending = JSON.parse(fs.readFileSync(pendingPath, "utf8"));
+        if (pending.schemaVersion === 1 && pending.nonce === nonce &&
+            Number.isSafeInteger(pending.sequence) && pending.sequence > pendingSequence &&
+            Number.isSafeInteger(pending.budgetMs) && pending.budgetMs > 0 && pending.budgetMs <= 210000) {
+          pendingSequence = pending.sequence;
+          deadline = Math.min(hardDeadline, now + pending.budgetMs + 15000);
+        }
+      }
+    } catch {
+      // Missing, partial or malformed progress cannot grant more waiting time.
+    }
+    sleep(20);
+  }
   if (!fs.existsSync(resultPath)) {
     fs.rmSync(admissionRoot, { recursive: true, force: true });
-    refuse("admission holder did not publish a result within 15 seconds; command body was not executed");
+    refuse("admission holder did not publish a result within its bounded census deadline; command body was not executed");
   }
 
   let result;

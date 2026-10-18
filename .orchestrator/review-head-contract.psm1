@@ -1,4 +1,441 @@
 $ErrorActionPreference = "Stop"
+function Get-ObservedLaneValue($Row, [string]$Name) {
+  if ($null -ne $Row -and $null -ne $Row.PSObject.Properties[$Name]) { return $Row.$Name }
+  return $null
+}
+
+function ConvertTo-ObservedLaneUtc([string]$Value) {
+  $parsed = [datetimeoffset]::MinValue
+  if ($Value -cnotmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?(?:Z|\+00:00)$' -or
+      -not [datetimeoffset]::TryParse($Value, [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::None, [ref]$parsed)) {
+    throw 'OBSERVED_TIME_INVALID: an explicit parseable UTC instant is required'
+  }
+  return $parsed.UtcDateTime
+}
+
+function Test-ObservedLaneTerminal([string]$Kind) {
+  return $Kind -cin @('lane-complete','lane-blocked','review-complete','decision-resolved','verify-complete','repair-complete')
+}
+
+function Get-ObservedLaneTime($Row) {
+  $value = if ([string]$Row.kind -ceq 'dispatch') { Get-ObservedLaneValue $Row 'observedStartAt' }
+    elseif (Test-ObservedLaneTerminal ([string]$Row.kind)) { Get-ObservedLaneValue $Row 'observedEndAt' }
+    else { $null }
+  if ($null -eq $value) { $value = $Row.ts }
+  if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { return $null }
+  if ($value -is [datetime]) { return $value.ToUniversalTime() }
+  return [datetime]::Parse([string]$value, [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)
+}
+
+function Assert-ObservedLaneFields($Row, [datetime]$Now) {
+  if (Test-LaneTimeObservation $Row) { Assert-LaneTimeObservationFields $Row $Now; return }
+  $start = $null -ne $Row.PSObject.Properties['observedStartAt']
+  $end = $null -ne $Row.PSObject.Properties['observedEndAt']
+  $evidence = $null -ne $Row.PSObject.Properties['observedEvidence']
+  if (-not ($start -or $end -or $evidence)) { return }
+  if ($end -and -not (Test-ObservedLaneTerminal ([string]$Row.kind))) { throw 'OBSERVED_END_KIND_INVALID: observed end requires a terminal kind' }
+  if ($start -and [string]$Row.kind -cne 'dispatch') { throw 'OBSERVED_START_KIND_INVALID: observed start requires dispatch' }
+  if (-not ($start -or $end)) { throw 'OBSERVED_TIME_REQUIRED: evidence requires an observed time' }
+  if (-not $evidence -or [string]$Row.observedEvidence -cnotmatch '^(report-mtime|transcript-ctime|transcript-lastwrite):\S[^\r\n]*$') {
+    throw 'OBSERVED_EVIDENCE_REQUIRED: an evidence citation is required'
+  }
+  if ([string]::IsNullOrWhiteSpace([string](Get-ObservedLaneValue $Row 'lane'))) { throw 'OBSERVED_LANE_REQUIRED: a lane is required' }
+  $value = if ($start) { $Row.observedStartAt } else { $Row.observedEndAt }
+  $at = ConvertTo-ObservedLaneUtc ([string]$value)
+  if ($at -gt $Now) { throw 'OBSERVED_TIME_FUTURE: observed time is after now' }
+  $written = [datetime]::Parse([string]$Row.ts, [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)
+  if ($at -gt $written) { throw 'OBSERVED_TIME_AFTER_ROW: observed time is after the row timestamp' }
+}
+
+function Assert-ObservedLaneHistory($Row, $History) {
+  $start = $null -ne $Row.PSObject.Properties['observedStartAt']
+  $end = $null -ne $Row.PSObject.Properties['observedEndAt']
+  if (-not ($start -or $end)) { return }
+  if (-not $History.complete -and $History.reason -cne 'HISTORY_MISSING') { throw "OBSERVED_HISTORY_INVALID: $($History.reason)" }
+  $attemptField = if (Get-ObservedLaneValue $Row 'attemptId') { 'attemptId' }
+    elseif (Get-ObservedLaneValue $Row 'reviewerAttempt') { 'reviewerAttempt' }
+    else { $null }
+  $prior = @($History.rows | ForEach-Object value | Where-Object {
+    [string](Get-ObservedLaneValue $_ 'lane') -ceq [string]$Row.lane -and
+      (-not $attemptField -or -not (Get-ObservedLaneValue $_ $attemptField) -or
+        [string](Get-ObservedLaneValue $_ $attemptField) -ceq [string](Get-ObservedLaneValue $Row $attemptField))
+  })
+  $at = Get-ObservedLaneTime $Row
+  if ($start) {
+    foreach ($previous in $prior) {
+      try { $previousAt = ConvertTo-ObservedLaneUtc ([string](Get-ObservedLaneValue $previous 'ts')) }
+      catch { throw 'OBSERVED_HISTORY_INVALID: prior lane timestamp is not a UTC instant' }
+      if ($at -lt $previousAt) { throw 'OBSERVED_START_BEFORE_PRIOR_ROW: observed start is before a prior lane row' }
+    }
+  } else {
+    try {
+      $dispatch = @($prior | Where-Object { Test-LaneTimeLaunch $_ } |
+        Sort-Object -Stable { ConvertTo-ObservedLaneUtc ([string](Get-ObservedLaneValue $_ 'ts')) } | Select-Object -Last 1)
+    } catch { throw 'OBSERVED_HISTORY_INVALID: dispatch timestamp is not a UTC instant' }
+    if ($dispatch.Count -ne 1) { throw 'OBSERVED_DISPATCH_REQUIRED: latest lane dispatch is required' }
+    try { $dispatchedAt = Get-ObservedLaneTime $dispatch[0] }
+    catch { throw 'OBSERVED_HISTORY_INVALID: dispatch observation is invalid' }
+    if ($at -lt $dispatchedAt) { throw 'OBSERVED_END_BEFORE_DISPATCH: observed end is before the dispatch observation' }
+  }
+}
+
+function Test-LaneTimeObservation($Row) {
+  return $null -ne $Row -and ($Row.kind -ceq 'lane-time-correction' -or $Row.observationSchema -cin @('lane-time-correction/v1','lane-time-harvest/v1'))
+}
+
+function Assert-LaneTimeKeys($Object, [string[]]$Required, [string[]]$Optional = @()) {
+  if ($Object -isnot [pscustomobject]) { throw 'LANE_TIME_SCHEMA_INVALID: object required' }
+  $names = @($Object.PSObject.Properties | ForEach-Object Name)
+  if (@($Required | Where-Object { $_ -cnotin $names }).Count -or
+      @($names | Where-Object { $_ -cnotin ($Required + $Optional) }).Count) {
+    throw 'LANE_TIME_SCHEMA_INVALID: missing or unknown fields'
+  }
+}
+
+function Get-LaneTimeHash([byte[]]$Bytes) {
+  return ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes))).ToLowerInvariant()
+}
+
+function ConvertFrom-LaneTimeJson([string]$Text) {
+  $document = [System.Text.Json.JsonDocument]::Parse($Text)
+  try {
+    $pending = [Collections.Generic.Stack[System.Text.Json.JsonElement]]::new()
+    $pending.Push($document.RootElement)
+    while ($pending.Count) {
+      $element = $pending.Pop()
+      if ($element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
+        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in $element.EnumerateObject()) {
+          if (-not $names.Add($property.Name)) { throw 'LANE_TIME_SOURCE_INVALID: duplicate field' }
+          $pending.Push($property.Value)
+        }
+      } elseif ($element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
+        foreach ($item in $element.EnumerateArray()) { $pending.Push($item) }
+      }
+    }
+  } finally { $document.Dispose() }
+  return ,(ConvertFrom-Json -InputObject $Text -DateKind String -NoEnumerate)
+}
+
+function Read-LaneTimeCapture([string]$Path) {
+  try {
+    $full = [IO.Path]::GetFullPath($Path)
+    $file = Get-Item -LiteralPath $full -ErrorAction Stop
+    if ($file.Length -gt 33554432 -or $file.PSIsContainer) { throw 'capture size/type' }
+    $bytes = [IO.File]::ReadAllBytes($full)
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    $entries = ConvertFrom-LaneTimeJson $text
+    if ($entries -isnot [array]) { throw 'capture must be an array' }
+    return [pscustomobject]@{ path=$full; sha256=(Get-LaneTimeHash $bytes); entries=$entries }
+  } catch { throw "LANE_TIME_SOURCE_INVALID: $($_.Exception.Message)" }
+}
+
+function Get-LaneTimeAttempts($Row) {
+  $attempts = [ordered]@{}
+  $fields = @('attemptId','reviewerAttempt','authorAttempt')
+  foreach ($property in $Row.PSObject.Properties) {
+    if ($property.Name -match 'attempt' -and $property.Name -cnotin $fields) {
+      throw 'LANE_TIME_ATTEMPT_INVALID: unsupported attempt identity'
+    }
+  }
+  foreach ($field in $fields) {
+    if ($null -ne $Row.PSObject.Properties[$field]) {
+      if ($Row.$field -isnot [string] -or $Row.$field -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$') {
+        throw 'LANE_TIME_ATTEMPT_INVALID: malformed attempt identity'
+      }
+      $attempts[$field] = $Row.$field
+    }
+  }
+  return [pscustomobject]$attempts
+}
+
+function Test-LaneTimeLaunch($Row) {
+  return [string](Get-ObservedLaneValue $Row 'kind') -ceq 'dispatch' -and
+    -not (Get-ObservedLaneValue $Row 'dispatchRoutingSchema')
+}
+
+function Get-LaneTimeHistoryIndex($History) {
+  if ($null -ne $History.PSObject.Properties['laneTimeIndex']) { return $History.laneTimeIndex }
+  $byLane=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+  $byRaw=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+  foreach($entry in $History.rows) {
+    $hash=[string]$entry.rawSha256
+    if(-not $byRaw.ContainsKey($hash)){$byRaw[$hash]=[Collections.Generic.List[object]]::new()}
+    $byRaw[$hash].Add($entry)
+    $row=$entry.value
+    if($null -eq $row -or $null -eq $row.PSObject.Properties['lane']){continue}
+    $lane=[string]$row.lane
+    if(-not $byLane.ContainsKey($lane)){$byLane[$lane]=[Collections.Generic.List[object]]::new()}
+    $byLane[$lane].Add($entry)
+  }
+  $index=[pscustomobject]@{byLane=$byLane;byRaw=$byRaw}
+  $History|Add-Member laneTimeIndex $index -Force
+  return $index
+}
+
+function Get-LaneTimeLaneRows($History,[string]$Lane) {
+  $index=Get-LaneTimeHistoryIndex $History
+  if($index.byLane.ContainsKey($Lane)){return $index.byLane[$Lane].ToArray()}
+}
+
+function Get-LaneTimeLaneHistoryHash($History, [string]$Lane) {
+  $identities = @(Get-LaneTimeLaneRows $History $Lane | Where-Object {
+    -not (Test-LaneTimeObservation $_.value)
+  } | ForEach-Object rawSha256)
+  return Get-LaneTimeHash ([Text.Encoding]::UTF8.GetBytes(($identities -join "`n")))
+}
+
+function Get-LaneTimeDispatchTarget($Entry, $History) {
+  return [pscustomobject][ordered]@{
+    rawSha256=[string]$Entry.rawSha256; ts=[string]$Entry.value.ts
+    attempts=(Get-LaneTimeAttempts $Entry.value)
+    laneHistorySha256=(Get-LaneTimeLaneHistoryHash $History ([string]$Entry.value.lane))
+  }
+}
+
+function Assert-LaneTimeObservationFields($Row, [datetime]$Now) {
+  $correction = [string](Get-ObservedLaneValue $Row 'kind') -ceq 'lane-time-correction'
+  $timeField = if ($correction) { 'observedStartAt' } else { 'observedEndAt' }
+  Assert-LaneTimeKeys $Row @('ts','kind','issue','lane','observationSchema','dispatchTarget','sourceCapture','observedEvidence',$timeField)
+  $schema = if ($correction) { 'lane-time-correction/v1' } else { 'lane-time-harvest/v1' }
+  if ($Row.observationSchema -cne $schema -or (-not $correction -and $Row.kind -cne 'lane-complete') -or
+      -not (Test-WholeNumber $Row.issue 1) -or $Row.issue -gt [int]::MaxValue -or
+      $Row.lane -isnot [string] -or $Row.lane -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') {
+    throw 'LANE_TIME_SCHEMA_INVALID: observation kind/identity'
+  }
+  Assert-LaneTimeKeys $Row.dispatchTarget @('rawSha256','ts','attempts','laneHistorySha256')
+  foreach ($field in @('rawSha256','laneHistorySha256')) {
+    if ($Row.dispatchTarget.$field -isnot [string] -or $Row.dispatchTarget.$field -cnotmatch '^[a-f0-9]{64}$') {
+      throw 'LANE_TIME_TARGET_INVALID: SHA-256 required'
+    }
+  }
+  Assert-LaneTimeKeys $Row.dispatchTarget.attempts @() @('attemptId','reviewerAttempt','authorAttempt')
+  [void](Get-LaneTimeAttempts $Row.dispatchTarget.attempts)
+  Assert-LaneTimeKeys $Row.sourceCapture @('path','sha256','lane','startField','endField','dispatchField')
+  $source = $Row.sourceCapture
+  if ($source.path -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($source.path) -or
+      $source.path -cne [IO.Path]::GetFullPath($source.path) -or
+      $source.sha256 -isnot [string] -or $source.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $source.lane -cne $Row.lane -or $source.startField -cnotin @('transcriptCreatedUtc','dispatchRowUtc') -or
+      $source.endField -cne 'reportMtimeUtc' -or $source.dispatchField -cne 'dispatchRowUtc' -or
+      ($correction -and $source.startField -cne 'transcriptCreatedUtc')) {
+    throw 'LANE_TIME_SOURCE_INVALID: closed capture identity required'
+  }
+  $prefix = if ($correction) { 'transcript-ctime' } else { 'report-mtime' }
+  $field = if ($correction) { $source.startField } else { $source.endField }
+  if ($Row.observedEvidence -isnot [string] -or $Row.observedEvidence -cne "${prefix}:$($source.path)#$($Row.lane).$field") {
+    throw 'LANE_TIME_SOURCE_INVALID: citation does not bind selected field'
+  }
+  foreach ($value in @($Row.ts,$Row.dispatchTarget.ts,$Row.$timeField)) {
+    if ($value -isnot [string]) { throw 'OBSERVED_TIME_INVALID: string UTC required' }
+    $at = ConvertTo-ObservedLaneUtc $value
+    if ($at -gt $Now) { throw 'OBSERVED_TIME_FUTURE: observation row or target is future' }
+  }
+  if ((ConvertTo-ObservedLaneUtc $Row.$timeField) -gt (ConvertTo-ObservedLaneUtc $Row.ts)) {
+    throw 'OBSERVED_TIME_AFTER_ROW: observed time is after the row timestamp'
+  }
+}
+
+function Get-LaneTimeSignature($Row) {
+  $ordered = [ordered]@{kind=$Row.kind;issue=$Row.issue;lane=$Row.lane;schema=$Row.observationSchema}
+  foreach ($field in @('rawSha256','ts','laneHistorySha256')) { $ordered[$field]=$Row.dispatchTarget.$field }
+  $ordered.attempts=Get-LaneTimeAttempts $Row.dispatchTarget.attempts
+  foreach ($field in @('path','sha256','lane','startField','endField','dispatchField')) { $ordered["source-$field"]=$Row.sourceCapture.$field }
+  $ordered.time=if ($Row.kind -ceq 'lane-time-correction') { $Row.observedStartAt } else { $Row.observedEndAt }
+  $ordered.evidence=$Row.observedEvidence
+  return $ordered | ConvertTo-Json -Compress -Depth 8
+}
+
+function Assert-LaneTimeObservationHistory($Row, $History, [datetime]$Now = [datetime]::UtcNow, [switch]$RequireCorrection, [switch]$Persisted) {
+  Assert-LaneTimeObservationFields $Row $Now
+  if (-not $History.complete) { throw "LANE_TIME_HISTORY_INVALID: $($History.reason)" }
+  $target = $Row.dispatchTarget
+  $index=Get-LaneTimeHistoryIndex $History
+  $matches = @(if($index.byRaw.ContainsKey($target.rawSha256)){$index.byRaw[$target.rawSha256].ToArray()})
+  if ($matches.Count -ne 1) { throw 'LANE_TIME_TARGET_INVALID: missing or duplicate raw-row identity' }
+  $entry = $matches[0]; $dispatch = $entry.value
+  $laneRows = @(Get-LaneTimeLaneRows $History $Row.lane)
+  $recorded = @($laneRows | Where-Object {
+    (Test-LaneTimeObservation $_.value) -and $_.value.kind -ceq $Row.kind -and
+      $_.value.dispatchTarget.rawSha256 -ceq $target.rawSha256
+  })
+  foreach($prior in $recorded) {
+    Assert-LaneTimeObservationFields $prior.value $Now
+    if((Get-LaneTimeSignature $prior.value) -cne (Get-LaneTimeSignature $Row)) {
+      throw 'LANE_TIME_REPLAY_CONFLICT: conflicting observation replay'
+    }
+  }
+  if($recorded.Count -gt 1){throw 'LANE_TIME_REPLAY_CONFLICT: duplicate recorded observation'}
+  if($recorded.Count -eq 1) {
+    # Validate recorded facts at their append boundary, not against later reuse.
+    # New proposals still use the complete current lane evidence census.
+    $laneRows=@($laneRows | Where-Object {$_.line -le $recorded[0].line})
+    $History=[pscustomobject]@{complete=$true;reason='HISTORY_COMPLETE';rows=$laneRows}
+  }
+  if (-not (Test-LaneTimeLaunch $dispatch) -or -not (Test-WholeNumber $dispatch.issue 1) -or $dispatch.lane -cne $Row.lane -or
+      $dispatch.issue -ne $Row.issue -or $dispatch.ts -cne $target.ts -or
+      ((Get-LaneTimeAttempts $dispatch | ConvertTo-Json -Compress) -cne (Get-LaneTimeAttempts $target.attempts | ConvertTo-Json -Compress))) {
+    throw 'LANE_TIME_TARGET_INVALID: lane/issue/time/attempt mismatch'
+  }
+  if ($target.laneHistorySha256 -cne (Get-LaneTimeLaneHistoryHash $History $Row.lane)) {
+    throw 'LANE_TIME_TARGET_STALE: lane evidence changed since planning'
+  }
+  $written = ConvertTo-ObservedLaneUtc $target.ts
+  if ($Persisted) {
+    $late = $Row.sourceCapture.startField -ceq 'transcriptCreatedUtc'
+    $corrections = @($laneRows | Where-Object {
+      $_.value.kind -ceq 'lane-time-correction' -and $_.value.dispatchTarget.rawSha256 -ceq $target.rawSha256
+    })
+    $start = if ($Row.kind -ceq 'lane-time-correction') { ConvertTo-ObservedLaneUtc $Row.observedStartAt }
+      elseif ($late -and $corrections.Count -eq 1) { ConvertTo-ObservedLaneUtc $corrections[0].value.observedStartAt }
+      else { Get-ObservedLaneTime $dispatch }
+    $end = if ($Row.kind -ceq 'lane-complete') { ConvertTo-ObservedLaneUtc $Row.observedEndAt } else { $start }
+    if ($start -gt $written -or $end -lt $start -or $end -gt (ConvertTo-ObservedLaneUtc $Row.ts)) {
+      throw 'LANE_TIME_INTERVAL_INVALID: persisted interval/dispatch contradiction'
+    }
+  } else {
+    $capture = Read-LaneTimeCapture $Row.sourceCapture.path
+    if ($capture.sha256 -cne $Row.sourceCapture.sha256) { throw 'LANE_TIME_SOURCE_INVALID: capture digest mismatch' }
+    $sources = @($capture.entries | Where-Object { [string](Get-ObservedLaneValue $_ 'lane') -ceq $Row.lane })
+    if ($sources.Count -ne 1) { throw 'LANE_TIME_SOURCE_INVALID: missing or ambiguous captured lane' }
+    $source = $sources[0]
+    if (-not (Test-WholeNumber $source.issue 1) -or $source.issue -ne $Row.issue -or
+        $source.lateDispatchRow -isnot [bool]) { throw 'LANE_TIME_SOURCE_INVALID: captured issue/flag mismatch' }
+    $late = $source.lateDispatchRow
+    $startField = if ($late) { 'transcriptCreatedUtc' } else { 'dispatchRowUtc' }
+    if ($Row.sourceCapture.startField -cne $startField -or ($Row.kind -ceq 'lane-time-correction' -and -not $late)) {
+      throw 'LANE_TIME_SOURCE_INVALID: capture does not support correction'
+    }
+    $start = ConvertTo-ObservedLaneUtc ([string](Get-ObservedLaneValue $source $startField))
+    $end = ConvertTo-ObservedLaneUtc ([string](Get-ObservedLaneValue $source 'reportMtimeUtc'))
+    if ((ConvertTo-ObservedLaneUtc ([string]$source.dispatchRowUtc)) -ne $written -or $start -gt $written -or
+        $end -lt $start -or $end -gt $Now -or $end -gt (ConvertTo-ObservedLaneUtc $Row.ts)) {
+      throw 'LANE_TIME_INTERVAL_INVALID: captured interval/dispatch contradiction'
+    }
+    $expected = if ($Row.kind -ceq 'lane-time-correction') { $start } else { $end }
+    $actual = if ($Row.kind -ceq 'lane-time-correction') { $Row.observedStartAt } else { $Row.observedEndAt }
+    if ((ConvertTo-ObservedLaneUtc $actual) -ne $expected) { throw 'LANE_TIME_INTERVAL_INVALID: observation disagrees with captured field' }
+  }
+  $attempts = @($target.attempts.PSObject.Properties | ForEach-Object Name)
+  foreach ($prior in $laneRows) {
+    $value = $prior.value
+    if (Test-LaneTimeObservation $value) { continue }
+    [void](ConvertTo-ObservedLaneUtc ([string]$value.ts))
+    $priorAt = Get-ObservedLaneTime $value
+    if ($prior.line -lt $entry.line -and $priorAt -gt $start) {
+      throw 'LANE_TIME_INTERVAL_INVALID: corrected start precedes earlier lane evidence'
+    }
+    $otherAttempts = Get-LaneTimeAttempts $value
+    $disjoint = @($attempts | Where-Object {
+      $null -ne $otherAttempts.PSObject.Properties[$_] -and $otherAttempts.$_ -cne $target.attempts.$_
+    }).Count -gt 0
+    if (Test-LaneTimeLaunch $value) {
+      if ($prior.rawSha256 -cne $target.rawSha256 -and -not $disjoint) {
+        throw 'LANE_TIME_TARGET_AMBIGUOUS: conflicting or legacy launch identity'
+      }
+      if ($prior.rawSha256 -cne $target.rawSha256 -and (Get-ObservedLaneTime $value) -gt $start -and
+          (Get-ObservedLaneTime $value) -lt $end) { throw 'LANE_TIME_INTERVAL_INVALID: overlapping subsequent launch' }
+    }
+    if (Test-ObservedLaneTerminal ([string]$value.kind)) {
+      if (-not $disjoint) { throw 'LANE_TIME_TERMINAL_CONFLICT: existing unbound terminal' }
+      if ($priorAt -gt $start -and $priorAt -lt $end) {
+        throw 'LANE_TIME_INTERVAL_INVALID: overlapping disjoint terminal'
+      }
+    }
+    if (-not $disjoint -and $null -ne (Get-ObservedLaneValue $value 'observedStartAt') -and
+        (ConvertTo-ObservedLaneUtc ([string]$value.observedStartAt)) -ne $start) {
+      throw 'LANE_TIME_LAUNCH_CONFLICT: canonical launch observation disagrees'
+    }
+  }
+  $already = $false; $hasCorrection = $false
+  $signature = Get-LaneTimeSignature $Row
+  foreach ($prior in $laneRows) {
+    $value = $prior.value
+    if (-not (Test-LaneTimeObservation $value)) { continue }
+    Assert-LaneTimeObservationFields $value $Now
+    if ($value.dispatchTarget.rawSha256 -cne $target.rawSha256) { continue }
+    if ($value.kind -ceq 'lane-time-correction') { $hasCorrection=$true }
+    if ($value.kind -ceq $Row.kind) {
+      if ((Get-LaneTimeSignature $value) -cne $signature) { throw 'LANE_TIME_REPLAY_CONFLICT: conflicting observation replay' }
+      if ($already) { throw 'LANE_TIME_REPLAY_CONFLICT: duplicate recorded observation' }
+      $already=$true
+    } elseif ($value.sourceCapture.sha256 -cne $Row.sourceCapture.sha256 -or
+        $value.dispatchTarget.laneHistorySha256 -cne $target.laneHistorySha256) {
+      throw 'LANE_TIME_REPLAY_CONFLICT: correction/completion source mismatch'
+    }
+  }
+  if ($RequireCorrection -and $late -and $Row.kind -ceq 'lane-complete' -and -not $hasCorrection) {
+    throw 'LANE_TIME_CORRECTION_REQUIRED: late terminal requires its correction first'
+  }
+  return [pscustomobject]@{ dispatch=$entry; start=$start; end=$end; alreadyRecorded=$already }
+}
+
+function Get-LaneTimeProjection($History, [datetime]$Now = [datetime]::UtcNow) {
+  $projected = [Collections.Generic.List[object]]::new()
+  $gaps = [Collections.Generic.List[string]]::new()
+  $starts = @{}
+  foreach ($entry in $History.rows) {
+    if (-not (Test-LaneTimeObservation $entry.value)) { continue }
+    try {
+      $binding = Assert-LaneTimeObservationHistory $entry.value $History $Now -RequireCorrection -Persisted
+      if ($entry.value.kind -ceq 'lane-time-correction') { $starts[$binding.dispatch.rawSha256]=$entry.value }
+    } catch { $gaps.Add("lane-time-invalid:$($entry.line):$(($_.Exception.Message -split ':',2)[0])") }
+  }
+  $lastLaunch = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+  if($starts.Count){ foreach($entry in $History.rows) {
+    $lane = [string](Get-ObservedLaneValue $entry.value 'lane')
+    if (Test-LaneTimeLaunch $entry.value) { $lastLaunch[$lane] = $entry; continue }
+    if(-not (Test-ObservedLaneTerminal ([string](Get-ObservedLaneValue $entry.value 'kind'))) -or
+        (Test-LaneTimeObservation $entry.value)){continue}
+    if($lastLaunch.ContainsKey($lane) -and $starts.ContainsKey($lastLaunch[$lane].rawSha256)) {
+      $gaps.Add("lane-time-invalid:$($entry.line):LANE_TIME_TERMINAL_CONFLICT")
+    }
+  } }
+  foreach ($entry in $History.rows) {
+    $row = $entry.value.PSObject.Copy()
+    if ($starts.ContainsKey($entry.rawSha256) -and -not $gaps.Count) {
+      $correction = $starts[$entry.rawSha256]
+      $row | Add-Member observedStartAt $correction.observedStartAt -Force
+      $row | Add-Member observedEvidence $correction.observedEvidence -Force
+      $row | Add-Member laneTimeOriginalRaw $entry.raw -Force
+      $row | Add-Member laneTimeRawSha256 $entry.rawSha256 -Force
+      $row | Add-Member laneTimeSourceCapture $correction.sourceCapture -Force
+    }
+    $projected.Add($row)
+  }
+  return [pscustomobject]@{rows=$projected.ToArray();gaps=$gaps.ToArray()}
+}
+
+function Assert-LaneTimeTerminalTarget([string]$Path, [string]$Lane) {
+  if (-not [IO.File]::Exists($Path)) { return }
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    if ($stream.Length) {
+      [void]$stream.Seek(-1, [IO.SeekOrigin]::End)
+      if ($stream.ReadByte() -ne 10) { throw 'OBSERVED_HISTORY_INVALID: unterminated history' }
+    }
+  } finally { $stream.Dispose() }
+  $laneToken = ConvertTo-Json -InputObject $Lane -Compress
+  $latest = $null
+  $corrected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach ($raw in [IO.File]::ReadLines($Path)) {
+    if ($raw.IndexOf($laneToken, [StringComparison]::Ordinal) -lt 0) { continue }
+    try { $row = ConvertFrom-LaneTimeJson $raw }
+    catch { throw 'LANE_TIME_HISTORY_INVALID: malformed lane evidence' }
+    if ([string](Get-ObservedLaneValue $row 'lane') -cne $Lane) { continue }
+    if (Test-LaneTimeLaunch $row) { $latest = Get-LaneTimeHash ([Text.Encoding]::UTF8.GetBytes($raw)) }
+    elseif ($row.kind -ceq 'lane-time-correction') {
+      Assert-LaneTimeObservationFields $row ([datetime]::UtcNow)
+      [void]$corrected.Add($row.dispatchTarget.rawSha256)
+    }
+  }
+  if ($null -ne $latest -and $corrected.Contains($latest)) {
+    throw 'LANE_TIME_TARGET_REQUIRED: corrected terminal must bind its dispatch'
+  }
+}
 $routingLibrary = Join-Path $PSScriptRoot 'routing-data.ps1'
 if (-not (Test-Path -LiteralPath $routingLibrary -PathType Leaf)) { $routingLibrary = Join-Path (Get-Location) '.orchestrator/routing-data.ps1' }
 if (Test-Path -LiteralPath $routingLibrary -PathType Leaf) { . $routingLibrary -Library }
@@ -890,20 +1327,33 @@ function Get-ControllerReviewRowClassification($Entry, [object]$Vocabulary = $nu
   $kind = if (Test-JsonProperty $row "kind") { [string]$row.kind } else { "" }
   $strictSchemas = @(
     $script:ControllerDispatchSchemaV1, $script:ControllerReceiptSchemaV1, $script:ControllerCorrectionSchema,
-    $script:ControllerDispatchSchemaV2, $script:ControllerReceiptSchemaV2
+    $script:ControllerDispatchSchemaV2, $script:ControllerReceiptSchemaV2, 'controller-review-prelog-void/v1'
   )
   $claimsStrict = Test-JsonProperty $row "controllerReviewSchema"
   $claimsLegacy = -not $claimsStrict -and (Test-JsonProperty $row "controllerHead") -and $kind -in @("dispatch", "review-complete")
   $rowKind = if ($claimsStrict) {
-    if ($schema -ceq $script:ControllerCorrectionSchema) { "correction" }
+    if ($schema -ceq 'controller-review-prelog-void/v1') { 'prelog-void' }
+    elseif ($schema -ceq $script:ControllerCorrectionSchema) { "correction" }
     elseif ($schema -in @($script:ControllerDispatchSchemaV1, $script:ControllerDispatchSchemaV2) -or $kind -ceq "dispatch") { "dispatch" }
     elseif ($schema -in @($script:ControllerReceiptSchemaV1, $script:ControllerReceiptSchemaV2) -or $kind -ceq "review-complete") { "receipt" }
     else { "strict-unknown" }
   } elseif ($claimsLegacy) { "legacy" } else { "other" }
-  $version = if ($schema -in @($script:ControllerDispatchSchemaV2, $script:ControllerReceiptSchemaV2)) { "v2" } elseif ($schema -in @($script:ControllerDispatchSchemaV1, $script:ControllerReceiptSchemaV1, $script:ControllerCorrectionSchema)) { "v1" } elseif ($claimsLegacy) { "legacy" } else { "none" }
+  $version = if ($schema -in @($script:ControllerDispatchSchemaV2, $script:ControllerReceiptSchemaV2)) { "v2" } elseif ($schema -in @($script:ControllerDispatchSchemaV1, $script:ControllerReceiptSchemaV1, $script:ControllerCorrectionSchema, 'controller-review-prelog-void/v1')) { "v1" } elseif ($claimsLegacy) { "legacy" } else { "none" }
 
   if ($claimsStrict) {
     if ($schema -cnotin $strictSchemas) { $errors.Add("UNSUPPORTED_CONTROLLER_REVIEW_SCHEMA") }
+    if ($rowKind -ceq 'prelog-void') {
+      if (-not (Test-ControllerClosedKeys $row @('ts','kind','controllerReviewSchema','issue','controllerHead','lane','transcript','reviewerAttempt','originalDispatchRawSha256'))) { $errors.Add('ROW_SHAPE_NOT_CLOSED') }
+      if ($kind -cne 'controller-review-prelog-void') { $errors.Add('KIND_SCHEMA_MISMATCH') }
+      if (-not (Test-ControllerUtcInstant $row.ts)) { $errors.Add('INVALID_TS') }
+      if (-not (Test-WholeNumber $row.issue 1) -or [int64]$row.issue -gt [int]::MaxValue) { $errors.Add('INVALID_ISSUE') }
+      if ([string]$row.controllerHead -cnotmatch '^[a-f0-9]{40}$') { $errors.Add('INVALID_CONTROLLER_HEAD') }
+      if (-not (Test-AttemptIdentity ([string]$row.reviewerAttempt))) { $errors.Add('INVALID_REVIEWER_ATTEMPT') }
+      foreach ($field in @('lane','transcript')) {
+        if ([string]::IsNullOrWhiteSpace([string]$row.$field) -or ([string]$row.$field).Length -gt 1024 -or [string]$row.$field -match '[\r\n]') { $errors.Add("INVALID_$($field.ToUpperInvariant())") }
+      }
+      if ([string]$row.originalDispatchRawSha256 -cnotmatch '^[a-f0-9]{64}$') { $errors.Add('INVALID_ORIGINAL_DISPATCH_HASH') }
+    } else {
     $baseKeys = @(
       "ts","kind","controllerReviewSchema","issue","controllerHead","authorAttempt","reviewerAttempt",
       "reviewAuthority","lane","transcript","reviewerModel","authorModel","effort","row","placement","harness"
@@ -918,6 +1368,13 @@ function Get-ControllerReviewRowClassification($Entry, [object]$Vocabulary = $nu
     }
     if ($version -ceq 'v2' -and $routingPresent.Count -ne $routingKeys.Count) { $errors.Add('ROUTING_EVIDENCE_REQUIRED_FOR_V2') }
     if ($rowKind -ceq "receipt") { $expected += @("reviewContract","completeSweep","outcome","findingIds","findings") }
+    $observedKeys = @('observedStartAt','observedEndAt','observedEvidence')
+    $observedPresent = @($observedKeys | Where-Object { Test-JsonProperty $row $_ })
+    if ($observedPresent.Count) {
+      $expected += $observedPresent
+      try { Assert-ObservedLaneFields $row ([datetime]::UtcNow) }
+      catch { $errors.Add(($_.Exception.Message -split ':',2)[0]) }
+    }
     if ($rowKind -ceq "correction") { $correctionVariant = if (Test-JsonProperty $row "originalTerminalRawSha256") { "pair" } else { "dispatch-only" }; $expected += @("originalDispatchRawSha256","operatorAuthority"); if ($correctionVariant -ceq "pair") { $expected += "originalTerminalRawSha256" } }
     if (-not (Test-ControllerClosedKeys $row $expected)) { $errors.Add("ROW_SHAPE_NOT_CLOSED") }
     if ($rowKind -ceq "strict-unknown" -or $kind -cne $(if ($rowKind -ceq "correction") { "controller-review-audit-correction" } elseif ($rowKind -ceq "dispatch") { "dispatch" } else { "review-complete" })) { $errors.Add("KIND_SCHEMA_MISMATCH") }
@@ -975,6 +1432,7 @@ function Get-ControllerReviewRowClassification($Entry, [object]$Vocabulary = $nu
       }
       if ([string]$row.outcome -ceq "PASS" -and [int64]$row.findings.blocking -ne 0) { $errors.Add("PASS_WITH_BLOCKING_FINDING") }
       if ([string]$row.outcome -in @("BLOCK_FIXABLE","BLOCK_REPLAN") -and [int64]$row.findings.blocking -lt 1) { $errors.Add("BLOCK_WITHOUT_FINDING") }
+    }
     }
   }
 
@@ -1048,7 +1506,7 @@ function Test-ControllerDanglingDispatchRow($Entry, $History, [int]$Before = 0, 
     $value = $other.value
     $otherKind = if (Test-JsonProperty $value 'kind') { [string]$value.kind } else { '' }
     $otherSchema = if (Test-JsonProperty $value 'controllerReviewSchema') { [string]$value.controllerReviewSchema } else { '' }
-    if ($otherKind -ceq 'review-complete' -or $otherSchema -cin @($script:ControllerReceiptSchemaV1, $script:ControllerReceiptSchemaV2)) {
+    if ((Test-ControllerReceiptForPrelog $value $row)) {
       foreach ($field in @('lane','transcript','reviewerAttempt')) {
         if ((Test-JsonProperty $row $field) -and (Test-JsonProperty $value $field) -and
             -not [string]::IsNullOrWhiteSpace([string]$row.$field) -and [string]$value.$field -ceq [string]$row.$field) { return $false }
@@ -1062,6 +1520,78 @@ function Test-ControllerDanglingDispatchRow($Entry, $History, [int]$Before = 0, 
     }
   }
   return $true
+}
+
+function Test-ControllerReceiptForPrelog($Receipt, $Prelog) {
+  $kind=[string](Get-ObservedLaneValue $Receipt 'kind')
+  $schema=[string](Get-ObservedLaneValue $Receipt 'controllerReviewSchema')
+  if ($kind -cne 'review-complete' -and $schema -cnotin @($script:ControllerReceiptSchemaV1,$script:ControllerReceiptSchemaV2)) { return $false }
+  # Only a completely readable foreign pair excludes a receipt. An incomplete
+  # pair retains uncertainty, never proof that the prelog is unbacked.
+  $issue=Get-ObservedLaneValue $Receipt 'issue'
+  $head=[string](Get-ObservedLaneValue $Receipt 'controllerHead')
+  $identityReadable=(Test-WholeNumber $issue 1) -and [int64]$issue -le [int]::MaxValue -and $head -cmatch '^[a-f0-9]{40}$'
+  if ($identityReadable) { return $issue -eq $Prelog.issue -and $head -ceq $Prelog.controllerHead }
+  return $true
+}
+
+function Test-ControllerPrelogIdentityMatch($Row, $Prelog, [string[]]$Fields) {
+  foreach ($field in $Fields) {
+    $value=Get-ObservedLaneValue $Row $field
+    if (-not [string]::IsNullOrWhiteSpace([string]$value) -and [string]$value -ceq [string]$Prelog.$field) { return $true }
+  }
+  return $false
+}
+
+function Test-ControllerPrelogLaunch($Row, $Prelog) {
+  if ([string](Get-ObservedLaneValue $Row 'dispatchRoutingSchema') -cne 'watchdog-dispatch-routing/v3') { return $false }
+  $head=[string](Get-ObservedLaneValue $Row 'head')
+  if ($head -cmatch '^[a-f0-9]{40}$' -and $head -cne $Prelog.controllerHead) { return $false }
+  return [string](Get-ObservedLaneValue $Row 'lane') -ceq $Prelog.lane -and [string](Get-ObservedLaneValue $Row 'transcript') -ceq $Prelog.transcript
+}
+
+function Get-ControllerPrelogVoidValidation($Entry, $History, [object]$Vocabulary = $null) {
+  if ($null -eq $Vocabulary) { $Vocabulary=Get-ReviewRecordVocabulary }
+  $result=[ordered]@{valid=$false;reason='PRELOG_VOID_INVALID';dispatch=$null}
+  $classification=Get-ControllerReviewRowClassification $Entry $Vocabulary
+  if (-not $History.complete -or -not $classification.valid -or $classification.rowKind -cne 'prelog-void') { return [pscustomobject]$result }
+  $void=$Entry.value
+  $targets=@($History.rows | Where-Object {$_.rawSha256 -ceq $void.originalDispatchRawSha256})
+  if ($targets.Count -ne 1) { $result.reason='PRELOG_VOID_TARGET_COUNT'; return [pscustomobject]$result }
+  $target=$targets[0];$row=$target.value
+  $targetClass=Get-ControllerReviewRowClassification $target $Vocabulary
+  if (-not $targetClass.valid -or $targetClass.rowKind -cne 'dispatch' -or $targetClass.version -cne 'v1' -or
+      $targetClass.issue -ne $void.issue -or $targetClass.controllerHead -cne $void.controllerHead -or
+      [string]$row.lane -cne $void.lane -or [string]$row.transcript -cne $void.transcript -or [string]$row.reviewerAttempt -cne $void.reviewerAttempt) {
+    $result.reason='PRELOG_VOID_TARGET_INVALID'; return [pscustomobject]$result
+  }
+  if ([int]$target.line -ge [int]$Entry.line) { $result.reason='PRELOG_VOID_ROW_ORDER'; return [pscustomobject]$result }
+  if ([datetimeoffset]::Parse($row.ts) -ge [datetimeoffset]::Parse($void.ts)) { $result.reason='PRELOG_VOID_UTC_ORDER'; return [pscustomobject]$result }
+  foreach ($other in $History.rows) {
+    $value=$other.value
+    if ([int]$other.line -eq [int]$Entry.line) { continue }
+    if ([string](Get-ObservedLaneValue $value 'controllerReviewSchema') -ceq 'controller-review-prelog-void/v1' -and
+        [string](Get-ObservedLaneValue $value 'originalDispatchRawSha256') -ceq $void.originalDispatchRawSha256) {
+      $result.reason='PRELOG_VOID_DUPLICATE'; return [pscustomobject]$result
+    }
+    if ([int]$other.line -gt [int]$target.line -and (Test-ControllerPrelogLaunch $value $row)) {
+      $result.reason=if ([int]$other.line -lt [int]$Entry.line) {'PRELOG_VOID_TARGET_LAUNCHED'}else{'PRELOG_VOID_LATE_LAUNCH'}
+      return [pscustomobject]$result
+    }
+    $receiptMatch=(Test-ControllerReceiptForPrelog $value $row) -and (Test-ControllerPrelogIdentityMatch $value $row @('lane','transcript','reviewerAttempt'))
+    if ([int]$other.line -lt [int]$Entry.line -and $receiptMatch) { $result.reason='PRELOG_VOID_TARGET_RECEIPT_BACKED'; return [pscustomobject]$result }
+    if ([int]$other.line -gt [int]$Entry.line) {
+      $schema=[string](Get-ObservedLaneValue $value 'controllerReviewSchema')
+      $sameHead=(Get-ObservedLaneValue $value 'issue') -eq $void.issue -and [string](Get-ObservedLaneValue $value 'controllerHead') -ceq $void.controllerHead
+      $dispatchMatch=$sameHead -and $schema -cin @($script:ControllerDispatchSchemaV1,$script:ControllerDispatchSchemaV2) -and
+        (Test-ControllerPrelogIdentityMatch $value $row @('transcript','reviewerAttempt'))
+      # Lane-only reuse is expected after a fresh label and reviewer attempt.
+      $receiptReuse=(Test-ControllerReceiptForPrelog $value $row) -and (Test-ControllerPrelogIdentityMatch $value $row @('transcript','reviewerAttempt'))
+      if ($dispatchMatch -or $receiptReuse) { $result.reason='PRELOG_VOID_IDENTITY_REUSED'; return [pscustomobject]$result }
+    }
+  }
+  $result.valid=$true;$result.reason='PRELOG_VOID_BOUND';$result.dispatch=$target
+  return [pscustomobject]$result
 }
 
 function Get-ControllerDanglingDispatchCorrectionValidation($Entry, $History, [object]$Vocabulary = $null) {
@@ -1248,6 +1778,16 @@ function Reduce-ControllerReleaseReview {
   }
 
   $expectedVersion = if($Mode-ceq"strict-v2"){"v2"}else{"v1"}
+  $voids=@($classified | Where-Object {$_.classification.valid -and $_.classification.rowKind -ceq 'prelog-void' -and $_.classification.issue -eq $Issue -and $_.classification.controllerHead -ceq $ControllerHead})
+  $voidedLines=@()
+  if ($voids.Count) { $audit.prelogVoids=@() }
+  foreach ($void in $voids) {
+    $binding=Get-ControllerPrelogVoidValidation $void.entry $History $recordVocabulary
+    if (-not $binding.valid) { $base.reason=$binding.reason;$census.invalidConflict+=1;return New-ControllerReleaseReduction $base }
+    $voidedLines+=@([int]$void.entry.line,[int]$binding.dispatch.line)
+    $audit.prelogVoids+=@([ordered]@{physicalLine=[int]$void.entry.line;rawSha256=$void.entry.rawSha256
+      originalPhysicalLine=[int]$binding.dispatch.line;originalDispatchRawSha256=$binding.dispatch.rawSha256})
+  }
   # Dispatch-only corrections bind first. Each must name one dangling malformed
   # strict dispatch row on this (issue, controllerHead) under Todd authority; an
   # unbound one fails closed with its binding reason. A cleared row leaves the
@@ -1275,7 +1815,7 @@ function Reduce-ControllerReleaseReview {
     $base.reason="MALFORMED_RELEVANT_STRICT_ROW";return New-ControllerReleaseReduction $base
   }
   $valid=@($classified|Where-Object{$_.classification.strict-and$_.classification.valid})
-  $candidate=@($valid|Where-Object{$_.classification.issue-eq$Issue-and$_.classification.controllerHead-ceq$ControllerHead})
+  $candidate=@($valid|Where-Object{$_.classification.issue-eq$Issue-and$_.classification.controllerHead-ceq$ControllerHead-and[int]$_.entry.line-notin$voidedLines})
   if(@($candidate|Where-Object{$_.classification.version-cne$expectedVersion}).Count-gt0){$base.reason="STRICT_VERSION_MISMATCH";return New-ControllerReleaseReduction $base}
   if ($null -ne $DispatchTuple) {
     $tupleClass = Get-ControllerReviewRowClassification $DispatchTuple $recordVocabulary
@@ -1345,6 +1885,23 @@ function Reduce-ControllerReleaseReview {
 }
 
 Export-ModuleMember -Function @(
+  "Get-ObservedLaneValue",
+  "Get-ObservedLaneTime",
+  "ConvertTo-ObservedLaneUtc",
+  "Assert-ObservedLaneFields",
+  "Assert-ObservedLaneHistory",
+  "Test-LaneTimeObservation",
+  "Test-ObservedLaneTerminal",
+  "Get-LaneTimeLaneRows",
+  "Get-LaneTimeHash",
+  "ConvertFrom-LaneTimeJson",
+  "Read-LaneTimeCapture",
+  "Get-LaneTimeDispatchTarget",
+  "Test-LaneTimeLaunch",
+  "Assert-LaneTimeObservationFields",
+  "Assert-LaneTimeObservationHistory",
+  "Assert-LaneTimeTerminalTarget",
+  "Get-LaneTimeProjection",
   "Get-ReviewRecordVocabulary",
   "Get-ExactHeadReviewContract",
   "Get-ReviewReceiptValidation",
@@ -1354,6 +1911,7 @@ Export-ModuleMember -Function @(
   "Get-ControllerReviewRowClassification",
   "Get-ControllerReviewClassifiedHistory",
   "Get-ControllerAuditCorrectionValidation",
+  "Get-ControllerPrelogVoidValidation",
   "Reduce-ControllerReleaseReview",
   "Test-WholeNumber",
   "Get-OrdinaryReviewPrDomain",

@@ -840,6 +840,129 @@ try {
   Assert-True ($historicalPollutionNamed.state-eq"indeterminate"-and$historicalPollutionNamed.reason-eq"AUDIT_DISPATCH_MISMATCH") "AC2: historical lifecycle pollution is not a dispatch row and cannot be cleared (observed=$($historicalPollutionNamed|ConvertTo-Json -Compress -Depth 20))"
   Write-Output "PASS #8110 dangling malformed dispatch row: dangling classification, dispatch-only correction under Todd authority, terminal-backed pollution still closed"
 
+  # #9382: additive void history has deliberately different semantics from H0.
+  function Get-PrelogHash($Value) {
+    ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($Value|ConvertTo-Json -Compress -Depth 10))))).ToLowerInvariant()
+  }
+  function New-PrelogVoid($Target) {
+    [pscustomobject][ordered]@{ts=$baseInstant.AddMinutes(12).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");kind='controller-review-prelog-void'
+      controllerReviewSchema='controller-review-prelog-void/v1';issue=$Target.issue;controllerHead=$Target.controllerHead
+      lane=$Target.lane;transcript=$Target.transcript;reviewerAttempt=$Target.reviewerAttempt;originalDispatchRawSha256=(Get-PrelogHash $Target)}
+  }
+  function Invoke-PrelogReduction($Rows,$Module=$script:equivalenceCandidate,$Tuple=$null) {
+    $path=Join-Path $testRoot 'synthetic-9382-history.jsonl'
+    [IO.File]::WriteAllLines($path,@($Rows|ForEach-Object{$_|ConvertTo-Json -Compress -Depth 10}),[Text.UTF8Encoding]::new($false))
+    & $Module {param($p,$h,$t) Reduce-ControllerReleaseReview -Issue 9382 -ControllerHead $h -Mode strict-v1 -History (Read-ExactHeadReviewHistory $p) -DispatchTuple $t} $path $headA $Tuple
+  }
+  $prelog=New-StrictControllerRow dispatch governing '' $headA 9382 'synthetic-9382-author' 'synthetic-9382-reviewer'
+  $void=New-PrelogVoid $prelog
+  $voidClass=Get-ControllerReviewRowClassification $void
+  Assert-True ($voidClass.valid -and $voidClass.rowKind -ceq 'prelog-void' -and $voidClass.version -ceq 'v1') '9382 AC2 closed void is its own strict v1 kind'
+  $voided=Invoke-PrelogReduction @($prelog,$void)
+  Assert-True ($voided.reason -ceq 'NO_STRICT_REVIEW_HISTORY' -and $voided.census.governing.inFlight -eq 0 -and $voided.census.governing.pass -eq 0 -and $voided.census.governing.blockFixable -eq 0) '9382 AC2 all-voided history grants nothing'
+  $v3=[pscustomobject]@{kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v3';lane=$prelog.lane;transcript=$prelog.transcript;head=$headA}
+  $receipt9382=New-StrictControllerRow review-complete governing PASS $headA 9382 'synthetic-9382-author' 'synthetic-9382-reviewer'
+  $fresh=$prelog.PSObject.Copy();$fresh.transcript='synthetic-fresh.jsonl';$fresh.reviewerAttempt='synthetic-fresh-reviewer';$fresh.ts=$baseInstant.AddMinutes(13).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+  $freshReceipt=$receipt9382.PSObject.Copy();$freshReceipt.transcript=$fresh.transcript;$freshReceipt.reviewerAttempt=$fresh.reviewerAttempt;$freshReceipt.ts=$baseInstant.AddMinutes(14).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
+  Assert-True ((Invoke-PrelogReduction @($prelog,$void,$fresh,$freshReceipt)).state -ceq 'authorized') '9382 AC2 lane-only reuse with fresh transcript and attempt authorizes'
+  foreach($case in @('launched','launched-absent-head','launched-unreadable-head','receipt','receipt-absent-head','receipt-unreadable-head','receipt-absent-issue','receipt-unreadable-issue','duplicate','before','utc-order','malformed','unbound','late-v3','late-v3-absent-head','late-v3-unreadable-head','reuse-transcript','reuse-attempt','late-receipt')) {
+    $target=$prelog.PSObject.Copy();$clear=$void.PSObject.Copy();$launch=$v3.PSObject.Copy();$terminal=$receipt9382.PSObject.Copy();$reuse=$fresh.PSObject.Copy()
+    $reason=switch -Wildcard ($case) {
+      'launched*' {'PRELOG_VOID_TARGET_LAUNCHED'}
+      'receipt*' {'PRELOG_VOID_TARGET_RECEIPT_BACKED'}
+      'duplicate' {'PRELOG_VOID_DUPLICATE'}
+      'before' {'PRELOG_VOID_ROW_ORDER'}
+      'utc-order' {'PRELOG_VOID_UTC_ORDER'}
+      'malformed' {'PRELOG_VOID_TARGET_INVALID'}
+      'unbound' {'PRELOG_VOID_TARGET_COUNT'}
+      'late-v3*' {'PRELOG_VOID_LATE_LAUNCH'}
+      default {'PRELOG_VOID_IDENTITY_REUSED'}
+    }
+    if($case -like '*absent-head') {if($case -like '*v3*' -or $case -like 'launched*'){$launch.PSObject.Properties.Remove('head')}else{$terminal.PSObject.Properties.Remove('controllerHead')}}
+    if($case -like '*unreadable-head') {if($case -like '*v3*' -or $case -like 'launched*'){$launch.head='unreadable'}else{$terminal.controllerHead='unreadable'}}
+    if($case -eq 'receipt-absent-issue'){$terminal.PSObject.Properties.Remove('issue');$terminal.controllerHead=$headB}
+    if($case -eq 'receipt-unreadable-issue'){$terminal.issue='unreadable';$terminal.controllerHead=$headB}
+    $rows=switch -Wildcard ($case) {
+      'launched*' {@($target,$launch,$clear)}
+      'receipt*' {@($target,$terminal,$clear)}
+      'duplicate' {@($target,$clear,$clear)}
+      'before' {@($clear,$target)}
+      'utc-order' {$clear.ts=$target.ts;@($target,$clear)}
+      'malformed' {$target.placement='override-Todd';$clear.originalDispatchRawSha256=Get-PrelogHash $target;@($target,$clear)}
+      'unbound' {$clear.originalDispatchRawSha256='0'*64;@($target,$clear)}
+      'late-v3*' {@($target,$clear,$launch)}
+      'reuse-transcript' {$reuse.transcript=$target.transcript;@($target,$clear,$reuse)}
+      'reuse-attempt' {$reuse.reviewerAttempt=$target.reviewerAttempt;@($target,$clear,$reuse)}
+      'late-receipt' {@($target,$clear,$terminal)}
+    }
+    $result=Invoke-PrelogReduction $rows
+    Assert-True ($result.state -ceq 'indeterminate' -and $result.reason -ceq $reason) "9382 AC2 $case fails closed: expected=$reason observed=$($result.reason)"
+    Write-Output "PASS #9382 AC2 $case $reason"
+  }
+  $foreignV3=$v3.PSObject.Copy();$foreignV3.head=$headB
+  Assert-True ((Invoke-PrelogReduction @($prelog,$foreignV3,$void,$foreignV3)).reason -ceq 'NO_STRICT_REVIEW_HISTORY') '9382 AC2 readable other-head v3 neither denies nor invalidates void'
+  $foreignReceipt=$receipt9382.PSObject.Copy();$foreignReceipt.controllerHead=$headB
+  $secondForeign=$foreignReceipt.PSObject.Copy();$secondForeign.controllerHead='c'*40
+  Assert-True ((Invoke-PrelogReduction @($foreignReceipt,$prelog,$secondForeign,$void)).reason -ceq 'NO_STRICT_REVIEW_HISTORY') '9382 AC3 two other-head receipts do not back this prelog'
+  $bad=$prelog.PSObject.Copy();$bad.placement='override-Todd'
+  $badReduction=Invoke-PrelogReduction @($foreignReceipt,$bad,$secondForeign)
+  Assert-True ($badReduction.reason -ceq 'MALFORMED_RELEVANT_STRICT_ROW' -and $badReduction.audit.invalidRows[0].dangling) '9382 AC3 dangling receipt match is head-scoped'
+  $baseline9382Path=Join-Path $testRoot 'installed-9382-baseline.psm1'
+  $baseline9382Source=@(& git -C (Split-Path -Parent $PSScriptRoot) show '24a00072a5d10b93c290d805d900920e3a2aa84a:.orchestrator/review-head-contract.psm1')
+  Assert-True ($LASTEXITCODE -eq 0) '9382 extract exact installed reducer baseline'
+  [IO.File]::WriteAllLines($baseline9382Path,$baseline9382Source,[Text.UTF8Encoding]::new($false))
+  $baseline9382Module=Import-Module $baseline9382Path -Force -PassThru -DisableNameChecking
+  $baselineVoid9382=Invoke-PrelogReduction @($prelog,$void) $baseline9382Module
+  $baselineDangling9382=Invoke-PrelogReduction @($foreignReceipt,$bad,$secondForeign) $baseline9382Module
+  Assert-True ($baselineVoid9382.reason -ceq 'MALFORMED_RELEVANT_STRICT_ROW' -and -not $baselineDangling9382.audit.invalidRows[0].dangling) '9382 AC2/AC3 installed baseline is red for additive void and head-scoped receipt controls'
+  Write-Output 'BASELINE_RED #9382 AC2/AC3 head=24a00072a5d10b93c290d805d900920e3a2aa84a void unsupported; two other-head receipts incorrectly back dangling prelog'
+  $misordered9382=$prelog.PSObject.Copy();$misordered9382.reviewerModel='claude-opus-5-5';$misordered9382.harness='claude';$misordered9382.placement='override-todd'
+  $baselineMisorder9382=Invoke-PrelogReduction @($prelog,$misordered9382,$fresh) $baseline9382Module $fresh
+  Assert-True ($baselineMisorder9382.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') '9382 AC1 installed baseline misorder strands fresh same-seat tuple'
+  $recoveredMisorder9382=Invoke-PrelogReduction @($prelog,$misordered9382,$void,(New-PrelogVoid $misordered9382),$fresh,$freshReceipt) $script:equivalenceCandidate
+  Assert-True ($recoveredMisorder9382.state -ceq 'authorized') '9382 AC1 voiding both misordered prelogs restores fresh same-seat governing authority'
+  Write-Output 'BASELINE_RED #9382 AC1 misorder fresh same-seat tuple stranded; candidate void-both recovery authorized'
+  Remove-Module $baseline9382Module
+  Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+  foreach($field in @('lane','transcript','reviewerAttempt')) {
+    $oneMatch=$receipt9382.PSObject.Copy();$oneMatch.lane='synthetic-other';$oneMatch.transcript='synthetic-other.jsonl';$oneMatch.reviewerAttempt='synthetic-other';$oneMatch.$field=$prelog.$field
+    Assert-True ((Invoke-PrelogReduction @($prelog,$oneMatch,$void)).reason -ceq 'PRELOG_VOID_TARGET_RECEIPT_BACKED') "9382 AC3 own-head receipt matches $field independently"
+  }
+  Write-Output 'PASS #9382 AC2/AC3 prelog x v3 x receipt x void-order x reuse state table'
+  $prelogSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'review-head-contract.psm1')).Replace("`r`n","`n")
+  $reusedDispatch9382=$fresh.PSObject.Copy();$reusedDispatch9382.transcript=$prelog.transcript
+  $reusedReceipt9382=$freshReceipt.PSObject.Copy();$reusedReceipt9382.transcript=$prelog.transcript
+  $prelogMutants=@(
+    @{Name='AC2-void-not-excluded';From='-and[int]$_.entry.line-notin$voidedLines';To='';Rows=@($prelog,$void);Reason='NO_STRICT_REVIEW_HISTORY'},
+    @{Name='AC2-launched-target-accepted';From='if ([int]$other.line -gt [int]$target.line -and (Test-ControllerPrelogLaunch $value $row))';To='if ($false)';Rows=@($prelog,$v3,$void);Reason='PRELOG_VOID_TARGET_LAUNCHED'},
+    @{Name='AC2-utc-order-removed';From='if ([datetimeoffset]::Parse($row.ts) -ge [datetimeoffset]::Parse($void.ts))';To='if ($false)';Rows=@($prelog);Reason='PRELOG_VOID_UTC_ORDER'},
+    @{Name='AC2-duplicate-void-accepted';From="`$result.reason='PRELOG_VOID_DUPLICATE'; return [pscustomobject]`$result";To='continue';Rows=@($prelog,$void,$void);Reason='PRELOG_VOID_DUPLICATE'},
+    @{Name='AC2-reuse-accepted';From='if ($dispatchMatch -or $receiptReuse)';To='if ($false)';Rows=@($prelog,$void,$reusedDispatch9382,$reusedReceipt9382);Reason='PRELOG_VOID_IDENTITY_REUSED'},
+    @{Name='AC3-unscoped-receipt';From='if ($identityReadable) { return $issue -eq $Prelog.issue -and $head -ceq $Prelog.controllerHead }';To='';Rows=@($foreignReceipt,$prelog,$secondForeign,$void);Reason='NO_STRICT_REVIEW_HISTORY'},
+    @{Name='AC6-exactly-one-launch-row-removed';From='$launchRows.Count -ne 1 -or';To='';Rows=@($prelog,$prelog);Reason='STRICT_PRELAUNCH_TUPLE_REQUIRED'}
+  )
+  foreach($mutant in $prelogMutants) {
+    if($mutant.Name -ceq 'AC2-utc-order-removed'){$equalVoid=$void.PSObject.Copy();$equalVoid.ts=$prelog.ts;$mutant.Rows=@($prelog,$equalVoid)}
+    Assert-True ($prelogSource.Split(@($mutant.From),[StringSplitOptions]::None).Count -eq 2) "9382 unique mutant anchor $($mutant.Name)"
+    $mutantRoot=Join-Path $testRoot $mutant.Name;[IO.Directory]::CreateDirectory($mutantRoot)|Out-Null
+    Copy-Item (Join-Path $PSScriptRoot 'routing-data.ps1') $mutantRoot
+    $mutantPath=Join-Path $mutantRoot 'review-head-contract.psm1'
+    [IO.File]::WriteAllText($mutantPath,$prelogSource.Replace($mutant.From,$mutant.To),[Text.UTF8Encoding]::new($false))
+    $mutantModule=Import-Module $mutantPath -Force -PassThru -DisableNameChecking
+    $tuple9382=if($mutant.Name -ceq 'AC6-exactly-one-launch-row-removed'){$prelog}else{$null}
+    $control=Invoke-PrelogReduction $mutant.Rows $script:equivalenceCandidate $tuple9382
+    $bypass=Invoke-PrelogReduction $mutant.Rows $mutantModule $tuple9382
+    Assert-True ($control.reason -ceq $mutant.Reason -and $bypass.reason -cne $control.reason) "9382 killed mutant $($mutant.Name): candidate=$($control.reason) mutant=$($bypass.reason)"
+    if($mutant.Name -ceq 'AC3-unscoped-receipt') {
+      $danglingControl=Invoke-PrelogReduction @($foreignReceipt,$bad,$secondForeign) $script:equivalenceCandidate
+      $danglingBypass=Invoke-PrelogReduction @($foreignReceipt,$bad,$secondForeign) $mutantModule
+      Assert-True ($danglingControl.audit.invalidRows[0].dangling -and -not $danglingBypass.audit.invalidRows[0].dangling) '9382 AC3 same unscoped mutant also reds dangling dispatch match'
+    }
+    Write-Output "KILLED #9382 $($mutant.Name) candidate=$($control.reason) mutant=$($bypass.reason)"
+    Remove-Module $mutantModule
+  }
+  Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+
   Assert-True ($script:equivalenceCount -eq 39) "equivalence must exercise all 39 controller fixture invocations; observed=$script:equivalenceCount"
   Write-Output "PASS review-head reducer ordinary byte-stable lifecycle and strict controller authority coverage; H0 equivalent controller fixtures=$script:equivalenceCount ordinary fixtures=$script:ordinaryEquivalenceCount"
 } finally {

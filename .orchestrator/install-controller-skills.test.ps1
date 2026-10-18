@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
+$routingScope = Enter-RoutingDataTestScope
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "FAIL: $Message" }
@@ -49,6 +51,8 @@ try {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-controller-skills.ps1") -Destination $orchestrator
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot "controller-install-lock.psm1") -Destination $orchestrator
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot "review-head-contract.psm1") -Destination $orchestrator
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot "routing-data.ps1") -Destination $orchestrator
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot "controller-heavy-paths.psm1") -Destination $orchestrator
   foreach ($runtimeFile in @(
       "landed-integration-evidence.psm1",
       "integration-dispatch-contract.ps1",
@@ -63,6 +67,7 @@ try {
       "landing-preflight.ps1",
       "review-queue-health.ps1",
       "log-event.ps1",
+      "harvest-observed-lanes.ps1",
       "cost-harvest.ps1",
       "matrix-refresh.ps1",
       "check-controller-skill-freshness.ps1",
@@ -207,14 +212,84 @@ landing-preflight/v1
   [IO.File]::WriteAllBytes($nativeInstalled, $nativeBytes)
   $nativeLock = Join-Path $orchestrator 'verify-lock.d'
   [void][IO.Directory]::CreateDirectory($nativeLock)
-  foreach ($owner in @('{"schemaVersion":6,"native":{"linux":null}}', '{"schemaVersion":5}', 'unreadable')) {
-    [IO.File]::WriteAllText((Join-Path $nativeLock 'owner.json'), $owner)
+  $ownerPath = Join-Path $nativeLock 'owner.json'
+  $liveOwner = '{"schemaVersion":6,"pid":' + $PID + ',"native":{"linux":null},"synthetic":true}'
+  [IO.File]::WriteAllText($ownerPath, $liveOwner)
+  $lockCreated = (Get-Item -LiteralPath $nativeLock).CreationTimeUtc.Ticks
+  $ownerWritten = (Get-Item -LiteralPath $ownerPath).LastWriteTimeUtc.Ticks
+  $ownerBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($ownerPath))
+  Add-Content -LiteralPath $dirtySource -Value 'non-heavy fixture revision'
+  & git -C $sandbox add '.orchestrator/controller-skills/model-routing/SKILL.md'
+  & git -C $sandbox commit -q -m 'non-heavy install under synthetic live holder'
+  $head = (& git -C $sandbox rev-parse HEAD).Trim()
+  Set-Content -LiteralPath $receiptLog -Value (New-Receipt 'PASS' $head)
+  $key = [IO.Path]::GetFullPath($sandbox).TrimEnd('\','/').ToUpperInvariant()
+  $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).ToLowerInvariant()
+  $heldAdmission = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-verifier-$hash")
+  $held = $heldAdmission.WaitOne(0)
+  Assert-True $held 'private admission mutex acquired'
+  try {
+    $nonHeavy = Invoke-Installer
+    Assert-True ($nonHeavy.ExitCode -eq 0 -and $nonHeavy.Output -match 'heavy classification: non-heavy') 'non-heavy install ignores both live holder and occupied product admission'
+  } finally {
+    $heldAdmission.ReleaseMutex()
+    $heldAdmission.Dispose()
+  }
+  Assert-True ((Get-Item -LiteralPath $nativeLock).CreationTimeUtc.Ticks -eq $lockCreated -and
+    (Get-Item -LiteralPath $ownerPath).LastWriteTimeUtc.Ticks -eq $ownerWritten -and
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes($ownerPath)) -ceq $ownerBytes -and
+    @(Get-ChildItem -LiteralPath $nativeLock).Count -eq 1) 'non-heavy install preserves lock directory and exact owner bytes without rewrite'
+  foreach ($owner in @('{"schemaVersion":5}', 'unreadable')) {
+    [IO.File]::WriteAllText($ownerPath, $owner)
+    $retainedNonHeavy = Invoke-Installer
+    Assert-True ($retainedNonHeavy.ExitCode -eq 0 -and [IO.File]::ReadAllText($ownerPath) -ceq $owner) 'non-heavy same-head install ignores retained/unreadable owners without touching them'
+  }
+  $identityPath = Join-Path $destinationRoot 'native-db/identity.json'
+  $identityBytes = [IO.File]::ReadAllBytes($identityPath)
+  foreach ($invalidIdentity in @('{}', '{"head":"' + ('0' * 40) + '","digest":"' + $nativeIdentity.digest + '"}')) {
+    [IO.File]::WriteAllText($identityPath, $invalidIdentity)
     Assert-Refused 'retained verifier owner'
+  }
+  [IO.File]::WriteAllBytes($identityPath, $identityBytes)
+
+  Add-Content -LiteralPath (Join-Path $orchestrator 'native-db-admission.py') -Value 'heavy helper revision'
+  & git -C $sandbox add '.orchestrator/native-db-admission.py'
+  & git -C $sandbox commit -q -m 'heavy install candidate'
+  $head = (& git -C $sandbox rev-parse HEAD).Trim()
+  Set-Content -LiteralPath $receiptLog -Value (New-Receipt 'PASS' $head)
+  function Assert-HeavyOwnerRefusal($Result) {
+    Assert-True ($Result.ExitCode -ne 0 -and ($Result.Output -replace '\s+', ' ') -match 'retained verifier owner') 'heavy candidate must refuse live replacement/schema6 downgrade/retained owner'
+  }
+  foreach ($owner in @($liveOwner, '{"schemaVersion":6,"native":{"linux":null}}', '{"schemaVersion":5}', 'unreadable')) {
+    [IO.File]::WriteAllText((Join-Path $nativeLock 'owner.json'), $owner)
+    $heavyRefusal = Invoke-Installer
+    Assert-HeavyOwnerRefusal $heavyRefusal
+    Assert-True ($heavyRefusal.Output -match 'heavy classification: heavy') 'heavy candidate records shared classification'
     Assert-True ([IO.File]::ReadAllText((Join-Path $nativeLock 'owner.json')) -ceq $owner) 'installer preserves exact retained owner, including schema6 downgrade'
   }
+  $installerText = [IO.File]::ReadAllText($installer)
+  $mutantText = $installerText.Replace("if (Test-Path -LiteralPath (Join-Path `$PSScriptRoot 'verify-lock.d')) {", "if (`$false) {")
+  Assert-True ($mutantText -cne $installerText) 'heavy-refusal mutant changes its exact target'
+  [IO.File]::WriteAllText($installer, $mutantText)
+  & git -C $sandbox add '.orchestrator/install-controller-skills.ps1'
+  & git -C $sandbox commit -q -m 'synthetic skipped heavy refusal mutant'
+  $mutantHead = (& git -C $sandbox rev-parse HEAD).Trim()
+  Set-Content -LiteralPath $receiptLog -Value (New-Receipt 'PASS' $mutantHead)
+  $mutantResult = Invoke-Installer $mutantHead
+  Assert-True ($mutantResult.ExitCode -eq 0) 'refusal mutant reaches an install, not an unrelated failure'
+  $mutantRejected = $false
+  try { Assert-HeavyOwnerRefusal $mutantResult } catch { $mutantRejected = $_.Exception.Message -match '^FAIL: heavy candidate must refuse' }
+  Assert-True $mutantRejected 'heavy-refusal regression assertion kills skipped-refusal mutant'
+  [IO.File]::WriteAllText($installer, $installerText)
+  & git -C $sandbox add '.orchestrator/install-controller-skills.ps1'
+  & git -C $sandbox commit -q -m 'restore installer after synthetic mutant'
+  $head = (& git -C $sandbox rev-parse HEAD).Trim()
+  Set-Content -LiteralPath $receiptLog -Value (New-Receipt 'PASS' $head)
   Remove-Item -LiteralPath (Join-Path $nativeLock 'owner.json') -Force
   Remove-Item -LiteralPath $nativeLock -Force
-  Write-Output 'PASS native helper installer: exact-head pin/copy, drift refusal, schema5/schema6/unreadable owner retention; inert destination only'
+  $success = Invoke-Installer
+  Assert-True ($success.ExitCode -eq 0) 'heavy install resumes after private holder removal'
+  Write-Output 'PASS native helper installer: non-heavy live/retained holders untouched; heavy live/schema5/schema6/unreadable refusals; unknown baseline fail closed; skipped-refusal mutant killed; inert destination only'
   foreach ($relative in $relativeFiles) {
     $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $sourceRoot $relative)).Hash
     $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $destinationRoot $relative)).Hash
@@ -328,6 +403,7 @@ landing-preflight/v1
 
   Write-Output "PASS install-controller-skills review receipt and install coverage"
 } finally {
+  Exit-RoutingDataTestScope $routingScope
   if (Test-Path -LiteralPath $sandbox) {
     Remove-Item -LiteralPath $sandbox -Recurse -Force
   }

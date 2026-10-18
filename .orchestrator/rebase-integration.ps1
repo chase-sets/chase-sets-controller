@@ -17,6 +17,7 @@ param(
   [string]$HistoryPath = (Join-Path $PSScriptRoot 'dispatch-log.jsonl'),
   [string]$RuntimeRoot = $(if($env:CHASE_SETS_INTEGRATION_RUNTIME){$env:CHASE_SETS_INTEGRATION_RUNTIME}else{$PSScriptRoot}),
   [switch]$ContinueInterruptedIntegration,
+  [switch]$PublishInterruptedIntegration,
   [Parameter(DontShow)][switch]$NoPush
 )
 
@@ -67,11 +68,35 @@ $top = (Invoke-IntegrationGit @('rev-parse','--show-toplevel') -RequireOutput).s
 if (-not [string]::Equals([IO.Path]::GetFullPath($top).TrimEnd('\','/'), $root, [StringComparison]::OrdinalIgnoreCase)) {
   throw 'rebase-integration: Worktree must be the canonical Git worktree root'
 }
+if ($ContinueInterruptedIntegration -and $PublishInterruptedIntegration) { throw 'INTEGRATION_RESUME_CHILD: continuation and publication are separate steps' }
+if ($PublishInterruptedIntegration) {
+  # #9334: the same bound ordinary execution publishes its finished-unpublished
+  # result R->P once, under the immutable original-head lease. No continuation,
+  # rebase, reset or branch movement happens here; refusal preserves bytes.
+  # #9411: a host-dispatched successor publishes the prior launch's retained
+  # finish through its attached binding, still exactly once across launches.
+  Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
+  $liveRequest = if ($env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER) { $null } else { Get-OrdinaryLiveRequest $RuntimeRoot $root $Pr $ReviewedHead $NewBase $IntegrationLane -Attached }
+  $child = Get-InterruptedIntegrationChild $RuntimeRoot $env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER $liveRequest
+  $o = $child.obligation
+  if ($o.pr -ne $Pr -or $o.targetHead -cne $ReviewedHead -or $o.newBase -cne $NewBase -or $o.integrationLane -cne $IntegrationLane -or
+      -not [string]::Equals($o.worktree,$root,[StringComparison]::OrdinalIgnoreCase)) { throw 'INTEGRATION_RESUME_CHILD: immutable request mismatch' }
+  $publication = Publish-OrdinaryIntegration $RuntimeRoot $child $root
+  [ordered]@{schemaVersion='rebase-integration-result/v1';status='REVIEW_REQUIRED';pr=$Pr;predecessorHead=$ReviewedHead;finishHead=$publication.finishHead;newHead=$publication.publishedHead;newBase=$NewBase;pushed=$true;commitCount=$publication.commitCount;continuationAuthority=$false;review='NORMAL_EXACT_NEW_HEAD_REQUIRED'} | ConvertTo-Json -Compress
+  return
+}
 if ($ContinueInterruptedIntegration) {
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
-  $child = Get-InterruptedIntegrationChild $RuntimeRoot $env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER
-  $o = $child.binding.obligation
-  if ($o.pr -ne $Pr -or $o.targetHead -cne $ReviewedHead -or $o.newBase -cne $NewBase -or
+  # #9334: a live ordinary author has no bound record path; its request is the
+  # native logical branch plus the helper's immutable arguments, proven by the
+  # actual owner, eligible route and the helper's own conflict capture.
+  $liveRequest = if ($env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER) { $null } else { Get-OrdinaryLiveRequest $RuntimeRoot $root $Pr $ReviewedHead $NewBase $IntegrationLane }
+  $child = Get-InterruptedIntegrationChild $RuntimeRoot $env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER $liveRequest
+  $o = $child.obligation
+  # #9411: a finished-unpublished successor has no native operation to continue.
+  if ($child.successor) { throw 'INTEGRATION_RESUME_CHILD: successor publishes only' }
+  if ($child.ordinary -and -not $NoPush) { throw 'INTEGRATION_RESUME_CHILD: ordinary continuation requires NoPush' }
+  if ($o.pr -ne $Pr -or $o.targetHead -cne $ReviewedHead -or $o.newBase -cne $NewBase -or ($child.ordinary -and $o.integrationLane -cne $IntegrationLane) -or
       -not [string]::Equals($o.worktree,$root,[StringComparison]::OrdinalIgnoreCase)) { throw 'INTEGRATION_RESUME_CHILD: immutable request mismatch' }
   $nativePath = (Invoke-IntegrationGit @('rev-parse','--git-path','rebase-merge') -RequireOutput).stdout
   if (-not [IO.Path]::IsPathFullyQualified($nativePath)) { $nativePath = Join-Path $root $nativePath }
@@ -81,7 +106,7 @@ if ($ContinueInterruptedIntegration) {
   }
   $result = Invoke-IntegrationGit @('-c','core.editor=true','rebase','--continue') -AllowFailure
   if ($result.exitCode -ne 0) {
-    Save-InterruptedIntegrationStop $RuntimeRoot $env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER
+    Save-InterruptedIntegrationStop $RuntimeRoot $env:CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER $liveRequest
     $conflicts = @((Invoke-IntegrationGit @('diff','--name-only','--diff-filter=U')).stdout -split "`r?`n" | Where-Object { $_ })
     [ordered]@{schemaVersion='rebase-integration-result/v1';status='DELTA_REQUIRED';pr=$Pr;reviewedHead=$ReviewedHead;newBase=$NewBase;conflictPaths=$conflicts;reason='REBASE_CONFLICT'} | ConvertTo-Json -Depth 5 -Compress
     exit 2
@@ -89,6 +114,10 @@ if ($ContinueInterruptedIntegration) {
   $newHead = (Invoke-IntegrationGit @('rev-parse','HEAD') -RequireOutput).stdout
   if ((Get-IntegrationBranch) -cne $o.branch -or (Invoke-IntegrationGit @('status','--porcelain=v1','--untracked-files=normal')).stdout) { throw 'INTEGRATION_RESUME_CHILD: incomplete finish' }
   if (-not $NoPush) { [void](Invoke-IntegrationGit @('push',"--force-with-lease=$($o.branch):$ReviewedHead",'origin',"HEAD:$($o.branch)")) }
+  # #9334: an ordinary variant records its native finish R under the actual
+  # owner. Under -NoPush that is finished-unpublished: no completion exists until
+  # the same execution publishes with -PublishInterruptedIntegration.
+  if ($child.ordinary) { [void](Save-OrdinaryIntegrationFinish $RuntimeRoot $child $root (-not $NoPush)) }
   [ordered]@{schemaVersion='rebase-integration-result/v1';status='REVIEW_REQUIRED';pr=$Pr;predecessorHead=$ReviewedHead;newHead=$newHead;newBase=$NewBase;pushed=(-not $NoPush);continuationAuthority=$false;review='NORMAL_EXACT_NEW_HEAD_REQUIRED'} | ConvertTo-Json -Compress
   return
 }
@@ -129,7 +158,12 @@ foreach ($owed in @(Get-RebaseOwed $RuntimeRoot $branch $root)) {
 $rebase = Invoke-IntegrationGit @('rebase','--onto',$NewBase,$oldBase) -AllowFailure
 if ($rebase.exitCode -ne 0) {
   $conflicts = @(((Invoke-IntegrationGit @('diff','--name-only','--diff-filter=U') -AllowFailure).stdout -split "`r?`n") | Where-Object { $_ })
-  if ($conflicts.Count -gt 0) { foreach ($startEvidence in $rebaseStarts) { Save-RebaseConflict $startEvidence $RuntimeRoot } }
+  if ($conflicts.Count -gt 0) {
+    foreach ($startEvidence in $rebaseStarts) { Save-RebaseConflict $startEvidence $RuntimeRoot }
+    # #9334: prospective evidence for an ordinary dispatched author's first
+    # canonical conflict; unauthenticated or non-ordinary callers record nothing.
+    if ($rebaseStarts.Count -eq 0) { [void](Save-OrdinaryIntegrationConflict $RuntimeRoot $root $Pr $ReviewedHead $NewBase $branch $IntegrationLane $SourcePassReceiptIdentity $conflicts $NoPush.IsPresent) }
+  }
   [pscustomobject][ordered]@{
     schemaVersion='rebase-integration-result/v1'; status='DELTA_REQUIRED'; pr=$Pr
     reviewedHead=$ReviewedHead; newBase=$NewBase; conflictPaths=@($conflicts)

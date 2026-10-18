@@ -294,7 +294,12 @@ finally:
     while ([DateTime]::UtcNow -lt $deadline) {
       if (Test-Path $path) {
         try {
-          $record=Get-Content $path -Raw | ConvertFrom-Json -DateKind String
+          $stream=[IO.File]::Open($path,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
+          try {
+            $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+            try { $raw=$reader.ReadToEnd() } finally { $reader.Dispose() }
+          } finally { $stream.Dispose() }
+          $record=$raw | ConvertFrom-Json -DateKind String
           if ($record.schemaVersion -eq $Schema -and $record.state -ceq 'started' -and ($Schema -ne 6 -or $record.native.linux)) { return $record }
         } catch {}
       }
@@ -314,6 +319,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     New-Item -ItemType Directory $runtime,$artifacts -Force | Out-Null
     $copy = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')).Replace('/opt/chase-sets-native-db/admission.py', "$linuxRoot/admission.py")
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'), $copy)
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $runtime
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $linuxSetup $linuxHelper $linuxRoot
     if ($LASTEXITCODE -ne 0) { throw 'native wrapper fixture setup failed' }
     Set-Content (Join-Path $anchor '.gitignore') ".orchestrator/artifacts/`nnode_modules/"

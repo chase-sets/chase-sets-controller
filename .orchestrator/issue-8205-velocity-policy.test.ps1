@@ -53,19 +53,23 @@ $script:sectionRules = @(
   @(7, 'Local-only failures, preparation stops, harness or environment failures, lock refusals and a lane''s own tooling defects do not count; the lane repairs them within the same attempt.'),
   @(7, 'Existing counts are recounted under this definition.'),
   @(7, 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'),
-  @(7, 'Review, repair, and planning rounds never count toward this ceiling.'),
+  @(7, 'Review, repair, and planning rounds never count toward this step-back trigger.'),
   @(12, 'Replacement never resets an attempt count, and counts follow the §7 attempt definition'),
   @(4, 'Choose the next committed outcome within Todd''s current product priority by explicit Todd steering first'),
-  @(4, 'while ready, runnable `kind:product` work exists, at least two lanes serve it.')
+  @(4, 'while ready, runnable `kind:product` work exists, at least two lanes serve it.'),
+  @(13, 'Actionable ready-idle means current trusted `issue-readiness/v1` accepted by main''s `consumeIssueReadinessReceipt`, independent current-brief semantic PASS, resolved prerequisites and section 4 window/backfill admission.'),
+  @(13, 'Backfill consumes the host''s section 4 priority assessment and marker-order evidence, including current-priority first claim and non-preemption, never an idle-derived permission.'),
+  @(13, 'The host verifies the workflow artifact and complete independent author/repair history before projecting them; comments, prospective results and artifact presence alone confer no authority.')
 )
 
 $script:contractRules = @(
-  'resets no lineage history or consumed count, and never makes `newCeiling` incremental.',
+  'and it resets no lineage history or consumed count.',
   'The consumed count is the number of pushed heads that received a hosted CI verdict or an exact-head review verdict (milestone-orchestrator section 7); a local-only, preparation, harness or lane-tooling stop consumed no attempt.'
 )
 
 function Test-VelocityPolicy([string]$Text) {
   $normalized = Normalize-Text $Text
+  if ((Compact-Text $normalized).Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.')) { return $false }
   if ([regex]::Matches($normalized, "(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$").Count -ne 1) { return $false }
   foreach ($rule in $script:sectionRules) {
     $section = Get-Section $normalized $rule[0]
@@ -97,10 +101,14 @@ $skill = Normalize-Text ([IO.File]::ReadAllText($skillPath))
 $contract = Normalize-Text ([IO.File]::ReadAllText($contractPath))
 Assert-8205 (Test-VelocityPolicy $skill) "#8205 hosted-proof, attempt-count, diagnostic-blocker or backfill policy is incomplete"
 Assert-8205 (Test-ContractPolicy $contract) "planning-repair consumed-count definition is incomplete"
+$landing = Get-Section $skill 8
+Assert-8205 (-not (Compact-Text $landing).Contains('per-PR Reports', [StringComparison]::Ordinal)) 'section 8 has no velocity collection recipe'
+Assert-8205 (-not (Compact-Text $skill).Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.', [StringComparison]::Ordinal)) 'old no-work rule is absent'
 $archivePath = Join-Path $controller ".orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md"
 Assert-8205 ((Normalize-Text ([IO.File]::ReadAllText($archivePath))).Contains("Version 2.84 codifies Todd's 2026-09-26 velocity ruling on #4388 (5845981597;", [StringComparison]::Ordinal)) "v2.84 release note is not preserved in the provenance archive"
 
 $mutants = [ordered]@{
+  'old-no-work-rule-restored' = $skill.Replace('## 14. Telemetry', "Everything else in the report is diagnostic context that never triggers work or files an issue.`n`n## 14. Telemetry")
   "backfill-dropped" = Remove-Phrase $skill 'Serial blocking backfills the floor (4388/5845981597).'
   "backfill-bound-to-pull-window" = $skill.Replace('regardless of track or the per-track pull window', 'within the per-track pull window')
   "backfill-files-priority-question" = Remove-Phrase $skill 'Backfill is not a priority change and files no §11 question.'
@@ -120,13 +128,16 @@ $mutants = [ordered]@{
   "recount-becomes-reset" = Remove-Phrase $skill 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'
   "park-ignores-definition" = $skill.Replace('Replacement never resets an attempt count, and counts follow' + "`n" + 'the §7 attempt definition', 'Replacement never resets an attempt count')
   "floor-dropped" = Remove-Phrase $skill 'at least two lanes serve it.'
+  "idle-without-canonical-authority" = Remove-Phrase $skill 'independent current-brief semantic PASS,'
+  "backfill-idle-derived" = Remove-Phrase $skill 'never an idle-derived permission.'
+  "artifact-presence-authority" = Remove-Phrase $skill 'artifact presence alone confer no authority.'
   # The exact release version is pinned once, by issue-6997; this test pins only a well-formed header.
   "header-malformed" = ($skill -replace '(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)', '# Milestone Orchestrator')
 }
 $contractMutants = [ordered]@{
   "contract-consumed-count-undefined" = Remove-Phrase $contract 'The consumed count is the number of pushed heads that received a hosted CI verdict or an exact-head review verdict (milestone-orchestrator section 7); a local-only, preparation, harness or lane-tooling stop consumed no attempt.'
   "contract-local-stop-consumes" = ($contract -replace 'a local-only,\s+preparation, harness or lane-tooling stop consumed no attempt', 'a local-only stop also consumed an attempt')
-  "contract-reset-allowed" = Remove-Phrase $contract 'resets no lineage history or consumed count, and never makes `newCeiling` incremental.'
+  "contract-reset-allowed" = Remove-Phrase $contract 'and it resets no lineage history or consumed count.'
   "contract-non-ascii" = $contract.Replace('section 7); a local-only', 'section 7) ' + [string][char]0x2014 + ' a local-only')
 }
 foreach ($entry in $mutants.GetEnumerator()) {

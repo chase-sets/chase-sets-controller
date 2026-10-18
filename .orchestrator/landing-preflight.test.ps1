@@ -4,12 +4,14 @@ param(
     "All",
     "BreakerClearOnly",
     "DeployResolverOnly",
+    "DeployCompletionOnly",
     "ExecutedUnrecognizedStaging",
     "SensitivityRequired",
     "BreakerRepairFrontierOnly",
     "Decision7643AdapterOnly",
     "ScopeAwareBreakerOnly",
     "RequiredCheckReducerOnly",
+    "ContextPaginationOnly",
     "ContinuationOnly"
   )]
   [string]$RegressionOnly = "All"
@@ -387,11 +389,10 @@ function Invoke-ScopeParserMutant([string]$Name, [string]$Function, [string]$Bef
 }
 
 function Test-NativeCurrentScopeOutput {
-  # The canonical battery also executes this carrier in inert temporary clones.
-  # Replay the recorded originals at their exact source; never copy or amend them.
-  $root = 'D:/Users/ToddS/Source/Repos/chase-sets'
-  $nativePath = Join-Path $root '.orchestrator/goal-7969-change-scope-native-r1.log'
-  $journalPath = Join-Path $root '.orchestrator/goal-7969-direct-enqueue-r1.json'
+  # Replay byte-identical historical captures, never the live controller fleet.
+  $captureRoot = Join-Path $PSScriptRoot 'fixtures/landing-preflight-native-scope'
+  $nativePath = Join-Path $captureRoot 'goal-7969-change-scope-native-r1.log'
+  $journalPath = Join-Path $captureRoot 'goal-7969-direct-enqueue-r1.json'
   Assert-True ((Get-FileHash $nativePath -Algorithm SHA256).Hash -ieq 'd22668fb8401274cf5921464d7269fcb0e58c94ad22947673178b43ca856203d') 'untouched native log hash'
   Assert-True ((Get-FileHash $journalPath -Algorithm SHA256).Hash -ieq 'a2c737287e6b0b06f5f1fb5d24d7e306ca4eb74ff447f80a0565a3c8ef75bcba') 'untouched native journal hash'
   $nativeLog = [IO.File]::ReadAllText($nativePath)
@@ -449,12 +450,15 @@ function Test-NativeCurrentScopeOutput {
 
   # Execute the exact pinned producer functions inside this admitted carrier.
   # No checkout dependency, provider call, classifier guess, or alternate gate.
-  $product = Join-Path $root 'main'
   $pin = '2d77c295802c06eb73543a2010babe5d02392fb7'
-  $mapper = (& git -C $product show "${pin}:scripts/change-scope.mjs") -join "`n"
-  Assert-True ($LASTEXITCODE -eq 0) 'pinned mapper object resolves'
-  $batcher = (& git -C $product show "${pin}:scripts/e2e-suites.mjs") -join "`n"
-  Assert-True ($LASTEXITCODE -eq 0) 'pinned batching object resolves'
+  $mapperPath = Join-Path $captureRoot 'change-scope.mjs'
+  $batcherPath = Join-Path $captureRoot 'e2e-suites.mjs'
+  $mapperBlob = & git hash-object --no-filters -- $mapperPath
+  Assert-True ($LASTEXITCODE -eq 0 -and $mapperBlob -ceq 'bb07241ebd9865a9753e057f652a514bf3c38fbe') 'pinned mapper fixture matches source object'
+  $batcherBlob = & git hash-object --no-filters -- $batcherPath
+  Assert-True ($LASTEXITCODE -eq 0 -and $batcherBlob -ceq '8053964a17a554f2c52e9c046f44b84299deaf05') 'pinned batching fixture matches source object'
+  $mapper = [IO.File]::ReadAllText($mapperPath)
+  $batcher = [IO.File]::ReadAllText($batcherPath)
   $parts = [Collections.Generic.List[string]]::new()
   $parts.Add('import fs from "node:fs";')
   foreach ($name in @('toOutputMap', 'toGithubOutputMap')) {
@@ -717,7 +721,19 @@ public static class LandingPreflightMockGh
         string fixture = null;
         bool isRunList = false;
         if (args.Length >= 2 && args[0] == "api" && args[1] == "graphql")
+        {
             fixture = Environment.GetEnvironmentVariable("LANDING_PREFLIGHT_MOCK_GRAPH");
+            foreach (var arg in args)
+            {
+                if (arg.StartsWith("cursor=", StringComparison.Ordinal))
+                {
+                    var queryArg = Array.Find(args, value => value.StartsWith("query=@", StringComparison.Ordinal));
+                    if (queryArg == null || !File.ReadAllText(queryArg.Substring(7)).Contains("contexts(first:100,after:$cursor)"))
+                        return 2;
+                    fixture = Environment.GetEnvironmentVariable("LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_" + arg.Substring(7));
+                }
+            }
+        }
         else if (args.Length >= 2 && args[0] == "run" && args[1] == "list")
         {
             isRunList = true;
@@ -1471,6 +1487,7 @@ function New-SyntheticConnection([object[]]$Nodes, [long]$TotalCount = $Nodes.Co
 }
 
 function Test-FrontierCollectionBoundaries {
+  # GetNewClosure creates a module that cannot resolve this script's helpers.
   # REST collection preserves 0/1/N array token kind.
   foreach ($case in @(
       [ordered]@{ name = "zero"; json = '[]'; count = 0 },
@@ -1513,9 +1530,11 @@ function Test-FrontierCollectionBoundaries {
     7476 = New-SyntheticConnection @()
     7490 = New-SyntheticConnection @()
   }
+  $capturedBlockerResults=@{}
+  foreach($key in $capturedBlockers.Keys){$capturedBlockerResults[$key]=New-SyntheticGraphResult 'blockedBy' $capturedBlockers[$key]}
   $script:collectionGraphResponder = {
     param($Query, $Variables)
-    New-SyntheticGraphResult "blockedBy" $capturedBlockers[[int]$Variables.issue]
+    $capturedBlockerResults[[int]$Variables.issue]
   }.GetNewClosure()
   $emptyBlockers = Get-FrontierIssueBlockers 7470
   Assert-True ($null -ne $emptyBlockers -and $emptyBlockers -is [object[]] -and $emptyBlockers.Count -eq 0) `
@@ -1570,10 +1589,10 @@ function Test-FrontierCollectionBoundaries {
     "scripts/platform-kubernetes-deployment.mjs",
     "scripts/platform-kubernetes-deployment.test.mjs"
   )
+  $capturedFileResult=New-SyntheticGraphResult 'files' (New-SyntheticConnection @($captured7487Paths | ForEach-Object { [ordered]@{ path = $_ } }) 7)
   $script:collectionGraphResponder = {
     param($Query, $Variables)
-    $nodes = @($captured7487Paths | ForEach-Object { [ordered]@{ path = $_ } })
-    New-SyntheticGraphResult "files" (New-SyntheticConnection $nodes 7)
+    $capturedFileResult
   }.GetNewClosure()
   $capturedFiles = Get-FrontierPullRequestFiles 7487
   $capturedSet = [Collections.Generic.HashSet[string]]::new([Collections.Generic.IEnumerable[string]]$capturedFiles, [StringComparer]::Ordinal)
@@ -1600,7 +1619,8 @@ function Test-FrontierCollectionBoundaries {
   )
   foreach ($mutant in $fileMutants) {
     $connection = $mutant.connection
-    $script:collectionGraphResponder = { param($Query, $Variables) New-SyntheticGraphResult "files" $connection }.GetNewClosure()
+    $graphResult = New-SyntheticGraphResult "files" $connection
+    $script:collectionGraphResponder = { param($Query, $Variables) $graphResult }.GetNewClosure()
     Assert-True ($null -eq (Get-FrontierPullRequestFiles 900011)) `
       "candidate file mutant $($mutant.name) did not fail closed"
   }
@@ -1652,6 +1672,105 @@ try {
   $env:LANDING_PREFLIGHT_MOCK_RUNS = Write-JsonFixture "runs.json" (New-RealDeployRunFixture)
   $env:LANDING_PREFLIGHT_MOCK_LOG = Join-Path $testRoot "mock-gh.log"
   Set-RealDeployJobFixtures
+
+  # #8526: synthetic queued, pre-merge observation through the real Report adapter.
+  $queuedGraph=New-ProductionGraphFixture
+  $queuedGraph.data.repository.pullRequest.mergeQueueEntry=@{id='MQE_SYNTHETIC_8526'}
+  $env:LANDING_PREFLIGHT_MOCK_GRAPH=Write-JsonFixture 'queued-8526.json' $queuedGraph
+  $queuedReport=Invoke-ProductionPreflight (New-History @((New-Pass $headA)))
+  Assert-True ($queuedReport.reason -ceq 'PR_ALREADY_ENQUEUED' -and $queuedReport.mutationCount -eq 0) 'queued refusal remains intact'
+  Assert-True ($queuedReport.PSObject.Properties.Name -cnotcontains 'velocityLanding') 'Report must omit the retired velocity projection'
+  $env:LANDING_PREFLIGHT_MOCK_GRAPH=Write-JsonFixture 'graph.json' (New-ProductionGraphFixture)
+
+  if ($RegressionOnly -in @('All', 'ContextPaginationOnly')) {
+    # Synthetic #8797 controls only; no live PR or check identity is altered.
+    $paginationHistory = New-History @((New-Pass $headA))
+    $savedRuns = $env:LANDING_PREFLIGHT_MOCK_RUNS
+    $env:LANDING_PREFLIGHT_MOCK_RUNS = Write-JsonFixture 'synthetic-8797-runs.json' @(
+      (New-SyntheticDeployRun 9007199254740801 '2030-01-01T00:00:00Z')
+    )
+    $env:LANDING_PREFLIGHT_MOCK_JOBS_9007199254740801 = Write-JsonFixture 'synthetic-8797-jobs.json' `
+      (New-SyntheticStagingJobs 9007199254740802 'completed' 'success' 1)
+    $oldRed = New-SyntheticRequiredCheckRawNode 9007199254741001 '2030-02-01T00:00:00Z' 'FAILURE'
+    $latestGreen = New-SyntheticRequiredCheckRawNode 9007199254741002 '2030-02-02T00:00:00Z'
+    $small = (Invoke-RawRequiredCheckProductionFixture @($oldRed, $latestGreen) 'synthetic-8797-small' $paginationHistory).result
+    Assert-True ($small.status -ceq 'eligible') 'synthetic <=100 contexts control must be eligible'
+
+    $advisory = @(1..148 | ForEach-Object {
+      @{ __typename = 'StatusContext'; context = "SYNTHETIC_8797_ADVISORY_$_"; state = 'SUCCESS' }
+    })
+    $firstGraph = New-ProductionGraphFixture
+    $firstGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts = [ordered]@{
+      totalCount = 150; pageInfo = @{ hasNextPage = $true; endCursor = 'SYNTHETIC_8797_PAGE_1' }
+      nodes = @($oldRed) + @($advisory[0..98])
+    }
+    $lastGraph = New-ProductionGraphFixture
+    $lastGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts = [ordered]@{
+      totalCount = 150; pageInfo = @{ hasNextPage = $false; endCursor = 'SYNTHETIC_8797_PAGE_2' }
+      nodes = @($advisory[99..147]) + @($latestGreen)
+    }
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH = Write-JsonFixture 'synthetic-8797-first.json' $firstGraph
+    $lastPath = Write-JsonFixture 'synthetic-8797-last.json' $lastGraph
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_SYNTHETIC_8797_PAGE_1 = $lastPath
+    $paged = Invoke-LoggedProductionPreflight $paginationHistory
+    $collection = $paged.result.observations.initial.pr.checkCollection
+    Assert-True ($paged.result.status -ceq 'eligible' -and $paged.result.mutationCount -eq 0 -and
+      $collection.complete -eq $true -and $collection.totalCount -eq 150 -and $collection.returnedCount -eq 150) `
+      "synthetic >100 contexts must be eligible (status=$($paged.result.status), reason=$($paged.result.reason), returned=$($collection.returnedCount))"
+    Assert-True (($paged.result.observations.initial.pr.requiredCheckReductions | ConvertTo-Json -Depth 20 -Compress) -ceq
+      ($small.observations.initial.pr.requiredCheckReductions | ConvertTo-Json -Depth 20 -Compress)) `
+      'pagination must preserve the <=100 required-context reduction including superseded red and latest green'
+    Assert-True (@($paged.calls | Where-Object { $_ -match 'cursor=SYNTHETIC_8797_PAGE_1' }).Count -eq 1 -and
+      @($paged.calls | Where-Object { $_ -match 'query=@' }).Count -eq 2) `
+      'contexts query must bind after:$cursor and request both pages exactly once'
+    Write-Output 'PASS synthetic-8797 contexts: 150/150 eligible; reduction equals 2/2 control'
+
+    foreach ($case in @('moving-total', 'truncated-final', 'duplicated-cursor', 'duplicated-final-cursor', 'missing-page', 'unreadable-page', 'head-drift')) {
+      $badGraph = Copy-TestValue $lastGraph
+      $badConnection = $badGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts
+      switch ($case) {
+        'moving-total' { $badConnection.totalCount = 151 }
+        'truncated-final' { $badConnection.nodes = @($badConnection.nodes | Select-Object -First 49) }
+        'duplicated-cursor' {
+          $badConnection.nodes = @($badConnection.nodes | Select-Object -First 1)
+          $badConnection.pageInfo.hasNextPage = $true
+          $badConnection.pageInfo.endCursor = 'SYNTHETIC_8797_PAGE_1'
+        }
+        'duplicated-final-cursor' { $badConnection.pageInfo.endCursor = 'SYNTHETIC_8797_PAGE_1' }
+        'missing-page' { $badGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts = $null }
+        'head-drift' { $badGraph.data.repository.pullRequest.commits.nodes[0].commit.oid = $headB }
+      }
+      $env:LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_SYNTHETIC_8797_PAGE_1 = Write-JsonFixture "synthetic-8797-$case.json" $badGraph
+      if ($case -ceq 'unreadable-page') { $env:LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_SYNTHETIC_8797_PAGE_1 = 'FAIL' }
+      $refusal = Invoke-ProductionPreflight $paginationHistory
+      Assert-True ($refusal.status -ceq 'unknown' -and $refusal.reason -ceq 'CHECK_PAGINATION_INCOMPLETE' -and
+        $refusal.mutationCount -eq 0 -and $refusal.observations.initial.pr.checkCollection.complete -eq $false) `
+        "synthetic $case must refuse without mutation"
+      Write-Output "PASS synthetic-8797 $case refused: CHECK_PAGINATION_INCOMPLETE"
+    }
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_SYNTHETIC_8797_PAGE_1 = $lastPath
+    $source = [IO.File]::ReadAllText($preflight)
+    $guard = 'if (-not $contextsPage.pageInfo.hasNextPage) { break }'
+    Assert-True ([regex]::Matches($source, [regex]::Escape($guard)).Count -eq 1) `
+      'M-contexts-first-page-only reaches exactly the contexts continuation guard'
+    $mutant = $source.Replace($guard, 'if ($true) { break }').Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+    $mutantPath = Join-Path $testRoot 'synthetic-M-contexts-first-page-only.ps1'
+    [IO.File]::WriteAllText($mutantPath, $mutant, [Text.UTF8Encoding]::new($false))
+    $originalPreflight = $preflight
+    try {
+      $preflight = $mutantPath
+      $mutated = Invoke-LoggedProductionPreflight $paginationHistory
+      Assert-True ($mutated.result.status -ceq 'unknown' -and $mutated.result.reason -ceq 'CHECK_PAGINATION_INCOMPLETE' -and
+        $mutated.result.mutationCount -eq 0 -and $mutated.result.observations.initial.pr.checkCollection.returnedCount -eq 100 -and
+        @($mutated.calls | Where-Object { $_ -match 'cursor=SYNTHETIC_8797_PAGE_1' }).Count -eq 0) `
+        'M-contexts-first-page-only must refuse the >100 fixture after only page 1'
+    } finally { $preflight = $originalPreflight }
+    Write-Output 'KILLED M-contexts-first-page-only: synthetic 150 contexts refused after 100; unmutated control eligible'
+    $env:LANDING_PREFLIGHT_MOCK_RUNS = $savedRuns
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH = Write-JsonFixture 'graph-after-synthetic-8797.json' (New-ProductionGraphFixture)
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_SYNTHETIC_8797_PAGE_1 = $null
+    if ($RegressionOnly -eq 'ContextPaginationOnly') { return }
+  }
 
   if ($RegressionOnly -in @('All', 'RequiredCheckReducerOnly')) {
     $requiredHistory = New-History @((New-Pass $headA))
@@ -2411,6 +2530,103 @@ try {
   }
 
   $deployHistory = New-History @((New-Pass $headA))
+  if ($RegressionOnly -in @("All", "DeployCompletionOnly")) {
+    $activeRun = [long]9007199254740603
+    $previousRun = [long]9007199254740602
+    $oldGreenRun = [long]9007199254740601
+    $completionRuns = @(
+      (New-SyntheticDeployRun $activeRun "2030-08-03T00:00:00Z" "in_progress" $null),
+      (New-SyntheticDeployRun $previousRun "2030-08-02T00:00:00Z"),
+      (New-SyntheticDeployRun $oldGreenRun "2030-08-01T00:00:00Z")
+    )
+    $completionCases = @(
+      @{ name = 'in-progress-after-success'; latest = 'in_progress'; prior = 'success'; status = 'eligible'; reason = 'REPORT_ONLY_ELIGIBLE' },
+      @{ name = 'in-progress-after-failure'; latest = 'in_progress'; prior = 'failure'; status = 'refused'; reason = 'DEPLOY_UNHEALTHY' },
+      @{ name = 'in-progress-after-cancelled'; latest = 'in_progress'; prior = 'cancelled'; status = 'refused'; reason = 'DEPLOY_UNHEALTHY' },
+      @{ name = 'completed-failure'; latest = 'failure'; prior = 'success'; status = 'refused'; reason = 'DEPLOY_UNHEALTHY' },
+      @{ name = 'completed-cancelled'; latest = 'cancelled'; prior = 'success'; status = 'refused'; reason = 'DEPLOY_UNHEALTHY' },
+      @{ name = 'missing-predecessor'; latest = 'in_progress'; prior = 'missing'; status = 'unknown'; reason = 'DEPLOY_AUTHORITY_UNREADABLE' },
+      @{ name = 'unreadable-predecessor'; latest = 'in_progress'; prior = 'unreadable'; status = 'unknown'; reason = 'DEPLOY_AUTHORITY_UNREADABLE' },
+      @{ name = 'missing-completion-conclusion'; latest = ''; prior = 'success'; status = 'unknown'; reason = 'DEPLOY_AUTHORITY_UNREADABLE' },
+      @{ name = 'unknown-staging-status'; latest = 'unknown'; prior = 'success'; status = 'unknown'; reason = 'DEPLOY_AUTHORITY_UNREADABLE' }
+    )
+    foreach ($case in $completionCases) {
+      $runs = Copy-TestValue $completionRuns
+      $activeStatus = if ($case.latest -in @('in_progress', 'unknown')) { $case.latest } else { 'completed' }
+      $activeConclusion = if ($activeStatus -ceq 'completed') { $case.latest } else { $null }
+      $runs[0].status = $activeStatus
+      $runs[0].conclusion = $activeConclusion
+      $runs[1].conclusion = $case.prior
+      if ($case.prior -ceq 'missing') { $runs = @($runs[0]) }
+      Set-DeployFixtures $runs @{
+        "$activeRun" = New-SyntheticStagingJobs 8007199254740603 $activeStatus $activeConclusion 1
+        "$previousRun" = $(if ($case.prior -ceq 'unreadable') { 'FAIL' } else {
+          New-SyntheticStagingJobs 8007199254740602 'completed' $case.prior 1
+        })
+        "$oldGreenRun" = New-SyntheticStagingJobs 8007199254740601 'completed' 'success' 1
+      }
+      $control = Invoke-LoggedProductionPreflight $deployHistory
+      $result = $control.result
+      Assert-True ($result.status -ceq $case.status -and $result.reason -ceq $case.reason -and
+        $result.mutationCount -eq 0) "AC12 $($case.name): expected $($case.status)/$($case.reason), got $($result.status)/$($result.reason)"
+      Assert-True ((Get-JobQueryCount $control $oldGreenRun) -eq 0) "AC12 $($case.name) never skips a completed or unreadable predecessor for older green"
+      if ($case.status -cne 'unknown') {
+        $expectedRun = if ($activeStatus -ceq 'in_progress') { $previousRun } else { $activeRun }
+        Assert-True ([long]$result.observations.initial.deploy.runId -eq $expectedRun) "AC12 $($case.name) binds completed deploy identity"
+      }
+      if ($activeStatus -ceq 'in_progress') {
+        Assert-True (@($result.observations.initial.deploy.nonAuthority | Where-Object {
+          [long]$_.runId -eq $activeRun -and $_.reason -ceq 'DEPLOY_STAGING_IN_PROGRESS'
+        }).Count -eq 1) "AC12 $($case.name) retains in-progress evidence without making it health authority"
+      }
+      Write-Output "PASS AC12 $($case.name) => $($result.status)/$($result.reason)"
+    }
+    Set-DeployFixtures @() @{}
+    $missingDeploy = Invoke-LoggedProductionPreflight $deployHistory
+    Assert-True ($missingDeploy.result.status -ceq 'unknown' -and
+      $missingDeploy.result.reason -ceq 'DEPLOY_AUTHORITY_UNREADABLE' -and
+      $missingDeploy.result.mutationCount -eq 0) 'AC12 missing deploy authority fails closed'
+    Write-Output 'PASS AC12 missing deploy authority => unknown/DEPLOY_AUTHORITY_UNREADABLE'
+
+    # Execute an isolated source mutant through the same mocked provider and
+    # admission path: an active deploy alone must not manufacture green health.
+    $source = [IO.File]::ReadAllText($preflight)
+    $guard = 'if ([string]$staging.status -ceq "in_progress") {'
+    Assert-True ([regex]::Matches($source, [regex]::Escape($guard)).Count -eq 1) 'AC12 mutant reaches the exact in-progress resolver clause'
+    $mutant = $source.Replace($guard, @'
+if ([string]$staging.status -ceq "in_progress") {
+      return [pscustomobject]@{
+        complete = $true; reason = "DEPLOY_AUTHORITY_OBSERVED"
+        status = "completed"; conclusion = "success"
+        runId = $runId; jobId = $jobId; headSha = [string]$run.headSha
+        createdAt = $created.ToString("o"); nonAuthority = @($nonAuthority)
+        unobservableRunId = $null
+      }
+'@)
+    $mutantPath = Join-Path $testRoot 'landing-preflight-always-healthy-mutant.ps1'
+    [IO.File]::WriteAllText($mutantPath, $mutant, [Text.UTF8Encoding]::new($false))
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Destination $testRoot
+    $failedPredecessorRuns = Copy-TestValue $completionRuns
+    $failedPredecessorRuns[1].conclusion = 'failure'
+    Set-DeployFixtures $failedPredecessorRuns @{
+      "$activeRun" = New-SyntheticStagingJobs 8007199254740603 'in_progress' $null 1
+      "$previousRun" = New-SyntheticStagingJobs 8007199254740602 'completed' 'failure' 1
+      "$oldGreenRun" = New-SyntheticStagingJobs 8007199254740601 'completed' 'success' 1
+    }
+    $originalPreflight = $preflight
+    try {
+      $preflight = $mutantPath
+      $bypass = Invoke-LoggedProductionPreflight $deployHistory
+    } finally { $preflight = $originalPreflight }
+    Assert-True ($bypass.result.status -ceq 'eligible' -and
+      $bypass.result.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and $bypass.result.mutationCount -eq 0 -and
+      (Get-JobQueryCount $bypass $previousRun) -eq 0) 'AC12 always-healthy mutant must expose admission without reading the failed predecessor'
+    Write-Output 'KILLED AC12 mutant=in-progress-always-healthy: failed-predecessor control refuses; isolated mutant admits without predecessor read'
+
+    $env:LANDING_PREFLIGHT_MOCK_RUNS = Write-JsonFixture 'runs-completion-restored.json' (New-RealDeployRunFixture)
+    Set-RealDeployJobFixtures
+    if ($RegressionOnly -eq 'DeployCompletionOnly') { return }
+  }
   if ($RegressionOnly -in @("All", "DeployResolverOnly")) {
     $resolverControl = Invoke-LoggedProductionPreflight $deployHistory
     $resolverOnly = $resolverControl.result
@@ -3366,6 +3582,7 @@ try {
   Get-ChildItem Env: |
     Where-Object {
       $_.Name -like "LANDING_PREFLIGHT_MOCK_JOBS_*" -or
+      $_.Name -like "LANDING_PREFLIGHT_MOCK_GRAPH_CURSOR_*" -or
       $_.Name -like "LANDING_PREFLIGHT_MOCK_SCOPE_JOB_*" -or
       $_.Name -like "LANDING_PREFLIGHT_MOCK_SCOPE_RUN_*" -or
       $_.Name -like "LANDING_PREFLIGHT_MOCK_SCOPE_LOG_*"

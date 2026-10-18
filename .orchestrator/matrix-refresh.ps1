@@ -48,6 +48,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
+. (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 $routingData = Get-RoutingData -ReadOnly:$DryRun
 $registryModelSet = @(Get-RoutingModelSet $routingData.registry)
 # Reader-only v2.86 evidence identity, never new-work admission.
@@ -65,12 +66,13 @@ Invoke-WithControllerInstallLock -Body {
 $nowUtc = (Get-Date).ToUniversalTime()
 $cutoff = $nowUtc.AddDays(-$SinceDays)
 
+$readFailures=@{}
 function Read-Jsonl([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return @() }
   $out = @()
   foreach ($line in Get-Content -LiteralPath $Path) {
     if (-not $line.Trim()) { continue }
-    try { $out += ($line | ConvertFrom-Json -DateKind String) } catch { continue }
+    try { $out += ($line | ConvertFrom-Json -DateKind String) } catch { $readFailures[$Path]=$true;continue }
   }
   $out
 }
@@ -279,6 +281,163 @@ function Get-EffortFromTranscriptName([string]$Name, [string]$ExpectedModel) {
   return $null
 }
 
+function Test-CapacityRoutingRecord($Record) {
+  if ($Record.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') { return $true }
+  foreach($field in @('capacityForecastStatus','capacityDecisionDigest','capacityFlip','capacityShadowFlip','capacityFlipSkip')) {
+    if ($null -ne $Record.PSObject.Properties[$field]) { return $true }
+  }
+  return $false
+}
+function ConvertTo-CapacityCanonicalValue($Value) {
+  if ($Value -is [pscustomobject]) {
+    $names=[string[]]@($Value.PSObject.Properties.Name)
+    [Array]::Sort($names,[StringComparer]::Ordinal)
+    $ordered=[ordered]@{}
+    foreach($name in $names) { $ordered[$name]=ConvertTo-CapacityCanonicalValue $Value.$name }
+    return $ordered
+  }
+  if ($Value -is [array]) { return ,@($Value | ForEach-Object { ConvertTo-CapacityCanonicalValue $_ }) }
+  return $Value
+}
+$capacityByTranscript=@{};$capacityByAttempt=@{};$capacityGroups=@{}
+$capacityModernIssues=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$capacityModernBranches=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$capacityAmbiguousIssues=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$capacityIdentity=[ordered]@{costRowsUnresolved=0;costRowsAmbiguous=0;reviewRowsUnresolved=0;reviewRowsAmbiguous=0}
+foreach($e in $dispatch) {
+  # Capacity-era declarations must reach quarantine even when their author shape is invalid.
+  # Legacy role rows without capacity fields are not author-shaped cost origins; every v3 row
+  # (implementation, planning, review) is a calibration record: active flips calibrate in the
+  # flipped cohort, everything else in the ordinary cohort (#9282).
+  if(-not (Test-CapacityRoutingRecord $e) -and ($e.kind -cne 'dispatch' -or $e.laneRole -cin @('review','planning') -or $e.authorModel)){continue}
+  $model=Get-CanonicalModel $e.model
+  $effort=Get-CanonicalEffort $(if($e.effortUsed){$e.effortUsed}else{$e.effort})
+  if((-not $model -or -not $effort) -and -not (Test-CapacityRoutingRecord $e)){continue}
+  $artifact=if($e.branch){"branch:$($e.branch)"}elseif($e.issue){"issue:$($e.issue)"}else{''}
+  $attempt=if($e.attemptId){[string]$e.attemptId}else{"transcript:$($e.transcript)"}
+  $key="$attempt`u{001f}$model`u{001f}$effort`u{001f}$artifact"
+  if(-not $capacityGroups.ContainsKey($key)){$capacityGroups[$key]=[Collections.Generic.List[object]]::new()}
+  $capacityGroups[$key].Add($e)
+}
+foreach($key in $capacityGroups.Keys) {
+  $rows=@($capacityGroups[$key]);$first=$rows[0]
+  $group=[pscustomobject]@{rows=$rows;model=(Get-CanonicalModel $first.model)
+    effort=(Get-CanonicalEffort $(if($first.effortUsed){$first.effortUsed}else{$first.effort}))
+    row=$null;cohort='ordinary';modern=(@($rows|Where-Object{Test-CapacityRoutingRecord $_}).Count -gt 0)}
+  $rowValues=@($rows|ForEach-Object{if($_.row){[string]$_.row}else{[string]$_.routingRow}}|Sort-Object -Unique)
+  if($rowValues.Count -eq 1 -and $rowValues[0]){$group.row=$rowValues[0]}else{$group.cohort='ambiguous'}
+  $invalidRouting=$false
+  if($group.modern) {
+    $invalidRouting=@($rows|Where-Object{
+      (Test-CapacityRoutingRecord $_) -and ($_.kind -cne 'dispatch' -or $_.laneRole -cnotin @('implementation','planning','review') -or
+        $_.dispatchRoutingSchema -cne 'watchdog-dispatch-routing/v3' -or -not (Test-DispatchRoutingLedgerEvidence $_))
+    }).Count -gt 0
+    foreach($e in $rows){
+      if($e.issue){[void]$capacityModernIssues.Add([string]$e.issue)}
+      if($e.branch){[void]$capacityModernBranches.Add([string]$e.branch)}
+    }
+    $unique=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+    $transcriptEvidence=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    $conflictingTranscript=$false
+    foreach($e in $rows){
+      $identity=ConvertTo-CapacityCanonicalValue $e | ConvertTo-Json -Depth 100 -Compress
+      if($e.transcript){
+        if($transcriptEvidence.ContainsKey($e.transcript) -and $transcriptEvidence[$e.transcript] -cne $identity){$conflictingTranscript=$true}
+        $transcriptEvidence[$e.transcript]=$identity
+      }
+      $unique[$identity]=$e
+    }
+    $roots=@($unique.Values|Where-Object{$_.capacityForecastStatus -cne 'not-evaluated'})
+    if($roots.Count -gt 1){$group.cohort='ambiguous'}
+    elseif($roots.Count -eq 1){
+      $origin=$roots[0]
+      try {
+        $originTime=Convert-RoutingTimestamp $origin.ts
+        foreach($e in $unique.Values){if((Convert-RoutingTimestamp $e.ts) -lt $originTime){throw 'noncausal'}}
+        if($null -ne $origin.capacityFlip){
+          if($origin.capacityForecastStatus -cne 'in-force' -or [string]$origin.capacityFlip.row -cne $group.row){throw 'invalid flip'}
+          $group.cohort='flipped'
+        } # CAPACITY_CALIBRATION_ORIGIN
+      }catch{$group.cohort='unresolved'}
+    }
+    if($conflictingTranscript){$group.cohort='ambiguous'}
+    if(-not $first.attemptId -or (-not $first.branch -and -not $first.issue) -or $readFailures.ContainsKey($DispatchLog) -or $invalidRouting){$group.cohort='unresolved'}
+  }
+  if($rowValues.Count -ne 1 -or -not $rowValues[0]){$group.cohort='ambiguous'}
+  if($invalidRouting){$group.cohort='unresolved'}
+  if($first.attemptId){
+    if(-not $capacityByAttempt.ContainsKey([string]$first.attemptId)){$capacityByAttempt[[string]$first.attemptId]=[Collections.Generic.List[object]]::new()}
+    $capacityByAttempt[[string]$first.attemptId].Add($group)
+  }
+  foreach($transcript in @($rows.transcript|Where-Object{$_}|Sort-Object -Unique)){
+    if(-not $capacityByTranscript.ContainsKey([string]$transcript)){$capacityByTranscript[[string]$transcript]=[Collections.Generic.List[object]]::new()}
+    $capacityByTranscript[[string]$transcript].Add($group)
+  }
+}
+# Structured history can identify an artifact for exclusion, never manufacture
+# a missing transcript or cohort. Retain every branch/issue link, not the last row.
+$issuesByBranch=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+$branchesByIssue=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+foreach($e in $dispatch){
+  if($e.branch -isnot [string] -or -not $e.branch -or -not (Test-DispatchJsonInteger $e.issue 1)){continue}
+  $issue=[string]$e.issue
+  if(-not $issuesByBranch.ContainsKey($e.branch)){$issuesByBranch[$e.branch]=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)}
+  if(-not $branchesByIssue.ContainsKey($issue)){$branchesByIssue[$issue]=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)}
+  [void]$issuesByBranch[$e.branch].Add($issue)
+  [void]$branchesByIssue[$issue].Add($e.branch)
+}
+foreach($branch in $capacityModernBranches){
+  if(-not $issuesByBranch.ContainsKey($branch)){continue}
+  foreach($issue in $issuesByBranch[$branch]){
+    if($issuesByBranch[$branch].Count -ne 1 -or $branchesByIssue[$issue].Count -ne 1){
+      [void]$capacityAmbiguousIssues.Add($issue)
+    } else {
+      [void]$capacityModernIssues.Add($issue)
+    }
+  }
+}
+foreach($transcript in $capacityByTranscript.Keys){
+  if($capacityByTranscript[$transcript].Count -gt 1){foreach($group in $capacityByTranscript[$transcript]){$group.cohort='ambiguous'}}
+}
+# A null mechanical row inherits only a unique same-config origin. A new
+# quota configuration remains its own ordinary cohort, never the last author.
+foreach($attempt in $capacityByAttempt.Keys){
+  $groups=@($capacityByAttempt[$attempt]);$artifacts=@($groups.rows|ForEach-Object{if($_.branch){"branch:$($_.branch)"}elseif($_.issue){"issue:$($_.issue)"}}|Sort-Object -Unique)
+  if($artifacts.Count -ne 1){foreach($group in $groups){$group.cohort=if($artifacts.Count){'ambiguous'}else{'unresolved'}};continue}
+  foreach($group in $groups|Where-Object modern){
+    $roots=@($group.rows|Where-Object{$_.capacityForecastStatus -cne 'not-evaluated'})
+    if($roots.Count -eq 0){
+      try {
+        $start=(@($group.rows|ForEach-Object{Convert-RoutingTimestamp $_.ts})|Sort-Object|Select-Object -First 1)
+        $prior=@($groups|Where-Object{$_ -ne $group -and $_.cohort -cin @('ordinary','flipped')}|ForEach-Object{$_.rows}|Where-Object{
+          $_.capacityForecastStatus -cne 'not-evaluated' -and (Convert-RoutingTimestamp $_.ts) -lt $start
+        })
+        if(-not $prior.Count){$group.cohort='unresolved'}
+      }catch{$group.cohort='unresolved'}
+    }
+  }
+}
+function Get-CapacityReviewGroup($Receipt,[string]$Model,[string]$Effort) {
+  if(-not $Receipt.authorAttempt){return $null}
+  $unknown=[pscustomobject]@{cohort='unresolved';row=$null}
+  if(-not $capacityByAttempt.ContainsKey([string]$Receipt.authorAttempt) -or -not $Effort){return $unknown}
+  try{$instant=Convert-RoutingTimestamp $Receipt.ts}catch{return $unknown}
+  $matches=@($capacityByAttempt[[string]$Receipt.authorAttempt]|Where-Object{
+    if($_.model -cne $Model -or $_.effort -cne $Effort){return $false}
+    $causal=@($_.rows|Where-Object{
+      try {
+        $bound=if($Receipt.branch){$_.branch -ceq $Receipt.branch}elseif($Receipt.issue){$_.issue -eq $Receipt.issue}
+          elseif($Receipt.reviewedHead){$_.head -ceq $Receipt.reviewedHead}else{$false}
+        return $bound -and (Convert-RoutingTimestamp $_.ts) -le $instant
+      }catch{return $false}
+    })
+    return $causal.Count -gt 0
+  })
+  if($matches.Count -eq 1){return $matches[0]}
+  if($matches.Count -gt 1){$unknown.cohort='ambiguous'}
+  return $unknown
+}
+
 $effortByTranscript = @{}
 # Author-shaped dispatches (implementation/planning, or legacy rows that name
 # no author) keyed by issue + exact model, as (ts, effort) pairs. A review
@@ -382,11 +541,26 @@ $rowModelFacts = @{}
 # contest — which is how every v4.12 quota threshold is written. byRowConfig
 # is that comparison; byRowModel remains the per-model row cost.
 $rowConfigFacts = @{}
+$flippedRowConfigFacts=@{}
 $unattributed = 0.0
 foreach ($c in $ledger) {
   $row = $null
   $exactModel = Get-CanonicalModel $c.model
-  if ($c.issue) {
+  $capacityGroup=$null
+  if($c.transcript -and $capacityByTranscript.ContainsKey([string]$c.transcript)){
+    $matches=@($capacityByTranscript[[string]$c.transcript])
+    if($matches.Count -ne 1){$capacityIdentity.costRowsAmbiguous++;continue}
+    $capacityGroup=$matches[0]
+    if($capacityGroup.cohort -cin @('unresolved','ambiguous') -or $capacityGroup.model -cne $exactModel){
+      if($capacityGroup.cohort -ceq 'ambiguous'){$capacityIdentity.costRowsAmbiguous++}else{$capacityIdentity.costRowsUnresolved++};continue
+    }
+    $row=$capacityGroup.row
+  } elseif($c.issue -and $capacityAmbiguousIssues.Contains([string]$c.issue)) {
+    $capacityIdentity.costRowsAmbiguous++;continue
+  } elseif($c.issue -and $capacityModernIssues.Contains([string]$c.issue)) {
+    $capacityIdentity.costRowsUnresolved++;continue
+  }
+  if (-not $row -and $c.issue) {
     $k = if ($exactModel) { "$($c.issue)`u{001f}$exactModel" } else { $null }
     if ($k -and $rowByIssueModel.ContainsKey($k)) { $row = $rowByIssueModel[$k] }
     elseif ($rowByIssue.ContainsKey("$($c.issue)")) { $row = $rowByIssue["$($c.issue)"] }
@@ -406,13 +580,14 @@ foreach ($c in $ledger) {
     if ($c.durationSec) { $rowModelFacts[$rmKey].durs += [double]$c.durationSec }
 
     if ($c.routingEffort) {
+      $configTable=if($capacityGroup -and $capacityGroup.cohort -ceq 'flipped'){$flippedRowConfigFacts}else{$rowConfigFacts}
       $rcKey = "row$row`u{001f}$exactModel`u{001f}$($c.routingEffort)"
-      if (-not $rowConfigFacts.ContainsKey($rcKey)) {
-        $rowConfigFacts[$rcKey] = [ordered]@{ row = $row; model = $exactModel; effort = $c.routingEffort; runs = 0; usd = 0.0; durs = @() }
+      if (-not $configTable.ContainsKey($rcKey)) {
+        $configTable[$rcKey] = [ordered]@{ row = $row; model = $exactModel; effort = $c.routingEffort; runs = 0; usd = 0.0; durs = @() }
       }
-      $rowConfigFacts[$rcKey].runs += 1
-      $rowConfigFacts[$rcKey].usd += [double]$c.routingUsd
-      if ($c.durationSec) { $rowConfigFacts[$rcKey].durs += [double]$c.durationSec }
+      $configTable[$rcKey].runs += 1
+      $configTable[$rcKey].usd += [double]$c.routingUsd
+      if ($c.durationSec) { $configTable[$rcKey].durs += [double]$c.durationSec }
     }
   }
 }
@@ -420,7 +595,7 @@ foreach ($k in @($rowFacts.Keys)) {
   $rowFacts[$k].usdPerRun = [math]::Round($rowFacts[$k].usd / $rowFacts[$k].runs, 2)
   $rowFacts[$k].usd = [math]::Round($rowFacts[$k].usd, 2)
 }
-foreach ($table in @($rowModelFacts, $rowConfigFacts)) {
+foreach ($table in @($rowModelFacts, $rowConfigFacts, $flippedRowConfigFacts)) {
   foreach ($k in @($table.Keys)) {
     $cell = $table[$k]
     $med = Get-Median ([double[]]$cell.durs)
@@ -440,6 +615,7 @@ $blockRateByRow = @{}
 # dispatch rows when they agree. Disagreement is reported as ambiguous and the
 # receipt still scores the author's model, never a guessed configuration.
 $blockRateByRowConfig = @{}
+$flippedBlockRateByRow=@{};$flippedBlockRateByRowConfig=@{}
 $excludedOutcomes = 0
 $mechanicalExcluded = 0
 foreach ($e in ($dispatch | Where-Object {
@@ -481,16 +657,32 @@ foreach ($e in ($dispatch | Where-Object {
   # Fable draw the full-path work — so a per-row rate is the only fair
   # comparison between two configs.
   $r = if ($e.issue -and $rowByIssue.ContainsKey("$($e.issue)")) { $rowByIssue["$($e.issue)"] } else { $null }
+  $capacityGroup=Get-CapacityReviewGroup $e $a $authorEffort
+  if(-not $e.authorAttempt){
+    # A legacy receipt may keep its historical attribution only when this
+    # artifact has no capacity-era author whose cohort it could contaminate.
+    if($capacityModernIssues.Contains([string]$e.issue) -or $capacityModernBranches.Contains([string]$e.branch)){
+      $capacityIdentity.reviewRowsUnresolved++;continue
+    }
+  }
+  if($capacityGroup){
+    if($capacityGroup.cohort -cin @('unresolved','ambiguous')){
+      if($capacityGroup.cohort -ceq 'ambiguous'){$capacityIdentity.reviewRowsAmbiguous++}else{$capacityIdentity.reviewRowsUnresolved++};continue
+    }
+    $r=$capacityGroup.row
+  }
+  $reviewTable=if($capacityGroup -and $capacityGroup.cohort -ceq 'flipped'){$flippedBlockRateByRow}else{$blockRateByRow}
+  $reviewConfigTable=if($capacityGroup -and $capacityGroup.cohort -ceq 'flipped'){$flippedBlockRateByRowConfig}else{$blockRateByRowConfig}
   if ($r) {
     $key = "row$r`u{001f}$a"
-    if (-not $blockRateByRow.ContainsKey($key)) { $blockRateByRow[$key] = [ordered]@{ row = $r; model = $a; reviews = 0; blocks = 0 } }
-    $blockRateByRow[$key].reviews += 1
-    if ($class -eq "block") { $blockRateByRow[$key].blocks += 1 }
+    if (-not $reviewTable.ContainsKey($key)) { $reviewTable[$key] = [ordered]@{ row = $r; model = $a; reviews = 0; blocks = 0 } }
+    $reviewTable[$key].reviews += 1
+    if ($class -eq "block") { $reviewTable[$key].blocks += 1 }
     if ($authorEffort) {
       $ckey = "row$r`u{001f}$a`u{001f}$authorEffort"
-      if (-not $blockRateByRowConfig.ContainsKey($ckey)) { $blockRateByRowConfig[$ckey] = [ordered]@{ row = $r; model = $a; effort = $authorEffort; reviews = 0; blocks = 0 } }
-      $blockRateByRowConfig[$ckey].reviews += 1
-      if ($class -eq "block") { $blockRateByRowConfig[$ckey].blocks += 1 }
+      if (-not $reviewConfigTable.ContainsKey($ckey)) { $reviewConfigTable[$ckey] = [ordered]@{ row = $r; model = $a; effort = $authorEffort; reviews = 0; blocks = 0 } }
+      $reviewConfigTable[$ckey].reviews += 1
+      if ($class -eq "block") { $reviewConfigTable[$ckey].blocks += 1 }
     }
   }
 }
@@ -498,7 +690,7 @@ foreach ($k in @($blockRate.Keys)) {
   $blockRate[$k].blockRate = [math]::Round($blockRate[$k].blocks / $blockRate[$k].reviews, 2)
 }
 # Keep only cells with enough n to say anything; below 3 it is noise.
-foreach ($table in @($blockRateByRow, $blockRateByRowConfig)) {
+foreach ($table in @($blockRateByRow, $blockRateByRowConfig, $flippedBlockRateByRow, $flippedBlockRateByRowConfig)) {
   foreach ($k in @($table.Keys)) {
     if ($table[$k].reviews -lt 3) { $table.Remove($k); continue }
     $table[$k].blockRate = [math]::Round($table[$k].blocks / $table[$k].reviews, 2)
@@ -658,6 +850,9 @@ $stamp = [pscustomobject][ordered]@{
   # Row x exact model x exact effort: the cost contract for every quota
   # threshold and rebalance comparison (model-routing v4.13).
   byRowConfig     = [pscustomobject]$rowConfigFacts
+  capacityFlipped = [pscustomobject]@{byRowConfig=[pscustomobject]$flippedRowConfigFacts
+    blockRateByRow=[pscustomobject]$flippedBlockRateByRow;blockRateByRowConfig=[pscustomobject]$flippedBlockRateByRowConfig}
+  capacityIdentity = [pscustomobject]$capacityIdentity
   blockRateByAuthor = [pscustomobject]$blockRate
   # The aggregate above is difficulty-confounded; this is the fair comparison.
   blockRateByRow    = [pscustomobject]$blockRateByRow

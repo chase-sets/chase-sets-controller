@@ -356,7 +356,7 @@ exit 0
       reused{$f.spec.launcherPid=[long]$PID;J $f.specPath $f.spec}
       'missing-spec'{Move-Item -LiteralPath $f.specPath -Destination ($f.specPath+'.retained')}
       'crossed-launch'{$f.spec.launchId=[guid]::NewGuid().ToString();J $f.specPath $f.spec}
-      'crossed-route'{$rows=@(Get-Content $c.history|ForEach-Object{$_|ConvertFrom-Json -DateKind String});@($rows|Where-Object{$_.dispatchRoutingSchema-cin@('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2')})[0].head=$c.head;[IO.File]::WriteAllLines($c.history,[string[]]@($rows|ForEach-Object{$_|ConvertTo-Json -Compress}))}
+      'crossed-route'{$rows=@(Get-Content $c.history|ForEach-Object{$_|ConvertFrom-Json -DateKind String});@($rows|Where-Object{$_.dispatchRoutingSchema-cin@('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')})[0].head=$c.head;[IO.File]::WriteAllLines($c.history,[string[]]@($rows|ForEach-Object{$_|ConvertTo-Json -Depth 8 -Compress}))}
       truncated{$raw=[IO.File]::ReadAllText($f.spec.partialReportPath);[IO.File]::WriteAllText($f.spec.partialReportPath,$raw.TrimEnd())}
       'additional-command'{$rows=@(Get-Content $f.spec.partialReportPath|ForEach-Object{$_|ConvertFrom-Json});$rows[0].item.command='pwsh -Command "git status; git rebase main"';[IO.File]::WriteAllLines($f.spec.partialReportPath,[string[]]@($rows|ForEach-Object{$_|ConvertTo-Json -Depth 5 -Compress}))}
       'git-moved'{[IO.File]::WriteAllText((Join-Path $c.repo 'later.txt'),'later');[void](N $c.repo @('add','.'));[void](N $c.repo @('commit','-qm','later author'))}

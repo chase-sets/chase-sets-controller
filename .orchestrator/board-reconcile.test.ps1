@@ -52,6 +52,7 @@ if ($query -match 'issue\(number:') {
     $race = Get-Content $racePath -Raw | ConvertFrom-Json -AsHashtable
     if (-not $race.atRead -or $readCount -eq $race.atRead) {
     if ($race.row) { [IO.File]::AppendAllText((Join-Path $PSScriptRoot 'dispatch.jsonl'), ($race.row | ConvertTo-Json -Compress) + "`n") }
+    if ($race.ContainsKey('replaceLog')) { [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'dispatch.jsonl'), [string]$race.replaceLog) }
     if ($race.spec) { [IO.File]::WriteAllText((Join-Path $PSScriptRoot "watchdog-lane-$($race.spec.label).json"), ($race.spec | ConvertTo-Json -Depth 10)) }
     if ($race.status) { $items[0].status.name = $race.status }
     if ($race.state) { $items[0].content.state = $race.state }
@@ -64,9 +65,11 @@ if ($query -match 'issue\(number:') {
   $item = @($items | Where-Object { $_.content.number -eq [int](Arg 'number') })[0]
   $issue = $item.content.Clone()
   $issue.projectItems = @{ nodes = @(@{ id = $item.id; project = @{ id = 'PVT_SYNTHETIC' }; status = $item.status }); pageInfo = @{ hasNextPage = $false } }
+  [IO.File]::AppendAllText((Join-Path $PSScriptRoot 'observations.jsonl'), (@{ phase = 'issue'; read = $readCount; item = $item } | ConvertTo-Json -Depth 20 -Compress) + "`n")
   @{ data = @{ repository = @{ issue = $issue } } } | ConvertTo-Json -Depth 20 -Compress
   exit 0
 }
+[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'observations.jsonl'), (@{ phase = 'initial-page'; items = $items } | ConvertTo-Json -Depth 20 -Compress) + "`n")
 @{ data = @{ node = @{ items = @{ nodes = $items; pageInfo = @{ hasNextPage = $false; endCursor = $null } } } } } | ConvertTo-Json -Depth 20 -Compress
 exit 0
 '@)

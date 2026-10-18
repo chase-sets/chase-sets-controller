@@ -70,6 +70,7 @@ function Get-LaneDiagnosticSeverityTable {
   $table.Add("malformed-live-lane-name", "blocking")
   $table.Add("ownership-record-cap-truncated", "blocking")
   $table.Add("ownership-deadline-truncated", "blocking")
+  $table.Add("product-census-git-deadline", "blocking")
   $table.Add("dispatch-owner-exited", "advisory")
   $table.Add("terminal-transcript-live-process", "blocking")
   $table.Add("transcript-state-unknown", "blocking")
@@ -103,6 +104,23 @@ function Get-DispatchBlockingDiagnostics($Ownership) {
 
 # The projection proves only membership of the one canonical platform repository,
 # never process capabilities, ownership transfer, or vacancy for other consumers.
+function Invoke-ProductCensusEvaluation([scriptblock]$Evaluate, [int]$DeadlineMs = 5000) {
+  # Exactly one fresh evaluation, only for the closed Git-deadline outcome.
+  # Keep the original 5000 ms bound per evaluation (10000 ms total metered
+  # proof allowance); a smaller caller deadline stays smaller. No load guess,
+  # per-record reset, cached anchors, or authority failure earns extra time.
+  # Two-seat baseline Git segments were 1615/2325 ms (13/14 calls), not a
+  # measured p95. Retain that original bound instead of inventing a load
+  # threshold; only an observed deadline earns the second evaluation.
+  for ($evaluation = 0; $evaluation -lt 2; $evaluation++) {
+    $budget = @{ watch=[Diagnostics.Stopwatch]::new(); deadline=[Math]::Min(5000, $DeadlineMs) }
+    try { return & $Evaluate $budget }
+    catch {
+      if ($_.Exception.Message -cne 'git-deadline' -or $evaluation -eq 1) { throw }
+    }
+  }
+}
+
 function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budget) {
   if ($Budget.watch.ElapsedMilliseconds -ge $Budget.deadline) { throw 'git-deadline' }
   foreach ($name in [Environment]::GetEnvironmentVariables().Keys) {
@@ -112,6 +130,10 @@ function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budge
   $start.FileName = 'git'; $start.UseShellExecute = $false; $start.CreateNoWindow = $true
   $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
   foreach ($arg in @('--no-optional-locks','-C',$Checkout) + $Arguments) { [void]$start.ArgumentList.Add($arg) }
+  # Trace2 is telemetry, never proof input, so it is dropped rather than refused:
+  # Git for Windows walks the whole process table for every traced process
+  # inside this metered wait (#8594). The caller's own Git keeps its trace.
+  foreach ($name in @($start.Environment.Keys)) { if ($name -like 'GIT_TRACE2*') { [void]$start.Environment.Remove($name) } }
   $process = [Diagnostics.Process]::Start($start)
   try {
     # ReadBlockAsync stops at EOF or the fixed bound. Excess output cannot grow
@@ -350,23 +372,87 @@ function Test-DispatchRoutingProvenance($Record) {
     $Record.usedLastKnownGood -is [bool]
 }
 
-function Get-DispatchRoutingLedgerKeys([string]$Schema) {
+function Get-DispatchRoutingLedgerKeys([string]$Schema, $Row = $null) {
   $keys = @('ts','kind','dispatchRoutingSchema','attemptId','label','lane','laneRole','transcript','harness','model','effort','row','placement','worktree','branch','head')
+  if ($null -ne $Row -and $null -ne $Row.PSObject.Properties['issue']) { $keys += 'issue' }
+  # A planning or review row dispatched without placement carries the logger's
+  # closed placementSource beside its null placement (#9282 role v3 rows).
+  if ($Schema -ceq 'watchdog-dispatch-routing/v3' -and $null -ne $Row -and $null -ne $Row.PSObject.Properties['placementSource']) { $keys += 'placementSource' }
   if ($Schema -ceq 'watchdog-dispatch-routing/v1') { return $keys }
-  if ($Schema -ceq 'watchdog-dispatch-routing/v2') {
-    return $keys + @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
+  if ($Schema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')) {
+    $keys += @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
+    if ($Schema -ceq 'watchdog-dispatch-routing/v3') {
+      $keys += @('capacityForecastStatus','capacityDecisionDigest','capacityFlip','capacityShadowFlip','capacityFlipSkip')
+    }
+    return $keys
   }
   throw 'ROUTING_EVIDENCE_INVALID: unknown ledger schema'
 }
 
 function Test-DispatchRoutingLedgerEvidence($Row) {
+  if ($null -ne $Row.PSObject.Properties['issue'] -and -not (Test-DispatchJsonInteger $Row.issue 1)) { return $false }
   if ($Row.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v1') { return $true }
-  return $Row.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v2' -and
+  if ($Row.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') {
+    $keys=@(Get-DispatchRoutingLedgerKeys $Row.dispatchRoutingSchema $Row)
+    if (@($Row.PSObject.Properties).Count -ne $keys.Count -or
+        @($keys|Where-Object{$_ -cnotin $Row.PSObject.Properties.Name}).Count -or
+        -not (Test-DispatchCapacityEvidence $Row)) { return $false }
+    if ($null -ne $Row.PSObject.Properties['placementSource'] -and (
+        $Row.laneRole -cnotin @('review','planning') -or $null -ne $Row.placement -or $Row.placementSource -isnot [string] -or
+        $Row.placementSource -cne $(if ([string]$Row.row -ceq '0') { 'row-0-explicit' } else { 'non-implementation-unspecified' }))) { return $false }
+  }
+  return $Row.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and
     (Test-DispatchJsonInteger $Row.policyGeneration 1) -and
     $Row.registryAuthorityDigest -is [string] -and $Row.registryAuthorityDigest -cmatch '^[a-zA-Z0-9._:-]{1,128}$' -and
     $Row.family -is [string] -and $Row.family -cmatch '^[a-z0-9][a-z0-9._-]{0,63}$' -and
     $Row.slot -is [string] -and $Row.slot -cmatch '^(explicit|(codex|claude)\.(primary|fallback))$' -and
     $Row.usedLastKnownGood -is [bool]
+}
+
+function Test-DispatchCapacityEvidence($Record) {
+  $fields=@('capacityForecastStatus','capacityDecisionDigest','capacityFlip','capacityShadowFlip','capacityFlipSkip')
+  if (@($fields | Where-Object {$_ -cnotin $Record.PSObject.Properties.Name}).Count) { return $false }
+  $status=$Record.capacityForecastStatus
+  if ($status -isnot [string] -or $status -cnotin @('not-evaluated','absent','malformed','stale','unknown','shadow','in-force')) { return $false }
+  if ($status -cnotin @('shadow','in-force')) {
+    return $null -eq $Record.capacityDecisionDigest -and $null -eq $Record.capacityFlip -and
+      $null -eq $Record.capacityShadowFlip -and $null -eq $Record.capacityFlipSkip
+  }
+  if ($Record.capacityDecisionDigest -isnot [string] -or $Record.capacityDecisionDigest -cnotmatch '^[a-f0-9]{16}$') { return $false }
+  if ($null -ne $Record.capacityFlipSkip) {
+    if ($Record.capacityFlipSkip -isnot [string] -or $Record.capacityFlipSkip -cnotin @('SLOT_NOT_ADMITTED','REVIEWER_HISTORY_UNKNOWN','REVIEWER_INDEPENDENCE') -or
+        $null -ne $Record.capacityFlip -or $null -ne $Record.capacityShadowFlip) { return $false }
+  }
+  if (($status -ceq 'shadow' -and $null -ne $Record.capacityFlip) -or
+      ($status -ceq 'in-force' -and $null -ne $Record.capacityShadowFlip)) { return $false }
+  $flip=if($status -ceq 'shadow'){$Record.capacityShadowFlip}else{$Record.capacityFlip}
+  if ($null -eq $flip) { return $true }
+  $keys=@('row','toward','steps','from','to')
+  if ($flip -isnot [pscustomobject] -or @($flip.PSObject.Properties).Count -ne $keys.Count -or
+      @($keys | Where-Object {$_ -cnotin $flip.PSObject.Properties.Name}).Count -or
+      -not (Test-DispatchJsonInteger $flip.row 1) -or $flip.row -gt 15 -or
+      -not (Test-DispatchJsonInteger $flip.steps 1) -or $flip.steps -gt 4 -or
+      $flip.toward -isnot [string] -or $flip.toward -cnotin @('codex','claude') -or [string]$flip.row -cne [string]$Record.row) { return $false }
+  foreach($side in @('from','to')) {
+    $route=$flip.$side;$keys=@('harness','family','effort','slot')
+    if($side -ceq 'to'){$keys+= 'placement'}
+    if($route -isnot [pscustomobject] -or @($route.PSObject.Properties).Count -ne $keys.Count -or
+        @($keys | Where-Object {$_ -cnotin $route.PSObject.Properties.Name}).Count){return $false}
+    foreach($key in $keys){if($route.$key -isnot [string]){return $false}}
+    if($route.harness -cnotin @('codex','claude') -or $route.family -cnotmatch '^[a-z0-9][a-z0-9._-]{0,63}$' -or
+        $route.effort -cnotin @('low','medium','high','xhigh','max') -or
+        $route.slot -cnotmatch '^(explicit|(codex|claude)\.(primary|fallback))$' -or
+        ($route.slot -cne 'explicit' -and -not $route.slot.StartsWith("$($route.harness).",[StringComparison]::Ordinal))){return $false}
+  }
+  if($flip.to.placement -cnotmatch '^(measured|provisional|override-[A-Za-z0-9._-]+)$' -or
+      $flip.to.slot -ceq 'explicit' -or $flip.to.harness -cne $flip.toward -or $flip.from.harness -ceq $flip.toward){return $false}
+  # Toward Claude every row 1..15 is eligible once steps >= 1 (Todd 4388/6098327249);
+  # toward Codex the ordered prefix still bounds the first `steps` rows.
+  if($flip.toward -ceq 'codex' -and $flip.row -notin @(@(3,13,10,4) | Select-Object -First $flip.steps)){return $false}
+  $effective=if($status -ceq 'shadow'){$flip.from}else{$flip.to}
+  foreach($key in @('harness','family','effort','slot')){if($effective.$key -cne $Record.$key){return $false}}
+  if($status -ceq 'in-force' -and $flip.to.placement -cne $Record.placement){return $false}
+  return $true
 }
 
 function ConvertFrom-DispatchClosedJson([string]$Json) {
@@ -524,7 +610,7 @@ function Get-ValidatedDispatchOwnershipRecord(
       if ($record.laneRole -cne 'implementation' -or $record.identityMode -cne 'branch' -or $record.interruptedIntegration -isnot [string]) { return $null }
       $binding = ConvertFrom-DispatchClosedJson $record.interruptedIntegration
       if (-not (Test-DispatchInterruptedBindingShape $binding) -or $record.branch -cne $binding.obligation.branch -or
-          -not (Test-DispatchSamePath $record.worktree $binding.obligation.worktree) -or $record.head -cne $binding.state.stoppedHead) { return $null }
+          -not (Test-DispatchSamePath $record.worktree $binding.obligation.worktree) -or $record.head -cne (Get-DispatchInterruptedBindingHead $binding)) { return $null }
     }
     if ($schemaVersion -in @(3, 4, 5)) {
       $worktree = [string]$record.worktree
@@ -701,7 +787,10 @@ function Test-DispatchInterruptedBindingShape($Binding) {
     $actual = @($Value.PSObject.Properties.Name)
     return $actual.Count -eq $Keys.Count -and @($Keys | Where-Object { $_ -cnotin $actual }).Count -eq 0
   }
-  if (-not (HasKeys $Binding @('schemaVersion','obligation','sources','state')) -or $Binding.schemaVersion -cne 'interrupted-canonical-integration/v1') { return $false }
+  if (-not (HasKeys $Binding @('schemaVersion','obligation','sources','state'))) { return $false }
+  if ($Binding.schemaVersion -ceq 'interrupted-canonical-integration/v2') { return Test-DispatchOrdinaryBindingShape $Binding }
+  if ($Binding.schemaVersion -is [string] -and $Binding.schemaVersion -ceq 'interrupted-canonical-integration/v3') { return Test-DispatchOrdinarySuccessorShape $Binding }
+  if ($Binding.schemaVersion -cne 'interrupted-canonical-integration/v1') { return $false }
   $o=$Binding.obligation;$s=$Binding.sources;$n=$Binding.state
   if (-not (HasKeys $o @('schemaVersion','landedPr','landedHead','pr','targetHead','newBase','branch','worktree','integrationLane')) -or
       -not (HasKeys $s @('requestIdentity','priorLabel','priorLaunchId','ackSha256','watchdogSha256','promptSha256','transcriptSha256','routingIdentity','checkpointSha256')) -or
@@ -724,6 +813,90 @@ function Test-DispatchInterruptedBindingShape($Binding) {
     $o.integrationLane -is [string] -and $o.integrationLane -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -and
     $s.priorLabel -is [string] -and $s.priorLabel -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -and $s.priorLaunchId -is [string] -and $s.priorLaunchId -cmatch '^[a-f0-9-]{36}$' -and
     $n.branch -ceq $o.branch -and $n.originalHead -ceq $o.targetHead -and $n.onto -ceq $o.newBase
+}
+
+# #9334: the ordinary-author variant. Same closed state; the obligation is the
+# closed ordinary request and the sources carry the retained ordinary launch,
+# its semantic attempt and the nullable helper capture/checkpoint hashes.
+function Test-DispatchOrdinaryBindingShape($Binding) {
+  function HasOrdinaryKeys($Value,[string[]]$Keys) {
+    if ($null -eq $Value -or $Value -isnot [pscustomobject]) { return $false }
+    $actual = @($Value.PSObject.Properties.Name)
+    return $actual.Count -eq $Keys.Count -and @($Keys | Where-Object { $_ -cnotin $actual }).Count -eq 0
+  }
+  if (-not (HasOrdinaryKeys $Binding @('schemaVersion','obligation','sources','state')) -or $Binding.schemaVersion -cne 'interrupted-canonical-integration/v2') { return $false }
+  $o=$Binding.obligation;$s=$Binding.sources;$n=$Binding.state
+  if (-not (HasOrdinaryKeys $o @('schemaVersion','pr','targetHead','newBase','branch','worktree','integrationLane')) -or
+      -not (HasOrdinaryKeys $s @('priorLabel','priorLaunchId','attemptId','watchdogSha256','promptSha256','transcriptSha256','routingIdentity','conflictSha256','checkpointSha256')) -or
+      -not (HasOrdinaryKeys $n @('branch','originalHead','onto','stoppedHead','stoppedCommit','oldBase','metadataSha256','indexSha256','stagesSha256','dirtySha256','stagedSha256','unstagedSha256'))) { return $false }
+  foreach ($key in @('watchdogSha256','promptSha256','transcriptSha256','routingIdentity')) {
+    if ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[a-f0-9]{64}$') { return $false }
+  }
+  foreach ($key in @('conflictSha256','checkpointSha256')) {
+    if ($null -ne $s.$key -and ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[a-f0-9]{64}$')) { return $false }
+  }
+  foreach ($key in @('metadataSha256','indexSha256','stagesSha256','dirtySha256','stagedSha256','unstagedSha256')) {
+    if ($n.$key -isnot [string] -or $n.$key -cnotmatch '^[a-f0-9]{64}$') { return $false }
+  }
+  foreach ($key in @('originalHead','onto','stoppedHead','stoppedCommit','oldBase')) {
+    if ($n.$key -isnot [string] -or $n.$key -cnotmatch '^[a-f0-9]{40}$') { return $false }
+  }
+  foreach ($key in @('targetHead','newBase')) {
+    if ($o.$key -isnot [string] -or $o.$key -cnotmatch '^[a-f0-9]{40}$') { return $false }
+  }
+  return $o.schemaVersion -ceq 'ordinary-integration/v1' -and (Test-DispatchJsonInteger $o.pr 1) -and
+    $o.branch -is [string] -and $o.branch -cmatch '^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' -and $o.worktree -is [string] -and (Test-DispatchFullyQualifiedPath $o.worktree) -and
+    $o.integrationLane -is [string] -and $o.integrationLane -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -and
+    $s.priorLabel -is [string] -and $s.priorLabel -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -and $s.priorLaunchId -is [string] -and $s.priorLaunchId -cmatch '^[a-f0-9-]{36}$' -and
+    $s.attemptId -is [string] -and $s.attemptId -cmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$' -and
+    $n.branch -ceq $o.branch -and $n.originalHead -ceq $o.targetHead -and $n.onto -ceq $o.newBase
+}
+
+# #9411: the attached finished-unpublished successor. Same closed ordinary
+# obligation; sources add the prior start acknowledgement, retained finish and
+# prior FINAL grant identity; state is the clean attached branch (no stop).
+function Test-DispatchOrdinarySuccessorShape($Binding) {
+  function HasSuccessorKeys($Value,[string[]]$Keys) {
+    if ($null -eq $Value -or $Value -isnot [pscustomobject]) { return $false }
+    $actual = @($Value.PSObject.Properties.Name)
+    return $actual.Count -eq $Keys.Count -and @($Keys | Where-Object { $_ -cnotin $actual }).Count -eq 0
+  }
+  if (-not (HasSuccessorKeys $Binding @('schemaVersion','obligation','sources','state')) -or $Binding.schemaVersion -isnot [string] -or $Binding.schemaVersion -cne 'interrupted-canonical-integration/v3') { return $false }
+  $o=$Binding.obligation;$s=$Binding.sources;$n=$Binding.state
+  if (-not (HasSuccessorKeys $o @('schemaVersion','pr','targetHead','newBase','branch','worktree','integrationLane')) -or
+      -not (HasSuccessorKeys $s @('priorLabel','priorLaunchId','attemptId','watchdogSha256','promptSha256','transcriptSha256','routingIdentity','conflictSha256','checkpointSha256','ackSha256','finishLabel','finishLaunchId','finishSha256','finishIdentity','grantIdentity')) -or
+      -not (HasSuccessorKeys $n @('branch','originalHead','onto','finishHead','attachedHead','attachedTree','branchReflogSha256'))) { return $false }
+  foreach ($key in @('watchdogSha256','promptSha256','transcriptSha256','routingIdentity','ackSha256','finishSha256','finishIdentity','grantIdentity')) {
+    if ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[a-f0-9]{64}$') { return $false }
+  }
+  foreach ($key in @('conflictSha256','checkpointSha256')) {
+    if ($null -ne $s.$key -and ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[a-f0-9]{64}$')) { return $false }
+  }
+  foreach ($key in @('originalHead','onto','finishHead','attachedHead','attachedTree')) {
+    if ($n.$key -isnot [string] -or $n.$key -cnotmatch '^[a-f0-9]{40}$') { return $false }
+  }
+  if ($n.branchReflogSha256 -isnot [string] -or $n.branchReflogSha256 -cnotmatch '^[a-f0-9]{64}$') { return $false }
+  foreach ($key in @('targetHead','newBase')) {
+    if ($o.$key -isnot [string] -or $o.$key -cnotmatch '^[a-f0-9]{40}$') { return $false }
+  }
+  foreach ($key in @('priorLabel','finishLabel')) {
+    if ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$') { return $false }
+  }
+  foreach ($key in @('priorLaunchId','finishLaunchId')) {
+    if ($s.$key -isnot [string] -or $s.$key -cnotmatch '^[a-f0-9-]{36}$') { return $false }
+  }
+  return $o.schemaVersion -is [string] -and $o.schemaVersion -ceq 'ordinary-integration/v1' -and (Test-DispatchJsonInteger $o.pr 1) -and
+    $o.branch -is [string] -and $o.branch -cmatch '^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$' -and $o.worktree -is [string] -and (Test-DispatchFullyQualifiedPath $o.worktree) -and
+    $o.integrationLane -is [string] -and $o.integrationLane -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$' -and
+    $s.attemptId -is [string] -and $s.attemptId -cmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$' -and
+    $n.branch -is [string] -and $n.branch -ceq $o.branch -and $n.originalHead -ceq $o.targetHead -and $n.onto -ceq $o.newBase
+}
+
+# The HEAD a retained resume binding launched at: the native stop (v1/v2) or
+# the attached successor head (v3). A v3 binding never carries stoppedHead.
+function Get-DispatchInterruptedBindingHead($Binding) {
+  if ($null -ne $Binding -and $Binding.schemaVersion -is [string] -and $Binding.schemaVersion -ceq 'interrupted-canonical-integration/v3') { return [string]$Binding.state.attachedHead }
+  return [string]$Binding.state.stoppedHead
 }
 
 function New-DispatchAttemptState(
@@ -993,6 +1166,9 @@ function Get-LiveDispatchOwnership(
     (Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")
   }
 ) {
+  $evaluationState = @{}
+  $evaluate = {
+  param($productBudget)
   $counts = [ordered]@{
     candidates = 0
     examined = 0
@@ -1060,11 +1236,11 @@ function Get-LiveDispatchOwnership(
   $orderedCandidatePaths = @($candidatePaths | Sort-Object)
   $seenWorktrees = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $seenTranscripts = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $watch = $productBudget.watch
+  $watch.Restart()
   $productAnchors = @{}
-  $productBudget = @{ watch=$watch; deadline=$DeadlineMs }
   foreach ($recordPath in $orderedCandidatePaths) {
-    if ($watch.ElapsedMilliseconds -ge $DeadlineMs) {
+    if ($watch.ElapsedMilliseconds -ge $productBudget.deadline) {
       $deadlineUnexamined = $orderedCandidatePaths.Count - $counts.examined
       $counts.truncated += $deadlineUnexamined
       $diagnostics += [ordered]@{
@@ -1280,13 +1456,36 @@ function Get-LiveDispatchOwnership(
     }
   }
   $counts.active = $active.Count
-  return [pscustomobject][ordered]@{
+  $result = [pscustomobject][ordered]@{
     activeLanes = @($active | Sort-Object lane, head)
     health = [ordered]@{
       status = Get-LaneHealthStatus @($diagnostics)
       counts = $counts
       diagnostics = @($diagnostics)
     }
+  }
+  $evaluationState.result = $result
+  if ($ProductCensus -and @($diagnostics | Where-Object reason -CEQ 'git-deadline').Count) {
+    $result.health.diagnostics += [ordered]@{ code="product-census-git-deadline" }
+    $result.health.status = 'partial'
+    # A simultaneous non-deadline refusal must not acquire an allowance.
+    $otherFailures = @($diagnostics | Where-Object {
+      (Get-LaneDiagnosticSeverity $_.code) -ceq 'blocking' -and
+      $_.code -cne 'ownership-deadline-truncated' -and
+      -not ($_.code -ceq 'worktree-outside-container' -and $_.reason -ceq 'git-deadline')
+    })
+    if ($otherFailures.Count -eq 0) { throw 'git-deadline' }
+  }
+  return $result
+  }
+  # The shared rule retries the entire read-only census, including records,
+  # process identities and anchors, once at most; never just a failed seat.
+  try {
+    if ($ProductCensus) { return Invoke-ProductCensusEvaluation $evaluate $DeadlineMs }
+    return & $evaluate @{watch=[Diagnostics.Stopwatch]::new();deadline=$DeadlineMs}
+  } catch {
+    if ($_.Exception.Message -cne 'git-deadline') { throw }
+    return $evaluationState.result
   }
 }
 

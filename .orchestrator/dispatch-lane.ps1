@@ -21,6 +21,10 @@ Gotchas encoded (references/stall-gotchas.md):
 - claude-background-task-dies-on-session-exit: Claude lanes receive one
   foreground-only preamble, deny session-scoped orchestration tools, and reject
   nominal success when stream-json shows active or terminated background work.
+- claude-foreground-gate-exceeds-tool-limit (#9712): every Claude child gets a
+  one-hour foreground Bash/PowerShell envelope with background tasks disabled
+  and no auto-background threshold; a Claude settings env block that would
+  override it refuses the launch, its preparation and its dry run.
 - wsl-watchdog-windows-path-blindness: the launch banner prints the
   /mnt/<drive>/ translation of the output file for lane-stall-watchdog.sh.
 - double-dispatch clobber: refuses to reuse a non-empty output stem without
@@ -63,6 +67,7 @@ param(
   # starts while retaining GitHub authentication.
   # implementation: explicitly inherit the launcher environment unchanged.
   [ValidateSet("implementation", "review", "planning")][string]$LaneRole = "review",
+  [ValidateRange(1,[int]::MaxValue)][int]$Issue,
   [ValidateSet('product','controller')][string]$ReviewTarget = 'product',
   [ValidateRange(1,[int]::MaxValue)][int]$ControllerIssue,
   [ValidatePattern('^[a-f0-9]{40}$')][string]$ControllerHead,
@@ -70,6 +75,11 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$ReviewerAttempt,
   [string]$AuthorModel,
   [ValidateSet('governing','shadow','advisory')][string]$ReviewAuthority,
+  # Review independence is per artifact: 'brief' excludes the brief's own
+  # author/repair history; 'code' excludes the code's author, repair and
+  # continuation history and ladders. A controller review defaults to 'code';
+  # an unnamed product review artifact keeps its history unknown (no flip).
+  [ValidateSet('','brief','code')][string]$ReviewArtifact = '',
   [Parameter(Mandatory)][string]$PromptFile,
   # Lane worktree: a pool name like "lane-05" (resolved against the container
   # root) or an absolute directory path.
@@ -78,6 +88,12 @@ param(
   [Parameter(Mandatory)][string]$Label,
   # Resolve, validate, and print the launch plan as JSON without launching.
   [switch]$DryRun,
+  # Preparation: run admission, the exemption and the capacity resolver, print
+  # the final route (and the strict tuple a controller review will bind) as
+  # JSON, and write nothing: no LKG cache, output stem, ledger row, forecast
+  # snapshot or process. The host prelogs that tuple, then launches; a launch
+  # that resolves differently refuses before any side effect.
+  [switch]$PrepareRoute,
   # Permit reusing an existing non-empty output stem (e.g. an intentional
   # same-label resume after the prior process was confirmed dead).
   [switch]$Force,
@@ -94,6 +110,7 @@ param(
   [ValidateRange(0,3)][int]$WatchdogRelaunchCount = 0,
   [ValidatePattern('^$|^[a-f0-9-]{36}$')][string]$ResumeOfLaunchId = '',
   [string]$InterruptedIntegrationResumePath = '',
+  [string]$ToddRouteOverride = '',
   [ValidateRange(0,15)][int]$Row = 0,
   [ValidatePattern('^(codex|claude)\.(primary|fallback)$')][string]$Slot,
   [ValidatePattern('^$|^(measured|provisional|reserve|override-[a-z0-9._-]+)$')][string]$Placement = '',
@@ -106,7 +123,10 @@ param(
   [Parameter(DontShow)][string]$OwedReleaseScanObservedPath = '',
   [Parameter(DontShow)][string]$OwedReleaseScanContinuePath = '',
   [Parameter(DontShow)][string]$RoutingStateRoot = '',
-  [Parameter(DontShow)][string]$RoutingLkgPath = ''
+  [Parameter(DontShow)][string]$RoutingLkgPath = '',
+  # Isolated test seam for the Claude managed-policy file root and its
+  # registry Settings values; production reads the machine policy locations.
+  [Parameter(DontShow)][string]$TestClaudeManagedPolicyRoot = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,6 +136,10 @@ if ([bool]$StartRequestIdentity -ne [bool]$StartAcknowledgementPath) {
 }
 if (($ResumeAdmissionObservedPath -or $ResumeAdmissionContinuePath) -and
     (-not $ExecutablePath -or -not $ResumeAdmissionObservedPath -or -not $ResumeAdmissionContinuePath)) { throw 'dispatch-lane: resume admission barrier requires paired isolated test paths and executable override' }
+if ($ReviewArtifact -and $LaneRole -cne 'review') { throw 'dispatch-lane: -ReviewArtifact requires -LaneRole review' }
+if ($PrepareRoute -and ($IntegrationTargetPath -or $InterruptedIntegrationResumePath -or $StartRequestIdentity -or $ResumeAdmissionObservedPath -or $ResumeAdmissionContinuePath)) {
+  throw 'dispatch-lane: -PrepareRoute prepares fresh dispatch routes only'
+}
 
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath
 
@@ -123,9 +147,9 @@ function Resolve-DispatchRouting {
   if ([bool]$Model -ne [bool]$Effort) { throw 'dispatch-lane: explicit -Model and -Effort must be supplied together' }
   if (-not $Model) {
     if ($Row -lt 1) { throw 'dispatch-lane: row-based selection requires -Row 1..15' }
-    return Resolve-RoutingSelection -Row $Row -Harness $Harness -Slot $Slot -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath
+    return Resolve-RoutingSelection -Row $Row -Harness $Harness -Slot $Slot -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath -ReadOnly:$PrepareRoute
   }
-  return Resolve-RoutingSelection -Row $Row -Harness $Harness -Model $Model -Effort $Effort -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath
+  return Resolve-RoutingSelection -Row $Row -Harness $Harness -Model $Model -Effort $Effort -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath -ReadOnly:$PrepareRoute
 }
 
 $routingExplicit = [bool]$Model
@@ -434,7 +458,7 @@ if ($StartAcknowledgementPath) {
   }
 }
 $tempRoot = if ($TestTempRoot) { [IO.Path]::GetFullPath($TestTempRoot) } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) }
-if (($TestRuntimeRoot -or $TestTempRoot) -and -not $ExecutablePath) {
+if (($TestRuntimeRoot -or $TestTempRoot -or $TestClaudeManagedPolicyRoot) -and -not $ExecutablePath) {
   throw "dispatch-lane: isolated runtime roots require the testing-only -ExecutablePath override"
 }
 foreach ($testRoot in @($runtimeRoot, $tempRoot)) {
@@ -468,7 +492,97 @@ $providerCredentialNames = @(
 # retrieval without changing what evidence exists or what a role may mutate.
 $boundedRetrievalPreamble = "Bounded retrieval contract: prefer exact named paths and bounded line ranges. Scope searches and inventories to the needed paths and patterns, and bound displayed output with -First/-Tail, line-width limits or selected fields. This bounds output, not necessary caller discovery, exact ownership/history checks or complete evidence inspection; inspect all required evidence in bounded slices. Fetch hosted CI logs to a file, then search that file. Keep polls short, bounded and in the foreground; when waiting is necessary, repeat short bounded foreground calls and let each return. Complete evidence stays on disk; cite paths and exact lines rather than dumping raw output. Heavy-verifier, harness, role and review contracts remain authoritative.`r`n`r`n"
 $claudeDisallowedTools = @("Monitor", "ScheduleWakeup", "CronCreate", "CronDelete", "CronList")
-$claudeForegroundPreamble = "Claude foreground-only execution contract: keep every terminal gate and poll in this turn's foreground and bounded. Do not use Monitor, ScheduleWakeup, any Cron tool (CronCreate, CronDelete, or CronList), long --watch commands, or long sleep/poll loops. When waiting is necessary, use repeated short bounded foreground calls, let each call return, and do not report delivery complete until all terminal work is finished.`r`n`r`n"
+$claudeForegroundPreamble = "Claude foreground-only execution contract: keep every terminal gate and poll in this turn's foreground and bounded. This launch gives Bash and PowerShell a one-hour foreground envelope with background tasks disabled; the hour is a harness bound, not a gate budget. Run each finite gate in the foreground without an explicit timeout. Narrow reads and polls before calling them so each call is short and bounded, and give any explicit deadline room to complete; never rely on the hour for them. Do not use Monitor, ScheduleWakeup, any Cron tool (CronCreate, CronDelete, or CronList), run_in_background, long --watch commands, or long sleep/poll loops. When waiting is necessary, use repeated short bounded foreground calls, let each call return, and do not report delivery complete until all terminal work is finished. A call that expires, or whose task is killed or stopped, forfeits this session's acceptance and leaves its work incomplete: report it incomplete to the host with its evidence; do not recover and finish it, retry it automatically, or report PASS.`r`n`r`n"
+# claude-foreground-gate-exceeds-tool-limit (#9712): Claude Code moves a
+# Bash/PowerShell call that outlives its tool timeout (default 120 s, maximum
+# 600 s) to the background, and stopping it loses the gate. Every Claude child,
+# whatever its role or model alias, gets a one-hour default and maximum for
+# both tools, background tasks disabled, and no inherited auto-background
+# threshold ($null removes it). The hour is a harness bound, not a measured
+# gate duration or a product budget; Codex children are untouched.
+$claudeForegroundEnvironment = [ordered]@{
+  BASH_DEFAULT_TIMEOUT_MS = "3600000"
+  BASH_MAX_TIMEOUT_MS = "3600000"
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1"
+  CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS = $null
+}
+# Claude applies settings `env` over its process environment: global config,
+# then user, project and local settings, managed policy last. Read those
+# sources (never write them) and name every value that would undo the policy.
+# Values are not echoed. Unreadable JSON cannot be proven harmless and refuses.
+function Get-ClaudeForegroundSettingsConflicts([string]$WorktreePath) {
+  $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
+  $configHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $userHome ".claude" }
+  $globalHome = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { $userHome }
+  $managedRoot = if ($TestClaudeManagedPolicyRoot) { $TestClaudeManagedPolicyRoot } else { "C:\Program Files\ClaudeCode" }
+  $sources = [Collections.Generic.List[object]]::new()
+  foreach ($file in @(
+      @("global-config", (Join-Path $configHome ".config.json")),
+      @("global-config", (Join-Path $globalHome ".claude.json")),
+      @("user", (Join-Path $configHome "settings.json")),
+      @("project", (Join-Path $WorktreePath ".claude/settings.json")),
+      @("local", (Join-Path $WorktreePath ".claude/settings.local.json")),
+      @("managed-policy", (Join-Path $configHome "remote-settings.json")),
+      @("managed-policy", (Join-Path $managedRoot "managed-settings.json")))) {
+    $sources.Add([pscustomobject]@{ source = $file[0]; location = [IO.Path]::GetFullPath($file[1]); registry = $null })
+  }
+  # Exactly the drop-ins Claude 2.1.299 loads: an ordinal ".json" suffix, no
+  # leading ".", whatever the file attributes (-Force keeps hidden files).
+  $dropIns = Join-Path $managedRoot "managed-settings.d"
+  if (Test-Path -LiteralPath $dropIns -PathType Container) {
+    foreach ($dropIn in @(Get-ChildItem -LiteralPath $dropIns -File -Force | Where-Object {
+          $_.Name.EndsWith(".json", [StringComparison]::Ordinal) -and -not $_.Name.StartsWith(".", [StringComparison]::Ordinal) } | Sort-Object Name)) {
+      $sources.Add([pscustomobject]@{ source = "managed-policy"; location = $dropIn.FullName; registry = $null })
+    }
+  }
+  foreach ($hive in @("HKLM", "HKCU")) {
+    $sources.Add($(if ($TestClaudeManagedPolicyRoot) {
+      [pscustomobject]@{ source = "managed-policy"; location = [IO.Path]::GetFullPath((Join-Path $managedRoot "$hive.Settings.json")); registry = $null }
+    } else {
+      [pscustomobject]@{ source = "managed-policy"; location = "${hive}:\SOFTWARE\Policies\ClaudeCode\Settings"; registry = "${hive}:\SOFTWARE\Policies\ClaudeCode" }
+    }))
+  }
+  $conflicts = [Collections.Generic.List[string]]::new()
+  foreach ($source in $sources) {
+    $settings = $null
+    $parsed = $false
+    # A live Claude session may be rewriting its config; re-read briefly
+    # before treating unparseable bytes as a refusal.
+    for ($attempt = 1; $attempt -le 3 -and -not $parsed; $attempt++) {
+      $text = if ($source.registry) {
+        $property = Get-ItemProperty -LiteralPath $source.registry -Name "Settings" -ErrorAction SilentlyContinue
+        if ($property) { [string]$property.Settings } else { $null }
+      } elseif (Test-Path -LiteralPath $source.location -PathType Leaf) {
+        [IO.File]::ReadAllText($source.location)
+      } else { $null }
+      if ($null -eq $text) { $parsed = $true; break }
+      try { $settings = $text | ConvertFrom-Json -AsHashtable -Depth 100; $parsed = $true }
+      catch { if ($attempt -lt 3) { [Threading.Thread]::Sleep(100) } }
+    }
+    if (-not $parsed) {
+      $conflicts.Add("$($source.source) settings at '$($source.location)' are not valid JSON, so their env cannot be proven not to override the policy")
+      continue
+    }
+    if ($settings -isnot [Collections.IDictionary] -or -not $settings.Contains("env") -or $settings["env"] -isnot [Collections.IDictionary]) { continue }
+    foreach ($entry in $settings["env"].GetEnumerator()) {
+      foreach ($policyName in $claudeForegroundEnvironment.Keys) {
+        if ([string]$entry.Key -ine $policyName) { continue }
+        $required = $claudeForegroundEnvironment[$policyName]
+        if ($null -eq $required -or $null -eq $entry.Value -or [string]$entry.Value -cne $required) {
+          $requirement = if ($null -eq $required) { "absent" } else { "'$required'" }
+          $conflicts.Add("$($source.source) settings env $($entry.Key) at '$($source.location)' conflicts with the Claude foreground policy (required $requirement)")
+        }
+      }
+    }
+  }
+  return @($conflicts)
+}
+function Assert-ClaudeForegroundSettingsAgree([string]$WorktreePath) {
+  $claudeSettingsConflicts = @(Get-ClaudeForegroundSettingsConflicts $WorktreePath)
+  if ($claudeSettingsConflicts.Count -gt 0) {
+    throw "dispatch-lane: CLAUDE_FOREGROUND_POLICY_CONFLICT: refusing the Claude launch before any side effect; Claude settings env would override the foreground policy. $($claudeSettingsConflicts -join '; '). Correct those settings outside dispatch; dispatch never edits them."
+  }
+}
 # Review and planning lanes are both read-only against provider state, so they
 # share the credential-isolation policy. They differ in what they may mutate:
 # review receives no provider credentials; its bounded mechanical remedies are
@@ -533,7 +647,15 @@ $admissionLane = Split-Path -Leaf $worktreeResolved
 if ($admissionLane -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$") {
   throw "dispatch-lane: worktree leaf is not a valid bounded admission lane identity: $admissionLane"
 }
+# A resumed integration is capacity-exempt, so its harness is final here:
+# refuse a Claude settings conflict before its binding is read or fleet
+# admission is entered.
+if ($InterruptedIntegrationResumePath -and $Harness -eq "claude") {
+  Assert-ClaudeForegroundSettingsAgree $worktreeResolved
+}
 $integrationResume = $null
+$ordinaryResume = $false
+$successorResume = $false
 $resumeAdmission = $null
 try {
 if ($InterruptedIntegrationResumePath) {
@@ -558,7 +680,27 @@ if ($InterruptedIntegrationResumePath) {
   }
   if (-not (Test-DispatchInterruptedBindingShape $integrationResume) -or
       -not (Test-DispatchSameCanonicalPath $integrationResume.obligation.worktree $worktreeResolved)) { throw 'INTEGRATION_RESUME_BINDING: target mismatch' }
-  [void](Assert-InterruptedIntegrationResume $integrationResume $runtimeRoot)
+  # #9334: an ordinary-author binding carries the prior semantic attempt; the
+  # resumed launch keeps it instead of minting a new attempt from its label.
+  $ordinaryResume = $integrationResume.schemaVersion -cin @('interrupted-canonical-integration/v2','interrupted-canonical-integration/v3')
+  # #9411: the attached finished-unpublished successor is host-dispatched only;
+  # the watchdog's automatic relaunch never carries it.
+  $successorResume = $integrationResume.schemaVersion -ceq 'interrupted-canonical-integration/v3'
+  if ($successorResume -and $WatchdogRelaunchCount -gt 0) { throw 'INTEGRATION_RESUME_SUCCESSOR: host-only successor dispatch' } # SUCCESSOR_GUARD_HOST_ONLY
+  if ($ordinaryResume) {
+    if ($SemanticAttemptId -and $SemanticAttemptId -cne [string]$integrationResume.sources.attemptId) { throw 'INTEGRATION_RESUME_BINDING: semantic attempt mismatch' }
+    $SemanticAttemptId = [string]$integrationResume.sources.attemptId
+  }
+  $resumePrior = Assert-InterruptedIntegrationResume $integrationResume $runtimeRoot
+  if ($successorResume) {
+    # Exactly the prior launch's recorded tuple, and a host prompt whose grant
+    # equals the prior FINAL grant; a crossed tuple, attempt or grant refuses.
+    foreach ($key in @('harness','model','effort','row','placement')) {
+      $requested = switch ($key) { 'harness' { $Harness } 'model' { $Model } 'effort' { $Effort } 'row' { [string]$Row } 'placement' { $Placement } }
+      if ([string]$resumePrior.$key -cne [string]$requested) { throw 'INTEGRATION_RESUME_SUCCESSOR: crossed tuple or attempt' } # SUCCESSOR_GUARD_EXACT_TUPLE
+    }
+    [void](Get-OrdinarySuccessorPromptGrant $integrationResume $promptResolved $runtimeRoot) # SUCCESSOR_GUARD_EQUAL_GRANT
+  }
   $resumeRequest = Get-RebaseRecordIdentity $integrationResume
   if ($StartRequestIdentity -and $StartRequestIdentity -cne $resumeRequest) { throw 'INTEGRATION_RESUME_BINDING: start request mismatch' }
   $StartRequestIdentity = $resumeRequest
@@ -572,7 +714,7 @@ if ($InterruptedIntegrationResumePath) {
   if ($LASTEXITCODE -ne 0) { throw 'INTEGRATION_RESUME_BINDING: controller identity unknown' }
   $resumeAdmission = Enter-FleetExclusiveAdmission -RuntimeRoot $runtimeRoot -LeaseHolder "resume-$([guid]::NewGuid().ToString('N'))" -Issue 7963 -Attempt "7963-$([guid]::NewGuid().ToString('N'))" `
     -ControllerRoot (Split-Path -Parent $runtimeRoot) -ControllerHead $resumeControllerHead -Worktree $worktreeResolved -Branch $integrationResume.obligation.branch `
-    -ClaimedHead $integrationResume.state.stoppedHead -Gate interrupted-canonical-integration
+    -ClaimedHead (Get-DispatchInterruptedBindingHead $integrationResume) -Gate interrupted-canonical-integration
   if ($ResumeAdmissionObservedPath) {
     [IO.File]::WriteAllText($ResumeAdmissionObservedPath,$resumeRequest,[Text.UTF8Encoding]::new($false))
     $barrierDeadline = [datetimeoffset]::UtcNow.AddSeconds(10)
@@ -589,7 +731,7 @@ if (-not $integrationResume -and $admissionIdentityBefore.IdentityMode -ceq "imm
 # These two independently load-bearing guards are intentionally adjacent and
 # precede plan construction and every dispatch side effect. The mutant controls
 # in dispatch-lane.test.ps1 delete one call at a time.
-if (-not $integrationResume) {
+if (-not $integrationResume -or $successorResume) {
 Assert-DispatchAdmissionClean $worktreeResolved # ADMISSION_GUARD_CLEANLINESS
 }
 Assert-DispatchAdmissionExclusiveBranchAttachment $admissionIdentityBefore # ADMISSION_GUARD_EXCLUSIVE_BRANCH
@@ -604,6 +746,76 @@ if ($integrationResume) {
 }
 if ($integrationTarget) {
   [void](Assert-IntegrationTarget $worktreeResolved $integrationTarget.branch $integrationTarget.head $integrationTarget.newBase $integrationTarget.repository $integrationTarget.pr $IntegrationAuthorityFixturePath) # INTEGRATION_GUARD_ADMISSION
+}
+
+$boundToddOverride=$false
+if ($PSBoundParameters.ContainsKey('ToddRouteOverride')) {
+  $claim=ConvertFrom-DispatchClosedJson $ToddRouteOverride
+  $keys=@('authority','branch','head','row','harness','model','effort','placement')
+  if ($null -eq $claim -or @($claim.PSObject.Properties).Count -ne $keys.Count -or
+      @($keys | Where-Object {$_ -cnotin $claim.PSObject.Properties.Name}).Count -or
+      $claim.authority -isnot [string] -or [string]::IsNullOrWhiteSpace($claim.authority) -or
+      -not (Test-DispatchJsonInteger $claim.row 0) -or $claim.row -gt 15) { throw 'TODD_ROUTE_OVERRIDE_INVALID' }
+  $expected=@{branch=$admissionBranch;head=$admissionHead;row=$Row;harness=$Harness;model=$Model;effort=$Effort;placement=$Placement}
+  foreach($key in $expected.Keys) {
+    if (($key -cne 'row' -and $claim.$key -isnot [string]) -or $claim.$key -cne $expected[$key]) { throw 'TODD_ROUTE_OVERRIDE_MISMATCH' }
+  }
+  $boundToddOverride=$true
+}
+# Planning and review lanes are eligible (Todd 4388/6098327249); row 0,
+# relaunches, launch resumes, integration paths and a bound Todd override stay
+# exempt before the forecast is read.
+$capacityExempt=$Row -eq 0 -or $WatchdogRelaunchCount -gt 0 -or
+  [bool]$ResumeOfLaunchId -or [bool]$IntegrationTargetPath -or [bool]$InterruptedIntegrationResumePath -or $boundToddOverride
+$capacityIssue=if ($PSBoundParameters.ContainsKey('Issue')) { [int]$Issue } elseif ($ReviewTarget -ceq 'controller') { [int]$ControllerIssue } else { 0 }
+$capacityReviewArtifact=if ($ReviewArtifact) { $ReviewArtifact } elseif ($LaneRole -ceq 'review' -and $ReviewTarget -ceq 'controller') { 'code' } else { '' }
+$capacity=Resolve-CapacityRouting -Selection $dispatchRouting -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath `
+  -HistoryPath (Join-Path $runtimeRoot 'dispatch-log.jsonl') -Branch $admissionBranch -Issue $capacityIssue `
+  -LaneRole $LaneRole -ReviewArtifact $capacityReviewArtifact -Exempt $capacityExempt
+$dispatchRouting=$capacity.selection
+if ($successorResume -and $null -ne $capacity.capacityFlip) { throw 'INTEGRATION_RESUME_SUCCESSOR: crossed tuple or attempt' }
+if ($null -ne $capacity.capacityFlip) {
+  $Model=[string]$dispatchRouting.model;$Effort=[string]$dispatchRouting.effort;$Harness=[string]$dispatchRouting.harness
+  $Placement=[string]$dispatchRouting.placement
+}
+$dispatchRouting.placement=$Placement
+# A fresh route's harness is final once the capacity flip is resolved. Refuse
+# a Claude settings conflict before any prepared route or strict tuple is
+# offered for prelogging, and before a dry-run plan.
+if (-not $InterruptedIntegrationResumePath -and $Harness -eq "claude") {
+  Assert-ClaudeForegroundSettingsAgree $worktreeResolved
+}
+# Ordinary v3 evidence, author and watchdog records keep override-Todd; the
+# strict controller-review tuple binds the lowercase override-todd grammar
+# that the strict classifier admits (#8064).
+$strictPlacement=if ($ReviewTarget -ceq 'controller' -and $null -ne $capacity.capacityFlip) { 'override-todd' } else { $Placement }
+function Write-DispatchPreparedRoute($StrictTuple) {
+  $strictPrelogV1=$null
+  if ($null -ne $StrictTuple) {
+    $strictPrelogV1=[ordered]@{}
+    foreach($property in $StrictTuple.PSObject.Properties) {
+      if ($property.Name -cnotin @('ts','kind','controllerReviewSchema','stage','policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')) {
+        $strictPrelogV1[$property.Name]=$property.Value
+      }
+    }
+  }
+  $prepared = [ordered]@{
+    prepared = $true
+    laneRole = $LaneRole; lane = $admissionLane; label = $Label; transcript = "$Label.jsonl"
+    worktree = $worktreeResolved; branch = $admissionBranch; head = $admissionHead; identityMode = $admissionIdentityMode
+    harness = $Harness; model = $Model; effort = $Effort; row = [int]$Row; placement = $Placement
+    routing = $dispatchRouting
+    capacityForecastStatus = $capacity.capacityForecastStatus
+    capacityDecisionDigest = $capacity.capacityDecisionDigest
+    capacityFlip = $capacity.capacityFlip
+    capacityShadowFlip = $capacity.capacityShadowFlip
+    capacityFlipSkip = $capacity.capacityFlipSkip
+    reviewArtifact = $capacityReviewArtifact
+    strictTuple = $StrictTuple
+    strictPrelogV1 = $strictPrelogV1
+  }
+  $prepared | ConvertTo-Json -Depth 6
+  $global:LASTEXITCODE = 0
 }
 
 if ($LaneRole -eq 'review') {
@@ -623,20 +835,23 @@ if ($ReviewTarget -ceq 'controller') {
     ts=[datetimeoffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"); kind='dispatch'; controllerReviewSchema='controller-review-dispatch/v2'; stage='review'
     issue=$ControllerIssue; controllerHead=$ControllerHead; authorAttempt=$AuthorAttempt; reviewerAttempt=$ReviewerAttempt
     reviewAuthority=$ReviewAuthority; lane=$admissionLane; transcript="$Label.jsonl"; reviewerModel=$Model; authorModel=$AuthorModel
-    effort=$Effort; row=[string]$Row; placement=$Placement; harness=$Harness
+    effort=$Effort; row=[string]$Row; placement=$strictPlacement; harness=$Harness
     policyGeneration=[long]$dispatchRouting.policyGeneration
     registryAuthorityDigest=[string]$dispatchRouting.registryAuthorityDigest
     family=[string]$dispatchRouting.family; slot=[string]$dispatchRouting.slot
     usedLastKnownGood=[bool]$dispatchRouting.usedLastKnownGood
   }
+  if ($PrepareRoute) { Write-DispatchPreparedRoute $dispatchTuple; return }
   # TestRuntimeRoot isolates output only; dispatch authority belongs to this controller.
   $reviewHistory = Read-ExactHeadReviewHistory -Path (Join-Path $PSScriptRoot 'dispatch-log.jsonl')
-  $prelaunchReview = Reduce-ControllerReleaseReview -Issue $ControllerIssue -ControllerHead $ControllerHead -Mode strict-v1 -History $reviewHistory -DispatchTuple $dispatchTuple
-  # v1 controller-review history remains readable during the provenance
-  # migration.  Retry only the exact legacy tuple when the v2-bound attempt
-  # cannot join; a v2 row with partial or mismatched routing evidence still
-  # fails closed because its v2 tuple is never projected into this fallback.
-  if ($prelaunchReview.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') {
+  # The prelogged schema selects the reducer mode: a provenance-bearing v2
+  # prelog reduces as strict-v2 against this v2 tuple. v1 controller-review
+  # history remains readable during the provenance migration: when the exact
+  # head's history is v1, retry only the exact legacy tuple as strict-v1; a v2
+  # row with partial or mismatched routing evidence still fails closed because
+  # its v2 tuple is never projected into this fallback.
+  $prelaunchReview = Reduce-ControllerReleaseReview -Issue $ControllerIssue -ControllerHead $ControllerHead -Mode strict-v2 -History $reviewHistory -DispatchTuple $dispatchTuple
+  if ($prelaunchReview.reason -ceq 'STRICT_VERSION_MISMATCH') {
     $legacyDispatchTuple = [pscustomobject][ordered]@{}
     foreach ($property in $dispatchTuple.PSObject.Properties) {
       if ($property.Name -notin @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood','stage')) {
@@ -645,20 +860,39 @@ if ($ReviewTarget -ceq 'controller') {
     }
     $legacyDispatchTuple.controllerReviewSchema = 'controller-review-dispatch/v1'
     $legacyReview = Reduce-ControllerReleaseReview -Issue $ControllerIssue -ControllerHead $ControllerHead -Mode strict-v1 -History $reviewHistory -DispatchTuple $legacyDispatchTuple
-    if ($legacyReview.state -ceq 'in-flight' -and $legacyReview.reason -ceq 'STRICT_ATTEMPT_IN_FLIGHT') { $prelaunchReview = $legacyReview }
+    $prelaunchReview = $legacyReview
   }
   if ($prelaunchReview.state -cne 'in-flight' -or $prelaunchReview.reason -cne 'STRICT_ATTEMPT_IN_FLIGHT') {
+    if ($prelaunchReview.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') {
+      $voidVocabulary=Get-ReviewRecordVocabulary
+      foreach($entry in $reviewHistory.rows) {
+        $prelogRow=$entry.value
+        $classification=Get-ControllerReviewRowClassification $entry $voidVocabulary
+        if (-not $classification.strict -or $classification.rowKind -cne 'dispatch' -or $classification.issue -ne $ControllerIssue -or
+            $classification.controllerHead -cne $ControllerHead -or ($prelogRow.lane -cne $admissionLane -and $prelogRow.transcript -cne "$Label.jsonl")) { continue }
+        try {
+          & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind controller-review-prelog-void -Issue $ControllerIssue -ControllerHead $ControllerHead `
+            -Lane $prelogRow.lane -Transcript $prelogRow.transcript -ReviewerAttempt $prelogRow.reviewerAttempt -OriginalDispatchRawSha256 $entry.rawSha256 `
+            -OutFile (Join-Path $PSScriptRoot 'dispatch-log.jsonl') -NoBoard | Out-Null
+          [Console]::Error.WriteLine("dispatch-lane: prelog voided hash=$($entry.rawSha256)")
+        } catch {
+          [Console]::Error.WriteLine("dispatch-lane: prelog void refused hash=$($entry.rawSha256) reason=$($_.Exception.Message)")
+        }
+      }
+    }
     throw "dispatch-lane: strict controller prelaunch tuple refused: $($prelaunchReview.reason)"
   }
 } elseif ($ControllerIssue -or $ControllerHead -or $AuthorAttempt -or $ReviewerAttempt -or $AuthorModel -or $ReviewAuthority) {
   throw 'dispatch-lane: controller tuple inputs require -ReviewTarget controller'
 }
+if ($PrepareRoute) { Write-DispatchPreparedRoute $null; return }
 
 # --- output stem, clobber guard ----------------------------------------------
 $stdoutPath = Join-Path $runtimeRoot "$Label.jsonl"
 $stderrPath = Join-Path $runtimeRoot "$Label.err.log"
+$capacitySnapshotPath = Join-Path $runtimeRoot "$Label.capacity-forecast.json"
 if (-not $Force) {
-  foreach ($p in @($stdoutPath, $stderrPath)) {
+  foreach ($p in @($stdoutPath, $stderrPath, $capacitySnapshotPath)) {
     if ((Test-Path -LiteralPath $p) -and (Get-Item -LiteralPath $p).Length -gt 0) {
       throw "dispatch-lane: output already exists and is non-empty ($p) — a live lane may own this label; pick a new -Label or pass -Force after confirming the prior process is dead"
     }
@@ -775,9 +1009,21 @@ if ($admissionIdentityMode -eq "branch") {
   $heavyAdmissionPlan.immutableHead = $admissionHead
 }
 
+function Get-HeavyVerificationPreamble([string]$Role, [int]$RoutingRow, [string]$Entrypoint) {
+  if ($Role -cne 'implementation' -or $RoutingRow -eq 13) {
+    return "Heavy verification contract: planning, review and row-13 documentation lanes use evidence inspection and cheap focused checks only. Heavy commands refuse with exit 73 before reservation; this is non-execution, not PASS or a consumed attempt. Return heavy reproduction to the host for an attributed implementation/verifier lane. Controller reviewers rerun changed tests directly, never through ControllerBattery or ControllerPrecursor.`r`n`r`n"
+  }
+  return "Heavy verification contract: product proof is exact-head hosted CI. Retain scoped pre-push checks and focused tests; local full/harness runs and focused DB diagnostics are optional, never publication or landing gates. A scoped refusal never escalates to a full gate: preserve and disclose the defect, never fabricate PASS. Controller authors retain baseline-aware controller-release-battery.ps1 proof; product CI is not controller release proof. Any eligible heavy reproduction uses '$Entrypoint', foreground and under unchanged exclusive admission, including direct Node, Playwright, full Vitest, script-battery and build commands. Exit 73 means not executed, not PASS or a consumed attempt. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
+}
+$gatePreamble = Get-HeavyVerificationPreamble $LaneRole $Row (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')
 $plan = [ordered]@{
   harness = $Harness
   routing = $dispatchRouting
+  capacityForecastStatus = $capacity.capacityForecastStatus
+  capacityDecisionDigest = $capacity.capacityDecisionDigest
+  capacityFlip = $capacity.capacityFlip
+  capacityShadowFlip = $capacity.capacityShadowFlip
+  capacityFlipSkip = $capacity.capacityFlipSkip
   laneRole = $LaneRole
   executable = $exe
   arguments = @($launchArguments)
@@ -806,6 +1052,7 @@ $plan = [ordered]@{
     $null
   }
   heavyVerifier = [ordered]@{
+    preamble = $gatePreamble
     entrypoint = (Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1")
     supportedGates = @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db")
     loadSensitiveProof = "unchanged isolated pass with material timing collapse, then one-worker/file-serial complete gate; never raise timeouts, edit product files, or skip tests"
@@ -817,6 +1064,12 @@ if ($DryRun) {
   $plan | ConvertTo-Json -Depth 4
   $global:LASTEXITCODE = 0
   return
+}
+
+# Recheck at launch: settings may have changed since preparation or the
+# host's prelog.
+if ($Harness -eq "claude") {
+  Assert-ClaudeForegroundSettingsAgree $worktreeResolved
 }
 
 Write-Output "dispatch-lane: launching $Harness ($Model/$Effort) in $worktreeResolved"
@@ -879,6 +1132,33 @@ try {
     $integrationOwners = Get-LiveDispatchOwnership -RuntimeRoot $runtimeRoot -TempRoot $tempRoot -ContainerRoot $container -ProductCensus:($integrationTarget.repository -ceq 'chase-sets/chase-sets')
     if ($integrationOwners.health.status -cne 'ok' -or @($integrationOwners.activeLanes | Where-Object { $_.branch -ceq $integrationTarget.branch }).Count) { throw "INTEGRATION_OWNER_PENDING diagnostics=$(Get-DispatchBlockingDiagnostics $integrationOwners)" }
   }
+  # Ledger admission must finish before publishing any launch resources.
+  if ($LaneRole -cin @('implementation','planning','review')) {
+    $routingIssue = @{}
+    if ($PSBoundParameters.ContainsKey('Issue')) { $routingIssue.Issue = $Issue }
+    # Every role writes the v3 routing row with its five capacity fields.
+    $routingSchema = 'watchdog-dispatch-routing/v3'
+    $capacityEvidence = @{CapacityForecastStatus=$capacity.capacityForecastStatus;CapacityDecisionDigest=$capacity.capacityDecisionDigest
+      CapacityFlip=$capacity.capacityFlip;CapacityShadowFlip=$capacity.capacityShadowFlip;CapacityFlipSkip=$capacity.capacityFlipSkip}
+    try {
+      & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind dispatch -DispatchRoutingSchema $routingSchema `
+        -StrictControllerLaunch:($ReviewTarget -ceq 'controller') `
+        -DispatchAttemptId $(if($SemanticAttemptId){$SemanticAttemptId}else{$Label}) -DispatchLabel $Label -Lane $admissionLane -LaneRole $LaneRole @routingIssue `
+        -Transcript (Split-Path -Leaf $stdoutPath) -Harness $Harness -Model $Model -Effort $Effort -Row ([string]$Row) -Placement $Placement `
+        -DispatchWorktree $worktreeResolved -DispatchBranch $admissionBranch -DispatchHead $admissionHead `
+        -PolicyGeneration $dispatchRouting.policyGeneration -RegistryAuthorityDigest $dispatchRouting.registryAuthorityDigest `
+        -RoutingFamily $dispatchRouting.family -RoutingSlot $dispatchRouting.slot -UsedLastKnownGood $dispatchRouting.usedLastKnownGood `
+        @capacityEvidence `
+        -RoutingStateRoot $RoutingStateRoot -RoutingLkgPath $RoutingLkgPath -OutFile (Join-Path $runtimeRoot 'dispatch-log.jsonl') -NoBoard | Out-Null
+    } catch {
+      if ($_.FullyQualifiedErrorId -notlike 'ORCHESTRATION_LOG_SHARING_RETRY_EXHAUSTED*') { throw }
+      [Console]::Error.WriteLine("dispatch-lane: $($_.Exception.Message)")
+      exit 74
+    }
+    if ($null -ne $capacity.forecastBytes) {
+      [IO.File]::WriteAllBytes($capacitySnapshotPath,$capacity.forecastBytes)
+    }
+  }
   if (-not $integrationResume) { Invoke-DispatchOwnershipScavenge $runtimeRoot $tempRoot | Out-Null }
   $launchId = [guid]::NewGuid().ToString()
   $launchPromptFile = Join-Path $runtimeRoot "dispatch-heavy-verifier-$launchId.prompt.txt"
@@ -930,18 +1210,14 @@ try {
       if ($LASTEXITCODE -eq 0 -and $ancestor.Count -eq 0) { [void](New-RebaseStart $owed $runtimeRoot $ownershipRecordPath -Prelaunch) }
     }
   }
-  if ($LaneRole -eq 'implementation') {
-    & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind dispatch -DispatchRoutingSchema watchdog-dispatch-routing/v2 `
-      -DispatchAttemptId $(if($SemanticAttemptId){$SemanticAttemptId}else{$Label}) -DispatchLabel $Label -Lane $admissionLane -LaneRole implementation `
-      -Transcript (Split-Path -Leaf $stdoutPath) -Harness $Harness -Model $Model -Effort $Effort -Row ([string]$Row) -Placement $Placement `
-      -DispatchWorktree $worktreeResolved -DispatchBranch $admissionBranch -DispatchHead $admissionHead `
-      -PolicyGeneration $dispatchRouting.policyGeneration -RegistryAuthorityDigest $dispatchRouting.registryAuthorityDigest `
-      -RoutingFamily $dispatchRouting.family -RoutingSlot $dispatchRouting.slot -UsedLastKnownGood $dispatchRouting.usedLastKnownGood `
-      -RoutingStateRoot $RoutingStateRoot -RoutingLkgPath $RoutingLkgPath -OutFile (Join-Path $runtimeRoot 'dispatch-log.jsonl') -NoBoard | Out-Null
-  }
-  $gatePreamble = "Heavy verification contract: use '$($plan.heavyVerifier.entrypoint)' for every full gate. Supported gates: $($plan.heavyVerifier.supportedGates -join ', '). It acquires and validates the exclusive lock, runs foreground, and only releases its own owner record. Direct memory-heavy Node, Playwright, Vitest, script-battery, and build commands are machine-admitted through the same lock before their command body. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
-  if ($integrationResume) {
+  if ($successorResume) {
+    # #9411: publication-only successor preamble; never the continuation text.
+    $gatePreamble += "Finished-unpublished ordinary successor: prior launch $($integrationResume.sources.finishLaunchId) already finished R '$($integrationResume.state.finishHead)' on branch '$admissionBranch' without publishing; this worktree is attached at '$admissionHead'. Never continue, start, abort or skip a rebase. Make only plain commits confined to the prior FINAL grant's repair paths and focused tests, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the bound Pr/ReviewedHead/NewBase/Worktree and IntegrationLane '$($integrationResume.obligation.integrationLane)'; it pushes under the immutable original-head lease. Never push, force, reset, amend, rebase or move the branch yourself. A heavy-admission exit 73 is disclosed non-execution, never PASS and never a publication stop; hosted CI on the published head owns the full gates. Publication gives no PASS, continuation or landing authority.`r`n`r`n"
+  } elseif ($integrationResume) {
     $gatePreamble += "Interrupted canonical integration: original logical branch '$admissionBranch', detached HEAD '$admissionHead'. Entry bytes are preserved. Only this implementation child may resolve these existing conflicts. Continue through rebase-integration.ps1 -ContinueInterruptedIntegration with the bound original Pr/ReviewedHead/NewBase/Worktree. GIT_EDITOR is noninteractive. Never start a new rebase, abort, reset, stash, skip, or normalize the worktree. A later native stop remains pending; completion requires clean attachment, original-head lease publication, and the existing native completion validator. Resume gives no PASS or continuation authority.`r`n`r`n"
+    if ($ordinaryResume) {
+      $gatePreamble += "Ordinary author variant: pass the bound IntegrationLane '$($integrationResume.obligation.integrationLane)' and finish locally with -NoPush. A finished-unpublished result has no completion, acknowledgement or acceptance. Make only plain commits on this branch for repair/test changes, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the same bound arguments; it pushes under the immutable original-head lease. Never push, force, reset, amend the finish commit, rebase or move the branch yourself.`r`n`r`n"
+    }
   }
   $harnessPreamble = if ($Harness -eq "claude") { $claudeForegroundPreamble } else { "" }
   $reviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
@@ -992,6 +1268,9 @@ try {
     CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS = $originalNodeOptions
     CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL = $admissionConfiguration.originalScriptShell
     CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL = "node-check-proxy"
+  }
+  if ($Harness -eq "claude") {
+    foreach ($name in $claudeForegroundEnvironment.Keys) { $childEnvironment[$name] = $claudeForegroundEnvironment[$name] }
   }
   if ($integrationResume) {
     $childEnvironment['CHASE_SETS_INTERRUPTED_INTEGRATION_OWNER'] = $ownershipRecordPath
@@ -1092,6 +1371,19 @@ try {
         [Console]::Error.WriteLine("INTEGRATION_RESUME_COMPLETION: $($_.Exception.Message)")
         $childExitCode = 1
       }
+    }
+  }
+  if (-not $integrationResume -and $LaneRole -eq 'implementation' -and $admissionIdentityMode -eq 'branch' -and $launchId -and $ownershipRecordPath -and $ownershipRecord -and
+      (Test-Path -LiteralPath (Join-Path $runtimeRoot "integration-ordinary-conflict-$launchId.json") -PathType Leaf)) {
+    # #9334: a LIVE ordinary author captured its own first canonical conflict.
+    # A clean attached result completes through the ordinary validator; a still
+    # detached stop completes nothing and keeps its bytes for host judgment.
+    try {
+      Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
+      [void](Complete-OrdinaryLiveLane $runtimeRoot $ownershipRecordPath)
+    } catch {
+      [Console]::Error.WriteLine("INTEGRATION_RESUME_COMPLETION: $($_.Exception.Message)")
+      $childExitCode = 1
     }
   }
   if (-not $resumeStillStopped -and $LaneRole -eq 'implementation' -and $admissionIdentityMode -eq 'branch' -and $ownershipRecordPath -and $ownershipRecord) {

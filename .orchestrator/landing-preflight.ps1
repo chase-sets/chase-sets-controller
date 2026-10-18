@@ -1231,6 +1231,22 @@ function Get-PlatformDeployObservation {
       continue
     }
 
+    # An executing deploy has not replaced the latest completed health authority.
+    if ([string]$staging.status -ceq "in_progress") {
+      $nonAuthority.Add([pscustomobject][ordered]@{
+          runId = $runId
+          jobId = $jobId
+          reason = "DEPLOY_STAGING_IN_PROGRESS"
+          status = [string]$staging.status
+          conclusion = [string]$staging.conclusion
+        })
+      continue
+    }
+    if ([string]$staging.status -cne "completed" -or
+        [string]::IsNullOrWhiteSpace([string]$staging.conclusion)) {
+      return New-IncompleteDeployObservation @($nonAuthority) $runId
+    }
+
     return [pscustomobject][ordered]@{
       complete = $true
       reason = "DEPLOY_AUTHORITY_OBSERVED"
@@ -1250,7 +1266,7 @@ function Get-PlatformDeployObservation {
 function Get-ProductionObservation {
   $owner, $name = $Repository.Split("/")
   $query = @'
-query($owner:String!, $name:String!, $pr:Int!) {
+query($owner:String!, $name:String!, $pr:Int!, $cursor:String) {
   repository(owner:$owner, name:$name) {
     defaultBranchRef { name target { ... on Commit { oid } } }
     pullRequest(number:$pr) {
@@ -1275,7 +1291,7 @@ query($owner:String!, $name:String!, $pr:Int!) {
             oid
             statusCheckRollup {
               state
-              contexts(first:100) {
+              contexts(first:100,after:$cursor) {
                 totalCount
                 pageInfo { hasNextPage endCursor }
                 nodes {
@@ -1351,9 +1367,41 @@ query($owner:String!, $name:String!, $pr:Int!) {
   $commitNodes = @($pull.commits.nodes)
   $commit = if ($commitNodes.Count -eq 1) { $commitNodes[0].commit } else { $null }
   $contextsConnection = if ($commit -and $commit.statusCheckRollup) { $commit.statusCheckRollup.contexts } else { $null }
+  $contextsPage = $contextsConnection
+  $allContexts = [Collections.Generic.List[object]]::new()
+  $cursor = $null
+  $seenCursors = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  $expectedTotal = $null
+  $contextsComplete = $false
+  for ($page = 1; $page -le 100; $page++) {
+    if (-not (Test-ExactKeys $contextsPage @("totalCount", "pageInfo", "nodes")) -or
+        -not (Test-ExactKeys $contextsPage.pageInfo @("hasNextPage", "endCursor")) -or
+        -not (Test-WholeNumber $contextsPage.totalCount 0) -or
+        $contextsPage.nodes -isnot [Array] -or
+        $contextsPage.pageInfo.hasNextPage -isnot [bool]) { break }
+    if ($null -eq $expectedTotal) { $expectedTotal = [long]$contextsPage.totalCount }
+    elseif ($expectedTotal -ne [long]$contextsPage.totalCount) { break }
+    $next = [string]$contextsPage.pageInfo.endCursor
+    if (-not [string]::IsNullOrWhiteSpace($next) -and -not $seenCursors.Add($next)) { break }
+    foreach ($context in @($contextsPage.nodes)) { $allContexts.Add($context) }
+    if (-not $contextsPage.pageInfo.hasNextPage) {
+      $contextsComplete = $allContexts.Count -eq $expectedTotal
+    }
+    if (-not $contextsPage.pageInfo.hasNextPage) { break }
+    if ($allContexts.Count -ge $expectedTotal -or [string]::IsNullOrWhiteSpace($next) -or $page -eq 100) { break }
+    $cursor = $next
+    $nextGraph = Invoke-GhGraphQl $query @{ owner = $owner; name = $name; pr = $Pr; cursor = $cursor }
+    if (-not $nextGraph.complete) { break }
+    $nextPull = $nextGraph.payload.data.repository.pullRequest
+    $nextCommits = @($nextPull.commits.nodes)
+    if ([string]$nextPull.headRefOid -cne [string]$pull.headRefOid -or $nextCommits.Count -ne 1 -or
+        [string]$nextCommits[0].commit.oid -cne [string]$commit.oid) { break }
+    $contextsPage = $nextCommits[0].commit.statusCheckRollup.contexts
+  }
+  $contextsConnection = [ordered]@{ totalCount = $expectedTotal; nodes = @($allContexts) }
   $checksComplete = $null -ne $commit -and
     [string]$commit.oid -ceq [string]$pull.headRefOid -and
-    (Test-ConnectionComplete $contextsConnection)
+    $contextsComplete
   $checks = @()
   $changeScopeCheckCandidates = [Collections.Generic.List[object]]::new()
   foreach ($context in @($contextsConnection.nodes)) {
@@ -2753,7 +2801,7 @@ function Get-ImmediateQueueObservation {
   Get-FrontierQueue
 }
 
-function Test-PreflightObservation($Observation, $Review) {
+function Test-PreflightPullObservation($Observation) {
   if ($null -eq $Observation -or $Observation.complete -ne $true) {
     return [pscustomobject][ordered]@{ status = "unknown"; reason = if ($Observation.reason) { [string]$Observation.reason } else { "AUTHORITY_INCOMPLETE" } }
   }
@@ -2771,9 +2819,23 @@ function Test-PreflightObservation($Observation, $Review) {
   if ($pull.isDraft) {
     return [pscustomobject][ordered]@{ status = "refused"; reason = "PR_DRAFT" }
   }
+  return $null
+}
+
+function Test-PreflightObservation($Observation, $Review) {
+  $invalid = Test-PreflightPullObservation $Observation
+  if ($null -ne $invalid) { return $invalid }
+  $pull = $Observation.pr
   if (-not [string]::IsNullOrWhiteSpace([string]$pull.mergeQueueEntryId)) {
     return [pscustomobject][ordered]@{ status = "refused"; reason = "PR_ALREADY_ENQUEUED" }
   }
+  Test-NonHoldPreflightObservation $Observation $Review
+}
+
+function Test-NonHoldPreflightObservation($Observation, $Review) {
+  $invalid = Test-PreflightPullObservation $Observation
+  if ($null -ne $invalid) { return $invalid }
+  $pull = $Observation.pr
   if ($null -eq $Review -or [string]$Review.currentHead -cne [string]$pull.head) {
     return [pscustomobject][ordered]@{ status = "unknown"; reason = "REVIEW_REDUCTION_HEAD_MISMATCH" }
   }
@@ -2870,6 +2932,8 @@ function Get-ReviewReduction([string]$Head) {
   $history = Read-ExactHeadReviewHistory -Path $HistoryPath -MaxRows $MaxHistoryRows -MaxBytes $MaxHistoryBytes
   Reduce-ExactHeadReview -Pr $Pr -CurrentHead $Head -History $history
 }
+
+
 
 function Test-DirectLandingAuthorityComplete($Observation, $Review) {
   if ($ControllerCandidate -or $null -eq $Observation -or $Observation.complete -ne $true -or

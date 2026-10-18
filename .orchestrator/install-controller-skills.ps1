@@ -23,6 +23,7 @@ $container = Split-Path -Parent $PSScriptRoot
 $installLockModule = Join-Path $PSScriptRoot "controller-install-lock.psm1"
 Import-Module $installLockModule -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot "controller-heavy-paths.psm1") -Force -DisableNameChecking
 
 $head = (& git -C $container rev-parse HEAD).Trim().ToLowerInvariant()
 if ($head -ne $ReviewedCommit.ToLowerInvariant()) {
@@ -98,6 +99,7 @@ $runtimeFiles = @(
   "landing-preflight.ps1",
   "review-queue-health.ps1",
   "log-event.ps1",
+  "harvest-observed-lanes.ps1",
   "cost-harvest.ps1",
   "matrix-refresh.ps1",
   "check-controller-skill-freshness.ps1",
@@ -164,18 +166,32 @@ foreach ($file in $files) {
 # can never pre-empt a refusal that should have fired first, and nothing is
 # written until the whole plan is known-good.
 Invoke-WithControllerInstallLock -Body {
-  # Installation and ordinary product acquisition share the existing short
-  # admission mutex. Never replace the cleanup implementation under any owner,
-  # including unreadable or schema6 owners and retained interrupted launches.
-  $key = [IO.Path]::GetFullPath($container).TrimEnd('\','/').ToUpperInvariant()
-  $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).ToLowerInvariant()
-  $admissionMutex = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-verifier-$hash")
+  # Only a proven non-heavy diff may avoid product admission. Missing identity,
+  # helper drift or unavailable Git history retains the existing fail-closed guard.
+  $delta = $null
+  try {
+    $delta = Get-ControllerInstalledHeavyDelta -ContainerRoot $container -DestinationRoot $destinationRoot -CandidateHead $ReviewedCommit
+  } catch {
+    Write-Output 'Controller install heavy classification: unknown; retaining product admission and owner refusal'
+  }
+  $requiresHeavyGuard = $null -eq $delta -or $delta.classification -cne 'non-heavy'
+  if ($delta) {
+    Write-Output "Controller install heavy classification: $($delta.classification); installed=$($delta.installedHead); candidate=$ReviewedCommit; heavyPaths=$($delta.heavyPaths -join ',')"
+  }
+  $admissionMutex = $null
   $admissionHeld = $false
   try {
-    try { $admissionHeld = $admissionMutex.WaitOne(30000) } catch [Threading.AbandonedMutexException] { $admissionHeld = $true }
-    if (-not $admissionHeld) { throw 'controller skill install refused: product admission unavailable' }
-    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'verify-lock.d')) {
-      throw 'controller skill install refused: retained verifier owner; no live replacement or schema6 downgrade'
+    if ($requiresHeavyGuard) {
+      # Never replace the cleanup implementation under any owner, including
+      # unreadable/schema6 owners and retained interrupted launches.
+      $key = [IO.Path]::GetFullPath($container).TrimEnd('\','/').ToUpperInvariant()
+      $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($key))).ToLowerInvariant()
+      $admissionMutex = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-verifier-$hash")
+      try { $admissionHeld = $admissionMutex.WaitOne(30000) } catch [Threading.AbandonedMutexException] { $admissionHeld = $true }
+      if (-not $admissionHeld) { throw 'controller skill install refused: product admission unavailable' }
+      if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'verify-lock.d')) {
+        throw 'controller skill install refused: retained verifier owner; no live replacement or schema6 downgrade'
+      }
     }
     $helperPath = Join-Path $PSScriptRoot 'native-db-admission.py'
     $helperBytes = [IO.File]::ReadAllBytes($helperPath)
@@ -286,7 +302,7 @@ foreach ($file in $installPlan) {
   }
   } finally {
     if ($admissionHeld) { $admissionMutex.ReleaseMutex() }
-    $admissionMutex.Dispose()
+    if ($admissionMutex) { $admissionMutex.Dispose() }
   }
 }
 

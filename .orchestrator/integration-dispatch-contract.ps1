@@ -264,10 +264,10 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
     foreach($path in @($HistoryPath,$spec.originalPromptPath,$spec.partialReportPath,$spec.errorPath)) { $locks.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)) }
     $history = Read-ExactHeadReviewHistory -Path $HistoryPath
     if (-not $history.complete) { throw 'routing history unknown' }
-    $routes = @($history.rows | Where-Object { $_.value.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2') -and $_.value.label -ceq $ack.label })
+    $routes = @($history.rows | Where-Object { $_.value.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.value.label -ceq $ack.label })
     if ($routes.Count -ne 1) { throw 'routing history ambiguous' }
     $route = $routes[0].value
-    $routeKeys = @(Get-DispatchRoutingLedgerKeys $route.dispatchRoutingSchema)
+    $routeKeys = @(Get-DispatchRoutingLedgerKeys $route.dispatchRoutingSchema $route)
     if (-not (Test-DispatchRoutingLedgerEvidence $route) -or @($route.PSObject.Properties.Name).Count -ne $routeKeys.Count -or @($routeKeys | Where-Object { $_ -cnotin $route.PSObject.Properties.Name }).Count -or
         $route.kind -cne 'dispatch' -or $route.laneRole -cne 'implementation' -or $route.attemptId -cne $spec.attemptId -or
         $route.transcript -cne "$($ack.label).jsonl" -or $route.lane -cne (Split-Path -Leaf $Worktree) -or
@@ -386,10 +386,10 @@ function Get-IntegrationExecutionAttribution($Obligation,[string]$RuntimeRoot,[s
   } elseif ($spec.launcherPid -ne $accept.ownerPid -or $spec.launcherStartIdentity -cne $accept.ownerStartIdentity -or -not (Test-DispatchSamePath $spec.ownershipRecordPath $accept.ownerRecordPath)) { return $null }
   $history=Read-ExactHeadReviewHistory -Path $HistoryPath
   if (-not $history.complete) { return $null }
-  $routes=@($history.rows | ForEach-Object { $_.value } | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2') -and $_.label -ceq $spec.label })
+  $routes=@($history.rows | ForEach-Object { $_.value } | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.label -ceq $spec.label })
   if ($routes.Count -ne 1) { return $null }
   $route=$routes[0]
-  Assert-RebaseKeys $route @(Get-DispatchRoutingLedgerKeys $route.dispatchRoutingSchema)
+  Assert-RebaseKeys $route @(Get-DispatchRoutingLedgerKeys $route.dispatchRoutingSchema $route)
   if (-not (Test-DispatchRoutingLedgerEvidence $route)) { return $null }
   foreach($key in @('head','branch','harness','model','effort','row','placement','attemptId','laneRole')) { if ([string]$route.$key -cne [string]$spec.$key) { return $null } }
   if ($route.kind -cne 'dispatch' -or $route.transcript -cne "$($spec.label).jsonl" -or -not (Test-DispatchSamePath $route.worktree $Obligation.worktree) -or

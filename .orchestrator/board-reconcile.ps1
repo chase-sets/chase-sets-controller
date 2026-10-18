@@ -45,6 +45,7 @@ function Get-BoardIssue([int]$Number, [string]$Repository, [string]$Project, [st
 
 function Get-BoardHistory([string]$Path) {
   $rows = [Collections.Generic.List[object]]::new()
+  $records = [Collections.Generic.List[object]]::new()
   $errors = [Collections.Generic.List[string]]::new()
   $count = 0
   try {
@@ -57,7 +58,9 @@ function Get-BoardHistory([string]$Path) {
         $count++
         try {
           $row = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop
-          if (-not $row.kind) { throw 'missing kind' }
+          # Attribution evidence for unlinked specs only; typed where it is used.
+          if ($row.kind -is [string] -and $null -ne $row.issue -and $row.transcript -is [string]) { $records.Add($row) }
+          if (-not $row.kind) { continue }
           if ($row.kind -in @('dispatch','lane-complete','repair-complete','review-complete','lane-blocked','landed') -or
               $row.outcome -in @('PARKED_DECISION','REPLAN_REQUIRED','REPLAN_REPLACED','REPLAN_COMPLETE')) {
             $rows.Add($row)
@@ -77,16 +80,393 @@ function Get-BoardHistory([string]$Path) {
       } catch { $specs[$label] = @{ value = $null; error = "unreadable/malformed watchdog $label" } }
     }
   } catch { $errors.Add('watchdog inventory unreadable') }
-  foreach ($label in $specs.Keys) {
-    $links = @($rows | Where-Object {
-      $_.issue -gt 0 -and $_.transcript -and [IO.Path]::GetFileNameWithoutExtension([string]$_.transcript) -ceq $label
-    })
-    if (-not $links.Count) { $errors.Add("unlinked watchdog ${label}: owning issue unknown") }
+  $indexes = New-BoardHistoryIndexes $rows ($specs.Count -gt 0) $records
+  $indexes.scopeComplete = $errors.Count -eq 0
+  $unlinkedSpecs = New-BoardUnlinkedSpecScope $specs $indexes
+  return @{ rows = @($rows); specs = $specs; errors = @($errors); count = $count; indexes = $indexes; unlinkedSpecs = $unlinkedSpecs }
+}
+
+function Get-BoardProcessSnapshot {
+  $snapshot = @{ healthy = $false; ids = @{}; parents = @{} }
+  try {
+    $processes = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)
+    if (-not $processes.Count) { return $snapshot }
+    foreach ($process in $processes) {
+      foreach ($value in @($process.ProcessId, $process.ParentProcessId)) {
+        if ($value -isnot [uint32] -and $value -isnot [int] -and $value -isnot [long]) { return $snapshot }
+        if ($value -lt 0 -or $value -gt [int]::MaxValue) { return $snapshot }
+      }
+      $id = [int]$process.ProcessId; $parent = [int]$process.ParentProcessId
+      if ($snapshot.ids.ContainsKey($id)) { return $snapshot }
+      $creation = $process.CreationDate
+      $created = [datetimeoffset]::MinValue
+      if ($creation -is [datetime]) { $created = [datetimeoffset]$creation.ToUniversalTime() }
+      elseif ($creation -is [datetimeoffset]) { $created = $creation.ToUniversalTime() }
+      elseif ($creation -isnot [string] -or -not [datetimeoffset]::TryParse($creation,
+          [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$created)) { return $snapshot }
+      $created = $created.ToUniversalTime()
+      $snapshot.ids[$id] = $created
+      if (-not $snapshot.parents.ContainsKey($parent)) { $snapshot.parents[$parent] = [Collections.Generic.List[object]]::new() }
+      $snapshot.parents[$parent].Add(@{ id = $id; created = $created })
+    }
+    $snapshot.healthy = $true
+  } catch { $snapshot.healthy = $false }
+  return $snapshot
+}
+
+function Test-BoardUnlinkedEnvelope($Spec, [string]$Label) {
+  return $Spec.schemaVersion -cin @('watchdog-lane/v1','watchdog-lane/v2','watchdog-lane/v3','watchdog-lane/v4') -and
+    $Spec.label -is [string] -and $Spec.label -ceq $Label -and
+    $Spec.attemptId -is [string] -and -not [string]::IsNullOrWhiteSpace($Spec.attemptId) -and
+    $Spec.launchId -is [string] -and $Spec.launchId -cmatch '^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$' -and
+    $Spec.worktree -is [string] -and [IO.Path]::IsPathFullyQualified($Spec.worktree) -and
+    $Spec.branch -is [string] -and ($Spec.branch.Length -gt 0 -or ($Spec.head -is [string] -and $Spec.head -cmatch '^[a-f0-9]{40}$')) -and
+    $Spec.laneRole -cin @('implementation','review','planning','decision','capture') -and
+    $Spec.state -cin @('running','launching','exited') -and
+    ($null -eq $Spec.partialReportPath -or $Spec.partialReportPath -is [string]) -and
+    ($null -eq $Spec.transcriptPath -or $Spec.transcriptPath -is [string])
+}
+
+function Test-BoardUnlinkedDeath($Spec, $Processes) {
+  if (-not $Processes.healthy) { return $false }
+  $updated = [datetimeoffset]::MinValue
+  if ($Spec.updatedAt -isnot [string] -or -not [datetimeoffset]::TryParseExact($Spec.updatedAt, 'o',
+      [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$updated) -or
+      $updated -gt [datetimeoffset]::UtcNow) { return $false }
+  $starts = @{}
+  foreach ($root in @('launcher','child')) {
+    $id = $Spec."${root}Pid"; $identity = $Spec."${root}StartIdentity"
+    $start = [datetimeoffset]::MinValue
+    if (($id -isnot [int] -and $id -isnot [long]) -or $id -le 0 -or $id -gt [int]::MaxValue -or
+        -not (Test-DispatchUtcRoundTripIdentity $identity) -or -not [datetimeoffset]::TryParse($identity, [ref]$start) -or
+        $start -gt $updated) { return $false }
+    $starts[$root] = $start
   }
-  return @{ rows = @($rows); specs = $specs; errors = @($errors); count = $count }
+  if ($Spec.launcherPid -eq $Spec.childPid -or $starts.launcher -gt $starts.child) { return $false }
+  foreach ($root in @('launcher','child')) {
+    $id = [int]$Spec."${root}Pid"
+    $end = $null
+    if ($Processes.ids.ContainsKey($id)) {
+      $created = $Processes.ids[$id]
+      # CIM truncates to microseconds. Inequality with a recorded 100 ns start
+      # is not reuse proof; only creation strictly after updatedAt proves it.
+      if ($created -le $updated) { return $false }
+      $end = $created
+    }
+    # The launcher can spawn work after writing exited. Only a non-resume
+    # child's completed wait supplies an updatedAt lifetime upper bound.
+    if ($root -ceq 'child' -and $Spec.state -ceq 'exited' -and
+        $Spec.schemaVersion -cin @('watchdog-lane/v1','watchdog-lane/v2','watchdog-lane/v3') -and
+        ($Spec.exitCode -is [int] -or $Spec.exitCode -is [long])) {
+      if ($null -eq $end -or $updated -lt $end) { $end = $updated }
+    }
+    foreach ($edge in $Processes.parents[$id]) {
+      if ($edge.id -eq $id -or $edge.created -lt $starts[$root].AddMilliseconds(-1) -or
+          ($null -ne $end -and $edge.created -gt $end)) { continue }
+      return $false
+    }
+  }
+  return $true
+}
+
+function Get-BoardScopeIssueNumber([string]$Value, [switch]$Branch) {
+  # Closed positional forms, not digit-substring extraction. Labels:
+  # [controller-]<issue>-<words>-gN/rN[-cN], controller-<words>-<issue>-gN/rN[-cN].
+  # Branches: codex|claude/[controller-]<issue>-<words>[-gN/rN[-cN]], or <words>-<issue>-gN|hex-head.
+  $patterns = if ($Branch) { @(
+    '\A(?:codex|claude)/(?<issue>[1-9][0-9]*)-[a-z]+(?:-[a-z]+)*(?:-(?:g|r)[1-9][0-9]*(?:-c[1-9][0-9]*)?)?\z',
+    '\A(?:codex|claude)/controller-(?<issue>[1-9][0-9]*)-[a-z]+(?:-[a-z]+)*(?:-(?:g|r)[1-9][0-9]*(?:-c[1-9][0-9]*)?)?\z',
+    '\A(?:codex|claude)/(?:[a-z]+-)+(?<issue>[1-9][0-9]*)-(?:g[1-9][0-9]*|[a-f0-9]{7,40})\z'
+  ) } else { @(
+    '\A(?:controller-)?(?<issue>[1-9][0-9]*)-(?:[a-z]+-)+(?:g|r)[1-9][0-9]*(?:-c[1-9][0-9]*)?\z',
+    '\Acontroller-(?:[a-z]+-)+(?<issue>[1-9][0-9]*)-(?:g|r)[1-9][0-9]*(?:-c[1-9][0-9]*)?\z'
+  ) }
+  foreach ($pattern in $patterns) {
+    $number = 0
+    if ($Value -cmatch $pattern -and [int]::TryParse($Matches.issue, [ref]$number)) { return $number }
+  }
+  return 0
+}
+
+function Get-BoardUnlinkedLaunchEvidence($Spec, $Keys, $Indexes) {
+  $rows = [Collections.Generic.HashSet[object]]::new()
+  foreach ($kind in @('lanes','transcripts')) {
+    foreach ($key in $Keys[$kind]) {
+      if ($key) { foreach ($row in $Indexes.scopeRows[$kind][$key]) { [void]$rows.Add($row) } }
+    }
+  }
+  $consistent = $true; $scopeConsistent = $true; $corroborated = $false
+  $laneAliases = [Collections.Generic.HashSet[string]]::new([StringComparer]::InvariantCultureIgnoreCase)
+  $issues = [Collections.Generic.HashSet[int]]::new()
+  foreach ($row in $rows) {
+    $sameTranscript = $row.transcript -is [string] -and
+      [IO.Path]::GetFileNameWithoutExtension($row.transcript) -ceq $Spec.label
+    $sameSeatDispatch = $row.kind -ceq 'dispatch' -and $row.lane -eq (Split-Path -Leaf $Spec.worktree.TrimEnd('\','/')) -and
+      $row.laneRole -notin @('planning','decision','capture')
+    if (($sameTranscript -or $sameSeatDispatch) -and $row.issue) {
+      if (($row.issue -isnot [int] -and $row.issue -isnot [long]) -or $row.issue -le 0 -or $row.issue -gt [int]::MaxValue) {
+        $scopeConsistent = $false
+      } else { [void]$issues.Add([int]$row.issue) }
+    }
+    if ($sameSeatDispatch -and $row.branch -and $row.branch -cne $Spec.branch) { $scopeConsistent = $false }
+    if (-not $sameTranscript) { continue }
+    foreach ($field in @('attemptId','launchId','branch','laneRole')) {
+      if ($row.$field -and $row.$field -cne $Spec.$field) { $consistent = $false }
+    }
+    if ($row.lane -and $row.lane -cne (Split-Path -Leaf $Spec.worktree.TrimEnd('\','/'))) {
+      $scopeConsistent = $false
+      [void]$laneAliases.Add([string]$row.lane)
+    }
+    $instant = [datetimeoffset]::MinValue
+    if ($row.kind -ceq 'dispatch' -and $row.attemptId -ceq $Spec.attemptId -and
+        [datetimeoffset]::TryParse([string]$row.ts, [ref]$instant)) { $corroborated = $true }
+  }
+  return @{ consistent = $consistent; scopeConsistent = $scopeConsistent; corroborated = $corroborated; issues = $issues; laneAliases = $laneAliases }
+}
+
+function New-BoardUnlinkedSpecScope($Specs, $Indexes) {
+  $scope = @{ all = [Collections.Generic.List[string]]::new(); active = [Collections.Generic.List[string]]::new()
+    lanes = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCultureIgnoreCase)
+    transcripts = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCultureIgnoreCase)
+    issues = @{} }
+  $now = [datetimeoffset]::UtcNow
+  $processes = $null
+  # A record row claim is a native integer or a plain digit string, never loose coercion.
+  # Digit strings of any width agree by Int64 value; overflow refuses, never throws.
+  $rowNumber = { param($Value)
+    $parsed = 0L
+    if ($Value -is [int] -or $Value -is [long]) { [long]$Value }
+    elseif ($Value -is [string] -and $Value -cmatch '\A[0-9]+\z' -and
+      [long]::TryParse($Value, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) { $parsed } }
+  foreach ($label in $Specs.Keys) {
+    if ($Indexes.linkedLabels.Contains($label)) { continue }
+    $reason = "unlinked watchdog ${label}: owning issue unknown"
+    $scope.all.Add($reason)
+    $entry = $Specs[$label]; $spec = $entry.value
+    $lane = if ($spec.worktree -is [string] -and -not [string]::IsNullOrWhiteSpace($spec.worktree.TrimEnd('\','/'))) {
+      Split-Path -Leaf $spec.worktree.TrimEnd('\','/')
+    }
+    $keys = @{ lanes = @($lane); transcripts = @($label) }
+    foreach ($path in @($spec.partialReportPath, $spec.transcriptPath)) {
+      if ($path -is [string] -and $path) { $keys.transcripts += [IO.Path]::GetFileNameWithoutExtension($path) }
+    }
+    $valid = -not $entry.error -and $lane -and (Test-BoardUnlinkedEnvelope $spec $label)
+    if ($valid) {
+      $launch = Get-BoardUnlinkedLaunchEvidence $spec $keys $Indexes
+      $keys.lanes += @($launch.laneAliases)
+    }
+    foreach ($kind in @('lanes','transcripts')) {
+      foreach ($key in $keys[$kind]) {
+        if (-not $key) { continue }
+        if (-not $scope[$kind].ContainsKey($key)) { $scope[$kind][$key] = [Collections.Generic.List[string]]::new() }
+        $scope[$kind][$key].Add($reason)
+      }
+    }
+    if (-not $valid) {
+      $scope.active.Add($reason); continue
+    }
+    if (-not $launch.consistent) { $scope.active.Add($reason); continue }
+    if ($null -eq $processes) { $processes = Get-BoardProcessSnapshot }
+    $instant = [datetimeoffset]::MinValue
+    $recent = -not [datetimeoffset]::TryParse([string]$spec.updatedAt, [ref]$instant) -or $now - $instant -le [timespan]::FromHours(6)
+    $dead = Test-BoardUnlinkedDeath $spec $processes
+    if ($dead -and ($spec.state -ceq 'exited' -or -not $recent)) { continue }
+    # Derivation only bounds this refusal. It never changes rows, attempts,
+    # ownership, or terminal authority; every intersection above is retained.
+    $number = Get-BoardScopeIssueNumber $label
+    $branchNumber = Get-BoardScopeIssueNumber $spec.branch -Branch
+    if ($Indexes.scopeComplete -and $launch.scopeConsistent -and $launch.corroborated -and $number -gt 0 -and $number -eq $branchNumber -and
+        $Indexes.canonicalIssues.Contains($number) -and @($launch.issues | Where-Object { $_ -ne $number }).Count -eq 0) {
+      if (-not $scope.issues.ContainsKey($number)) { $scope.issues[$number] = [Collections.Generic.List[string]]::new() }
+      $scope.issues[$number].Add($reason)
+    } else {
+      # The spec's own same-label records may name its owner (FINAL #9322 Q1).
+      # Success bounds applicability only: never death, linkage or a wildcard.
+      $attributed = 0
+      $start = [datetimeoffset]::MinValue
+      $records = if ($Indexes.attribution) { $Indexes.attribution[$label] }
+      if ($Indexes.scopeComplete -and $records.Count -gt 0 -and (Test-DispatchUtcRoundTripIdentity $spec.launcherStartIdentity) -and
+          [datetimeoffset]::TryParse($spec.launcherStartIdentity, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind, [ref]$start)) {
+        $specRow = & $rowNumber $spec.row
+        $claims = [Collections.Generic.HashSet[int]]::new(); $agreed = $true; $causal = $false
+        foreach ($record in $records) {
+          # Every record binds; an earlier one is only non-causal, never skipped.
+          $instant = [datetimeoffset]::MinValue
+          $recordRow = & $rowNumber $record.row
+          if (($record.issue -is [int] -or $record.issue -is [long]) -and $record.issue -gt 0 -and $record.issue -le [int]::MaxValue) {
+            [void]$claims.Add([int]$record.issue)
+          } else { $agreed = $false }
+          if ($record.lane -isnot [string] -or $record.lane -cnotin @($label, $spec.attemptId, $lane)) { $agreed = $false }
+          if ($record.laneRole -isnot [string] -or $record.laneRole -cne $spec.laneRole -or $null -eq $recordRow -or $recordRow -ne $specRow) { $agreed = $false }
+          foreach ($field in @('harness','model','effort','placement','attemptId','launchId')) {
+            if ($null -ne $record.$field -and ($record.$field -isnot [string] -or $record.$field -cne $spec.$field)) { $agreed = $false }
+          }
+          if ($null -ne $record.branch -and ($record.branch -isnot [string] -or ($record.branch -and $record.branch -cne $spec.branch))) { $agreed = $false }
+          if ($record.ts -isnot [string] -or $record.ts -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?(?:Z|[+-][0-9]{2}:[0-9]{2})\z' -or
+              -not [datetimeoffset]::TryParse($record.ts, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$instant)) {
+            $agreed = $false
+          } elseif ($instant -ge $start.AddMilliseconds(-1)) { $causal = $true }
+        }
+        $candidate = if ($claims.Count -eq 1) { @($claims)[0] } else { 0 }
+        if ($agreed -and $causal -and $candidate -gt 0 -and ($number -eq 0 -or $number -eq $candidate) -and
+            ($branchNumber -eq 0 -or $branchNumber -eq $candidate) -and $Indexes.canonicalIssues.Contains($candidate) -and
+            $launch.scopeConsistent -and @($launch.issues | Where-Object { $_ -ne $candidate }).Count -eq 0) { $attributed = $candidate }
+      }
+      if ($attributed -gt 0) {
+        if (-not $scope.issues.ContainsKey($attributed)) { $scope.issues[$attributed] = [Collections.Generic.List[string]]::new() }
+        $scope.issues[$attributed].Add($reason)
+      } else {
+        $scope.active.Add($reason)
+      }
+    }
+  }
+  return $scope
+}
+
+function Get-BoardUnlinkedSpecReasons($Scope, $Lanes, $Rows, [int]$Number) {
+  if (-not $Scope) { return }
+  foreach ($reason in $Scope.active) { $reason }
+  foreach ($reason in $Scope.issues[$Number]) { $reason }
+  foreach ($lane in $Lanes) {
+    if ($lane -is [string]) {
+      foreach ($reason in $Scope.lanes[$lane]) { $reason }
+    } else {
+      # Preserve the same typed lane membership semantics as issue-less rows.
+      foreach ($key in $Scope.lanes.Keys) {
+        if ($key -in @($lane)) { foreach ($reason in $Scope.lanes[$key]) { $reason } }
+      }
+    }
+  }
+  foreach ($row in $Rows) {
+    if ($row.transcript) {
+      $label = [IO.Path]::GetFileNameWithoutExtension([string]$row.transcript)
+      foreach ($reason in $Scope.transcripts[$label]) { $reason }
+    }
+  }
+}
+
+function New-BoardHistoryIndexes($Rows, [bool]$LinkLabels, $Records = @()) {
+  # PowerShell string equality uses invariant-culture comparison, not ordinal
+  # comparison. Linkage is case-sensitive; lane membership is not.
+  $linkedLabels = [Collections.Generic.HashSet[string]]::new([StringComparer]::InvariantCulture)
+  # Issue-bearing rows of any kind by exact transcript stem. Never linkage,
+  # lifecycle or canonical-issue authority.
+  $attribution = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCulture)
+  if ($LinkLabels) {
+    foreach ($record in $Records) {
+      $stem = [IO.Path]::GetFileNameWithoutExtension([string]$record.transcript)
+      if (-not $attribution.ContainsKey($stem)) { $attribution[$stem] = [Collections.Generic.List[object]]::new() }
+      $attribution[$stem].Add($record)
+    }
+  }
+  $issues = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCultureIgnoreCase)
+  $lanes = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCultureIgnoreCase)
+  $nonzeroIssues = [Collections.Generic.List[object]]::new()
+  $otherLanes = [Collections.Generic.List[object]]::new()
+  $ordinal = 0
+  $canonicalIssues = [Collections.Generic.HashSet[int]]::new()
+  $scopeRows = @{}
+  foreach ($kind in @('lanes','transcripts')) {
+    $scopeRows[$kind] = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::InvariantCultureIgnoreCase)
+  }
+  foreach ($row in $Rows) {
+    if ($LinkLabels) {
+      $scopeInstant = [datetimeoffset]::MinValue
+      if (($row.issue -is [int] -or $row.issue -is [long]) -and $row.issue -gt 0 -and $row.issue -le [int]::MaxValue -and
+          [datetimeoffset]::TryParse([string]$row.ts, [ref]$scopeInstant)) {
+        [void]$canonicalIssues.Add([int]$row.issue)
+      }
+      $scopeKeys = @{ lanes = $row.lane; transcripts = $(if ($row.transcript -is [string]) { [IO.Path]::GetFileNameWithoutExtension($row.transcript) }) }
+      foreach ($kind in @('lanes','transcripts')) {
+        $scopeKey = $scopeKeys[$kind]
+        if ($scopeKey -isnot [string] -or -not $scopeKey) { continue }
+        if (-not $scopeRows[$kind].ContainsKey($scopeKey)) { $scopeRows[$kind][$scopeKey] = [Collections.Generic.List[object]]::new() }
+        $scopeRows[$kind][$scopeKey].Add($row)
+      }
+    }
+    if ($LinkLabels -and $row.issue -gt 0 -and $row.transcript) {
+      [void]$linkedLabels.Add([IO.Path]::GetFileNameWithoutExtension([string]$row.transcript))
+    }
+    $entry = @{ row = $row; ordinal = $ordinal++ }
+    # JSON issue values are not schema-restricted. Arrays use PowerShell's
+    # filtered-result truthiness; true matches every nonzero native Int32.
+    $nonzero = $false
+    if ($row.issue -is [long] -or $row.issue -is [int] -or $row.issue -is [string]) {
+      $key = [string]$row.issue
+      if (-not $issues.ContainsKey($key)) { $issues[$key] = [Collections.Generic.List[object]]::new() }
+      $issues[$key].Add($entry)
+    } else {
+      $keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::InvariantCultureIgnoreCase)
+      foreach ($value in @($row.issue)) {
+        if ($value -is [string]) { [void]$keys.Add($value) }
+        elseif ($value -is [bool]) {
+          if ($value) { $nonzero = $true } else { [void]$keys.Add('0') }
+        }
+        elseif ($null -ne $value -and $value -is [ValueType]) {
+          $number = 0
+          if ([int]::TryParse([string]$value, [ref]$number) -and $value -eq $number) {
+            [void]$keys.Add([string]$number)
+          }
+        }
+      }
+      foreach ($key in $keys) {
+        if (-not $issues.ContainsKey($key)) { $issues[$key] = [Collections.Generic.List[object]]::new() }
+        $issues[$key].Add($entry)
+      }
+    }
+    if ($nonzero) { $nonzeroIssues.Add($entry) }
+    if (-not $row.issue -and ($row.watchdogSchema -or $row.dispatchRoutingSchema)) {
+      if ($row.lane -is [string]) {
+        if (-not $lanes.ContainsKey($row.lane)) { $lanes[$row.lane] = [Collections.Generic.List[object]]::new() }
+        $lanes[$row.lane].Add($entry)
+      } else { $otherLanes.Add($entry) }
+    }
+  }
+  return @{ linkedLabels = $linkedLabels; issues = $issues; nonzeroIssues = $nonzeroIssues
+    lanes = $lanes; otherLanes = $otherLanes; scopeRows = $scopeRows; canonicalIssues = $canonicalIssues; attribution = $attribution
+    scopeComplete = $true }
+}
+
+function Get-BoardIssueRows($Indexes, [int]$Number) {
+  if (-not $Indexes) { return }
+  $entries = $Indexes.issues[[string]$Number]
+  if ($Number -ne 0 -and $Indexes.nonzeroIssues.Count) {
+    $entries = @(@($entries) + @($Indexes.nonzeroIssues) | Sort-Object ordinal -Unique)
+  }
+  foreach ($entry in $entries) {
+    if ($entry.row.issue -eq $Number) { $entry.row }
+  }
+}
+
+function Get-BoardUnlinkedLaneRows($Indexes, $Lanes) {
+  if (-not $Indexes -or -not $Lanes.Count) { return }
+  $selected = [Collections.Generic.HashSet[object]]::new()
+  $entries = [Collections.Generic.List[object]]::new()
+  $typed = $false
+  foreach ($lane in $Lanes) {
+    if ($lane -is [string]) {
+      foreach ($entry in $Indexes.lanes[$lane]) { if ($selected.Add($entry)) { $entries.Add($entry) } }
+    } else { $typed = $true }
+  }
+  if ($typed) {
+    # A typed -in member is the left operand and may convert comparer-equal
+    # bucket strings differently; apply the original test per indexed row.
+    foreach ($key in $Indexes.lanes.Keys) {
+      foreach ($entry in $Indexes.lanes[$key]) {
+        if (-not $selected.Contains($entry) -and $entry.row.lane -in $Lanes) { [void]$selected.Add($entry); $entries.Add($entry) }
+      }
+    }
+  }
+  foreach ($entry in $Indexes.otherLanes) {
+    if ($entry.row.lane -in $Lanes -and $selected.Add($entry)) { $entries.Add($entry) }
+  }
+  # Sort-Object -Unique later retains the first casing of equal reasons.
+  foreach ($entry in ($entries | Sort-Object ordinal)) { $entry.row }
 }
 
 function Get-BoardProjection($Item, $History) {
+  if (-not $History.indexes -and $History.rows.Count -gt 0) { throw 'non-empty board history requires indexes' }
   $native = $Item.content
   $result = [ordered]@{ issue = [int]$native.number; itemId = $Item.id; status = [string]$Item.status.name
     statusSince = [string]$Item.status.updatedAt; eligible = $false; known = $true; desired = $null
@@ -116,14 +496,13 @@ function Get-BoardProjection($Item, $History) {
   }
   $liveImplementation = $false; $liveReview = $false
   $evidence = [Collections.Generic.List[string]]::new()
-  $related = @($History.rows | Where-Object { $_.issue -eq $native.number })
+  $related = @(Get-BoardIssueRows $History.indexes $native.number)
   $lanes = @($related | Where-Object lane | ForEach-Object { $_.lane } | Sort-Object -Unique)
+  foreach ($reason in (Get-BoardUnlinkedSpecReasons $History.unlinkedSpecs $lanes $related $native.number)) { $reasons.Add($reason) }
   # Issue-less watchdog rows can never retire an owner by a number guessed from
   # its branch. Retain them as unknown for the issue linked by canonical history.
-  foreach ($row in $History.rows) {
-    if (-not $row.issue -and ($row.watchdogSchema -or $row.dispatchRoutingSchema)) {
-      if ($row.lane -in $lanes) { $reasons.Add("unlinked watchdog row for lane $($row.lane): missing owning issue") }
-    }
+  foreach ($row in (Get-BoardUnlinkedLaneRows $History.indexes $lanes)) {
+    $reasons.Add("unlinked watchdog row for lane $($row.lane): missing owning issue")
   }
   $attempts = @{}
   foreach ($row in $related) {

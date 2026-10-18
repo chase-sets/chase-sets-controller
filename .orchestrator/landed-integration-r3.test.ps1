@@ -441,4 +441,5 @@ function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
 }
 
 Test-TimedFixtureUnderFleetLoadMeasuresLoad
+Invoke-9334OrdinaryCarriers @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')
 } finally { Exit-RoutingDataTestScope $routingTestScope }

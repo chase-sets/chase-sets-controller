@@ -32,14 +32,23 @@ function Test-8185AuthPartition {
           @(Get-ChildItem $f.runtime -Filter 'integration-rebase-complete-*.json').Count -eq 0) 'auth observations preserve owed/history and never publish completion'
       }
     }
+    # #8594: each Auth is evaluated once; its actual value, own duration and the
+    # loaded module and fixture identities travel with the unchanged assertion,
+    # so an early refusal is attributable without calling Auth again.
+    function AuthIs([string]$Expected, [string]$Name, [hashtable]$With=@{}) {
+      $watch = [Diagnostics.Stopwatch]::StartNew()
+      $actual = Auth @With
+      $watch.Stop()
+      Assert-CensusFixture ($actual -ceq $Expected) "$Name (actual: $actual; authMs=$($watch.ElapsedMilliseconds); module=$((Get-FileHash -LiteralPath $modulePath -Algorithm SHA256).Hash); runtime=$(if ($With.Runtime) { $With.Runtime } else { $f.runtime }); owner=$($owner.record.launchId); foreign=$($foreign.record.launchId))"
+    }
     Import-Module $modulePath -Force -DisableNameChecking
-    Assert-CensusFixture ((Auth) -ceq $owner.record.launchId) 'auth native platform partition grants only exact product owner'
-    Assert-CensusFixture ((Auth -Strict) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') 'auth defaults strict'
+    AuthIs $owner.record.launchId 'auth native platform partition grants only exact product owner'
+    AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' 'auth defaults strict' @{Strict=$true}
     $guard = 'if ($proof.proven) { continue }'
     Assert-CensusFixture ([regex]::Matches($source,[regex]::Escape($guard)).Count -eq 1) 'auth branch-only mutant carrier'
     [IO.File]::WriteAllText($modulePath,$source.Replace($guard,'if ($false) { continue }'))
     Import-Module $modulePath -Force -DisableNameChecking
-    Assert-CensusFixture ((Auth) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') 'auth-branch-only killed'
+    AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' 'auth-branch-only killed'
     [IO.File]::WriteAllText($modulePath,$source)
     Import-Module $modulePath -Force -DisableNameChecking
     foreach ($differentWorktree in @($false,$true)) {
@@ -49,13 +58,13 @@ function Test-8185AuthPartition {
         [void](Invoke-CensusFixtureGit $f.main @('worktree','add','--force','-q',$duplicatePath,$o.branch))
       }
       $duplicate = New-CensusFixtureOwner $f $duplicatePath
-      Assert-CensusFixture ((Auth) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') "same-repo duplicate differentWorktree=$differentWorktree"
+      AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' "same-repo duplicate differentWorktree=$differentWorktree"
       if ($differentWorktree) {
         $old = 'if ($record.branch -ceq $Obligation.branch -and (Get-DispatchProcessIdentityState $record.launcherPid $record.launcherStartIdentity) -ceq ''live'') {'
         Assert-CensusFixture ([regex]::Matches($source,[regex]::Escape($old)).Count -eq 1) 'auth exact-worktree mutant carrier'
         [IO.File]::WriteAllText($modulePath,$source.Replace($old,'if ((Test-DispatchSamePath $record.worktree $Obligation.worktree) -and $record.branch -ceq $Obligation.branch -and (Get-DispatchProcessIdentityState $record.launcherPid $record.launcherStartIdentity) -ceq ''live'') {'))
         Import-Module $modulePath -Force -DisableNameChecking
-        Assert-CensusFixture ((Auth) -ceq $owner.record.launchId) 'auth-exact-worktree-only exposes hidden duplicate'
+        AuthIs $owner.record.launchId 'auth-exact-worktree-only exposes hidden duplicate'
         [IO.File]::WriteAllText($modulePath,$source)
         Import-Module $modulePath -Force -DisableNameChecking
       }
@@ -64,10 +73,10 @@ function Test-8185AuthPartition {
     $outside = Join-Path $parent 'outside-product'
     [void](Invoke-CensusFixtureGit $f.main @('worktree','add','--force','-q',$outside,$o.branch))
     $duplicate = New-CensusFixtureOwner $f $outside
-    Assert-CensusFixture ((Auth) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') 'outside product counts in uniqueness'
+    AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' 'outside product counts in uniqueness'
     Remove-Item -LiteralPath $duplicate.path
     [void](Invoke-CensusFixtureGit $f.anchor @('config','remote.origin.pushurl','https://github.com/chase-sets/chase-sets.git'))
-    Assert-CensusFixture ((Auth) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') 'unknown outside proof stays counted'
+    AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' 'unknown outside proof stays counted'
     [void](Invoke-CensusFixtureGit $f.anchor @('config','--unset-all','remote.origin.pushurl'))
     $other = Join-Path $parent 'other-container'
     $runtime = Join-Path $other '.orchestrator'; $main = Join-Path $other 'main'
@@ -84,12 +93,12 @@ function Test-8185AuthPartition {
       $r.transcriptPath = Join-Path $runtime (Split-Path -Leaf $r.transcriptPath)
       Write-DispatchOwnershipRecord (Join-Path $runtime (Split-Path -Leaf $item.path)) $r -CreateNew
     }
-    Assert-CensusFixture ((Auth -Runtime $runtime -Path (Join-Path $runtime (Split-Path -Leaf $owner.path))) -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') 'F1 runtime-parent product repository mismatch stays strict'
+    AuthIs 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner' 'F1 runtime-parent product repository mismatch stays strict' @{Runtime=$runtime;Path=(Join-Path $runtime (Split-Path -Leaf $owner.path))}
     $guard = '(Test-DispatchSameCanonicalPath $target.commonDir $product.commonDir)'
     Assert-CensusFixture ([regex]::Matches($source,[regex]::Escape($guard)).Count -eq 1) 'F1 governing common-dir guard'
     [IO.File]::WriteAllText($modulePath,$source.Replace($guard,'$true'))
     Import-Module $modulePath -Force -DisableNameChecking
-    Assert-CensusFixture ((Auth -Runtime $runtime -Path (Join-Path $runtime (Split-Path -Leaf $owner.path))) -ceq $owner.record.launchId) 'F1 product obligation proof omission unmasked'
+    AuthIs $owner.record.launchId 'F1 product obligation proof omission unmasked' @{Runtime=$runtime;Path=(Join-Path $runtime (Split-Path -Leaf $owner.path))}
     [IO.File]::WriteAllText($modulePath,$source)
     Import-Module $modulePath -Force -DisableNameChecking
     $strictCalls = @(
@@ -103,7 +112,7 @@ function Test-8185AuthPartition {
       $Runtime=$f.runtime; $RecordPath=$owner.path; $Obligation=$o; $binding=@{obligation=$o}
       $refusal=$null
       try { & ([scriptblock]::Create($command)) | Out-Null } catch { $refusal=$_.Exception.Message }
-      Assert-CensusFixture ($refusal -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') "strict interrupted production call with proven same-branch platform: $command"
+      Assert-CensusFixture ($refusal -ceq 'OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') "strict interrupted production call with proven same-branch platform: $command (actual: $refusal)"
     }
     Assert-CensusFixture ($source.Contains('if ($resumeRecord -and $resumeRecord.schemaVersion -eq 5) { return Complete-InterruptedIntegration $Obligation $Runtime $RecordPath }')) 'v5 completion delegation remains strict'
     Write-Output 'CONTROL 8185 auth partition PASS native-product/live-platform; strict/duplicate-same-worktree/duplicate-other-worktree/outside-product/unknown/runtime-parent-main refuse; MUTANTS auth-branch-only/auth-exact-worktree-only KILLED'

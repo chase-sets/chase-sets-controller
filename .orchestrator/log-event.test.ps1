@@ -1,7 +1,10 @@
-[CmdletBinding()]param([switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$StrictOnly,[switch]$BoardOnly)
+[CmdletBinding()]param([switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$StrictOnly,[switch]$CapacityOnly,[switch]$BoardOnly,[switch]$ToddActionOnly)
+if($CapacityOnly){& (Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1') -Case capacity-logger;return}
 $ErrorActionPreference='Stop';$logger=Join-Path $PSScriptRoot 'log-event.ps1';$root=Join-Path ([IO.Path]::GetTempPath()) ('log-event-test-'+[guid]::NewGuid().ToString('N'))
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
+$oldBoardSync=$env:ORCH_BOARD_SYNC
+$env:ORCH_BOARD_SYNC='1'
 function Assert-Log([bool]$c,[string]$m){if(-not$c){throw "ASSERTION FAILED: $m"}}
 function Assert-Refused([scriptblock]$Body,[string]$Pattern){$message='';try{&$Body}catch{$message=$_.Exception.Message};Assert-Log ($message-match$Pattern) "expected refusal $Pattern, observed $message"}
 function Test-StrictControllerWriter {
@@ -151,10 +154,45 @@ function Test-StrictControllerWriter {
   Assert-Log ($failures.Count-eq0) ($failures-join"`n")
 }
 function Test-BoardLogger {
+  $entryBoardSync = $env:ORCH_BOARD_SYNC
+  $env:ORCH_BOARD_SYNC = '1'
+  try {
   . (Join-Path $PSScriptRoot 'board-reconcile.test.ps1') -FunctionsOnly
+  foreach ($case in @('NoBoard','issue-less','disabled','failure')) {
+    $caseRoot = Join-Path $root "board-bypass-$case"; [void][IO.Directory]::CreateDirectory($caseRoot)
+    $caseLog = Join-Path $caseRoot 'dispatch.jsonl'
+    $marker = Join-Path $caseRoot 'board-called'
+    $failure = Join-Path $caseRoot 'board.ps1'
+    [IO.File]::WriteAllText($failure, "[IO.File]::WriteAllText('$($marker.Replace("'","''"))','called'); throw 'synthetic board failure'")
+    $parameters = @{ Log = 'dispatch'; Kind = 'lane-complete'; LaneRole = 'implementation'; OutFile = $caseLog; BoardScript = $failure }
+    if ($case -ne 'issue-less') { $parameters.Issue = 908548 }
+    if ($case -eq 'NoBoard') { $parameters.NoBoard = $true }
+    $env:ORCH_BOARD_SYNC = if ($case -eq 'disabled') { '0' } else { '1' }
+    $warnings = @()
+    & $logger @parameters -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+    $rows = @(Get-Content $caseLog | ConvertFrom-Json)
+    Assert-Log ($rows.Count -eq 1 -and $rows[0].kind -eq 'lane-complete') "$case committed append survives"
+    Assert-Log ((Test-Path $marker) -eq ($case -eq 'failure')) "$case board invocation/zero-history bypass"
+    Assert-Log (($warnings.Count -gt 0) -eq ($case -eq 'failure')) "$case fail-open warning"
+    Write-Output "PASS board-bookkeeping-$case append=1"
+  }
+  $env:ORCH_BOARD_SYNC = '1'
   $forward = Join-Path $root 'forward.ps1'; $capture = Join-Path $root 'forward.json'
   [IO.File]::WriteAllText($forward, "param(`$Issue,`$EventKind,`$LaneRole,`$Outcome,`$ReviewAuthority,`$Pr)`n[IO.File]::WriteAllText('$($capture.Replace("'","''"))',(`$PSBoundParameters | ConvertTo-Json))")
-  & $logger -Log dispatch -Kind lane-complete -Issue 908478 -LaneRole implementation -Pr 909478 -OutFile (Join-Path $root 'board-forward.jsonl') -BoardScript $forward | Out-Null
+  $forwardingBoardSync = $env:ORCH_BOARD_SYNC
+  try {
+    $env:ORCH_BOARD_SYNC = '0'
+    $suppressedLog = Join-Path $root 'board-suppressed.jsonl'
+    & $logger -Log dispatch -Kind lane-complete -Issue 908478 -LaneRole implementation -Pr 909478 -OutFile $suppressedLog -BoardScript $forward | Out-Null
+    Assert-Log (-not (Test-Path $capture)) 'ORCH_BOARD_SYNC=0 suppresses board projection'
+    $suppressedRows = @(Get-Content $suppressedLog | ConvertFrom-Json)
+    Assert-Log ($suppressedRows.Count -eq 1 -and $suppressedRows[0].kind -eq 'lane-complete' -and $suppressedRows[0].pr -eq 909478) 'ORCH_BOARD_SYNC=0 preserves the event append'
+    Write-Output 'PASS ORCH_BOARD_SYNC=0 suppresses projection and preserves append'
+  } finally { $env:ORCH_BOARD_SYNC = $forwardingBoardSync }
+  try {
+    Remove-Item Env:ORCH_BOARD_SYNC -ErrorAction SilentlyContinue
+    & $logger -Log dispatch -Kind lane-complete -Issue 908478 -LaneRole implementation -Pr 909478 -OutFile (Join-Path $root 'board-forward.jsonl') -BoardScript $forward | Out-Null
+  } finally { $env:ORCH_BOARD_SYNC = $forwardingBoardSync }
   Assert-Log ((Get-Content $capture -Raw | ConvertFrom-Json).Pr -eq 909478) 'positive Pr forwarded to board-set'
   Write-Output 'PASS positive Pr forwarding'
   foreach ($kind in @('dispatch', 'review-complete')) {
@@ -179,7 +217,11 @@ function Test-BoardLogger {
           if ($outcome -eq 'BLOCK_REPLAN') { $parameters.RepairOwner='planning-repair' }
         }
         $warnings = @()
-        & $logger @parameters -WarningVariable warnings | Out-Null
+        $caseBoardSync = $env:ORCH_BOARD_SYNC
+        try {
+          Remove-Item Env:ORCH_BOARD_SYNC -ErrorAction SilentlyContinue
+          & $logger @parameters -WarningVariable warnings | Out-Null
+        } finally { $env:ORCH_BOARD_SYNC = $caseBoardSync }
         Assert-Log ($warnings.Count -eq 0) "real logger board path did not fail open: $warnings"
         $items = @(Get-Content $f.data -Raw | ConvertFrom-Json)
         Assert-Log ($items[0].status.name -eq 'In lane') "concurrent implementation survives $kind/$outcome/Pr=$withPr"
@@ -188,12 +230,113 @@ function Test-BoardLogger {
       }
     }
   }
+  } finally { $env:ORCH_BOARD_SYNC = $entryBoardSync }
+}
+# #9228 todd-action/v1: closed schema, stable actionId, now|later|done. Synthetic
+# issues and action ids only; every refusal appends nothing and never boards.
+function Test-ToddActionLogger {
+  $toddLog=Join-Path $root 'todd-action.jsonl';$boardMarker=Join-Path $root 'todd-board-called.txt'
+  $boardStub=Join-Path $root 'todd-board-stub.ps1';Set-Content -LiteralPath $boardStub -Value "Set-Content -LiteralPath '$boardMarker' -Value called"
+  $base=@{Log='dispatch';Kind='todd-action';ActionId='synthetic-9228-a1';Issue=909001;ActionState='now';Action='Synthetic packaged step';ActionTime='synthetic minutes';Unblocks='#909002';OutFile=$toddLog;BoardScript=$boardStub}
+  & $logger @base|Out-Null
+  $row=(Get-Content -LiteralPath $toddLog -Tail 1)|ConvertFrom-Json -DateKind String
+  Assert-Log ((@($row.PSObject.Properties.Name)-join',')-ceq'ts,kind,toddActionSchema,actionId,issue,state,action,time,unblocks' -and $row.kind-ceq'todd-action' -and
+    $row.toddActionSchema-ceq'todd-action/v1' -and $row.actionId-ceq'synthetic-9228-a1' -and $row.issue-eq909001 -and $row.state-ceq'now' -and
+    $row.action-ceq'Synthetic packaged step' -and $row.time-ceq'synthetic minutes' -and $row.unblocks-ceq'#909002' -and $row.ts-cmatch'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$') 'todd-action row is not the closed todd-action/v1 shape'
+  Assert-Log (-not(Test-Path -LiteralPath $boardMarker)) 'todd-action row moved the delivery board'
+  foreach($state in @('later','done')){$next=$base.Clone();$next.ActionState=$state;& $logger @next|Out-Null}
+  $second=$base.Clone();$second.ActionId='synthetic-9228-a2';& $logger @second|Out-Null
+  Assert-Log (@(Get-Content -LiteralPath $toddLog).Count-eq4) 'same-issue state changes and a second action on one issue were not all appended'
+  $refusals=[Collections.Generic.List[object]]::new()
+  foreach($field in @('ActionId','Issue','ActionState','Action','ActionTime','Unblocks')){$case=$base.Clone();$case.Remove($field);$refusals.Add(@{name="omitted/$field";args=$case;code='TODD_ACTION_(SCHEMA_)?INVALID'})}
+  foreach($mismatch in @(@{f='ActionId';v='Synthetic-9228-A1'},@{f='ActionId';v='synthetic 9228'},@{f='ActionState';v='Now'},@{f='ActionState';v='blocked'},
+      @{f='Issue';v=1.5},@{f='Issue';v=0},@{f='Issue';v='-3'},@{f='Action';v="two`nlines"},@{f='Action';v=' padded'},@{f='Action';v=('x'*401)},
+      @{f='ActionTime';v=('x'*81)},@{f='Unblocks';v=('x'*201)},@{f='Kind';v='Todd-Action'})){
+    $case=$base.Clone();$case[$mismatch.f]=$mismatch.v;$refusals.Add(@{name="mismatch/$($mismatch.f)/$($mismatch.v)";args=$case;code='TODD_ACTION_(SCHEMA_)?INVALID'})
+  }
+  foreach($extra in @(@{Note='synthetic'},@{Pr=909003},@{Lane='synthetic-lane'},@{Outcome='PASS'},@{DispatchDecision='{}'})){
+    $case=$base.Clone();foreach($k in $extra.Keys){$case[$k]=$extra[$k]};$refusals.Add(@{name="extra/$(@($extra.Keys)[0])";args=$case;code='TODD_ACTION_SCHEMA_INVALID'})
+  }
+  $foreign=@{Log='dispatch';Kind='decision-filed';Issue=909001;ActionId='synthetic-9228-a1';OutFile=$toddLog;NoBoard=$true}
+  $refusals.Add(@{name='foreign-kind';args=$foreign;code='TODD_ACTION_SCHEMA_INVALID'})
+  $rebound=$base.Clone();$rebound.Issue=909009;$refusals.Add(@{name='rebound-id';args=$rebound;code='TODD_ACTION_ID_CONFLICT'})
+  foreach($refusal in $refusals){
+    $bytes=[IO.File]::ReadAllBytes($toddLog);$arguments=$refusal.args
+    $message='';try{& $logger @arguments|Out-Null}catch{$message=$_.Exception.Message}
+    Assert-Log ($message-cmatch$refusal.code) "todd-action $($refusal.name): expected $($refusal.code), observed '$message'"
+    Assert-Log ([Linq.Enumerable]::SequenceEqual($bytes,[IO.File]::ReadAllBytes($toddLog))) "todd-action $($refusal.name) appended a row"
+  }
+  Assert-Log (-not(Test-Path -LiteralPath $boardMarker)) 'a todd-action refusal moved the delivery board'
+  Write-Output "PASS #9228 todd-action/v1: closed row, latest-state appends, two actions per issue, no board move; $($refusals.Count) omitted/one-field-mismatch/extra/foreign/rebound refusals append nothing"
 }
 try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'events.jsonl';$head='a'*40
+  if(-not $AuthorityOnly -and -not $RetiredOnly -and -not $StrictOnly -and -not $BoardOnly){Test-ToddActionLogger;if($ToddActionOnly){return}}
   $snapshot=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'controller-skills/model-routing/capability-matrix.json') | ConvertFrom-Json
   $fixture=New-RoutingMatrixFixture -Root (Join-Path $root 'routing-state') -Snapshot $snapshot -BenchmarkRows @(New-RoutingCostBenchmarkRows)
   $env:CHASE_SETS_ROUTING_DATA_ROOT=$fixture.stateRoot;$env:CHASE_SETS_ROUTING_LKG_PATH=$fixture.lkgPath
-  if(-not $AuthorityOnly -and -not $RetiredOnly -and -not $StrictOnly){Test-BoardLogger;if($BoardOnly){return}}
+  # Synthetic #8526 producer controls, separate ledger preserves existing row counts.
+  $routeLog=Join-Path $root 'velocity-routing.jsonl'
+  foreach($version in @('v1','v2')) {
+    $route=@{Log='dispatch';Kind='dispatch';DispatchRoutingSchema="watchdog-dispatch-routing/$version";DispatchAttemptId='synthetic-8526';DispatchLabel='123-review-g1';Lane='synthetic-seat';LaneRole='implementation';Transcript='123-review-g1.jsonl';Harness='codex';Model='gpt-6.1-sol';Effort='high';Row='4';Placement='measured';DispatchWorktree=$root;DispatchBranch='synthetic/branch';DispatchHead=$head;OutFile=$routeLog;NoBoard=$true}
+    if($version -ceq 'v2') {$route.PolicyGeneration=1L;$route.RegistryAuthorityDigest='synthetic-digest';$route.RoutingFamily='sol';$route.RoutingSlot='explicit';$route.UsedLastKnownGood=$false}
+    & $logger @route | Out-Null
+    $before=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
+    $route.Issue=908526
+    & $logger @route | Out-Null
+    $after=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
+    Assert-Log ($after.issue -eq 908526) "launch-issue-no-host-row/${version}: Issue survives routing serializer"
+    $after.PSObject.Properties.Remove('issue');$after.ts=$before.ts
+    Assert-Log (($before|ConvertTo-Json -Compress) -ceq ($after|ConvertTo-Json -Compress)) 'implementation routing bytes unchanged apart from issue and timestamp'
+    foreach($role in @('planning','review')) {
+      $route.LaneRole=$role;& $logger @route | Out-Null
+      $row=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
+      Assert-Log ($row.issue -eq 908526 -and $row.laneRole -ceq $role) "launch-label-issue-resolution/$version/$role"
+      foreach($absent in @('omitted','empty')) {
+        $explicit=$route.Clone();$explicit.Row='0';$explicit.Remove('Placement')
+        if($absent -ceq 'empty'){$explicit.Placement=''}
+        $explicit.DispatchBranch=''
+        & $logger @explicit | Out-Null
+        $row=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
+        Assert-Log ($null -ne $row.PSObject.Properties['placement'] -and $null -eq $row.placement -and $row.placementSource -ceq 'row-0-explicit') "$version/$role/$absent truthful absent placement"
+        Assert-Log ($row.branch -ceq '' -and $row.head -ceq $head -and $row.issue -eq 908526 -and $row.laneRole -ceq $role) "$version/$role/$absent detached immutable identity"
+        $bytes=[IO.File]::ReadAllBytes($routeLog)
+        $invalid=$explicit.Clone();$invalid.Remove('DispatchHead')
+        Assert-Refused { & $logger @invalid | Out-Null } 'requires closed'
+        $invalid=$explicit.Clone();$invalid.DispatchHead='not-an-immutable-head'
+        Assert-Refused { & $logger @invalid | Out-Null } 'validate argument'
+        $invalid=$explicit.Clone();$invalid.LaneRole='implementation';$invalid.DispatchBranch='synthetic/branch'
+        Assert-Refused { & $logger @invalid | Out-Null } 'requires closed'
+        $invalid=$explicit.Clone();$invalid.LaneRole='implementation';$invalid.Placement='measured'
+        Assert-Refused { & $logger @invalid | Out-Null } 'requires closed'
+        Assert-Log ([Linq.Enumerable]::SequenceEqual($bytes,[IO.File]::ReadAllBytes($routeLog))) 'invalid implementation placement/branch or detached head appended no row'
+      }
+      $unspecified=$route.Clone();$unspecified.Remove('Placement')
+      & $logger @unspecified | Out-Null
+      $row=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
+      Assert-Log ($null -eq $row.placement -and $row.placementSource -ceq 'non-implementation-unspecified' -and $row.branch -ceq 'synthetic/branch') "$version/$role nonzero row absent placement has a truthful reason"
+    }
+    $route.LaneRole='unknown'
+    $bytes=[IO.File]::ReadAllBytes($routeLog)
+    Assert-Refused { & $logger @route | Out-Null } 'LaneRole|requires closed'
+    Assert-Log ([Linq.Enumerable]::SequenceEqual($bytes,[IO.File]::ReadAllBytes($routeLog))) 'unknown role appended no row'
+  }
+  Write-Output 'PASS launch-label-issue-resolution logger v1/v2 roles, Issue, implementation compatibility'
+  Write-Output 'PASS absent-placement/detached-head v1/v2: explicit null reason, immutable head, implementation and missing-head negative controls'
+  foreach($field in @('Placement','DispatchBranch')) {
+    $ordinary=@{Log='dispatch';Kind='dispatch';OutFile=$routeLog;NoBoard=$true};$ordinary[$field]=''
+    $bytes=[IO.File]::ReadAllBytes($routeLog)
+    Assert-Refused { & $logger @ordinary | Out-Null } 'requires closed'
+    Assert-Log ([Linq.Enumerable]::SequenceEqual($bytes,[IO.File]::ReadAllBytes($routeLog))) "ordinary empty $field did not gain routing exception"
+  }
+  if(-not $AuthorityOnly -and -not $RetiredOnly -and -not $StrictOnly){
+    $boardSyncBeforeTest = $env:ORCH_BOARD_SYNC
+    try {
+      $env:ORCH_BOARD_SYNC = 'ambient-sentinel'
+      Test-BoardLogger
+      Assert-Log ($env:ORCH_BOARD_SYNC -ceq 'ambient-sentinel') 'board tests restore ambient ORCH_BOARD_SYNC'
+    } finally { $env:ORCH_BOARD_SYNC = $boardSyncBeforeTest }
+    if($BoardOnly){return}
+  }
   if(-not $AuthorityOnly -and -not $RetiredOnly){Test-StrictControllerWriter;if($StrictOnly){return}}
   foreach($model in @('gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol','claude-opus-5','claude-sonnet-5','gpt-6-sol')){
     Assert-Refused {& $logger -Log dispatch -Kind dispatch -Issue 8156 -Lane synthetic -LaneRole implementation -Harness $(if($model-like'claude-*'){'claude'}else{'codex'}) -Model $model -Effort high -Row 4 -Placement provisional -Transcript synthetic.jsonl -OutFile $log -NoBoard|Out-Null} "$model.*retired"
@@ -305,7 +448,11 @@ try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'even
   $boardMarker=Join-Path $root 'board-called';$boardStub=Join-Path $root 'board-stub.ps1'
   Set-Content $boardStub "[IO.File]::WriteAllText('$($boardMarker.Replace("'","''"))','called')"
   $boardBinding=$binding.Clone();$boardBinding.OutFile=$telemetryHistory;$boardBinding.BoardScript=$boardStub
-  & $logger @boardBinding -AuthorityState ELIGIBLE|Out-Null
+  $authorityBoardSync = $env:ORCH_BOARD_SYNC
+  try {
+    Remove-Item Env:ORCH_BOARD_SYNC -ErrorAction SilentlyContinue
+    & $logger @boardBinding -AuthorityState ELIGIBLE|Out-Null
+  } finally { $env:ORCH_BOARD_SYNC = $authorityBoardSync }
   Assert-Log (-not(Test-Path $boardMarker)) 'authority row invoked board even with explicit BoardScript'
   $costLedger=Join-Path $root 'synthetic-cost.jsonl'
   $cost=& (Join-Path $PSScriptRoot 'cost-harvest.ps1') -TranscriptDir $telemetry -Ledger $costLedger -Json|ConvertFrom-Json
@@ -436,10 +583,170 @@ try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'even
   $relaunch=Reduce-ControllerReleaseReview -Issue 8103 -ControllerHead $danglingHead -Mode strict-v1 -History (Read-ExactHeadReviewHistory $danglingLog) -DispatchTuple ([pscustomobject]$successor)
   Assert-Log ($relaunch.state-ceq'in-flight'-and$relaunch.reason-ceq'STRICT_ATTEMPT_IN_FLIGHT') 'a relaunch on a fresh lane after clearance is not admitted in flight'
   Write-Output 'PASS #8110 dispatch-only audit correction: dangling row cleared under Todd authority, no terminal fabricated, every refusal appends nothing'
+  # #9382: both sides of the append race use the real locked producer and one
+  # ledger. Synthetic v3 rows here deliberately live beside strict history.
+  $voidLog=Join-Path $root 'synthetic-9382-void.jsonl'
+  $prelogArgs=$strictBase.Clone();$prelogArgs.OutFile=$voidLog;$prelogArgs.Issue=9382;$prelogArgs.Kind='dispatch'
+  [IO.File]::WriteAllText($voidLog,'')
+  & $logger @prelogArgs | Out-Null
+  $target9382=(Read-ExactHeadReviewHistory $voidLog).rows[0].value
+  $target9382.ts='2001-01-01T00:00:00.000Z'
+  $targetRaw9382=$target9382|ConvertTo-Json -Compress -Depth 10
+  [IO.File]::WriteAllLines($voidLog,@($targetRaw9382),[Text.UTF8Encoding]::new($false))
+  $targetHash9382=(Read-ExactHeadReviewHistory $voidLog).rows[0].rawSha256
+  $voidArgs=@{Log='dispatch';Kind='controller-review-prelog-void';Issue=9382;ControllerHead=$target9382.controllerHead;Lane=$target9382.lane
+    Transcript=$target9382.transcript;ReviewerAttempt=$target9382.reviewerAttempt;OriginalDispatchRawSha256=$targetHash9382;OutFile=$voidLog;NoBoard=$true}
+  . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
+  $selection9382=Resolve-RoutingSelection -Row 11 -Harness codex -Model gpt-6.1-sol -Effort high -ReadOnly
+  $v3Args=@{Log='dispatch';Kind='dispatch';DispatchRoutingSchema='watchdog-dispatch-routing/v3';DispatchAttemptId='synthetic-9382';DispatchLabel='synthetic-9382'
+    StrictControllerLaunch=$true
+    Lane=$target9382.lane;LaneRole='review';Transcript=$target9382.transcript;Harness='codex';Model='gpt-6.1-sol';Effort='high';Row='11';Placement='measured'
+    DispatchWorktree=$root;DispatchBranch='synthetic/9382';DispatchHead=$target9382.controllerHead;PolicyGeneration=$selection9382.policyGeneration
+    RegistryAuthorityDigest=$selection9382.registryAuthorityDigest;RoutingFamily=$selection9382.family;RoutingSlot=$selection9382.slot;UsedLastKnownGood=$selection9382.usedLastKnownGood
+    CapacityForecastStatus='not-evaluated';CapacityDecisionDigest=$null;CapacityFlip=$null;CapacityShadowFlip=$null;CapacityFlipSkip=$null;OutFile=$voidLog;NoBoard=$true}
+  $ordinaryV3Args=$v3Args.Clone();$ordinaryV3Args.Remove('StrictControllerLaunch')
+  function Assert-OrdinaryV3Append9382([string[]]$Rows,[string]$Case,[string]$LoggerPath=$logger) {
+    [IO.File]::WriteAllLines($voidLog,$Rows,[Text.UTF8Encoding]::new($false))
+    $prefix9382=[IO.File]::ReadAllText($voidLog)
+    & $LoggerPath @ordinaryV3Args | Out-Null
+    $lines9382=@([IO.File]::ReadAllLines($voidLog))
+    Assert-Log ($lines9382.Count -eq $Rows.Count+1 -and [IO.File]::ReadAllText($voidLog).StartsWith($prefix9382,[StringComparison]::Ordinal)) "9382 ordinary v3 $Case must append exactly one row without changing history"
+    $row9382=$lines9382[-1]|ConvertFrom-Json -DateKind String
+    Assert-Log ($row9382.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3' -and $null -eq $row9382.PSObject.Properties['strictControllerLaunch']) "9382 ordinary v3 $Case must not serialize the launcher switch"
+  }
+  Assert-OrdinaryV3Append9382 @('{synthetic-9382-malformed') 'malformed history'
+  Write-Output 'PASS #9382 F1 ordinary v3 malformed history appends exactly one row'
+  foreach($invalidLaunch9382 in @(@{Kind='decision-filed'},@{DispatchRoutingSchema='watchdog-dispatch-routing/v2'},@{LaneRole='implementation'})) {
+    $invalid9382=$v3Args.Clone()
+    foreach($key9382 in $invalidLaunch9382.Keys){$invalid9382[$key9382]=$invalidLaunch9382[$key9382]}
+    $beforeInvalid9382=(Get-FileHash $voidLog).Hash
+    Assert-Refused {& $logger @invalid9382 | Out-Null} 'STRICT_CONTROLLER_LAUNCH_INVALID'
+    Assert-Log ($beforeInvalid9382 -ceq (Get-FileHash $voidLog).Hash) '9382 invalid launcher switch must append nothing'
+  }
+  Write-Output 'PASS #9382 F1 launcher switch refuses non-dispatch, non-v3 and non-review calls (zero append)'
+  foreach($case in @('launched','absent-head','unreadable-head','receipt','malformed','duplicate','future','operator','unbound')) {
+    $request=$voidArgs.Clone();$rows=@($targetRaw9382)
+    switch($case) {
+      'launched' { }
+      'absent-head' { }
+      'unreadable-head' { }
+      'receipt' {$terminal9382=$target9382.PSObject.Copy();$terminal9382.kind='review-complete';$terminal9382.controllerReviewSchema='controller-review-receipt/v1';$rows+=($terminal9382|ConvertTo-Json -Compress)}
+      'malformed' {$bad9382=$target9382.PSObject.Copy();$bad9382.placement='override-Todd';$rows=@($bad9382|ConvertTo-Json -Compress -Depth 10)}
+      'future' {$bad9382=$target9382.PSObject.Copy();$bad9382.ts='2999-01-01T00:00:00.000Z';$rows=@($bad9382|ConvertTo-Json -Compress -Depth 10)}
+      'operator' {$request.OperatorAuthority='Todd:synthetic-not-void-authority'}
+      'unbound' {$request.OriginalDispatchRawSha256='0'*64}
+    }
+    [IO.File]::WriteAllLines($voidLog,$rows,[Text.UTF8Encoding]::new($false))
+    if($case -in @('malformed','future')){$request.OriginalDispatchRawSha256=(Read-ExactHeadReviewHistory $voidLog).rows[0].rawSha256}
+    if($case -in @('launched','absent-head','unreadable-head')) {
+      & $logger @v3Args | Out-Null
+      if($case -ne 'launched'){
+        $v3=(Read-ExactHeadReviewHistory $voidLog).rows[1].value
+        if($case -eq 'absent-head'){$v3.PSObject.Properties.Remove('head')}else{$v3.head='unreadable'}
+        [IO.File]::WriteAllLines($voidLog,@($targetRaw9382,($v3|ConvertTo-Json -Compress -Depth 10)),[Text.UTF8Encoding]::new($false))
+      }
+    }
+    if($case -eq 'duplicate'){& $logger @voidArgs | Out-Null}
+    $before9382=[Convert]::ToBase64String([IO.File]::ReadAllBytes($voidLog))
+    $expected9382=switch($case){'launched' {'PRELOG_VOID_TARGET_LAUNCHED'} 'absent-head' {'PRELOG_VOID_TARGET_LAUNCHED'} 'unreadable-head' {'PRELOG_VOID_TARGET_LAUNCHED'} 'receipt' {'PRELOG_VOID_TARGET_RECEIPT_BACKED'} 'malformed' {'PRELOG_VOID_TARGET_INVALID'} 'duplicate' {'PRELOG_VOID_DUPLICATE'} 'future' {'PRELOG_VOID_UTC_ORDER'} 'operator' {'PRELOG_VOID_INVALID'} 'unbound' {'PRELOG_VOID_TARGET_COUNT'}}
+    Assert-Refused {& $logger @request | Out-Null} $expected9382
+    Assert-Log ($before9382 -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($voidLog))) "9382 AC2/AC4 refusal $case appended nothing"
+    Write-Output "PASS #9382 locked void refusal $case $expected9382 (zero append)"
+  }
+  [IO.File]::WriteAllLines($voidLog,@($targetRaw9382),[Text.UTF8Encoding]::new($false))
+  $foreignV3Args=$v3Args.Clone();$foreignV3Args.DispatchHead='b'*40
+  & $logger @foreignV3Args | Out-Null
+  & $logger @voidArgs | Out-Null
+  $voidHistory9382=Read-ExactHeadReviewHistory $voidLog
+  $producedVoid9382=$voidHistory9382.rows[-1].value
+  Assert-Log ($null -eq $voidHistory9382.rows[1].value.PSObject.Properties['strictControllerLaunch']) '9382 strict v3 must not serialize the launcher switch'
+  Assert-Log ((Get-ControllerReviewRowClassification $producedVoid9382).valid -and $producedVoid9382.controllerReviewSchema -ceq 'controller-review-prelog-void/v1' -and
+    $null -eq $producedVoid9382.PSObject.Properties['operatorAuthority']) '9382 closed void is machine-stamped without operator authority'
+  $before9382=[Convert]::ToBase64String([IO.File]::ReadAllBytes($voidLog))
+  Assert-Refused {& $logger @v3Args | Out-Null} 'PRELOG_VOID_LATE_LAUNCH'
+  Assert-Refused {& $logger @prelogArgs | Out-Null} 'PRELOG_VOID_IDENTITY_REUSED'
+  Assert-Log ($before9382 -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($voidLog))) '9382 AC4 v3/prelog after void refuses before append'
+  $voidRows9382=@([IO.File]::ReadAllLines($voidLog))
+  Assert-OrdinaryV3Append9382 $voidRows9382 'matching void'
+  $lateOrdinary9382=Reduce-ControllerReleaseReview -Issue 9382 -ControllerHead $target9382.controllerHead -Mode strict-v1 -History (Read-ExactHeadReviewHistory $voidLog)
+  Assert-Log ($lateOrdinary9382.state -ceq 'indeterminate' -and $lateOrdinary9382.reason -ceq 'PRELOG_VOID_LATE_LAUNCH') '9382 unflagged late v3 remains fail-closed in the reducer'
+  [IO.File]::WriteAllLines($voidLog,$voidRows9382,[Text.UTF8Encoding]::new($false))
+  Write-Output 'PASS #9382 F1 ordinary v3 matching void appends exactly one row; strict switch refuses zero append; reducer still refuses unflagged late launch'
+  & $logger @foreignV3Args | Out-Null
+  $fresh9382=$prelogArgs.Clone();$fresh9382.Transcript='synthetic-9382-fresh.jsonl';$fresh9382.ReviewerAttempt='synthetic-9382-fresh-reviewer'
+  & $logger @fresh9382 | Out-Null
+  foreach($reusedField9382 in @('Transcript','ReviewerAttempt')) {
+    $reused9382=$fresh9382.Clone();$reused9382[$reusedField9382]=$prelogArgs[$reusedField9382]
+    $beforeReuse9382=(Get-FileHash $voidLog).Hash
+    Assert-Refused {& $logger @reused9382 | Out-Null} 'PRELOG_VOID_IDENTITY_REUSED'
+    Assert-Log ($beforeReuse9382 -ceq (Get-FileHash $voidLog).Hash) "9382 AC2 $reusedField9382-only prelog reuse appended nothing"
+    Write-Output "PASS #9382 AC2 locked prelog $reusedField9382-only reuse refused (zero append)"
+  }
+  Write-Output 'PASS #9382 AC2/AC4 opposite append orders: v3 then void refuses; void then v3 refuses; readable other-head and lane-only reuse admitted'
+  $strictRouting9382=$prelogArgs.Clone();$strictRouting9382.PolicyGeneration=1
+  $before9382=(Get-FileHash $voidLog).Hash
+  Assert-Refused {& $logger @strictRouting9382 | Out-Null} 'STRICT_CONTROLLER_V1_REQUIRED'
+  $strictV3Routing9382=$v3Args.Clone()
+  foreach($key9382 in @('Issue','ControllerHead','AuthorAttempt','ReviewerAttempt','AuthorModel','ReviewAuthority')){$strictV3Routing9382[$key9382]=$prelogArgs[$key9382]}
+  Assert-Refused {& $logger @strictV3Routing9382 | Out-Null} 'STRICT_CONTROLLER_V1_REQUIRED'
+  $ordinaryRouting9382=@{Log='dispatch';Kind='dispatch';PolicyGeneration=1;OutFile=$voidLog;NoBoard=$true}
+  Assert-Refused {& $logger @ordinaryRouting9382 | Out-Null} 'dispatch routing v2 required'
+  Assert-Log ($before9382 -ceq (Get-FileHash $voidLog).Hash) '9382 AC5 strict and ordinary routing refusal append zero rows'
+  Write-Output 'PASS #9382 AC5 strict refusal is honest; ordinary refusal retained'
+  $loggerSource9382=[IO.File]::ReadAllText($logger)
+  foreach($mutation9382 in @(
+      @{Name='AC2-AC4-void-admission-bypass';From='$binding=Get-ControllerPrelogVoidValidation $proposed $history $voidVocabulary';To='$binding=[pscustomobject]@{valid=$true}'},
+      @{Name='AC4-v3-after-void-bypass';From='if ($relevant) {';To='if ($false) {'},
+      @{Name='F1-ordinary-v3-history-gate-dropped';From=" -and `$StrictControllerLaunch)) {";To=')) {'},
+      @{Name='AC5-generic-strict-refusal';From='STRICT_CONTROLLER_V1_REQUIRED: strict controller producers remain v1';To='ROUTING_EVIDENCE_INVALID: dispatch routing v2 required'})) {
+    $expectedAnchors9382=if($mutation9382.Name -ceq 'AC5-generic-strict-refusal'){3}else{2}
+    Assert-Log ($loggerSource9382.Split(@($mutation9382.From),[StringSplitOptions]::None).Count -eq $expectedAnchors9382) "9382 exact logger mutant anchor count $($mutation9382.Name)"
+    $mutantRoot9382=Join-Path $root $mutation9382.Name;[IO.Directory]::CreateDirectory($mutantRoot9382)|Out-Null
+    foreach($file9382 in @('orchestration-log-lock.psm1','review-head-contract.psm1','routing-data.ps1','dispatch-ownership.ps1')){Copy-Item (Join-Path $PSScriptRoot $file9382) $mutantRoot9382}
+    $mutantLogger9382=Join-Path $mutantRoot9382 'log-event.ps1'
+    [IO.File]::WriteAllText($mutantLogger9382,$loggerSource9382.Replace($mutation9382.From,$mutation9382.To),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllLines($voidLog,@($targetRaw9382),[Text.UTF8Encoding]::new($false))
+    switch($mutation9382.Name) {
+      'AC2-AC4-void-admission-bypass' {
+        & $logger @v3Args | Out-Null
+        Assert-Refused {& $logger @voidArgs | Out-Null} 'PRELOG_VOID_TARGET_LAUNCHED'
+        & $mutantLogger9382 @voidArgs | Out-Null
+        Assert-Log ((Read-ExactHeadReviewHistory $voidLog).rows.Count -eq 3) '9382 void-admission mutant must append the launched target void'
+      }
+      'AC4-v3-after-void-bypass' {
+        & $logger @voidArgs | Out-Null
+        Assert-Refused {& $logger @v3Args | Out-Null} 'PRELOG_VOID_LATE_LAUNCH'
+        & $mutantLogger9382 @v3Args | Out-Null
+        Assert-Log ((Read-ExactHeadReviewHistory $voidLog).rows.Count -eq 3) '9382 v3 bypass mutant must append after void'
+      }
+      'AC5-generic-strict-refusal' {
+        Assert-Refused {& $logger @strictRouting9382 | Out-Null} 'STRICT_CONTROLLER_V1_REQUIRED'
+        Assert-Refused {& $mutantLogger9382 @strictRouting9382 | Out-Null} 'dispatch routing v2 required'
+        Assert-Log ((Read-ExactHeadReviewHistory $voidLog).rows.Count -eq 1) '9382 refusal mutant must differ only in reason, not append'
+      }
+      'F1-ordinary-v3-history-gate-dropped' {
+        Assert-OrdinaryV3Append9382 @('{synthetic-9382-malformed') 'malformed history'
+        Assert-Refused {Assert-OrdinaryV3Append9382 @('{synthetic-9382-malformed') 'malformed history' $mutantLogger9382} 'PRELOG_VOID_HISTORY_INVALID: HISTORY_MALFORMED'
+        Assert-Log (@([IO.File]::ReadAllLines($voidLog)).Count -eq 1) '9382 F1 gate mutant must refuse the ordinary append'
+        [IO.File]::WriteAllLines($voidLog,@($targetRaw9382),[Text.UTF8Encoding]::new($false))
+        & $logger @voidArgs | Out-Null
+        $matchingVoidRows9382=@([IO.File]::ReadAllLines($voidLog))
+        Assert-OrdinaryV3Append9382 $matchingVoidRows9382 'matching void'
+        Assert-Refused {Assert-OrdinaryV3Append9382 $matchingVoidRows9382 'matching void' $mutantLogger9382} 'PRELOG_VOID_LATE_LAUNCH'
+        Assert-Log (@([IO.File]::ReadAllLines($voidLog)).Count -eq 2) '9382 F1 gate mutant must refuse the ordinary append after a matching void'
+      }
+    }
+    if($mutation9382.Name -ceq 'F1-ordinary-v3-history-gate-dropped') {
+      Write-Output 'KILLED #9382 F1-ordinary-v3-history-gate-dropped same-input candidate appended exactly one row; mutant refused malformed history and matching void'
+    } else {
+      Write-Output "KILLED #9382 $($mutation9382.Name) same-input candidate refused; mutant violated contract"
+    }
+  }
   Write-Output 'PASS log-event lifecycle-only kinds, closed watchdog routing provenance, requested/strict/planning receipts, lane identity, and atomic landing-stall enqueue record'
 }finally{
   $resolved=[IO.Path]::GetFullPath($root);$temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
   if((Split-Path -Parent $resolved).TrimEnd('\','/')-cne$temp-or(Split-Path -Leaf $resolved)-notlike'log-event-test-*'){throw 'unsafe log event cleanup root'}
   if(Test-Path -LiteralPath $resolved){Remove-Item -LiteralPath $resolved -Recurse -Force}
   Exit-RoutingDataTestScope $routingTestScope
+  $env:ORCH_BOARD_SYNC=$oldBoardSync
 }

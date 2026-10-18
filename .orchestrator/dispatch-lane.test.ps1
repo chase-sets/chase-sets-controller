@@ -1,9 +1,94 @@
-param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$ProductCensusOnly)
+param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$OrdinaryOnly,[switch]$ProductCensusOnly,[switch]$CapacityOnly,[switch]$RoutingIssueOnly,[switch]$VerificationPolicyOnly,[string]$GuardRevision='',[ValidateSet('','universal-preamble','local-product-gate')][string]$PolicyMutant='')
 
 $ErrorActionPreference = "Stop"
+if ($VerificationPolicyOnly) {
+  $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/dispatch-lane.ps1") -join "`n") } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-lane.ps1')) }
+  if($PolicyMutant -eq 'universal-preamble'){$source=$source.Replace("if (`$Role -cne 'implementation' -or `$RoutingRow -eq 13)",'if ($false)')}
+  if($PolicyMutant -eq 'local-product-gate'){$source=$source.Replace('product proof is exact-head hosted CI','product proof requires full local verify')}
+  $tokens=$null; $errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+  $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-HeavyVerificationPreamble'},$false))
+  if($definition.Count -ne 1){throw 'ASSERTION FAILED: role-specific verification preamble absent'}
+  . ([scriptblock]::Create($definition[0].Extent.Text))
+  foreach($harness in @('codex','claude')) {
+    foreach($role in @('planning','review','implementation')) {
+      foreach($row in @(7,13)) {
+        $preamble=Get-HeavyVerificationPreamble $role $row 'synthetic-wrapper'
+        if($role -ne 'implementation' -or $row -eq 13) {
+          if($preamble -notmatch 'cheap focused checks only' -or $preamble -notmatch 'exit 73' -or $preamble -notmatch 'never through ControllerBattery or ControllerPrecursor'){throw "denied prompt failed $harness/$role/$row"}
+        } elseif($preamble -notmatch 'product proof is exact-head hosted CI' -or $preamble -notmatch 'scoped refusal never escalates' -or $preamble -notmatch 'Controller authors retain baseline-aware' -or $preamble -notmatch 'unchanged exclusive admission') {throw "author prompt failed $harness/$role/$row"}
+        if($preamble -match 'for every full gate|must run.*verify:static'){throw 'universal/full-local product instruction restored'}
+        Write-Output "PASS verification policy $harness/$role/row-$row"
+      }
+    }
+  }
+  if($source -notmatch 'preamble = \$gatePreamble' -or $source -notmatch '\$gatePreamble \+ \$boundedRetrievalPreamble'){throw 'DryRun/live preamble diverged'}
+  $skill=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md')) -replace '\s+',' '
+  if($skill -notmatch 'directly as focused tests, never through ControllerBattery, ControllerPrecursor or a battery rerun'){throw 'section 7 reviewer rerun route missing'}
+  return
+}
+if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){ & $PSCommandPath -VerificationPolicyOnly }
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
+# Execute the exact routing statement with inert launcher inputs and the real
+# logger. No model subprocess, ownership census or live runtime is involved.
+$routingRoot=Join-Path ([IO.Path]::GetTempPath()) ('synthetic-8526-routing-'+[guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($routingRoot)|Out-Null
+try {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'dispatch-lane.ps1'),[ref]$tokens,[ref]$errors)
+  if($errors.Count){throw 'launcher parse failed'}
+  $calls=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text.Contains('-DispatchRoutingSchema $routingSchema')},$true))
+  if($calls.Count -ne 1){throw 'routing call must have one canonical owner'}
+  $block=$calls[0].Parent
+  while($block -isnot [Management.Automation.Language.IfStatementAst]){$block=$block.Parent}
+  $routingScriptRoot=$PSScriptRoot
+  foreach($role in @('implementation','planning','review')){
+    & {
+      param($LaneRole)
+      $PSScriptRoot=$routingScriptRoot
+      $runtimeRoot=$routingRoot;$worktreeResolved=$routingRoot;$admissionLane='synthetic-seat';$admissionBranch='synthetic/8526';$admissionHead='a'*40
+      $Label='123-impl-g1';$SemanticAttemptId='123-impl-g1';$stdoutPath=Join-Path $routingRoot "$Label.jsonl"
+      $Harness='codex';$Model='gpt-6.1-sol';$Effort='high';$Row=4;$Placement='provisional'
+      if($LaneRole -cne 'implementation'){$Row=0;$Placement='';$admissionBranch=''}
+      $Issue=908526;$PSBoundParameters['Issue']=$Issue
+      $capacity=[pscustomobject]@{forecastBytes=$null;capacityForecastStatus='not-evaluated';capacityDecisionDigest=$null;capacityFlip=$null;capacityShadowFlip=$null;capacityFlipSkip=$null}
+      $dispatchRouting=[pscustomobject]@{policyGeneration=1L;registryAuthorityDigest='synthetic';family='sol';slot='explicit';usedLastKnownGood=$false}
+      $RoutingStateRoot=$env:CHASE_SETS_ROUTING_DATA_ROOT;$RoutingLkgPath=$env:CHASE_SETS_ROUTING_LKG_PATH
+      $launcherStartedAt=[datetime]::UtcNow.ToString('o')
+      & ([scriptblock]::Create("param(`$Issue)`n`$PSScriptRoot='$($routingScriptRoot.Replace("'","''"))';`n"+$block.Extent.Text)) -Issue $Issue
+      $recordedAt=[datetime]::UtcNow.ToString('o')
+      $rows=@(Get-Content -LiteralPath (Join-Path $routingRoot 'dispatch-log.jsonl')|ConvertFrom-Json -DateKind String)
+      $start=[datetime]::Parse($launcherStartedAt).ToUniversalTime();$routeTime=[datetime]::Parse($rows[-1].ts).ToUniversalTime()
+      if($routeTime -lt $start.AddTicks(-($start.Ticks % [timespan]::TicksPerMillisecond)) -or $routeTime -ge [datetime]::Parse($recordedAt).ToUniversalTime()){throw 'launch-route-before-ownership-record: real statement timing no longer brackets routing'}
+      if($rows[-1].laneRole -cne $LaneRole -or $rows[-1].issue -ne 908526){throw "launch-label-issue-resolution: $LaneRole routing did not preserve explicit Issue over label"}
+      . (Join-Path $routingScriptRoot 'dispatch-ownership.ps1')
+      # Every role writes the v3 routing row (#9282); planning and review rows carry and validate the five capacity fields.
+      if($rows[-1].dispatchRoutingSchema -cne 'watchdog-dispatch-routing/v3' -or -not (Test-DispatchRoutingLedgerEvidence $rows[-1])){throw "launch-label-issue-resolution: capacity v3 issue evidence was not preserved for $LaneRole"}
+      if($LaneRole -cne 'implementation' -and ($null -ne $rows[-1].placement -or $rows[-1].placementSource -cne 'row-0-explicit' -or $rows[-1].branch -cne '' -or $rows[-1].head -cne $admissionHead)){throw 'launch-label-issue-resolution: absent placement or detached head was fabricated'}
+      . (Join-Path $routingScriptRoot 'velocity-metrics.ps1')
+      $instant=[datetime]::UtcNow;$stamp=$instant.ToString('o')
+      $facts=[pscustomobject]@{complete=$true;gaps=@();platformMilestones=@();merges=@();lastProductMergeAt=$stamp;productPrs=@();issueKinds=[pscustomobject]@{};ownershipStatus='ok';dispatchRows=$rows
+        productIssues=@([pscustomobject]@{number=908526;labels=@('kind:product');milestone=[pscustomobject]@{number=148;committed=$true;state='OPEN';track='commerce'};openBlockers=0})
+        activeLanes=@([pscustomobject]@{lane='synthetic-seat';label=$Label;laneRole=$LaneRole;launchHead=$admissionHead;worktree=$worktreeResolved;launcherStartedAt=$launcherStartedAt;startedAt=$recordedAt})
+        holdState=[pscustomobject]@{schema='merge-hold-state/v1';revision=1;initializedAt=$stamp;records=@()}
+        }
+      $report=Get-VelocityReport $facts $instant @()
+      if(@($report.metrics.flowingProductIssues).Count -ne 1 -or $report.metrics.flowingProductIssues[0] -ne 908526 -or @($report.metrics.readyNotInFlight).Count){throw "launch-issue-no-host-row: role=$LaneRole flowing=$($report.metrics.flowingProductIssues -join ',') idle=$($report.metrics.readyNotInFlight -join ',') gaps=$($report.gaps -join ',')"}
+      Write-Output "PASS launch-route-before-ownership-record real launcher role=$LaneRole issue=908526"
+    } $role
+  }
+  Write-Output 'PASS launch-label-issue-resolution real launcher statement -> logger, all roles, explicit Issue wins (synthetic)'
+} finally {
+  if([IO.Path]::GetFullPath($routingRoot).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)){Remove-Item -LiteralPath $routingRoot -Recurse -Force}
+}
+if($RoutingIssueOnly){return}
+if($CapacityOnly){
+  & (Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1') -Case capacity-override
+  & (Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1') -Case capacity-exemptions
+  return
+}
 if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -and -not $NativeBranchOnly)) {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
@@ -13,6 +98,12 @@ if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -
 if ($NativeBranchOnly) {
   . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
   Invoke-7963ResumeCarriers @('native-branch')
+  return
+}
+if ($OrdinaryOnly) {
+  # #9334/#9411 focused route; the full battery runs the same carriers from landed-integration-r3.test.ps1.
+  . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+  Invoke-9334OrdinaryCarriers @('ordinary-dispatch','successor-dispatch')
   return
 }
 
@@ -627,6 +718,7 @@ try {
   $controllerTemp=Join-Path $testRoot 'controller-review-temp'
   New-Item -ItemType Directory -Path $controllerRuntime,$controllerTemp|Out-Null
   $controllerLog=Join-Path $controllerSubject.ScriptRoot 'dispatch-log.jsonl'
+  Assert-True ([IO.Path]::GetFullPath($controllerLog).StartsWith([IO.Path]::GetFullPath($testRoot)+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) 'strict synthetic authority is confined to private test root, never the live ledger'
   $controllerLabel='synthetic-strict-review'
   $controllerArgs=@{Harness='codex';Model='gpt-6.1-sol';Effort='high';LaneRole='review';ReviewTarget='controller';ControllerIssue=900002;ControllerHead=$dispatchHead;AuthorAttempt='synthetic-author';ReviewerAttempt='synthetic-reviewer';AuthorModel='gpt-6-astra';ReviewAuthority='governing';Row=11;Placement='provisional';PromptFile=$prompt;Worktree=$worktree;Label=$controllerLabel;ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$controllerRuntime;TestTempRoot=$controllerTemp;TestArgumentList=@('-NoProfile','-NonInteractive','-Command','Write-Output SYNTHETIC_CONTROLLER_STARTED')}
   $strictLogArgs=@{Log='dispatch';Kind='dispatch';Issue=900002;ControllerHead=$dispatchHead;Lane='lane-99';LaneRole='review';Transcript="$controllerLabel.jsonl";Model='gpt-6.1-sol';AuthorModel='gpt-6-astra';Effort='high';Row='11';Placement='provisional';Harness='codex';AuthorAttempt='synthetic-author';ReviewerAttempt='synthetic-reviewer';ReviewAuthority='governing';OutFile=$controllerLog;NoBoard=$true}
@@ -673,8 +765,12 @@ try {
     $beforeNames=@(Get-ChildItem -LiteralPath $controllerRuntime,$controllerTemp -Recurse -Force|ForEach-Object{$_.FullName})-join"`n"
     $beforeHash=(Get-FileHash $controllerLog).Hash
     Assert-Throws {&$controllerLauncher @controllerArgs} 'strict controller prelaunch tuple refused' "controller $case must refuse"
-    Assert-True ($beforeNames-ceq(@(Get-ChildItem -LiteralPath $controllerRuntime,$controllerTemp -Recurse -Force|ForEach-Object{$_.FullName})-join"`n")-and$beforeHash-ceq(Get-FileHash $controllerLog).Hash) "controller $case created ownership/isolation/transcript/harness side effects or wrote history"
-    Write-Output "PASS controller prelaunch refusal: $case (zero side effects)"
+    $afterRows=@(Get-Content -LiteralPath $controllerLog | Where-Object {$_} | ForEach-Object {$_|ConvertFrom-Json -DateKind String})
+    $expectedVoids=if($case -ceq 'conflict'){2}elseif($case -cin @('wrong-authority','wrong-lane','wrong-author','wrong-reviewer','wrong-transcript','wrong-model','wrong-author-model','wrong-effort','wrong-row','wrong-placement','wrong-harness')){1}else{0}
+    Assert-True ($beforeNames-ceq(@(Get-ChildItem -LiteralPath $controllerRuntime,$controllerTemp -Recurse -Force|ForEach-Object{$_.FullName})-join"`n") -and
+      $afterRows.Count -eq ($testRows.Count+$expectedVoids) -and @($afterRows | Where-Object {$_.kind -ceq 'controller-review-prelog-void'}).Count -eq $expectedVoids) "controller $case created resources or unexpected history (expected voids=$expectedVoids)"
+    if(-not $expectedVoids){Assert-True ($beforeHash-ceq(Get-FileHash $controllerLog).Hash) "controller $case unexpectedly changed history"}
+    Write-Output "PASS controller prelaunch refusal: $case (no launch resources; voids=$expectedVoids)"
   }
   $duplicateRaw=($strictRow|ConvertTo-Json -Compress).Replace('"authorAttempt":"synthetic-author"','"authorAttempt":"synthetic-ambiguous-first","authorAttempt":"synthetic-author"')
   [IO.File]::WriteAllText($controllerLog,$duplicateRaw+"`n",[Text.UTF8Encoding]::new($false))
@@ -718,6 +814,218 @@ try {
   $productArgs.Worktree=$metaRoot;$productArgs.Label='synthetic-unmarked-controller'
   Assert-Throws {&$controllerLauncher @productArgs} 'requires -ReviewTarget controller' 'controller source cannot omit the closed review target'
   Write-Output 'PASS controller prelaunch unique exact tuple starts; product review unaffected; structural controller target cannot omit inputs'
+  # --- #9282 AC8: a flipped strict controller review is prepared, prelogged (override-todd) and launched;
+  # forecast drift after prelogging refuses before any side effect; preparation writes nothing.
+  $strictForecastPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'capacity-forecast.json'
+  $strictCapacityHistory=Join-Path $controllerRuntime 'dispatch-log.jsonl'
+  function Set-StrictForecast([string]$Toward){
+    $now=[DateTimeOffset]::UtcNow
+    $forecast=[ordered]@{format='capacity-forecast/v1';mode='active';generatedAt=$now.AddMinutes(-1).ToString('o');staleAfter=$now.AddMinutes(14).ToString('o');decisionDigest='fedcba9876543210'
+      providers=@{codex=@{state='conserve'};claude=@{state='spend'}};balance=@{toward=$Toward;steps=1}}
+    [IO.File]::WriteAllText($strictForecastPath,($forecast|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+  }
+  function Get-StrictInventory([string[]]$Roots){ @(Get-ChildItem -LiteralPath $Roots -Recurse -Force -File | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" } | Sort-Object) -join "`n" }
+  function New-StrictPrelog($Prepared){
+    $tuple=$Prepared.strictPrelogV1;$prelog=@{Log='dispatch';Kind='dispatch';LaneRole='review';NoBoard=$true}
+    foreach($property in $tuple.PSObject.Properties) {
+      $key=if($property.Name -ceq 'reviewerModel'){'Model'}else{$property.Name}
+      $prelog[$key]=$property.Value
+    }
+    & $controllerProducer @prelog | Out-Null
+  }
+  try {
+    Set-StrictForecast 'claude'
+    [IO.File]::WriteAllText($strictCapacityHistory,'');[IO.File]::WriteAllText($controllerLog,'')
+    if(Test-Path -LiteralPath $env:CHASE_SETS_ROUTING_LKG_PATH){Remove-Item -LiteralPath $env:CHASE_SETS_ROUTING_LKG_PATH -Force}
+    $flipArgs=$controllerArgs.Clone();$flipArgs.Label='synthetic-strict-flip'
+    # The flipped route launches under the Claude harness, so its inert child must satisfy the stream-json success audit.
+    $strictClaudeChild=Join-Path $testRoot 'strict-claude-child.ps1'
+    [IO.File]::WriteAllText($strictClaudeChild,"[void][Console]::In.ReadToEnd()`nWrite-Output '{""type"":""result"",""subtype"":""success"",""is_error"":false,""result"":""SYNTHETIC_CONTROLLER_STARTED""}'`nexit 0`n",[Text.UTF8Encoding]::new($false))
+    $flipArgs.TestArgumentList=@('-NoProfile','-NonInteractive','-File',$strictClaudeChild)
+    $prepareArgs=$flipArgs.Clone();$prepareArgs.PrepareRoute=$true
+    $inventoryRoots=@($controllerSubject.Root,$controllerRuntime,$controllerTemp,$env:CHASE_SETS_ROUTING_DATA_ROOT)
+    $beforeInventory=Get-StrictInventory $inventoryRoots
+    $prepared=& $controllerLauncher @prepareArgs | ConvertFrom-Json -DateKind String
+    Assert-True ($LASTEXITCODE -eq 0 -and $prepared.prepared -eq $true -and $prepared.laneRole -ceq 'review' -and $prepared.reviewArtifact -ceq 'code' -and
+      $prepared.harness -ceq 'claude' -and $prepared.model -ceq 'claude-opus-5-5' -and $prepared.effort -ceq 'high' -and $prepared.row -eq 11 -and $prepared.placement -ceq 'override-Todd' -and
+      $prepared.capacityForecastStatus -ceq 'in-force' -and $prepared.capacityFlip.to.placement -ceq 'override-Todd' -and $prepared.capacityFlip.row -eq 11 -and
+      $prepared.strictTuple.controllerReviewSchema -ceq 'controller-review-dispatch/v2' -and $prepared.strictTuple.placement -ceq 'override-todd' -and
+      $prepared.strictTuple.reviewerModel -ceq 'claude-opus-5-5' -and $prepared.strictTuple.harness -ceq 'claude' -and $prepared.strictTuple.family -ceq 'opus' -and
+      $prepared.strictTuple.slot -ceq 'claude.fallback' -and $prepared.strictTuple.transcript -ceq 'synthetic-strict-flip.jsonl') 'preparation resolves the flipped strict route and its override-todd tuple'
+    Assert-True ($beforeInventory -ceq (Get-StrictInventory $inventoryRoots) -and -not (Test-Path -LiteralPath $env:CHASE_SETS_ROUTING_LKG_PATH) -and
+      -not (Test-Path -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-flip.jsonl'))) 'preparation wrote nothing: no LKG cache, output, snapshot, ledger row, ownership record or prompt'
+    Write-Output 'PASS #9282 AC8 strict preparation resolves the flip with zero writes'
+    $expectedPrelogKeys=@('issue','controllerHead','authorAttempt','reviewerAttempt','reviewAuthority','lane','transcript','reviewerModel','authorModel','effort','row','placement','harness') | Sort-Object
+    Assert-True ((@($prepared.strictPrelogV1.PSObject.Properties.Name | Sort-Object) -join ',') -ceq ($expectedPrelogKeys -join ',')) '9382 AC5 exact strictPrelogV1 key set'
+    foreach($key in $expectedPrelogKeys){Assert-True ($prepared.strictPrelogV1.$key -ceq $prepared.strictTuple.$key) "9382 AC5 exact prelog field $key"}
+    New-StrictPrelog $prepared
+    $prelogged=Get-Content -LiteralPath $controllerLog -Raw | ConvertFrom-Json -DateKind String
+    Assert-True ($prelogged.controllerReviewSchema -ceq 'controller-review-dispatch/v1' -and $prelogged.placement -ceq 'override-todd' -and $prelogged.reviewerModel -ceq 'claude-opus-5-5' -and $prelogged.harness -ceq 'claude') 'host prelogged the prepared closed v1 tuple with override-todd'
+    $prelogHash=(Get-FileHash $controllerLog).Hash
+    & $controllerLauncher @flipArgs | Out-Null
+    $flipOutput=Get-Content -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-flip.jsonl') -Raw
+    Assert-True ($LASTEXITCODE -eq 0 -and [regex]::Matches($flipOutput,'SYNTHETIC_CONTROLLER_STARTED').Count -eq 1 -and $prelogHash -ceq (Get-FileHash $controllerLog).Hash) 'flipped strict review launched once to STRICT_ATTEMPT_IN_FLIGHT against the prelogged v1 tuple'
+    $v3Rows=@(Get-Content -LiteralPath $strictCapacityHistory | Where-Object {$_} | ForEach-Object { $_ | ConvertFrom-Json -DateKind String })
+    Assert-True ($v3Rows.Count -eq 1 -and $v3Rows[0].dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3' -and $v3Rows[0].laneRole -ceq 'review' -and $v3Rows[0].harness -ceq 'claude' -and
+      $v3Rows[0].model -ceq 'claude-opus-5-5' -and $v3Rows[0].placement -ceq 'override-Todd' -and $v3Rows[0].capacityFlip.to.placement -ceq 'override-Todd' -and
+      $v3Rows[0].capacityFlip.row -eq 11 -and (Test-DispatchRoutingLedgerEvidence $v3Rows[0])) 'v3 review evidence keeps override-Todd while the strict tuple binds override-todd'
+    Assert-True ((Get-FileHash (Join-Path $controllerRuntime 'synthetic-strict-flip.capacity-forecast.json')).Hash -ceq (Get-FileHash $strictForecastPath).Hash) 'review lane captured the consumed forecast bytes'
+    Write-Output 'PASS #9282 AC8 flipped strict review prepared, prelogged (override-todd) and launched; v3 keeps override-Todd'
+    $receipt=$strictLogArgs.Clone();$tuple=$prepared.strictTuple
+    $receipt.Kind='review-complete';$receipt.Transcript=$tuple.transcript;$receipt.Model=$tuple.reviewerModel
+    $receipt.Harness=$tuple.harness;$receipt.Effort=$tuple.effort;$receipt.Row=$tuple.row;$receipt.Placement=$tuple.placement
+    $receipt.ReviewContract='review-contract/v2';$receipt.CompleteSweep=$true;$receipt.Outcome='PASS'
+    $receipt.Blocking=0;$receipt.Candidates=0;$receipt.NonBlocking=0
+    & $controllerProducer @receipt | Out-Null
+    $strictHistory=Read-ExactHeadReviewHistory -Path $controllerLog
+    $installReduction=Reduce-ControllerReleaseReview -Issue $tuple.issue -ControllerHead $tuple.controllerHead -Mode strict-v1 -History $strictHistory
+    Assert-True ($installReduction.state -ceq 'authorized' -and $installReduction.reason -ceq 'GOVERNING_PASS') 'synthetic shipped prepare/prelog/launch/PASS route authorizes in installer strict-v1 mode'
+    Write-Output 'PASS #9282 F1 shipped v1 prepare/prelog/launch/governing PASS/installer reduction (synthetic only)'
+    # Drift: prepare and prelog, then the forecast turns toward Codex; the launch re-resolves the ordinary Sol tuple and refuses before any side effect.
+    $driftArgs=$controllerArgs.Clone();$driftArgs.Label='synthetic-strict-drift'
+    $prepareDrift=$driftArgs.Clone();$prepareDrift.PrepareRoute=$true
+    [IO.File]::WriteAllText($controllerLog,'')
+    $preparedDrift=& $controllerLauncher @prepareDrift | ConvertFrom-Json -DateKind String
+    Assert-True ($preparedDrift.strictTuple.reviewerModel -ceq 'claude-opus-5-5' -and $preparedDrift.strictTuple.placement -ceq 'override-todd') 'drift control prepared the flipped tuple'
+    New-StrictPrelog $preparedDrift
+    Set-StrictForecast 'codex'
+    $beforeInventory=Get-StrictInventory @($controllerRuntime,$controllerTemp);$beforeHash=(Get-FileHash $controllerLog).Hash
+    Assert-Throws {& $controllerLauncher @driftArgs} 'strict controller prelaunch tuple refused: STRICT_PRELAUNCH_TUPLE_REQUIRED' 'forecast drift after prelogging refuses the re-resolved tuple'
+    $driftHistory=Read-ExactHeadReviewHistory $controllerLog
+    Assert-True ($beforeInventory -ceq (Get-StrictInventory @($controllerRuntime,$controllerTemp)) -and $driftHistory.rows.Count -eq 2 -and
+      $driftHistory.rows[1].value.controllerReviewSchema -ceq 'controller-review-prelog-void/v1' -and $driftHistory.rows[1].value.originalDispatchRawSha256 -ceq $driftHistory.rows[0].rawSha256 -and
+      -not (Test-Path -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-drift.jsonl')) -and -not (Test-Path -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-drift.capacity-forecast.json'))) '9382 AC4 drift refusal appended exactly one void and no launch resources'
+    function Complete-StrictRecovery($Request) {
+      $preparation=$Request.Clone();$preparation.PrepareRoute=$true
+      $route=& $controllerLauncher @preparation | ConvertFrom-Json -DateKind String
+      New-StrictPrelog $route
+      & $controllerLauncher @Request | Out-Null
+      $output=Get-Content -LiteralPath (Join-Path $controllerRuntime "$($Request.Label).jsonl") -Raw
+      Assert-True ($LASTEXITCODE -eq 0 -and [regex]::Matches($output,'SYNTHETIC_CONTROLLER_STARTED').Count -eq 1) '9382 AC1 fresh same-seat reviewer launches exactly once'
+      # TestRuntimeRoot separates routing output from strict authority. Inspect a
+      # unified history as production does, never infer absence from that split.
+      $routingRows=@(Get-Content -LiteralPath $strictCapacityHistory | Where-Object {$_} | ForEach-Object {$_|ConvertFrom-Json -DateKind String})
+      $launch=@($routingRows|Where-Object {$_.transcript -ceq "$($Request.Label).jsonl"})
+      Assert-True ($launch.Count -eq 1 -and $launch[0].head -ceq $route.strictPrelogV1.controllerHead) '9382 AC1 exactly one v3 launch bound to recovery head'
+      $terminal=$strictLogArgs.Clone();$t=$route.strictPrelogV1
+      foreach($key in @('issue','controllerHead','authorAttempt','reviewerAttempt','reviewAuthority','lane','transcript','authorModel','effort','row','placement','harness')){$terminal[$key]=$t.$key}
+      $terminal.Model=$t.reviewerModel;$terminal.Kind='review-complete';$terminal.Outcome='PASS';$terminal.ReviewContract='review-contract/v2';$terminal.CompleteSweep=$true;$terminal.Blocking=0;$terminal.Candidates=0;$terminal.NonBlocking=0
+      & $controllerProducer @terminal | Out-Null
+      $history=Read-ExactHeadReviewHistory $controllerLog
+      foreach($r in $routingRows){$history.rows+=@([pscustomobject]@{line=$history.rows.Count+1;value=$r;rawSha256='synthetic-v3'})}
+      $result=Reduce-ControllerReleaseReview -Issue $t.issue -ControllerHead $t.controllerHead -Mode strict-v1 -History $history
+      Assert-True ($result.state -ceq 'authorized') "9382 AC1 recovered governing PASS authorizes installer strict-v1: $($result.reason)"
+    }
+    $recovery=$driftArgs.Clone();$recovery.Label='synthetic-strict-drift-recovery';$recovery.ReviewerAttempt='synthetic-drift-recovery-reviewer'
+    Complete-StrictRecovery $recovery
+    Write-Output 'PASS #9382 AC1 drift refusal voids prelog; fresh label/attempt same-seat recovery launches once and authorizes installer'
+    # Misorder: the old unprepared Sol prelog followed by prepared Opus on the
+    # same lane/transcript/attempt cannot launch; both never-launched rows void.
+    [IO.File]::WriteAllText($controllerLog,'');[IO.File]::WriteAllText($strictCapacityHistory,'')
+    $misorder=$controllerArgs.Clone();$misorder.Label='synthetic-strict-misorder'
+    $oldPrepare=$misorder.Clone();$oldPrepare.PrepareRoute=$true
+    $oldRoute=& $controllerLauncher @oldPrepare | ConvertFrom-Json -DateKind String
+    New-StrictPrelog $oldRoute
+    Set-StrictForecast 'claude'
+    $newRoute=& $controllerLauncher @oldPrepare | ConvertFrom-Json -DateKind String
+    New-StrictPrelog $newRoute
+    $beforeInventory=Get-StrictInventory @($controllerRuntime,$controllerTemp)
+    Assert-Throws {& $controllerLauncher @misorder} 'STRICT_PRELAUNCH_TUPLE_REQUIRED' '9382 AC1 misorder must refuse'
+    $misordered=Read-ExactHeadReviewHistory $controllerLog
+    Assert-True ($misordered.rows.Count -eq 4 -and @($misordered.rows|Where-Object {$_.value.kind -ceq 'controller-review-prelog-void'}).Count -eq 2 -and
+      $beforeInventory -ceq (Get-StrictInventory @($controllerRuntime,$controllerTemp))) '9382 AC1 misorder voids both prelogs with no launch resources'
+    Set-StrictForecast 'codex'
+    $recovery=$misorder.Clone();$recovery.Label='synthetic-strict-misorder-recovery';$recovery.ReviewerAttempt='synthetic-misorder-recovery-reviewer'
+    Complete-StrictRecovery $recovery
+    Write-Output 'PASS #9382 AC1 misorder voids both prelogs; same-seat recovery launches once and authorizes installer'
+    # The real producer refuses v2. Directly written SYNTHETIC rows retain
+    # strict-v2-first launch coverage without claiming live/install authority.
+    [IO.File]::WriteAllText($controllerLog,'')
+    $v2Args=$controllerArgs.Clone();$v2Args.Label='synthetic-strict-v2'
+    $prepareV2=$v2Args.Clone();$prepareV2.PrepareRoute=$true
+    $preparedV2=& $controllerLauncher @prepareV2 | ConvertFrom-Json -DateKind String
+    Assert-True ($null -eq $preparedV2.capacityFlip -and $preparedV2.strictTuple.reviewerModel -ceq 'gpt-6.1-sol' -and $preparedV2.strictTuple.placement -ceq 'provisional' -and $preparedV2.strictTuple.harness -ceq 'codex') 'toward Codex the strict review keeps its ordinary Sol tuple'
+    New-StrictPrelog $preparedV2
+    $v2Prelog=$strictLogArgs.Clone();$v2Prelog.Transcript=$preparedV2.strictTuple.transcript
+    $v2Prelog.PolicyGeneration=[long]$preparedV2.strictTuple.policyGeneration;$v2Prelog.RegistryAuthorityDigest=$preparedV2.strictTuple.registryAuthorityDigest
+    $v2Prelog.RoutingFamily=$preparedV2.strictTuple.family;$v2Prelog.RoutingSlot=$preparedV2.strictTuple.slot;$v2Prelog.UsedLastKnownGood=$false
+    $beforeHash=(Get-FileHash $controllerLog).Hash
+    Assert-Throws {& $controllerProducer @v2Prelog} 'STRICT_CONTROLLER_V1_REQUIRED' 'strict provenance prelog refused until every consumer supports v2'
+    Assert-True ($beforeHash -ceq (Get-FileHash $controllerLog).Hash) 'v2 refusal preserves immutable strict history'
+    $syntheticV2=Get-Content -LiteralPath $controllerLog -Raw | ConvertFrom-Json -DateKind String
+    $syntheticV2.controllerReviewSchema='controller-review-dispatch/v2'
+    $syntheticV2 | Add-Member stage 'review'
+    foreach($field in @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')) { $syntheticV2 | Add-Member $field $preparedV2.strictTuple.$field }
+    [IO.File]::WriteAllText($controllerLog,($syntheticV2|ConvertTo-Json -Compress)+"`n",[Text.UTF8Encoding]::new($false))
+    & $controllerLauncher @v2Args | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0 -and (Get-Content -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-v2.jsonl') -Raw) -match 'SYNTHETIC_CONTROLLER_STARTED') 'unflipped v2 prelog launches under the strict-v2 reducer'
+    [IO.File]::WriteAllText($controllerLog,'')
+    $legacyArgs=$controllerArgs.Clone();$legacyArgs.Label='synthetic-strict-legacy'
+    $legacyPrelog=$strictLogArgs.Clone();$legacyPrelog.Transcript='synthetic-strict-legacy.jsonl'
+    & $controllerProducer @legacyPrelog | Out-Null
+    Assert-True ((Get-Content -LiteralPath $controllerLog -Raw | ConvertFrom-Json -DateKind String).controllerReviewSchema -ceq 'controller-review-dispatch/v1') 'legacy control prelogged a v1 tuple'
+    & $controllerLauncher @legacyArgs | Out-Null
+    Assert-True ($LASTEXITCODE -eq 0 -and (Get-Content -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-legacy.jsonl') -Raw) -match 'SYNTHETIC_CONTROLLER_STARTED') 'legacy v1 prelog still launches'
+    [IO.File]::WriteAllText($controllerLog,'')
+    $wrongArgs=$controllerArgs.Clone();$wrongArgs.Label='synthetic-strict-wrong-v2'
+    $syntheticV2.transcript='synthetic-strict-wrong-v2.jsonl';$syntheticV2.family='astra';$syntheticV2.slot='explicit'
+    [IO.File]::WriteAllText($controllerLog,($syntheticV2|ConvertTo-Json -Compress)+"`n",[Text.UTF8Encoding]::new($false))
+    $beforeHash=(Get-FileHash $controllerLog).Hash
+    Assert-Throws {& $controllerLauncher @wrongArgs} 'strict controller prelaunch tuple refused: STRICT_PRELAUNCH_TUPLE_REQUIRED' 'mismatched v2 provenance refuses without a legacy projection'
+    Assert-True ($beforeHash -ceq (Get-FileHash $controllerLog).Hash -and -not (Test-Path -LiteralPath (Join-Path $controllerRuntime 'synthetic-strict-wrong-v2.jsonl'))) 'mismatched provenance refusal left no output or history change'
+    Write-Output 'PASS #9282 N3 real v2 producer refuses; synthetic strict-v2 binds; legacy v1 preserved; mismatched provenance refuses'
+    # Retain a baseline-red control at the installed dispatch baseline and a
+    # same-input omission mutant. No provider or model executable is launched.
+    $prelogBaseline='24a00072a5d10b93c290d805d900920e3a2aa84a'
+    $voidOmissionNeedle="if (`$prelaunchReview.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') {"
+    $launcherSource9382=[IO.File]::ReadAllText($launcher)
+    Assert-True ($launcherSource9382.Split(@($voidOmissionNeedle),[StringSplitOptions]::None).Count -eq 2) '9382 unique launcher void omission seam'
+    foreach($control9382 in @('installed-baseline','AC1-AC4-void-omitted')) {
+      $controlSource9382=if($control9382 -ceq 'installed-baseline'){@(& git -C (Split-Path -Parent $PSScriptRoot) show "${prelogBaseline}:.orchestrator/dispatch-lane.ps1") -join "`n"}else{$launcherSource9382.Replace($voidOmissionNeedle,'if ($false) {')}
+      $controlSubject9382=New-AdmissionLauncherSubject $control9382 $controlSource9382
+      if($control9382 -ceq 'installed-baseline') {
+        foreach($file9382 in @('log-event.ps1','review-head-contract.psm1')) {
+          $old9382=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${prelogBaseline}:.orchestrator/$file9382")
+          Assert-True ($LASTEXITCODE -eq 0) "9382 extract exact baseline $file9382"
+          [IO.File]::WriteAllLines((Join-Path $controlSubject9382.ScriptRoot $file9382),$old9382,[Text.UTF8Encoding]::new($false))
+        }
+      }
+      $controlLog9382=Join-Path $controlSubject9382.ScriptRoot 'dispatch-log.jsonl'
+      $controlRequest9382=$controllerArgs.Clone();$controlRequest9382.Label="synthetic-$control9382"
+      $controlPrepare9382=$controlRequest9382.Clone();$controlPrepare9382.PrepareRoute=$true
+      Set-StrictForecast 'claude'
+      $controlRoute9382=& $controlSubject9382.Launcher @controlPrepare9382 | ConvertFrom-Json -DateKind String
+      if($control9382 -ceq 'installed-baseline') {
+        Assert-True ($null -eq $controlRoute9382.PSObject.Properties['strictPrelogV1']) '9382 AC5 baseline red: exact v1 prelog absent'
+        Write-Output "BASELINE_RED #9382 AC5 head=$prelogBaseline strictPrelogV1 absent"
+      }
+      # Historic projection exists only to reproduce the old stranded head.
+      $controlPrelog9382=$strictLogArgs.Clone();$controlPrelog9382.OutFile=$controlLog9382
+      foreach($key9382 in @('lane','transcript','reviewerAttempt','harness','effort','row','placement')){$controlPrelog9382[$key9382]=$controlRoute9382.strictTuple.$key9382}
+      $controlPrelog9382.Model=$controlRoute9382.strictTuple.reviewerModel
+      & (Join-Path $controlSubject9382.ScriptRoot 'log-event.ps1') @controlPrelog9382 | Out-Null
+      Set-StrictForecast 'codex'
+      Assert-Throws {& $controlSubject9382.Launcher @controlRequest9382} 'STRICT_PRELAUNCH_TUPLE_REQUIRED' '9382 unchanged drift input refuses'
+      Assert-True ((Read-ExactHeadReviewHistory $controlLog9382).rows.Count -eq 1) '9382 baseline/mutant leaves never-launched prelog stranded'
+      $controlRequest9382.Label+="-fresh";$controlRequest9382.ReviewerAttempt="synthetic-$control9382-fresh"
+      $controlPrepare9382=$controlRequest9382.Clone();$controlPrepare9382.PrepareRoute=$true
+      $controlRoute9382=& $controlSubject9382.Launcher @controlPrepare9382 | ConvertFrom-Json -DateKind String
+      foreach($key9382 in @('lane','transcript','reviewerAttempt','harness','effort','row','placement')){$controlPrelog9382[$key9382]=$controlRoute9382.strictTuple.$key9382}
+      $controlPrelog9382.Model=$controlRoute9382.strictTuple.reviewerModel
+      & (Join-Path $controlSubject9382.ScriptRoot 'log-event.ps1') @controlPrelog9382 | Out-Null
+      Assert-Throws {& $controlSubject9382.Launcher @controlRequest9382} 'STRICT_PRELAUNCH_TUPLE_REQUIRED' '9382 baseline/mutant fresh same-seat recovery remains stranded'
+      Assert-True (-not(Test-Path (Join-Path $controllerRuntime "$($controlRequest9382.Label).jsonl"))) '9382 control creates no reviewer process output'
+      Write-Output "KILLED #9382 $control9382 drift and fresh same-seat recovery stranded; candidate recovery authorized"
+    }
+    $preparedOmission9382=New-AdmissionLauncherSubject 'AC5-prelog-keys-mutant' ($launcherSource9382.Replace('strictPrelogV1 = $strictPrelogV1','strictPrelogV1 = $StrictTuple'))
+    $mutantPrepare9382=$controllerArgs.Clone();$mutantPrepare9382.Label='synthetic-prelog-keys-mutant';$mutantPrepare9382.PrepareRoute=$true
+    $mutantRoute9382=& $preparedOmission9382.Launcher @mutantPrepare9382 | ConvertFrom-Json -DateKind String
+    Assert-True ((@($mutantRoute9382.strictPrelogV1.PSObject.Properties.Name|Sort-Object)-join ',') -cne ($expectedPrelogKeys -join ',')) '9382 AC5 key-set assertion kills hand projection mutant'
+    Write-Output 'KILLED #9382 AC5-prelog-keys-mutant exact prelog keys differ; candidate exact keys admitted'
+  } finally {
+    if(Test-Path -LiteralPath $strictForecastPath){Remove-Item -LiteralPath $strictForecastPath -Force}
+    [IO.File]::WriteAllText($controllerLog,'')
+  }
   Invoke-FleetLauncherOrderingControls
   # --- direct ownership validator: no launcher, provider, or live runtime -----
   function New-OwnershipFixture(
@@ -907,7 +1215,7 @@ exit [int]$env:DISPATCH_CLEANUP_CHILD_EXIT_CODE
 '@ | Set-Content -LiteralPath $cleanupChildProbe
   $cleanupRunner = Join-Path $testRoot "cleanup-runner.ps1"
   @'
-& $env:DISPATCH_CLEANUP_LAUNCHER -Harness codex -Model gpt-6.1-sol -Effort high `
+& $env:DISPATCH_CLEANUP_LAUNCHER -Harness codex -Model gpt-6.1-sol -Effort high -Issue 908526 `
   -PromptFile $env:DISPATCH_CLEANUP_PROMPT -Worktree $env:DISPATCH_CLEANUP_WORKTREE `
   -Label $env:DISPATCH_CLEANUP_LABEL -ExecutablePath (Join-Path $PSHOME "pwsh.exe") `
   -TestArgumentList @("-NoProfile", "-NonInteractive", "-File", $env:DISPATCH_CLEANUP_CHILD_PROBE) `
@@ -937,8 +1245,12 @@ exit $LASTEXITCODE
       -Environment $cleanupEnvironment -WindowStyle Hidden -Wait -PassThru `
       -RedirectStandardOutput $cleanupRunnerOutput -RedirectStandardError $cleanupRunnerError
     Assert-True ($cleanupProcess.ExitCode -eq $cleanupChildExitCode) "cleanup probe preserves child exit code $cleanupChildExitCode"
+    Assert-True (Test-Path -LiteralPath $cleanupResult) "cleanup child entered: $((Get-Content -LiteralPath $cleanupRunnerError -Tail 12) -join ' ')"
     $cleanupChild = Get-Content -Raw -LiteralPath $cleanupResult | ConvertFrom-Json
     Assert-True (-not (Test-Path -LiteralPath $cleanupChild.isolationRoot)) "review isolation root is cleaned after child exit $cleanupChildExitCode"
+    $cleanupRouting=@(Get-Content (Join-Path $ownershipRoot 'dispatch-log.jsonl') | ConvertFrom-Json -DateKind String | Where-Object label -CEQ $cleanupLabel)
+    Assert-True ($cleanupRouting.Count -eq 1 -and $cleanupRouting[0].issue -eq 908526 -and $cleanupRouting[0].laneRole -ceq 'review') 'real default-review child records Issue once without a HOST row'
+    Assert-True ($null -ne $cleanupRouting[0].PSObject.Properties['placement'] -and $null -eq $cleanupRouting[0].placement -and $cleanupRouting[0].placementSource -ceq 'row-0-explicit' -and $cleanupRouting[0].head -ceq $dispatchHead) 'real default-review child preserves absent placement and exact head'
     $remainingPrompts = @(Get-ChildItem -LiteralPath $ownershipRoot -Filter "dispatch-heavy-verifier-*.prompt.txt" -File)
     Assert-True ($remainingPrompts.Count -eq 0) "injected launch prompt is cleaned after child exit $cleanupChildExitCode"
     $remainingRecords = @(Get-ChildItem -LiteralPath $ownershipRoot -Filter "dispatch-launch-*.json" -File)
@@ -1343,8 +1655,9 @@ exit $LASTEXITCODE
   Assert-True ($malformedDiagnostics -match "malformed stream-json") "partial stream-json diagnostic identifies the malformed state without echoing content"
 
   $supportedGates = @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db")
-  $expectedHeavyPreamble = "Heavy verification contract: use '$(Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1")' for every full gate. Supported gates: $($supportedGates -join ', '). It acquires and validates the exclusive lock, runs foreground, and only releases its own owner record. Direct memory-heavy Node, Playwright, Vitest, script-battery, and build commands are machine-admitted through the same lock before their command body. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
-  $expectedClaudePreamble = "Claude foreground-only execution contract: keep every terminal gate and poll in this turn's foreground and bounded. Do not use Monitor, ScheduleWakeup, any Cron tool (CronCreate, CronDelete, or CronList), long --watch commands, or long sleep/poll loops. When waiting is necessary, use repeated short bounded foreground calls, let each call return, and do not report delivery complete until all terminal work is finished.`r`n`r`n"
+  $expectedHeavyPreamble = "Heavy verification contract: product proof is exact-head hosted CI. Retain scoped pre-push checks and focused tests; local full/harness runs and focused DB diagnostics are optional, never publication or landing gates. A scoped refusal never escalates to a full gate: preserve and disclose the defect, never fabricate PASS. Controller authors retain baseline-aware controller-release-battery.ps1 proof; product CI is not controller release proof. Any eligible heavy reproduction uses '$(Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')', foreground and under unchanged exclusive admission, including direct Node, Playwright, full Vitest, script-battery and build commands. Exit 73 means not executed, not PASS or a consumed attempt. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
+  $expectedDeniedPreamble = "Heavy verification contract: planning, review and row-13 documentation lanes use evidence inspection and cheap focused checks only. Heavy commands refuse with exit 73 before reservation; this is non-execution, not PASS or a consumed attempt. Return heavy reproduction to the host for an attributed implementation/verifier lane. Controller reviewers rerun changed tests directly, never through ControllerBattery or ControllerPrecursor.`r`n`r`n"
+  $expectedClaudePreamble = "Claude foreground-only execution contract: keep every terminal gate and poll in this turn's foreground and bounded. This launch gives Bash and PowerShell a one-hour foreground envelope with background tasks disabled; the hour is a harness bound, not a gate budget. Run each finite gate in the foreground without an explicit timeout. Narrow reads and polls before calling them so each call is short and bounded, and give any explicit deadline room to complete; never rely on the hour for them. Do not use Monitor, ScheduleWakeup, any Cron tool (CronCreate, CronDelete, or CronList), run_in_background, long --watch commands, or long sleep/poll loops. When waiting is necessary, use repeated short bounded foreground calls, let each call return, and do not report delivery complete until all terminal work is finished. A call that expires, or whose task is killed or stopped, forfeits this session's acceptance and leaves its work incomplete: report it incomplete to the host with its evidence; do not recover and finish it, retry it automatically, or report PASS.`r`n`r`n"
   $expectedRetrievalPreamble = "Bounded retrieval contract: prefer exact named paths and bounded line ranges. Scope searches and inventories to the needed paths and patterns, and bound displayed output with -First/-Tail, line-width limits or selected fields. This bounds output, not necessary caller discovery, exact ownership/history checks or complete evidence inspection; inspect all required evidence in bounded slices. Fetch hosted CI logs to a file, then search that file. Keep polls short, bounded and in the foreground; when waiting is necessary, repeat short bounded foreground calls and let each return. Complete evidence stays on disk; cite paths and exact lines rather than dumping raw output. Heavy-verifier, harness, role and review contracts remain authoritative.`r`n`r`n"
   $originalPrompt = [IO.File]::ReadAllText($prompt)
   Assert-True ($clearedScenario.prompt -ceq ($expectedHeavyPreamble + $expectedRetrievalPreamble + $expectedClaudePreamble + $originalPrompt)) "every Claude launch receives the exact canonical foreground-only preamble after the unchanged heavy-gate and bounded-retrieval preambles"
@@ -1358,7 +1671,7 @@ exit $LASTEXITCODE
   $reviewTranscriptScenario = Invoke-TranscriptScenario -Name "codex-review-contract" `
     -Events $foregroundEvents -Harness codex -LaneRole review
   Assert-True ($reviewTranscriptScenario.exitCode -eq 0) "review contract fixture launches successfully"
-  Assert-True ($reviewTranscriptScenario.prompt -ceq ($expectedHeavyPreamble + $expectedRetrievalPreamble + $reviewContractText + $originalPrompt)) "every review launch receives the exact versioned review contract before the task prompt"
+  Assert-True ($reviewTranscriptScenario.prompt -ceq ($expectedDeniedPreamble + $expectedRetrievalPreamble + $reviewContractText + $originalPrompt)) "every review launch receives the exact versioned review contract before the task prompt"
   Assert-True ($reviewTranscriptScenario.prompt.Contains('A lane must not launch model CLIs or subprocess reviewers itself') -and
     $reviewTranscriptScenario.prompt.Contains('PENDING_HOST_REVIEW')) 'review role must inject the host-only independent review handoff'
 
@@ -1394,7 +1707,7 @@ exit $LASTEXITCODE
   $planningTranscriptScenario = Invoke-TranscriptScenario -Name "codex-planning-contract" `
     -Events $foregroundEvents -Harness codex -LaneRole planning
   Assert-True ($planningTranscriptScenario.exitCode -eq 0) "planning contract fixture launches successfully"
-  Assert-True ($planningTranscriptScenario.prompt -ceq ($expectedHeavyPreamble + $expectedRetrievalPreamble + $planningContractText + $originalPrompt)) "every planning launch receives the exact versioned planning contract before the task prompt"
+  Assert-True ($planningTranscriptScenario.prompt -ceq ($expectedDeniedPreamble + $expectedRetrievalPreamble + $planningContractText + $originalPrompt)) "every planning launch receives the exact versioned planning contract before the task prompt"
   Assert-True ($planningTranscriptScenario.prompt.Contains('A lane must not launch model CLIs or subprocess reviewers itself') -and
     $planningTranscriptScenario.prompt.Contains('PENDING_HOST_REVIEW')) 'planning role must inject the host-only independent review handoff'
 
@@ -1768,6 +2081,16 @@ function Invoke-8102DispatchLeg([string]$Test,[string]$Label,[hashtable]$Edits,[
     if($WithHolder){$holder=Start-SyntheticFleetHolder $copy.container;$holderIdentity=$holder.identity}
     $run=Invoke-8102CarrierCopy $copy 'dispatch'
   } finally { Stop-SyntheticFleetHolder $holder }
+  # Copies are disposable; retain raw lifecycle records and streams first.
+  $evidence=Join-Path $PSScriptRoot ('artifacts/8102-'+$Label+'-'+[guid]::NewGuid().ToString('N'))
+  [IO.Directory]::CreateDirectory($evidence)|Out-Null
+  Copy-Item -LiteralPath $run.stdoutPath,$run.stderrPath -Destination $evidence
+  foreach($file in @(Get-ChildItem -LiteralPath (Join-Path $copy.runtime 'artifacts') -File -Filter '7963-*')){
+    Copy-Item -LiteralPath $file.FullName -Destination $evidence
+  }
+  $run.stdoutPath=Join-Path $evidence (Split-Path -Leaf $run.stdoutPath)
+  $run.stderrPath=Join-Path $evidence (Split-Path -Leaf $run.stderrPath)
+  [IO.File]::WriteAllText((Join-Path $evidence 'leg.json'),([ordered]@{label=$Label;sourceHead=(@(& git -C (Split-Path -Parent $PSScriptRoot) rev-parse HEAD)-join'').Trim();copyHead=(@(& git -C $copy.root rev-parse HEAD)-join'').Trim();exitCode=$run.exit;elapsedSeconds=$run.elapsedSeconds;holder=$holderIdentity;applied=$copy.applied;stdoutPath=$run.stdoutPath;stderrPath=$run.stderrPath}|ConvertTo-Json -Depth 8))
   $lines=@($run.stdout -split "\r?\n")
   $measured=@($lines|Where-Object{$_-clike'MEASURED_LOAD *'})
   $finished=[bool]@($lines|Where-Object{$_-clike'RETAINED 7963 dispatch *finished=True'}).Count
@@ -1779,6 +2102,56 @@ function Invoke-8102DispatchLeg([string]$Test,[string]$Label,[hashtable]$Edits,[
 function Assert-8102([bool]$Condition,[string]$Test,[string]$Name,$Leg) {
   if(-not$Condition){throw "8102 $Test ASSERTION FAILED: $Name; leg=$($Leg.label) exit=$($Leg.exit) stdout=$($Leg.run.stdoutPath) stderr=$($Leg.run.stderrPath)"}
   Write-Output "PROOF 8102 $Test $Name"
+}
+
+# #9531: predeclare a 31 s delay immediately before the complete wait-omitted
+# invocation. The restored arm-before-omission mutant must lose its live-root
+# refusal at the derived site, not fail at some unrelated classifier stage.
+function Test-ArmAfterOmissionSurvivesPreArmDelay {
+  $test='arm-after-omission-pre-arm-delay'
+  if(-not(Test-BatteryProofRelevant @('landed-integration-evidence.psm1','dispatch-lane.test.ps1'))){
+    Write-Output "SKIPPED 9531 ${test}: ordering files unchanged in impact battery"
+    return
+  }
+  $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
+  $delayNeedle='          & { . $block; Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label } | Out-Null'
+  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n"+$delayNeedle
+  # This new proof arm ends only after the complete native omission/release pair.
+  # It is not a carrier PASS; the existing unmodified whole carrier runs below.
+  $controlNeedle='      $binding=MeasuredResume8076 $w $seed $o $runtime $label $runControl8076'
+  $controlEnd=$controlNeedle+"`n      if(`$runControl8076){[Console]::WriteLine('CONTROL 9531 native omission/release pair complete');exit 0} # SYNTHETIC_9531_PAIR_ONLY"
+  $armStart=$source.IndexOf('        $record.hold.armStartedAt=')
+  $armEnd=$source.IndexOf('        Save $path $record',$armStart)+'        Save $path $record'.Length
+  if($armStart-lt0-or$armEnd-le$armStart){throw '9531 arm block unavailable'}
+  $arm=$source.Substring($armStart,$armEnd-$armStart)
+  # Restore the old block's initial-projection precondition as well as its order.
+  $oldArm=$arm.Replace('[datetimeoffset]$record.hold.armStartedAt-le[datetimeoffset]$record.hold.preArmObservation.observedAt-or','[datetimeoffset]$record.hold.armStartedAt-le[datetimeoffset]$record.observations[0].observedAt-or')
+  $oldArm=[regex]::Replace($oldArm,'(?m)^          \[datetimeoffset\]\$record\.hold\.preArmObservation\.observedAt-le\[datetimeoffset\]\$pair\.omissionValidatedAt-or\r?\n','')
+  $omissionNeedle='        # Mutate this in-process resume, not the dispatch script run by Native.'
+  $oldOrder=@{'interrupted-integration-test-support.ps1'=@(@($arm,''),@($omissionNeedle,$oldArm+"`n"+$omissionNeedle),@($delayNeedle,$delay),@($controlNeedle,$controlEnd))}
+  $old=Invoke-8102DispatchLeg $test '9531-delayed-old-order' $oldOrder $false
+  $site=(Get-8076GuardSites (Join-Path $old.copy.runtime 'landed-integration-evidence.psm1')).refusal
+  Assert-8102 ($old.exit-eq1-and$old.measured.Count-eq0-and-not$old.finished-and$old.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$site")) $test 'restored old order loses the exact live-root omission refusal after the fixed delay' $old
+  $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$delay),@($controlNeedle,$controlEnd))}
+  $candidate=Invoke-8102DispatchLeg $test '9531-delayed-candidate' $candidateEdits $false
+  Assert-8102 ($candidate.exit-eq0-and$candidate.measured.Count-eq0-and-not$candidate.finished-and$candidate.text.Contains('CONTROL 9531 native omission/release pair complete')) $test 'unarmed omission survives the fixed delay and the native pair completes, without claiming whole-carrier PASS' $candidate
+  $pairs=@(Get-ChildItem -LiteralPath (Split-Path -Parent $candidate.run.stdoutPath) -File -Filter '*.wait-omitted-pair.json')
+  Assert-8102 ($pairs.Count-eq1) $test 'one retained native omission/release pair' $candidate
+  $pair=Get-Content -LiteralPath $pairs[0].FullName|ConvertFrom-Json -DateKind String
+  $hold=$pair.heldIdentity
+  Assert-8102 ($pair.rootLiveAtRefusal-and$pair.releaseCausalityProven-and$pair.candidatePassed-and
+    [datetimeoffset]$pair.mutantRefusedAt-lt[datetimeoffset]$pair.omissionValidatedAt-and
+    [datetimeoffset]$pair.omissionValidatedAt-lt[datetimeoffset]$hold.preArmObservation.observedAt-and
+    [datetimeoffset]$hold.preArmObservation.observedAt-lt[datetimeoffset]$hold.armStartedAt-and
+    [datetimeoffset]$hold.armStartedAt-le[datetimeoffset]$hold.armedReceipt.armedAt-and
+    [datetimeoffset]$hold.releasedAt-lt[datetimeoffset]$hold.armedReceipt.deadline-and
+    [datetimeoffset]$hold.releasedAt-lt[datetimeoffset]$hold.exitedAt-and$hold.releaseMarginSeconds-gt0) $test 'refusal, frozen validation, fresh observation, arm, causal release and exit are ordered with positive margin' $candidate
+  foreach($observation in @($pair.refusalObservation,$hold.preArmObservation,$hold.preReleaseObservation)){
+    $roots=@($observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'exact'-and$_.ProcessId-eq$hold.pid-and$_.recordedStartIdentity-ceq$hold.startIdentity-and$_.rows[0].ThreadCount-gt0})
+    Assert-8102 ($roots.Count-eq1) $test 'the same exact live holder is projected at refusal, pre-arm and release' $candidate
+  }
+  Write-Output "PASS 9531 $test old-order=FAIL candidate=PASS delayMilliseconds=31000"
+  foreach($leg in @($old,$candidate)){Remove-8102FixtureCopy $leg.copy}
 }
 
 # AC1 (dispatch): a miss of the 8076 fixture's timed bound is MEASURED_LOAD,
@@ -1825,9 +2198,9 @@ function Test-RegressionUnderLoadIsNotMasked {
   }
   $edits=@{'landed-integration-evidence.psm1'=@(,@($treeGuard8102Needle,$treeGuard8102))}
   $held=Invoke-8102DispatchLeg $test 'tree-guard-omitted-held' $edits $true
-  Assert-8102 ($held.holder-cne'none'-and$held.exit-ne0-and$held.exit-ne75-and$held.measured.Count-eq0-and-not$held.finished-and$held.text.Contains('8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:615')) $test "omitted tree-death guard under a live holder is FAIL, never PASS and never MEASURED_LOAD (actual exit=$($held.exit) measuredLines=$($held.measured.Count))" $held
+  Assert-8102 ($held.holder-cne'none'-and$held.exit-ne0-and$held.exit-ne75-and$held.measured.Count-eq0-and-not$held.finished-and$held.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$((Get-8076GuardSites (Join-Path $held.copy.runtime 'landed-integration-evidence.psm1')).refusal)")) $test "omitted tree-death guard under a live holder is FAIL, never PASS and never MEASURED_LOAD (actual exit=$($held.exit) measuredLines=$($held.measured.Count))" $held
   $vacant=Invoke-8102DispatchLeg $test 'tree-guard-omitted-vacant' $edits $false
-  Assert-8102 ($vacant.exit-eq1-and$vacant.measured.Count-eq0-and-not$vacant.finished-and$vacant.text.Contains('8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:615')) $test "same omission on a vacant fleet is caught as FAIL exit=1 (actual exit=$($vacant.exit))" $vacant
+  Assert-8102 ($vacant.exit-eq1-and$vacant.measured.Count-eq0-and-not$vacant.finished-and$vacant.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$((Get-8076GuardSites (Join-Path $vacant.copy.runtime 'landed-integration-evidence.psm1')).refusal)")) $test "same omission on a vacant fleet is caught as FAIL exit=1 (actual exit=$($vacant.exit))" $vacant
   Write-Output "PASS 8102 $test held=FAIL vacant=FAIL"
   foreach($leg in @($held,$vacant)){Remove-8102FixtureCopy $leg.copy}
 }
@@ -1911,9 +2284,9 @@ function Test-ReusedPidRootIsDeadByIdentity {
 
 # AC3: the #8076 AC3 omission control still refuses at the renamed refusal
 # line with live root: the real guard refuses an exact-identity live owner at
-# the line and with the string the control pins, the omitted guard (the #8102
-# AC3 mutant) passes the same owner, and no control is pinned to the retired
-# refusal. The 7906 discriminator chain that produced mutant 070 completes on a
+# the line the control derives from the module (#9090) and with the string it
+# pins, the omitted guard (the #8102 AC3 mutant) passes the same owner, and no
+# control is pinned to the retired refusal or to a literal module line. The 7906 discriminator chain that produced mutant 070 completes on a
 # vacant fleet in this file's dispatch carrier run below.
 function Test-TreeDeathOmissionStillRefuses {
   $test='tree-death-omission-still-refuses'
@@ -1933,9 +2306,12 @@ function Test-TreeDeathOmissionStillRefuses {
     $callSites=@(1..$psmLines.Count|Where-Object{$psmLines[$_-1]-ceq'  Assert-InterruptedIntegrationTreeDead $sources.owner # RESUME_GUARD_PRIOR_DEATH'})
     Assert-True ($callSites.Count-eq1) "$test`: one RESUME_GUARD_PRIOR_DEATH call site"
     $support=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
-    foreach($pin in @("if(`$pair.mutantError-cne'INTEGRATION_RESUME_PRIOR_OWNER: live root'-or`$pair.mutantStack-notmatch'landed-integration-evidence\.psm1: line $line'){","throw '8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$line'","guardRefusalSite='landed-integration-evidence.psm1:$line'","guardCallSite='landed-integration-evidence.psm1:$($callSites[0])'")){
+    $sites=Get-8076GuardSites $psm
+    Assert-True ($sites.refusal-eq$line-and$sites.call-eq$callSites[0]) "$test`: the #8076 AC3 omission control derives refusal psm1:$line and call site psm1:$($callSites[0]) (actual: refusal=$($sites.refusal) call=$($sites.call))"
+    foreach($pin in @('$sites8076=Get-8076GuardSites (Join-Path $PSScriptRoot ''landed-integration-evidence.psm1'')','if($pair.mutantError-cne''INTEGRATION_RESUME_PRIOR_OWNER: live root''-or$pair.mutantStack-notmatch"landed-integration-evidence\.psm1: line $($sites8076.refusal)(?!\d)"){','throw "8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$($sites8076.refusal)"','guardRefusalSite="landed-integration-evidence.psm1:$($sites8076.refusal)"','guardCallSite="landed-integration-evidence.psm1:$($sites8076.call)"')){
       Assert-True ([regex]::Matches($support,[regex]::Escape($pin)).Count-eq1) "$test`: the #8076 AC3 omission control pins $pin"
     }
+    Assert-True (-not[regex]::IsMatch($support,'psm1:( line )?[0-9]')) "$test`: no control pins a literal module line"
     Assert-True (-not$support.Contains('live, reused or ambiguous root')) "$test`: no control is pinned to the retired refusal"
     $text=[IO.File]::ReadAllText($psm)
     Assert-True ([regex]::Matches($text,[regex]::Escape($treeGuard8102Needle)).Count-eq1) "$test`: the omission needle is unique"
@@ -1954,6 +2330,7 @@ function Test-TreeDeathOmissionStillRefuses {
 Test-ReusedPidRootIsDeadByIdentity
 Test-TreeDeathOmissionStillRefuses
 
+Test-ArmAfterOmissionSurvivesPreArmDelay
 Test-TimedFixtureUnderFleetLoadMeasuresLoad
 Test-RegressionUnderLoadIsNotMasked
 Invoke-7963ResumeCarriers @('native-branch')

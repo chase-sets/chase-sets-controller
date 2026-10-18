@@ -416,5 +416,68 @@ foreach ($rule in $platformRules) {
   Assert-Mutant "platform-section-$($rule[0]):$($rule[1])" { Test-PlatformPolicy $mutant }
 }
 
+function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
+  foreach($text in @($Milestone,$Routing)) {
+    Assert-Enforced ((Compact-Text $text).Contains('never rows 8/11/12')) 'capacity policy excludes Fable rows 8/11/12'
+    Assert-Enforced ((Compact-Text $text).Contains('capacityShadowFlip')) 'capacity shadow policy is explicit'
+    # #9282: planning and review lanes are capacity-eligible; the role exemption is removed from both skills.
+    Assert-Enforced (-not (Compact-Text $text).Contains('Review/planning, row 0')) 'capacity role exemption removed (#9282)'
+    Assert-Enforced ((Compact-Text $text).Contains('override-todd')) 'strict controller tuples bind override-todd'
+    Assert-Enforced ((Compact-Text $text).Contains('prepared, prelogged, then launched')) 'strict review prepare-prelog-launch order'
+    Assert-Enforced ((Compact-Text $text).Contains('strictPrelogV1')) 'strict review exact v1 prelog (#9382)'
+    Assert-Enforced ((Compact-Text $text).Contains('voids never-launched prelogs')) 'strict refusal void recovery (#9382)'
+    Assert-Enforced ((Compact-Text $text).Contains('`-Label` and `-ReviewerAttempt`')) 'strict recovery uses fresh label and reviewer attempt (#9382)'
+  }
+  Assert-Enforced ((Compact-Text $Routing).Contains('Codex [3,13,10,4]')) 'capacity Codex ordered prefix retained'
+  Assert-Enforced (-not (Compact-Text $Routing).Contains('Claude [13,10,4,5]')) 'capacity Claude prefix superseded (#9282)'
+  Assert-Enforced ((Compact-Text $Routing).Contains('every lane a Claude model can admissibly take goes to Claude')) 'capacity toward-Claude rule'
+  Assert-Enforced ((Compact-Text $Routing).Contains('decision.modelWindowStates.claude.Fable')) 'capacity Fable window gate'
+  Assert-Enforced ((Compact-Text $Routing).Contains('No blanket Sol/Opus exclusion')) 'capacity route-derived continuation replaces blanket exclusion'
+  Assert-Enforced ((Compact-Text $Routing).Contains('Its only automatic routes are the closed Astra-to-Fable watchdog fallback and the ruled capacity reserve flip, both on rows 7/14/15 under the existing reserve')) 'capacity Fable reserve-scoped automatic routes'
+  Assert-Enforced (-not (Compact-Text $Routing).Contains('Never use it as an automatic fallback')) 'capacity removes contradictory blanket Fable fallback prohibition'
+  Assert-Enforced ((Compact-Text $Milestone).Contains('-ReviewArtifact brief|code')) 'review dispatch names its artifact'
+  $watchdog=Read-Strict 'lane-stall-watchdog.ps1'
+  foreach($row in @(8,11,12)){Assert-Enforced ($watchdog -notmatch "'$row\|astra/high'\s*=\s*@\('claude','fable'") "watchdog Fable exclusion row $row"}
+}
+$routingSkill=Read-Strict 'controller-skills/model-routing/SKILL.md'
+Test-CapacityPolicy $milestoneText $routingSkill
+Assert-Mutant 'strict-prelog-hand-projection-restored' {Test-CapacityPolicy ($milestoneText.Replace('strictPrelogV1','strictTuple')) $routingSkill}
+Assert-Mutant 'strict-prelog-void-recovery-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('voids never-launched prelogs','refuses without recovery'))}
+Assert-Mutant 'capacity-fable-prohibition-omitted' {Test-CapacityPolicy ($milestoneText.Replace('never rows 8/11/12','any row')) $routingSkill}
+Assert-Mutant 'capacity-role-exemption-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('lanes are eligible. Row 0, relaunches','lanes are eligible. Review/planning, row 0, relaunches'))}
+Assert-Mutant 'capacity-claude-prefix-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('Codex [3,13,10,4]','Claude [13,10,4,5] and Codex [3,13,10,4]'))}
+Assert-Mutant 'capacity-fable-window-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('decision.modelWindowStates.claude.Fable','the Fable window'))}
+Assert-Mutant 'capacity-prepare-order-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'prepared,\s+prelogged,\s+then\s+launched','launched, then prelogged')) $routingSkill}
+function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
+  # #9316: section 10 states the pacing condition; capacity-pacing.ps1 is its runtime counterpart.
+  $section=[regex]::Match($Skill,'(?ms)^## 10\.[^\r\n]*\r?\n(.*?)(?=^## \d+\.|\z)')
+  Assert-Enforced $section.Success 'skill section 10 present'
+  $text=Compact-Text $section.Value
+  foreach($rule in @(
+      'run `capacity-pacing.ps1` once with the cycle''s `-NowUtc` and add no fresh lane on a provider beyond its `newLaneAllowance`, Fable within `fableLaneBudget`.',
+      'Relaunches, resumes, review of in-flight work and landing are not counted against it.',
+      'A zero allowance is a valid section 10 deferral reason, including in #9283''s spend mode.',
+      '`status: unknown` (an unreachable, malformed or stale status, or an unknown census) is zero allowance on every provider: pacing never authorizes dispatch on missing evidence.',
+      'less the 0.10 reserve',
+      'The pace target (`targetUnitsPerHour`) spends banked credits before they lapse; the pace budget (`paceBudget`) raises the headroom budget by at most two new lanes per run.',
+      'A positive allowance with ready work is a reason to dispatch, not a ceiling to stay under.',
+      'replaces the hand-read AgentPools dashboard routine of 4388/6101785942, which is superseded.')) {
+    Assert-Enforced ($text.Contains($rule,[StringComparison]::Ordinal)) "section 10 lacks pacing rule: $rule"
+  }
+  foreach($needle in @("'capacity-pacing/v1'",'reserve = 0.10','claude = 0.015; codex = 0.009','minLaneHours = 24','windowHours = 168','fableShare = 0.5')) {
+    Assert-Enforced ($Reducer.Contains($needle,[StringComparison]::Ordinal)) "capacity-pacing.ps1 lacks runtime counterpart: $needle"
+  }
+}
+$pacingReducer=Read-Strict 'capacity-pacing.ps1'
+Assert-Enforced ((Compact-Text (Read-Strict 'controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md')).Contains('supersedes 4388/6101785942',[StringComparison]::Ordinal)) 'release note names 4388/6101785942 as superseded for the rule-change row'
+Test-PacingPolicy $milestoneText $pacingReducer
+Assert-Mutant 'pacing-allowance-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'add no fresh\s+lane on a provider beyond its `newLaneAllowance`','add lanes freely')) $pacingReducer}
+Assert-Mutant 'pacing-deferral-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'A zero allowance is a valid section 10 deferral\s+reason','A zero allowance is advisory')) $pacingReducer}
+Assert-Mutant 'pacing-supersession-omitted' {Test-PacingPolicy ($milestoneText.Replace('4388/6101785942','4388/0')) $pacingReducer}
+Assert-Mutant 'pacing-unknown-authorizes' {Test-PacingPolicy ([regex]::Replace($milestoneText,'pacing never authorizes dispatch on missing\s+evidence','pacing may authorize dispatch on missing evidence')) $pacingReducer}
+Assert-Mutant 'pacing-reserve-drifted' {Test-PacingPolicy $milestoneText ($pacingReducer.Replace('reserve = 0.10','reserve = 0.05'))}
+Assert-Mutant 'pacing-credit-raise-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'(?s)The pace target\s+.*?per run\.','')) $pacingReducer}
+Assert-Mutant 'pacing-dispatch-duty-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'A positive allowance with ready work is a reason to dispatch,\s+not a ceiling to stay under\.','')) $pacingReducer}
+Write-Output 'PASS 9737 AC5 pace-raise-pin=PASS dispatch-duty-pin=PASS mutants=2 survivors=0'
 Write-Output "PASS platform-supervision boundaries=$($platformRules.Count) whitespace-control=PASS"
 Write-Output "PASS contract-enforcement files=$($hygieneFiles.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"

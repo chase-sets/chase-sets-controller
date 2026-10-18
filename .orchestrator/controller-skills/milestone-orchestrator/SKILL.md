@@ -3,13 +3,11 @@ name: milestone-orchestrator
 description: Run the chase-sets delivery loop — complete all committed, non-parked outcomes by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, sending Todd only product priority or scope questions and packaged operator actions. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
 ---
 
-# Milestone Orchestrator (v2.89, 2026-10-02)
+# Milestone Orchestrator (v2.115, 2026-10-16)
 
-Version 2.89 projects implementation/review board ownership on events and runs
-the capped reconciliation backstop at most hourly (#8478). Model-routing v4.20,
-host-attributed review handoffs, the nonterminal exhausted-brief-reviewer proof
-route and strict review-history reduction remain unchanged. Repair battery logs
-bind the admitted baseline receipt.
+Version 2.115 adds the AgentPools pace raise (#9737) so banked credits are
+spent before they lapse, in steps of at most two new lanes per run. A positive
+allowance with ready work is a reason to dispatch, not a ceiling to stay under.
 Routing remains data-bound as in v2.87; prior release notes are archived in
 `references/rule-provenance-v2.24.md`.
 
@@ -43,9 +41,11 @@ the ledger query includes them without replacing the machine-maintained pair.
 
 Terminal condition: every committed, non-parked milestone is closed and no
 issue globally remains `status:needs-replan`. Candidate outcomes remain visible
-future triage outside terminal completion. Parked means deliberately deferred
-with a stated un-park condition. Stopped implementation is active recovery
-work labeled `status:needs-replan`, not parked.
+future triage outside terminal completion. Parked means Todd deliberately
+deferred the work, with a stated un-park condition (4388/6022146271). No
+attempt count, dispatch count, reviewer-eligibility gap, or environment or
+tooling failure parks work. Stopped implementation is active recovery work
+labeled `status:needs-replan`, not parked.
 
 Standing invariants:
 
@@ -79,6 +79,7 @@ its record; a stale record is overwritten, never a blocker.
 
 State must survive in the logs, board, and artifacts rather than in an
 ever-growing chat.
+The orchestrator and its lanes never run an unscoped recursive enumeration of `.orchestrator`, `logs` or `artifacts`; use exact paths or `rg --files -g <glob>`.
 
 At session start, run `.orchestrator/check-controller-skill-freshness.ps1`.
 Use the installed controller only when it reports `current`. The installer
@@ -98,15 +99,20 @@ On every wake:
 1. Renew the host identity record.
 2. Verify the newest actual deploy execution; update breakers.
 3. Land only exact-head-authorized green PRs through `landing-preflight.ps1`.
-4. Reclaim merged lanes and stale resources.
+4. Run `cleanup-orphan-worktree-dirs.ps1 -Remove -ReportPath
+   .orchestrator/logs/worktree-reclamation-<yyyyMMddTHHmmssZ>.json` every cycle.
+   Run `runtime-retention.ps1 -Apply`; it archives seven-day-old eligible output only when no verified manifest is newer than 24 hours.
 5. Run the stall watchdog and inspect active-lane deltas.
 6. Validate completed lanes and run independent review; supervise both platform
    loops as below before step 7.
 7. Backfill or scale from the live runnable frontier.
-8. Sweep for decisions and operator actions.
+8. Sweep for decisions and operator actions; log each packaged Todd action
+   change as `todd-action` (§11).
 9. Record terminal events.
 10. Run `board-reconcile.ps1 -Apply` once per cycle, at most hourly.
 11. Publish `digest-publish.ps1` output; never hand-type the digest.
+12. Run `waiting-on-todd.ps1` once, in the foreground. A refusal writes
+    nothing; repair its named cause, never hand-edit the pinned issue.
 
 No flow snapshot, replan reconciliation, or metrics check exists in the cycle.
 
@@ -250,7 +256,9 @@ Product floor (4388/5838576100): while ready, runnable `kind:product` work
 exists, at least two lanes serve it. Controller, platform, ops and
 test-infrastructure work take only the remaining capacity. When fewer than two
 product issues are ready, planning lanes that make product issues ready come
-before new ops or test-infrastructure probes. Heavy-verifier slot order is
+before new ops or test-infrastructure probes. Recovery planning for a
+`status:needs-replan` issue in a committed product outcome is product-floor
+work (4388/6022146271). Heavy-verifier slot order is
 unchanged, and nothing preempts a live heavy owner.
 
 Serial blocking backfills the floor (4388/5845981597). When Todd's current
@@ -290,6 +298,41 @@ a planning-repair lane, not an implementation lane.
 Select the exact model and effort from the model-routing skill and log its row
 and placement. Family aliases are not model identities; startup liveness must
 confirm the exact reported version.
+
+Fresh implementation, planning and review routing may consume a valid, active,
+fresh capacity forecast under model-routing's "Capacity-balanced fresh
+dispatch" rule (Todd 4388/6098327249): toward Claude every off-Claude row flips
+to its own Claude slot and logs `override-Todd`; toward Codex the ordered
+prefix still applies. Shadow computes only `capacityShadowFlip`; rejected input
+preserves ordinary routing. Row 0, relaunches, integration dispatch/resume, and
+a host-verified per-artifact Todd override are exempt before forecast read. The
+host binds the Todd reference to branch, exact head and requested
+row/harness/model/effort/placement in the closed `-ToddRouteOverride` JSON;
+dispatch refuses incomplete or mismatched claims. Standing Todd placements are
+not this exemption. Pass the positive `-Issue` on every planning and review
+dispatch and `-ReviewArtifact brief|code` on every product review; independence
+is judged per artifact and per route (implementation: the complete branch
+history, the original and target models and the target route's continuation
+must leave an admitted reviewer; planning: the target never planned,
+implemented or repaired the issue; review: the target never authored or
+repaired the reviewed brief or code), otherwise the flip skips and grants
+nothing. Fable flips only on rows 7/14/15 under the `spend`/`normal` Fable
+window; the host applies the reserve tiers and keeps Fable at or below half of
+Claude's lanes. Protected authorship, reserve and challenger rules are
+unchanged. Dispatch v3 records all five capacity fields for every role;
+calibration separates active flips.
+
+A strict controller review is prepared, prelogged, then launched, in that
+order: run `dispatch-lane.ps1 -PrepareRoute` with the full review request,
+prelog the returned `strictPrelogV1` through `log-event.ps1` (map `reviewerModel`
+to `-Model`, with `-Kind dispatch -LaneRole review`). Governing receipts remain
+v1 until all terminal/install consumers support v2. Launch the same request.
+A launch refusing `STRICT_PRELAUNCH_TUPLE_REQUIRED` voids never-launched prelogs
+through the closed `controller-review-prelog-void/v1` row, naming each voided or
+refused hash, with no launch output, snapshot, ownership record, v3 row or
+process. A prelog void supplies no review authority. Re-prepare with a fresh
+`-Label` and `-ReviewerAttempt`; the same seat is allowed. Other refusals and
+preparation void nothing.
 
 Every dispatch uses `.orchestrator/dispatch-lane.ps1`. Never author a one-off
 launcher. Every implementation call supplies its exact `-Row` and `-Placement`;
@@ -353,6 +396,23 @@ Universal launcher rules remain in the shared launcher and tests:
   Start/watchdog/release/retry preserve the versioned binding. Clean attached
   finish and original-head lease publication use the existing native completion
   checks; resume provides no review, provider, CI, enqueue or landing authority.
+  The ordinary-author variant (#9334) is the same closed binding at
+  `interrupted-canonical-integration/v2`: a schema-4 implementation author with
+  no landed request, start acknowledgement or runtime prompt whose canonical
+  helper stopped under the actual wrapper/relative-helper/logging/NoPush
+  grammar, proven from its retained watchdog, routing row, prompt, transcript
+  and the helper's own conflict capture when present. Its native plan is the
+  sequencer's topo-order no-merges pick list, never raw reverse history. The
+  same admitted actual owner finishes locally with `-NoPush`, commits
+  repair/test changes as plain commits, and publishes exactly once through
+  `-PublishInterruptedIntegration` under the immutable original-head lease;
+  finished-unpublished has no completion, acknowledgement or acceptance, and a
+  refused publication preserves bytes and history.
+  Ordinary continuation requires NoPush before mutation. The host binds the
+  exact FINAL-derived repair/test paths in the execution's authenticated prompt
+  using `ordinary-integration-repair-authority/v1` in the owning evidence
+  contract. Publication and completion check every repair commit, not just the
+  net diff; pushed or bare-R finishes never complete. Landed defaults stay unchanged.
 - Every launch injects the bounded retrieval contract after the heavy-gate
   preamble and before any harness, review or planning preamble; it bounds
   displayed output, never required evidence inspection or what a role may mutate.
@@ -455,7 +515,8 @@ and uses only the current routing row's closed qualified fallback table. Under
 Todd's vendor fallback ruling (4388/5743533387) that table sends a
 quota-blocked or refused `gpt-6-astra` author to `claude-fable-5-1` and a
 quota-blocked or refused `gpt-6.1-sol` author to `claude-opus-5-5`, each at the
-same effort and placed `override-Todd` on any row, except that a
+same effort and placed `override-Todd` in the closed table. Astra-to-Fable is
+only rows 7/14/15 under the existing reserve, never rows 8/11/12. A
 `watchdog-lane/v3` integration lane, whose author set stays closed to
 codex/`gpt-6-astra`/high/row 7/`override-Todd` pending a separate ruling,
 records `lane-blocked`/`NO_QUALIFIED_FALLBACK` instead of falling to
@@ -463,14 +524,16 @@ Fable 5.1. Author lanes and watchdog relaunches retain that uppercase spelling;
 strict controller-review dispatch and receipt tuples instead use `override-todd`,
 as required by the strict classifier (#8064). A
 closed v2 specification carries that route directly. The bounded v1 adapter
-accepts only one exact `watchdog-dispatch-routing/v1` canonical row matching the
+accepts only one exact `watchdog-dispatch-routing/v1`, v2 or v3 canonical row matching the
 same attempt/lane/transcript/configuration/worktree/branch/head; missing,
 ambiguous, wrong-head, wrong-attempt, or wrong-configuration evidence is a
 closed provenance refusal and never selects a row or fallback. A
 supported configuration without one records `lane-blocked`/
 `NO_QUALIFIED_FALLBACK` instead of inventing a move; the ruled Astra-to-Fable
-5.1 and Sol 6.1-to-Opus 5.5 moves are closed table entries, never an inference from
-capacity, and the relaunched Fable 5.1 row-7 author resumes an interrupted
+5.1 and Sol 6.1-to-Opus 5.5 moves remain closed watchdog table entries, never
+recomputed from capacity on relaunch. The four own-slot Claude quota fallbacks
+in model-routing apply whether or not the original author was flipped. The
+relaunched Fable 5.1 row-7 author resumes an interrupted
 integration through the same closed binding as the Astra author. `dispatch-lane`
 remains the sole launcher and `log-event.ps1` the sole ledger producer, and
 the relaunch continues from the partial, never from zero. A successful row is
@@ -512,6 +575,12 @@ missing authority or no eligible implementation reviewer remain outside this
 route and return to independent decision. No attempt, blocking-round or landing
 rule changes.
 
+Reviewer exhaustion never parks or stalls an artifact (4388/6022146271). When
+no fully independent admitted reviewer remains, the host dispatches the best
+available admitted reviewer that did not author or repair the exact artifact
+under review, and the receipt discloses that reviewer's earlier participation
+in the lineage. This is never self-review.
+
 Every non-trivial PR receives independent review on its exact head. The injected
 `contracts/review-v2.md` is authoritative. Review cadence is bounded per
 artifact: a brief takes at most two complete-sweep semantic reviews in its
@@ -535,7 +604,8 @@ normal final-head hosted `DB Profile Tests` job is the DB proof
   are not classified as environmental.
 - Local-gate investigation stays in the #8159 lineage, and no new local-gate
   probe or diagnostic issue opens outside it. When that lineage yields no
-  bounded repair, #8159 parks with a terminal comment.
+  bounded repair, #8159 escalates through the recovery ladder below; it never
+  parks automatically, and only Todd may defer it.
 
 Hosted CI is the proof for every product attempt, not only DB
 (4388/5845981597). The hosted jobs on the pushed head decide it, including E2E,
@@ -546,6 +616,17 @@ DB Profile, unit, static and build.
 - A local-harness, environment or lock failure never parks, fails or
   classifies a candidate. The lane pushes its candidate to its draft PR and
   hosted CI judges it.
+
+Planning, review and native row-13 documentation lanes inspect evidence and
+run cheap focused checks only. They cannot reserve either heavy slot in any
+mode. Heavy reproduction returns to the host for an attributed implementation
+or verifier execution, supplying evidence rather than review authority. Exit
+73 is non-execution, never PASS or a consumed attempt. A scoped refusal never
+escalates to a full gate; preserve and disclose the defect. Non-doc controller
+authors retain baseline-aware release proof under the separate controller slot.
+Standalone host verification, including the fleet gate and host battery, requires
+a healthy complete native census proving no containing launch; command shape,
+prompt, lane name and inherited tokens are not caller authority.
 
 A reviewed draft PR is always the
 implementation head for its issue; a brief may not designate a live draft as
@@ -581,17 +662,51 @@ that applies the reviewer's prescribed remedies verbatim, never a replan; a
 third block on the same PR is `BLOCK_REPLAN` by definition and dispatches the
 planning lane.
 
-An artifact that accumulates more than four implementation attempts stops
-dispatching: force replan-or-park through an independent decision lane (§11)
-whose verdict is final. Review, repair, and planning rounds never count toward
-this ceiling. An implementation attempt counts only when a pushed head
+Recovery is judged, never counted to a stop (Todd, 4388/6022146271). After
+every non-PASS (a blocking review or a red hosted verdict), the blocking receipt
+or the host names one failure class, and the class sets the next step:
+
+- Mechanical (stale pins or counts, type or lint errors, generated output,
+  fixture counts): the reviewer or author repairs in place; it consumes no
+  implementation attempt.
+- Environment or tooling (harness, launcher, quota, sandbox, hosted-runner
+  infrastructure): link the tooling owner as a native blocker; the artifact
+  resumes when that blocker lands, with no attempt consumed.
+- Implementation defect with a known remedy: resume the author with it.
+- Brief defect (missing context, impossible or contradictory acceptance):
+  `ISSUE`-level replan.
+- Slice defect (wrong boundary, cannot be proven alone, or a cause shared with
+  siblings): `SET`-level replan across the named siblings.
+- Design defect (the approach does not work): `EPIC`-level replan or a bounded
+  design spike.
+- Product scope conflict: one §11 priority or scope question; unrelated work
+  continues.
+- External dependency (credentials, provider, counsel): `status:needs-operator`
+  or a native blocker.
+
+Escalate the level, not the count. The same root cause recurring at the same
+level moves the next step up one level: implementation, `ISSUE`, `SET`,
+`EPIC`, product scope. While blocking findings and red required jobs shrink
+from one judged head to the next, keep repairing at the current level whatever
+the attempt number; an oscillating or growing set escalates one level.
+
+Implementation attempts are counted as telemetry and step-back triggers, never
+as a stop. Review, repair, and planning rounds never count toward this
+step-back trigger. An implementation attempt counts only when a pushed head
 receives a hosted CI verdict or an exact-head review verdict
 (4388/5845981597). Local-only failures, preparation stops, harness or
 environment failures, lock refusals and a lane's own tooling defects do not
 count; the lane repairs them within the same attempt. Existing counts are
 recounted under this definition. That is a recount, not a reset: an attempt
-that did receive a hosted or review verdict keeps counting. No further dispatch binds to it until that verdict is recorded. This ceiling
-complements the three-round repair rule; it never relaxes it.
+that did receive a hosted or review verdict keeps counting. No further dispatch binds to it until that verdict is recorded.
+
+At every fourth counted implementation attempt, the next dispatch for that
+artifact is one independent step-back review (§11) over the whole lineage, its
+siblings and its epic. Its verdict is final and is exactly one of `CONTINUE`
+with a named remedy, `REPLAN` at a named level, `WAIT` on a named native
+blocker, `PRODUCT_QUESTION` (§11), or `RECOMMEND_NOT_COMPLETING` (only Todd
+closes the issue). The step-back review never parks and never asks Todd for
+a ceiling. It complements the three-round repair rule; it never relaxes it.
 
 Semantic implementation G1 identity and attempt counts persist across repair.
 The lane name identifies the current author or reviewer execution; it is unique
@@ -600,6 +715,22 @@ receipts. Historical attempt fields remain readable audit evidence and are
 never rewritten, but reuse on an unrelated issue/head cannot poison a current
 controller candidate. Causal dispatch and terminal rows still bind one exact
 lane/head tuple.
+
+At 15 or more dispatches without any confirmed canonical landing, route one
+independent step-back review under section 11, only at the pre-dispatch moment
+for the open issue the host is about to route. Never sweep closed, tracking-only or non-candidate issues
+or batch decisions at install. Before any further lane for that candidate, run
+`scripts/query-ledgers.ps1 -DispatchIssue <issue> -DispatchCandidateState open -DispatchAuthority <authority>`.
+Use the installed query with its canonical runtime root, not velocity's window
+or a projection. Count each issue-bearing `kind=dispatch` row once, all roles,
+all history; exclude issue-less aliases and other kinds. Any confirmed canonical
+`landed` row (positive PR and exact head) suppresses the threshold forever.
+UNKNOWN history/admission holds only this candidate for evidence reconciliation.
+The host supplies `clear` only after checking existing terminal authority,
+attempt admission and external gates; otherwise use `terminal-park`,
+`attempt-ceiling`, `counsel`, `operator`, `todd` or `unknown`. These return no
+threshold action. The fourth-attempt step-back review remains independent of
+this count; this count grants no attempt, reset or dispatch authority.
 
 Review authorization is exact-head and exact-attempt:
 
@@ -645,9 +776,33 @@ defect that refuses a landing-authority-complete PR (§8), any breaker-repair
 refusal, and any pipeline breaker on the controller itself; a controller P0
 ships out of band by default without a Todd ruling: bounded repair, full
 runtime battery, one governing review, install. A release identifier is never
-burned on a module whose prerequisite is unmet; such work is parked at filing
-with its stated un-park condition, except that an implementation of a Todd
-ruling is never parked (§15).
+burned on a module whose prerequisite is unmet; such work waits at filing on
+that prerequisite as a native blocker, and an implementation of a Todd ruling
+is never parked (§15).
+
+Batch releases ([Todd's #4388 batch ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-6169900446),
+codified as a member of batch 1, #9614): while the ruling is in force, the
+preceding paragraph's no-packet-lifecycle clause and the re-anchor each install
+forces on every other in-flight candidate are suspended, and controller
+releases, Todd-authored or controller-authored, batch. A candidate joins a
+batch only if it has a strict governing `controller-review-receipt/v1` PASS at
+its own head before the batch is cut and merges onto the installed baseline
+without conflict alongside the other members; a candidate that is red,
+unreviewed, under review at the cut, or conflicting goes to the next batch and
+never holds the current one. The combined head gets one `-Scope full` battery,
+with CI-sourced reuse unchanged, and one governing review over the merge
+result, any conflict resolutions, any repairs and any member diff no receipt
+already covers; on PASS it installs once through
+`install-controller-skills.ps1 -ReviewedCommit`. Members are not re-anchored,
+re-batteried or re-reviewed individually. Each batch has one tracking
+controller issue naming its member issues and heads; that issue is the receipt
+identity, and each member gets its own installed/landed row. Unchanged:
+exact-head receipts, the strict governing PASS, the clean tracked-tree gate,
+guards that always run locally, the PREEXISTING baseline rule (Todd
+4388/6167918688) and the controller P0 out-of-band path; no gate is bypassed
+and no attempt is reset. The ruling ends when Todd rules battery cost fixed or
+when #189's exit gate makes the hosted battery the native governing proof,
+whichever comes first; the host records the end on #4388.
 
 A P0 repair brief is exempt from the planning pressure sweep: the failing
 run's log, read by the host, is its normative content, incorporated by
@@ -665,10 +820,43 @@ against the installed baseline; a repair against a governing `BLOCK_FIXABLE`
 baseline requires full scope when its diff changes a runtime script.
 For a skill/contract/test-only repair, impact scope satisfies the contract's
 "prose plan" because its smoke set includes the policy pin and contract
-enforcement. Impact and prior-result reuse runs are author-iteration evidence
-only, never substitutes for the governing install proof. The author-iteration
-battery runs the impact scope: the smoke set (policy pin, contract
-enforcement, installer, battery self-test, landing preflight), the changed
+enforcement. Impact-scope and local-prior reuse are author-iteration evidence
+only, never substitutes for the governing install proof; a local prior that
+carries `ci:` rows is local-prior reuse.
+
+CI-sourced reuse (Todd 4388/6112638067, #9373) may serve a governing install
+proof, initial or repair, at `-Scope full` only. Run
+`controller-release-battery.ps1 -Scope full -PriorResultPath <final.json>` with
+the `controller-battery-result` final.json of a completed hosted
+`chase-sets/chase-sets-controller` run of the exact candidate head, whatever
+its conclusion; per-item rows govern. The battery lends only fresh `test:*`
+PASS rows with equal arguments that the diff cannot reach, never a CI row of
+another `scope.kind`. Everything else runs locally: FAIL, LOCAL_ONLY,
+restricted and not-hermetic items, the guards
+(`direct:fail-closed-guard-evidence` and every `discriminator:*`, under every
+prior), each `-NoReuseIdentity` item and anything the battery declines to
+lend. No item turns from FAIL or LOCAL_ONLY into PASS by reuse; such items get
+verdicts only from local execution. The governing review checks:
+
+- executed + reused = satisfied = required;
+- the log's `REUSE ... source=ci:<runId>` line;
+- `provenance.source = ci:<runId>` on every reused row, for a completed run on
+  the exact reviewed head;
+- an empty diff since that run's `controllerHead`;
+- every guard/open safeguard identity executed locally;
+- no reuse after the second occurrence.
+
+Safeguard: record distinct local/weekly failures of CI-reused items on
+CI-passed heads in #189 `Bug`s titled
+`[controller] CI reuse safeguard: <identity>`. While open, pass the identity
+in `-NoReuseIdentity` (one `;`-separated string) and verify local execution.
+A second occurrence ends governing CI reuse (`reusedCount = 0`), even for the
+same identity/Bug; duplicates count once. Closure does not undo termination;
+only a new Todd ruling reinstates it. This rule lasts until #189's exit gate
+makes the hosted battery the native governing proof.
+
+The author-iteration battery runs the impact scope: the smoke set (policy pin,
+contract enforcement, installer, battery self-test, landing preflight), the changed
 tests, the guard discriminators, and every test that reads a changed file,
 following code readers transitively and skill, contract and data readers
 directly. No baseline, `-Scope full`, or a changed runtime file that no test
@@ -685,7 +873,10 @@ nothing waits on that issue. The host runs the full battery on the installed
 head at most weekly, hidden and never blocking a release; a failure there
 files an issue. The selected battery runs once per candidate head, by the author lane,
 with its log bound to the exact head; the governing review verifies that log
-and re-runs only the tests the diff changed. A review report is the report
+and re-runs only the tests the diff changed, directly as focused tests, never
+through ControllerBattery, ControllerPrecursor or a battery rerun. Heavy
+reproduction returns to the host's attributed implementation/verifier lane.
+A review report is the report
 alone: no manifest, evidence file, or hash comparison. Install requires the
 exact reviewed head, a clean tracked tree, and the strict
 `controller-review-receipt/v1` PASS for that head; nothing else authorizes
@@ -702,6 +893,24 @@ class. A second confirmed bite triggers a class sweep, structural guard with a
 negative control, and a tracked guard issue.
 
 ## 8. Landing and deploy
+
+An executing staging deploy does not replace the latest completed deploy
+health; completed red remains unhealthy.
+
+`merge-hold-state.ps1` is the sole producer of `merge-hold-state.json`
+(`merge-hold-state/v1`). Initialize only after reconciling actual hold state,
+using `-Action Initialize -ExpectedRevision 0 -Reconciled`; absence, prose,
+an expired historical hold or `{}` is not initialization authority. Record an
+authorized take only in its armed window, after every PASS product PR is
+canonically enqueued: `-Action Take -ExpectedRevision <read-revision> -Armed
+-ArmedWindowId <window> -HoldId <new-unique-id> -Issue <positive-issue>
+-Scope queue|prs [-Prs <positive-PRs>] -ExpiresAt <UTC-within-two-hours>`.
+Use `-Action Lift -ExpectedRevision <read-revision> -HoldId <exact-id>` for
+the actual lift, and `-Action Disarm -ExpectedRevision <read-revision>
+-ArmedWindowId <exact-window>` when disarming. Re-arm uses a new hold identity.
+These serialized revision-equal updates retain take/expiry/release times;
+expiry is inert observation, never an automatic lift. State records grant no
+hold or landing authority. Unverified state remains UNKNOWN, never no-hold.
 
 Incumbent enqueue, repair, and landed-integration actions below are confined to
 incumbent-owned scope (section 4), including direct-enqueue fallback. A qualifying
@@ -789,7 +998,13 @@ These reclamation rules exclude platform-owned worktrees and processes even
 after idle, park, or merge. Ownership transfer requires section 4's Todd ruling
 and register change; rollback follows the separately authorized runbook.
 
-After merge, remove the merged PR's worktree and branch and release its lane.
+After merge, remove the recognized incumbent PR's worktree and branch and
+release its lane. Todd's 2026-10-04 directive also authorizes recognized-landed
+worktrees: clean, unlocked, non-live, idle at least six hours, HEAD reachable
+from base, with complete zero open head-PR and child-PR authority. Reclaim
+recognized orphan branches only at their exact SHA; protect `main`, `archive/`
+and `salvage/` on every branch-deletion route. Parse the current ownership
+register and newest path-bound dispatch identity each run; unknown retains.
 Remove nothing else without Todd's word: a dirty, unpushed, locked, or
 unrecognized worktree is reported on #4388 with its path and head, not
 reclaimed. Terminate only the exact lane owner and descendants, and release
@@ -797,8 +1012,9 @@ heavy-verifier ownership only after the exact process tree exits. Keep salvage
 and transcript storage outside skill discovery; stale `SKILL.md` copies and
 ledger snapshots use archive names or extensions so search cannot mistake them
 for live authority. `cleanup-orphan-worktree-dirs.ps1 -Remove` directly
-revalidates and removes only the exact merged, clean, inactive worktree and its
-exact branch; no disposition packet or replacement ceremony exists.
+revalidates identity, ownership, HEAD, branch tip, cleanliness and idle state
+before each removal and atomically writes `worktree-reclamation-report/v4`;
+no disposition packet or replacement ceremony exists.
 
 Heavy-admission temp cleanup is lifecycle-owner cleanup, not an age or prefix
 sweep. An attached verifier owner records its exact admission root. Only a
@@ -818,6 +1034,27 @@ shape. Scale only when:
 - The merge queue and deploy are healthy.
 - Host memory and heavy-verifier capacity are safe.
 - No ownership record is conflicting, unknown, or legacy-live.
+- The provider has pacing headroom (#9316). Before adding lanes each cycle,
+  run `capacity-pacing.ps1` once with the cycle's `-NowUtc` and add no fresh
+  lane on a provider beyond its `newLaneAllowance`, Fable within
+  `fableLaneBudget`. The lane budget (`laneBudget`) is the provider's paced
+  lane count from each available account's headroom less the 0.10 reserve,
+  its hours to reset and the provider's measured burn per lane-hour; the
+  pace target (`targetUnitsPerHour`) and pace budget (`paceBudget`) come from
+  a valid, fresh AgentPools pace on an in-force forecast. The pace target
+  (`targetUnitsPerHour`) spends banked credits before they lapse; the pace
+  budget (`paceBudget`) raises the headroom budget by at most two new lanes
+  per run. A positive allowance with ready work is a reason to dispatch,
+  not a ceiling to stay under. The new-lane allowance (`newLaneAllowance`)
+  is that budget less the live
+  census. Relaunches, resumes, review of in-flight work and landing are not
+  counted against it. A zero allowance is a valid section 10 deferral reason,
+  including in #9283's spend mode. `status: unknown` (an unreachable,
+  malformed or stale status, or an unknown census) is zero allowance on every
+  provider: pacing never authorizes dispatch on missing evidence. This
+  reducer replaces the hand-read AgentPools dashboard routine of
+  4388/6101785942, which is superseded.
+  `paceBudget` is advisory unless reflected in `laneBudget`.
 
 Backfill before adding lanes. Work-conservation beats soft harness
 specialization.
@@ -855,7 +1092,7 @@ Every other decision stays with agents:
   fixture collisions, sink or path mistakes, host prompt defects, continuation
   authority, and agent-owned placement.
 - **An independent decision lane decides** a change to accepted acceptance
-  criteria within the current product scope, an attempt-ceiling disposition, a
+  criteria within the current product scope, a step-back review verdict (§7), a
   proof-route substitution, a bounded capture allowance, a staging data
   repair, or a cross-lineage choice. Its verdict is final, and the host
   proceeds on it.
@@ -875,6 +1112,57 @@ and enqueue; funding a bounded review, repair, verification, or re-review
 never needs a Decision; and no authorization Decision is filed for work already
 inside a ruled scope.
 
+The section 7 threshold uses one independent decision lane, never a filed
+Decision issue or a Todd question. Pending and final are once-only steady states:
+never launch a second threshold decision. The host consumes the query's action:
+`CLAIM_DECISION` records `CLAIMED` through `log-event.ps1 -DispatchDecision <json>`
+before the sole canonical launch. Use `-Log dispatch -Kind decision-filed -Issue <issue>`;
+this reuses lifecycle kinds, not Decision-issue filing authority. CLAIMED and
+ACKNOWLEDGED still appear in decision-heavy telemetry and the pending digest.
+The closed payload is `{schemaVersion:"dispatch-count-decision/v1",
+id:"dispatch-count-<issue>-v1",phase:"CLAIMED",count:<query.dispatchCount>,
+lane:<unique decision lane>,transcript:<exact canonical transcript>}`.
+The logger validates and serializes each transition against complete history.
+Ledger line order, not `ts`, is authoritative for the reducer.
+Only the uninterrupted successful claim caller may launch `dispatch-lane.ps1`
+with that lane/transcript. On claim/launch/ack interruption, `RECONCILE_DECISION`
+recovers that same identity from canonical ownership/start acknowledgement and
+the exact issue-bearing dispatch row, or reports bounded uncertainty; it never
+blindly relaunches. Persist `ACKNOWLEDGED` with the same payload plus
+`dispatchReceiptIdentity` (the canonical dispatch row's raw SHA256). A pending
+container, lane-complete prose or launch intent is not a FINAL verdict.
+The claim caller launches the decision lane once through
+`dispatch-lane.ps1 -Issue <issue> -LaneRole planning` (or `review`).
+The worktree leaf must equal the claimed `lane`, and the label must make the
+transcript equal the claimed `transcript`. That launcher's
+`watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row,
+and `ACKNOWLEDGED.dispatchReceiptIdentity` is its raw SHA256.
+The host appends no other issue-bearing `kind=dispatch` row for that
+lane/transcript: no VERIFIED, attribution or backfill `-Issue` row.
+Multiple matching launches remain UNKNOWN rather than acknowledgement authority.
+After validating that independent lane's final report, record `FINAL` using
+`-Kind decision-resolved`, the same identity/count/dispatch binding and
+the step-back verdict as `disposition`: `CONTINUE`, `REPLAN`, `WAIT`,
+`PRODUCT_QUESTION` or `RECOMMEND_NOT_COMPLETING`; `PARK` is refused.
+`CLAIM_APPLICATION` records `APPLYING`
+before the effect, additionally binding `finalReceiptIdentity` from the query.
+Use the query's stable `applicationId` as the replan lane label/transcript stem
+or the verdict-comment marker, so restart reconciliation addresses the
+same effect rather than constructing a new one.
+Apply the final disposition once: Replan is planning work, not another decision lane;
+every other verdict is one issue comment naming the verdict and its next step,
+plus the native blocker for `WAIT` or the one #4388 question for
+`PRODUCT_QUESTION`. Record `APPLIED`
+only after the exact planning dispatch or verdict comment is confirmed, retaining
+all bindings. `RECONCILE_APPLICATION` checks that same effect after interruption;
+uncertain response means bounded uncertainty, never a second dispatch/comment.
+`NONE` requests no threshold action; APPLIED remains steady across restarts.
+Replan preserves consumed attempts and ordinary admission; counsel/operator
+gates and Todd-only authority remain binding.
+A terminal park or attempt-ceiling decision recorded before v2.103 is
+re-triaged under §7 by one step-back review at its next dispatch moment; it is
+not reopened through this threshold and needs no material changed fact.
+
 Do not send routine milestone creation, splitting, rescoping, placement,
 ordering, issue ranking, or scope tradeoffs within an accepted outcome to Todd.
 Agents own those choices under §4. Escalate to Todd only when a tradeoff would
@@ -883,8 +1171,27 @@ authority reaches Todd only as a packaged operator action.
 
 The existing Todd-reserved rules are unchanged: platform ownership transfer
 (§4), host rotation (§2), rollback (§3), and reclaiming unrecognized worktrees
-(§9). Status posts list only open priority or scope questions and packaged
-operator actions. They never list process decisions as waiting on Todd.
+(§9). Status posts list only open priority or scope questions and link the
+pinned Waiting-on-Todd issue for packaged operator actions; they never repeat
+its list inline. They never list process decisions as waiting on Todd.
+
+Packaged operator actions live on the pinned Waiting-on-Todd issue named in
+`.orchestrator/waiting-on-todd.psd1` (#9229), not in #4388 comments. When the
+host packages, updates or resolves one, it logs `log-event.ps1 -Log dispatch
+-Kind todd-action -ActionId <id> -Issue <issue> -ActionState now|later|done
+-Action <step> -ActionTime <estimate> -Unblocks <issues>`. The actionId is
+stable and unique per action; one issue may carry several. Now is ready for
+Todd, Later waits on gates that must pass first, and done resolves it. The
+ledger is the only membership source: comments, labels and prose carry no
+authority, because the host posts as Todd's account. Ambiguous ownership goes
+to host triage, never to Todd. `waiting-on-todd.ps1` renders the pinned body
+from the latest row per actionId (Now, Later, and Done for seven days),
+assigns Todd to each issue with a Now action, and removes only assignments it
+made. It journals each GitHub write before making it and confirms it by
+readback, writes the body only while it is unchanged since the cycle read, and
+writes nothing after a failed read. It also writes nothing while the pinned body
+is still hand-written and no `todd-action` row exists, so install seeds the
+current items first.
 
 Batch operator work into signaled windows. Keep credentials, approvals, and
 provider mutations outside worker prompts unless the role requires them.
@@ -910,15 +1217,12 @@ stall alert and a same-cycle retro; the retro names the step that consumed
 the time. Landing latency, from PASS receipt to enqueue, is read from the
 receipts each cycle; over 60 minutes is a stall alert.
 Every `breaker-open` carries `-BreakerScope artifact|pipeline`. Artifact breakers
-discharge through the replan terminal disposition.
+discharge through the §7 recovery ladder.
 
-An artifact past the four-attempt ceiling (§7) parks with one terminal
-comment on its lineage root naming the artifact, the terminal head, the
-terminal failure, attempts consumed, and the un-park condition: an accepted
-replan with a material changed fact (§15). There is no standing-cap
-continuation row, no escalation count, and no ceiling authority ceremony; a
-replan re-enters the artifact once and a non-PASS returns it to the same
-terminal comment. Replacement never resets an attempt count, and counts follow
+No artifact parks on attempts (§7; 4388/6022146271). There is no standing-cap
+continuation row and no ceiling authority ceremony; the fourth-attempt
+step-back review chooses the next step.
+Replacement never resets an attempt count, and counts follow
 the §7 attempt definition; billed USD is carried forward as telemetry. No USD figure is a ceiling.
 
 ## 13. Bookkeeping and digest
@@ -936,14 +1240,99 @@ dispatch log and generated digest, never in the note.
 
 Velocity alarms (#8207; 4388/5845981597). Every cycle the host runs
 `.orchestrator/velocity-metrics.ps1 -Summary`, which records one observation
-and reports `velocity-report/v1`. It raises only two alarms. Everything else
-in the report is diagnostic context that never triggers work or files an issue.
+and reports `velocity-report/v1`. Run one Summary per cycle, foreground,
+without per-PR Reports for velocity. DROUGHT is the only alarm; every
+`metrics.floorState` UNMET requires the same-cycle response below, independent
+of `status`, `alarms` and observation history. Other diagnostics do not trigger
+work except the existing duty to repair named gaps.
+For these metrics, `committed-product-milestone/v1` counts every issue kind in
+an open committed commerce/mobile outcome, excluding platform-owned milestones,
+the policy's named CI/controller-evidence milestones and parked issues. A
+`[controller]` title or canonical dispatch/review controller evidence at any
+age excludes controller-owned issues. Ownership does not expire with the
+observation window. Kind changes never produce
+`lateProductRelabels`; that compatibility field remains empty (Todd, 2026-10-04
+12:20Z). Flowing and ready use open issues; merge and lane-hour accounting use
+the same milestone/ownership definition, including closed referenced issues.
+Actionable ready-idle means current trusted `issue-readiness/v1` accepted by
+main's `consumeIssueReadinessReceipt`, independent current-brief semantic PASS,
+resolved prerequisites and section 4 window/backfill admission. The host passes
+its already-verified considered-candidate evidence with `-DispatchQualificationPath`;
+this transient input is not a readiness ledger. Bind repository, issue, node,
+revision, body SHA256, all five milestone fields, trusted checker, workflow run,
+semantic report and admission evidence. The host verifies the workflow artifact
+and complete independent author/repair history before projecting them; comments,
+prospective results and artifact presence alone confer no authority.
+`Get-VelocityFacts` retains that source and current native inputs; facts replay
+reconsumes main's `isRunnableRefined`, `readOutcomePolicy` and `derivePullWindow`.
+Backfill consumes the host's section 4 priority assessment and marker-order
+evidence, including current-priority first claim and non-preemption, never an
+idle-derived permission. No new admission checker or action runner exists.
+Missing, malformed, stale, failed or not-evaluated qualification is reason-coded
+UNKNOWN/not-evaluated. `unblockedCommittedBacklog` and `backlogQualification`
+remain diagnostic, with no per-backlog action duty. Summary only consumes
+qualification; it never starts workflows or a corpus sweep. Unknown never proves
+ready or readiness completeness. With no actionable or held witness below the
+floor, unevaluated backlog leaves FLOOR UNKNOWN, not a no-ready-work proof.
+Idle fields in JSON, Summary and observations are actionable-only; observations
+mark `readyIdleDefinition=dispatch-qualified/v1`. Historical diagnostic rows do
+not retroactively gain this meaning. Qualification never erases flow or holds.
 - FLOOR: fewer than two product issues have an agent-owned next step (a live
-  lane, running hosted CI, or the merge queue) while a ready product issue is
-  idle, continuously for 60 minutes. The host fixes it the same cycle by
-  dispatching, backfilling (§4) or unblocking, and logs `decision-resolved`
-  with `velocity:FLOOR` in the note. It needs no retro.
-- DROUGHT: no `kind:product` merge for 48 hours, re-armed every further 48
+  lane, running hosted CI, or the unblocked merge queue) while a ready product
+  issue is idle or an exact-head PASS product PR is held.
+  Held means ready, exact-head authorized and covered by a validated
+  active merge hold; count each PR once with its hold identities, never as
+  ready idle or queue-only flow. Independent live-lane, CI or unblocked-PR
+  progress may still flow. Name both idle and held causes and the host action.
+  For every UNMET cycle, dispatch each ready idle issue, or run its PR's next
+  permissible step; `NO_REVIEW_HISTORY` means a first review. Otherwise record
+  the concrete reason. A capacity/ordering deferral creates no marker and is
+  reconsidered next cycle. Only a cause section 7's failure-class list already
+  routes to a native blocker or `status:needs-operator` gets that marker,
+  applied there; a product question goes to section 11. This response never
+  creates a terminal park, `status:needs-replan` or an attempt change.
+  A blocker stops blocking when it closes; remove `status:needs-operator` only
+  after verifying the operator action completed. Lift or confirm each listed
+  hold under section 8's authority; a held PR stays listed while held.
+  Log one `decision-resolved` row with `velocity:FLOOR` in the note carrying
+  the observation's exact `ts` and every `readyIdleIssues`/`heldPrs` identity
+  with its action, concrete reason or marker. Identical consecutive cycles
+  bind separately by `ts`. It needs no retro. A terminal park velocity misses
+  is a facts defect: file it, never re-triage.
+- With incomplete facts, FLOOR is MET only when every gap is additive-only or
+  proven issue-local and at least `FloorLanes` flowing issues remain after
+  removing the named issues. The case-sensitive additive-only allowlist is
+  `review-reduction-unknown:<pr>`,
+  `launch-issue-unresolved:<lane>`, `launch-issue-resolution-pending:<lane>`
+  and `merge-hold-state-unverified`, with no hold exception. A valid reduction
+  makes held decidable; an invalid one never adds queue or green-wait flow.
+  Only `merged-issue-labels-incomplete:<n>`
+  and `issue-details-labels-incomplete:<n>` are proven issue-local. Open-issue
+  connection gaps can affect PR-wide hold state and are not issue-local.
+  Every other gap, including malformed dispatch rows, whole-source failures
+  and unknown/future kinds, makes FLOOR UNKNOWN; there is no blanket landing
+  subtraction. Below the floor, incomplete facts remain UNKNOWN. Complete-facts
+  behavior, `status`, `factsComplete` and `gaps` are unchanged. `floorProofIssues`
+  exposes the remaining witnesses, or an empty set when gap scope is unknown;
+  `flowingProductIssues` remains diagnostic flow, not the incomplete-facts proof.
+- Live lanes join their canonical routing Issue, attempt, label and worktree,
+  retaining live origins beyond seven days and exact relaunch labels. Supply
+  positive `-Issue` on every dispatch role. Explicit Issue wins; only absent
+  Issue permits a leading positive issue prefix matching this census, and
+  `-cN` inherits only one unambiguous prior-seat issue. Unresolved owned lanes
+  older than ten minutes are named gaps, never an idle FLOOR cause. The
+  eight-hour staleness flag remains diagnostic only. Green open PRs with an
+  exact-head live review/repair lane or bound enqueue/landing row flow once;
+  without one they are actionable ready idle only with the qualification above,
+  regardless of native review status; otherwise they remain backlog diagnostics.
+  A same-PR, same-repository dequeue at or after a binding row unbinds it;
+  a later re-enqueue rebinds. Future rows confer no binding or unbinding.
+  A merged product PR flows as landing only with a landed row and no
+  deploy-verified row between merge and now, regardless of landed-row write
+  order, for less than 24 hours after merge. Terminal
+  parks without admitted live re-entry stay in a separate diagnostic bucket;
+  uncertain terminal evidence never becomes ready idle.
+- DROUGHT: no product-milestone merge for 48 hours, re-armed every further 48
   hours. The host dispatches one independent diagnosis decision lane with the
   report, bounded to 60 minutes, and logs `velocity:DROUGHT`. Its verdict is
   final and is exactly one of: a repair of the named blocker; a rule change
@@ -955,8 +1344,16 @@ in the report is diagnostic context that never triggers work or files an issue.
 - A velocity rule change states the mechanism it should change and is checked
   48 hours after install. A miss re-diagnoses; it never auto-reverts and never
   adds a rule by itself.
+  For #9123, retain installed head and the first non-UNKNOWN complete row,
+  the no-per-PR-Report transcript, and every UNMET observation joined by exact
+  `ts` and each listed identity to its same-cycle action row through install+48h.
+  Require zero unmatched identities, distinguish repeated cycles, retain a
+  queued product PR row if any, and prove deleting one action fails the join.
+  No observed UNMET cycle is "not exercised"; zero UNMET cycles is unexercised,
+  never invented coverage. The mechanism is same-cycle response and one-time
+  native triage instead of the timed alarm and per-PR collection.
 - Until the heartbeat ships in #8222, the host checks `unacted` in each cycle's
-  summary (FLOOR 2 hours, DROUGHT 4 hours).
+  summary (DROUGHT 4 hours only).
 - Once a week the host posts one outcome summary on #4129: product merges,
   hours since the last product merge, flowing product issues, and what
   changed. It asks Todd nothing.
@@ -975,11 +1372,73 @@ dispatch-start acknowledgement; launch failure appends no success identity and
 remains retryable without incrementing a relaunch count.
 `log-event.ps1` refuses an ordinary exact-head review receipt unless its PR is
 a positive supported whole number; controller-review schemas remain a distinct
-strict variant.
+strict variant. `todd-action/v1` is closed: actionId, issue, state (`now`,
+`later` or `done`), action, time and unblocks are all required, no other field
+is accepted, and an actionId never moves to another issue.
+
+Every brief intake, publication, edit and repair, including reviewer in-body
+repairs and host CAS transport, must call the existing producer after exact
+readback, not a generic model-bearing lifecycle note:
+
+```powershell
+& "$O/log-event.ps1" -Log dispatch -Kind decision-resolved -Issue $issue `
+  -BriefRevision ($target | ConvertTo-Json -Depth 20 -Compress) `
+  -BriefAttribution ($attribution | ConvertTo-Json -Depth 20 -Compress) -NoBoard
+```
+
+This emits the closed `brief-attribution/v1` variant: `ts`, `kind`, `issue`,
+`briefSchema`, `briefRevision`, `briefAttribution`. `briefRevision` is the
+independent eligibility marker/target, with `issue` (positive integer),
+`artifact` (body or the exact Packet identity), `revision` (immutable published
+revision), `bodySha256` (exact UTF-8 bytes) and `observedAt` (zoned instant).
+`briefAttribution` always contains `operation`, `originalRowSha256`, `authors`,
+`host`, `consumed`, `byteProof`, including explicit nulls/empty arrays. Each
+revision declares its complete consumed ancestry, not a delta; it cannot
+invent an omitted legacy edge. Selection uses the latest ledger-bound
+revision, without GitHub reads. Missing, malformed, partial or stale eligible
+facts are unknown, never empty ancestry. Pre-v1 projection stays unchanged.
+An unmarked publication bypassing this caller remains an explicit legacy
+residual, not repaired history or permission to bypass it.
+
+An author is `{issue,attemptId,dispatchRawSha256,evidenceRawSha256,model,effort}`.
+Bind exact original dispatch and author/repair evidence; retain the evidence's
+observed effort or null, never fill missing effort from a different row. Raw
+row hashes use UTF-8 excluding the line terminator. `host` is
+`{model,effort,writing}`. `consumed` entries are
+`{issue,artifact,revision,bodySha256,attributionRawSha256}`, pointing only to
+earlier validated declarations. Shared links are not ancestry. Original code
+roles and same-model/different-effort participation never get rewritten.
+
+Before transporting lane-authored bytes, the author or host records an
+`attestation` with the command above plus `-BriefEvidencePath <author-report>`:
+one bound author, null host/original, empty consumed, and
+`byteProof:{reportSha256,bodySha256,attestorDispatchRawSha256}`. Inspect the
+author's own report/transcript and its attestation of the
+prepublication bytes, retaining its exact hash, attempt and model. The
+producer verifies that report's bytes and binding. A hash computed only from
+the host's publication file is not an attestation. Publish only those bytes,
+then record `publication`, its bound author, `host.writing:false`, and
+`byteProof:{attestationRawSha256}`. For a host-written intake/edit with no
+bound byte match, use `publication`, empty authors, `host.writing:true`, null
+byteProof. Nonwriting without a matching attestation, changed bytes, or a
+writer claim naming another author refuses `BRIEF_ATTRIBUTION_WRITER_CONFLICT`.
+
+Truthful retrospective source attribution uses `retrospective`, the immutable
+original row hash, exact original author/repair tuples, and the host-attested
+artifact/revision link. It is stamped now, never backdated or synthesized as
+a historical dispatch/completion. A nonwriting lifecycle decision uses
+`participation`, its original row hash, empty authors/consumed and null
+byteProof; it is not a publication exemption. Preserve every actual edit and
+uncorrected historical conflict. Do not retrospectively attribute live history
+without inspecting its original evidence. The producer validates the complete
+history under the existing append lock; omission refuses
+`BRIEF_ATTRIBUTION_REQUIRED`, other malformed/causal/conflicting/stale bindings
+refuse `BRIEF_ATTRIBUTION_INVALID`. The reader retains
+`REVIEWER_HISTORY_UNKNOWN`; no dispatch or strict-review schema is widened.
 
 Required event families are dispatch, review, verify, repair, enqueue,
 landing, deploy verification, stall, breaker open/clear, replan, decision, rule
-change, and escaped defect. The host writes only lifecycle event kinds;
+change, escaped defect, and Todd action. The host writes only lifecycle event kinds;
 `bookkeeping`, `note`, and `flow-snapshot` are not accepted. Terminal events
 bind to the exact attempt and head. Unknown or incomplete authority is represented explicitly, never coerced
 to success.
@@ -1021,15 +1480,14 @@ failed irreversible operations, and remedy recurrence.
   whose non-blocking findings recur after remedy gets a mechanical guard issue,
   not a longer review.
 
-A terminal-park replan is accepted only when its body contains exactly one
-ordered `changedSinceLastFailure` packet defined by
-`contracts/planning-repair-v1.md`, its changed fact is material to the recorded
-failure, and a `planning-repair/v1` completion receipt plus a fresh
-independent semantic PASS bind the exact current body revision. Prose,
-`changedSinceLastFailure=true`, a label, readiness-only evidence, a new model,
-more effort, elapsed time, renewed willingness, or restated evidence alone never
-reopens the item. An accepted replan proves only a material changed fact and a
-bounded approach; it resets no attempt count, and billed USD is telemetry.
+Re-entry after a stopped attempt follows `contracts/planning-repair-v1.md`: its
+ordered `recoveryHypothesis` packet names what the work does differently from
+every prior hypothesis, and a `planning-repair/v1` completion receipt plus a
+fresh independent semantic PASS bind the exact current body revision. A new
+model, more effort, elapsed time, renewed willingness, or restated evidence
+alone is not a new hypothesis; a repeated hypothesis escalates the recovery
+level (§7) instead. Acceptance resets no attempt count and needs no ceiling
+authority; billed USD is telemetry.
 
 At a Todd-requested recalibration, merge same-parent ledger variants into
 families and

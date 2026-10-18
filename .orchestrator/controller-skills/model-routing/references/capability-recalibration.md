@@ -6,6 +6,7 @@ Load only when refreshing measurements, adjudicating placement, investigating ro
 
 - Capability matrix
 - Recalibration
+- October 6 benchmark rebalance
 - September 23 benchmark rebalance
 - September 28 benchmark rebalance
 - September 29 Sol 6.1 snapshot
@@ -19,6 +20,19 @@ sets are separate: historical rows remain evidence-only, while a current swap
 creates a new exact model/effort matrix configuration with empty evidence. A
 stale or malformed registry uses only a validated, flagged last-known-good copy;
 there is no guessed model, effort, price, or predecessor measurement transfer.
+
+## October 6 benchmark rebalance
+
+Todd's #8915 ruling is implemented by model-routing v4.23 and the authored
+`benchmarkRebalance20261006` snapshot. Read
+`benchmark-rebalance-20261006.md` for the per-row comparator, default/fallback,
+cost/latency effects, source URLs, missing metrics and selector follow-up.
+It covers all current effort ladders, including Luna; September 29 is retained
+unchanged as history. The old snapshot's rounded numbers and timing are not
+substitutes for the new fetch. Only row selection policy changes: no generated
+block, dimension cell, baseline, verdict, sample count or price is rewritten.
+No public metric alone certifies a local service bar. Exact-harness admission
+and the protected rules remain filters before cost selection.
 
 ## September 29 Sol 6.1 snapshot
 

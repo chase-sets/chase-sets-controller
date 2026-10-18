@@ -287,6 +287,45 @@ exit [int]$env:FLEET_TEST_EXIT
   Assert-NoAdmissionResidue "claimant ordering mutants"
   Pass-Control "MUTANT_REMOVED_LANE_CENSUS_REREAD is killed by a real carrier"
 
+  # Exercise the actual :114 heavy-wrapper caller, not only its interface stub.
+  $captureAnchor = '-WindowStyle Hidden -PassThru'
+  Assert-True ($wrapperSource.Contains($captureAnchor)) 'real fleet child diagnostic seam exists'
+  $captureSource = $wrapperSource.Replace($captureAnchor, '-WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:FLEET_TEST_RUNTIME "heavy.out") -RedirectStandardError (Join-Path $env:FLEET_TEST_RUNTIME "heavy.err")')
+  Commit-WrapperSource $captureSource 'restore fleet wrapper with child diagnostic capture'
+  foreach($name in @('invoke-heavy-verifier.ps1','heavy-admission-preload.cjs','heavy-slot.cjs',
+      'heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs')) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime -Force
+  }
+  Invoke-Git $controller @('add','.orchestrator') | Out-Null
+  Invoke-Git $controller @('commit','--quiet','-m','real heavy wrapper fixture') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $lane '.gitignore'),".orchestrator/artifacts/`nnode_modules/`n")
+  [IO.File]::WriteAllText((Join-Path $lane 'package.json'),'{"name":"synthetic-fleet-heavy","private":true,"scripts":{"test:scripts":"node fleet-body.cjs"}}')
+  [IO.File]::WriteAllText((Join-Path $lane 'pnpm-lock.yaml'), "lockfileVersion: '9.0'`n`nsettings:`n  autoInstallPeers: true`n  excludeLinksFromLockfile: false`n`nimporters:`n`n  .: {}`n")
+  [IO.File]::WriteAllText((Join-Path $lane 'fleet-body.cjs'), @'
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const root = process.env.FLEET_TEST_RUNTIME;
+const fleet = JSON.parse(fs.readFileSync(path.join(root, 'fleet-admission.d/owner.json')));
+const heavy = JSON.parse(fs.readFileSync(path.join(root, 'verify-lock.d/owner.json')));
+const tokenHash = crypto.createHash('sha256').update(process.env.CHASE_SETS_FLEET_ADMISSION_TOKEN).digest('hex');
+if (fleet.ownerTokenSha256 !== tokenHash || heavy.lockId !== process.env.CHASE_SETS_HEAVY_SLOT_ID || heavy.gate !== 'test:scripts') throw Error('inert fleet body lacks both exact owners');
+fs.writeFileSync(process.env.FLEET_TEST_RESULT, JSON.stringify({body:1, fleet:1, heavy:1}));
+'@)
+  Invoke-Git $lane @('add','.') | Out-Null
+  Invoke-Git $lane @('commit','--quiet','-m','inert native fleet body') | Out-Null
+  $head=Invoke-Git $lane @('rev-parse','HEAD')
+  $native=Invoke-Wrapper -ExtraEnvironment @{FLEET_TEST_RUNTIME=$runtime}
+  foreach ($diagnostic in @('heavy.out','heavy.err')) {
+    if (Test-Path (Join-Path $runtime $diagnostic)) {
+      Write-Output "FLEET_HEAVY_DIAGNOSTIC|$diagnostic|$([IO.File]::ReadAllText((Join-Path $runtime $diagnostic)))"
+    }
+  }
+  Assert-True ($native.exitCode -eq 0 -and $native.result.body -eq 1 -and $native.result.fleet -eq 1 -and $native.result.heavy -eq 1) "real fleet entrypoint retains standalone host authority: exit=$($native.exitCode) stderr=$($native.stderr) stdout=$($native.stdout)"
+  Assert-NoAdmissionResidue 'real fleet heavy body'
+  Assert-True (-not(Test-Path (Join-Path $runtime 'verify-lock.d'))) 'real fleet body releases exact heavy owner'
+  Pass-Control 'real fleet entrypoint executes one inert body under both exact owners'
+
   Write-Output "RESIDUE|lease=0|lane=0"
   Write-Output "PASS fleet-exclusive wrapper identity, ordering, bypass, and verifier coverage ($($controls.Count) controls)"
 } finally {

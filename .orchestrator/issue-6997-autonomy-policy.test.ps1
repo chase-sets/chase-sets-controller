@@ -76,9 +76,9 @@ function Test-ReleaseIdentity([string]$Milestone, [string]$Routing) {
   $routingHeaders = [regex]::Matches($Routing, "(?m)^# Model Routing \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)$")
   return (
     $milestoneHeaders.Count -eq 1 -and
-    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.89, 2026-10-02)" -and
+    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.115, 2026-10-16)" -and
     $routingHeaders.Count -eq 1 -and
-    $routingHeaders[0].Value -ceq "# Model Routing (v4.20, 2026-10-02)" -and
+    $routingHeaders[0].Value -ceq "# Model Routing (v4.26, 2026-10-16)" -and
     -not $Routing.Contains("v4.5", [StringComparison]::Ordinal) -and
     $archive.Contains("Version 2.60 removes overhead that returns nothing for one operator", [StringComparison]::Ordinal) -and
     $archive.Contains("Version 2.59 removes the runtime retired by v2.58", [StringComparison]::Ordinal) -and
@@ -115,33 +115,33 @@ function Test-Vocabulary([string]$Archive) {
   )
 }
 
-function Test-AcceptedReplanContract([string]$Contract) {
+function Test-RecoveryReentryContract([string]$Contract) {
+  # v2.103 (Todd 4388/6022146271, #8903): re-entry needs a new hypothesis at a
+  # named recovery level, never ceiling authority; reviewer exhaustion never parks.
   $grammar = @'
-### changedSinceLastFailure
-terminalReceipt: <exact terminal comment URL; comment ID; lineage root; issue/PR/head/attempt identity>
-changedFact: <external|architectural|dependency|evidence|scope> - <specific changed fact; source URL/identity; observed UTC instant>
-invalidationReason: <why the fact invalidates the prior failure or enables a different bounded approach>
-newCeiling: attempts=<positive absolute integer>; nonPass=PARK; authority=<existing binding URL/ID or separate governing ruling URL/comment ID>
+### recoveryHypothesis
+lastFailure: <stopping review/run identity; failure class; root cause in one line>
+priorHypotheses: <each earlier recovery hypothesis for this lineage, or none>
+newHypothesis: <what this plan changes about the work, and why that addresses the root cause>
+level: <ISSUE|SET|EPIC> - <named siblings or epic when not ISSUE>
 '@
   $compact = Compact-Text $Contract
   return (
-    [regex]::Matches($Contract, "(?m)^### changedSinceLastFailure$").Count -eq 1 -and
+    [regex]::Matches($Contract, "(?m)^### recoveryHypothesis$").Count -eq 1 -and
+    [regex]::Matches($Contract, "(?m)^### changedSinceLastFailure$").Count -eq 0 -and
     $Contract.Contains((Normalize-Text $grammar).Trim(), [StringComparison]::Ordinal) -and
-    $compact.Contains("Each label appearing once and carrying a non-space payload", [StringComparison]::OrdinalIgnoreCase) -and
-    $compact.Contains('planning-repair/v1` completion receipt', [StringComparison]::Ordinal) -and
-    $compact.Contains("fresh independent complete-sweep semantic PASS", [StringComparison]::Ordinal) -and
-    $compact.Contains("exact current body revision/hash, terminal receipt ID/URL, and immutable artifact identity", [StringComparison]::Ordinal) -and
-    $compact.Contains("It grants no attempt authority", [StringComparison]::Ordinal) -and
+    $compact.Contains("each label appearing once and carrying a non-space payload", [StringComparison]::OrdinalIgnoreCase) -and
+    $compact.Contains('`newHypothesis` must differ from every `priorHypotheses` entry in what the work does.', [StringComparison]::Ordinal) -and
+    $compact.Contains('A plan that can only repeat a prior hypothesis returns `level` one step higher instead of re-entering at the same level.', [StringComparison]::Ordinal) -and
+    $compact.Contains('planning-repair/v1` completion receipt and a fresh independent semantic PASS both bind its exact current body revision/hash', [StringComparison]::Ordinal) -and
+    $compact.Contains("It needs no attempt-ceiling authority and no Todd or decision-lane ceiling ruling, and it resets no lineage history or consumed count.", [StringComparison]::Ordinal) -and
+    $compact.Contains("Consumed counts are history and step-back triggers, never a stop.", [StringComparison]::Ordinal) -and
     $compact.Contains("Billed USD is recorded telemetry and is never a ceiling", [StringComparison]::Ordinal) -and
-    $compact.Contains("separate already-governing authority", [StringComparison]::Ordinal) -and
-    $compact.Contains("Attempt-ceiling authority must already govern before admission.", [StringComparison]::Ordinal) -and
-    $compact.Contains("It is either a Todd-authored ruling or a recorded final independent decision-lane verdict under milestone-orchestrator section 11", [StringComparison]::Ordinal) -and
-    $compact.Contains("bound to that lineage root, terminal receipt, and exact absolute ceiling", [StringComparison]::Ordinal) -and
-    $compact.Contains("That decision lane is separate from this replan's author, repairer, and reviewers.", [StringComparison]::Ordinal) -and
-    $compact.Contains("Neither this replan nor its semantic PASS can supply it.", [StringComparison]::Ordinal) -and
-    $compact.Contains('resets no lineage history or consumed count, and never makes `newCeiling` incremental', [StringComparison]::Ordinal) -and
-    $compact.Contains("Missing, stale, broader, self-authored, unreadable, or merely recommended authority leaves the item parked", [StringComparison]::Ordinal) -and
-    $compact.Contains("never files a cap-only Decision", [StringComparison]::Ordinal)
+    $compact.Contains("never files a cap-only Decision", [StringComparison]::Ordinal) -and
+    $compact.Contains("Reviewer exhaustion never parks or stalls the artifact, and it is never self-review.", [StringComparison]::Ordinal) -and
+    $compact.Contains("did not author or repair this exact body revision", [StringComparison]::Ordinal) -and
+    -not $compact.Contains("nonPass=PARK", [StringComparison]::Ordinal) -and
+    -not $compact.Contains("leaves the item parked", [StringComparison]::Ordinal)
   )
 }
 
@@ -203,8 +203,13 @@ $script:requiredMilestoneStatements = @(
   'an implementation takes one exact-head code review before ready',
   'Reviewers apply mechanical fixes (pins, counts, generated outputs, lint) directly on the branch and let hosted CI validate them',
   'A reviewed draft PR is always the implementation head for its issue',
-  'An artifact that accumulates more than four implementation attempts stops dispatching',
-  'Review, repair, and planning rounds never count toward this ceiling.',
+  'At every fourth counted implementation attempt, the next dispatch for that artifact is one independent step-back review (§11)',
+  'Review, repair, and planning rounds never count toward this step-back trigger.',
+  'The step-back review never parks and never asks Todd for a ceiling.',
+  'Escalate the level, not the count.',
+  'No attempt count, dispatch count, reviewer-eligibility gap, or environment or tooling failure parks work.',
+  'Reviewer exhaustion never parks or stalls an artifact',
+  'This is never self-review.',
   'Semantic implementation G1 identity and attempt counts persist across repair.',
   'The lane name identifies the current author or reviewer execution',
   'reuse on an unrelated issue/head cannot poison a current controller candidate',
@@ -240,7 +245,8 @@ $script:requiredMilestoneStatements = @(
   'parking a ruling''s implementation, or conditioning it on an empty product frontier, is prohibited',
   'a repair is re-read as a delta review over its changed hunks that inherits the predecessor sweep',
   'Every controller release, Todd-authored or controller-authored, takes one governing review scoped to its change and installs on PASS; there is no packet lifecycle and no weekly release train',
-  'There is no standing-cap continuation row, no escalation count, and no ceiling authority ceremony',
+  'There is no standing-cap continuation row and no ceiling authority ceremony',
+  'No artifact parks on attempts',
   'The author-iteration battery runs the impact scope: the smoke set (policy pin, contract enforcement, installer, battery self-test, landing preflight), the changed tests, the guard discriminators, and every test that reads a changed file, following code readers transitively and skill, contract and data readers directly.',
   'No baseline, `-Scope full`, or a changed runtime file that no test reads runs the full battery; a battery change adds its full self-test.',
   'In an impact run a guard-omission mutant or #8102 classifier leg runs only when its guarded file or the carrier support changed; candidate arms always run.',
@@ -364,10 +370,14 @@ $spendCapMutant = $milestone.Replace(
   [StringComparison]::Ordinal)
 Add-MutantClaim "spend-telemetry-section-12-delta" $true (Test-PreservedSections $spendCapMutant $baseMilestone) "exact reviewed v2.51 spend-telemetry deltas"
 $attemptCeilingMutant = $milestone.Replace(
-  "An artifact that accumulates more than four implementation attempts stops",
-  "An artifact that accumulates more than eight attempt rounds across all lane roles stops",
+  "At every fourth counted implementation attempt, the next dispatch for that",
+  "At every eighth attempt round across all lane roles, the next dispatch for that",
   [StringComparison]::Ordinal)
-Add-MutantClaim "attempt-ceiling-counts-implementation-only" $true (Test-PreservedSections $attemptCeilingMutant $baseMilestone) "v2.52 attempt ceiling statement"
+Add-MutantClaim "attempt-step-back-counts-implementation-only" $true (Test-PreservedSections $attemptCeilingMutant $baseMilestone) "v2.103 fourth-attempt step-back statement"
+$attemptParkMutant = $milestone -replace 'The step-back review never parks and never asks Todd for\s+a ceiling\.', 'The step-back review may park the artifact at its terminal head.'
+Add-MutantClaim "attempt-count-park-restored" $true (Test-PreservedSections $attemptParkMutant $baseMilestone) "v2.103 step-back never parks"
+$reviewerParkMutant = $milestone -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+an\s+artifact', 'Reviewer exhaustion parks the artifact'
+Add-MutantClaim "reviewer-exhaustion-parks" $true (Test-PreservedSections $reviewerParkMutant $baseMilestone) "v2.103 reviewer exhaustion fallback"
 $packetExemptionMutant = $milestone.Replace("there is no packet`nlifecycle and no weekly release train", "a packet lifecycle and a weekly`nrelease train remain", [StringComparison]::Ordinal)
 Add-MutantClaim "release-packet-lifecycle-reintroduced" $true (Test-PreservedSections $packetExemptionMutant $baseMilestone) "v2.58 one review, no packets, no train"
 $leaseRotationMutant = $milestone.Replace("rotates only`nwhen Todd says so", "rotates daily`nor at the session limit", [StringComparison]::Ordinal)
@@ -414,7 +424,7 @@ Add-MutantClaim "quality-verdict-not-retro-input" $true (Test-PreservedSections 
 $sectionTitleMutant = $milestone.Replace("## 8. Landing and deploy", "## 8. Landing, deploy, and manual attempts", [StringComparison]::Ordinal)
 Add-MutantClaim "section-title-moved" $true (Test-PreservedSections $sectionTitleMutant $baseMilestone) "section titles preserved in order"
 
-Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.89/v4.20 release identity is invalid"
+Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.115/v4.26 release identity is invalid"
 # v2.58: no live train authority. The only permitted mentions of a release train are the
 # section-7 retirement sentence and the v2.58 header retirement list.
 function Test-NoTrainAuthority([string]$Milestone) {
@@ -427,8 +437,57 @@ function Test-NoTrainAuthority([string]$Milestone) {
 Assert-6997 (Test-NoTrainAuthority $milestone) "live skill retains release-train authority outside its retirement text"
 $trainMutant = $milestone.Replace("is implemented within seven days; parking a", "is implemented by the next weekly train at the latest; parking a", [StringComparison]::Ordinal)
 Add-MutantClaim "train-authority-reintroduced" (Test-NoTrainAuthority $milestone) (Test-NoTrainAuthority $trainMutant) "v2.58 no live train authority"
-$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.89, 2026-10-02)", "# Milestone Orchestrator (v2.88, 2026-10-02)")
+$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.115, 2026-10-16)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
 Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing) "milestone release header"
+$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.115, 2026-10-16)", "# Milestone Orchestrator (v2.114, 2026-10-16)")
+Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing) "milestone release header"
+
+# #9373 (Todd 4388/6112638067): section 7's CI-sourced governing reuse rule.
+# Each clause has its own deletion mutant; the retired sentence stays absent.
+$retiredReuseSentence = 'Impact and prior-result reuse runs are author-iteration evidence only, never substitutes for the governing install proof.'
+$script:ciReuseClauses = [ordered]@{
+  'iteration-only' = 'Impact-scope and local-prior reuse are author-iteration evidence only, never substitutes for the governing install proof;'
+  'chained-local-prior' = 'a local prior that carries `ci:` rows is local-prior reuse.'
+  'full-scope-only' = 'CI-sourced reuse (Todd 4388/6112638067, #9373) may serve a governing install proof, initial or repair, at `-Scope full` only.'
+  'how-to-run' = 'Run `controller-release-battery.ps1 -Scope full -PriorResultPath <final.json>` with the `controller-battery-result` final.json of a completed hosted `chase-sets/chase-sets-controller` run of the exact candidate head,'
+  'per-item-rows-govern' = 'whatever its conclusion; per-item rows govern.'
+  'test-rows-only' = 'The battery lends only fresh `test:*` PASS rows with equal arguments that the diff cannot reach, never a CI row of another `scope.kind`.'
+  'local-remainder' = 'Everything else runs locally: FAIL, LOCAL_ONLY, restricted and not-hermetic items,'
+  'guards-local' = 'the guards (`direct:fail-closed-guard-evidence` and every `discriminator:*`, under every prior),'
+  'no-reuse-identity-local' = 'each `-NoReuseIdentity` item and anything the battery declines to lend.'
+  'no-fail-to-pass' = 'No item turns from FAIL or LOCAL_ONLY into PASS by reuse; such items get verdicts only from local execution.'
+  'check-counts' = 'executed + reused = satisfied = required;'
+  'check-reuse-line' = 'the log''s `REUSE ... source=ci:<runId>` line;'
+  'check-row-source' = '`provenance.source = ci:<runId>` on every reused row, for a completed run on the exact reviewed head;'
+  'check-empty-diff' = 'an empty diff since that run''s `controllerHead`;'
+  'check-guards-executed' = 'every guard/open safeguard identity executed locally;'
+  'check-no-reuse-after-second' = 'no reuse after the second occurrence.'
+  'safeguard-record' = 'Safeguard: record distinct local/weekly failures of CI-reused items on CI-passed heads in #189 `Bug`s titled `[controller] CI reuse safeguard: <identity>`.'
+  'safeguard-stop-identity' = 'While open, pass the identity in `-NoReuseIdentity` (one `;`-separated string) and verify local execution.'
+  'second-occurrence' = 'A second occurrence ends governing CI reuse (`reusedCount = 0`),'
+  'same-bug' = 'even for the same identity/Bug;'
+  'duplicates' = 'duplicates count once.'
+  'closure' = 'Closure does not undo termination; only a new Todd ruling reinstates it.'
+  'lifetime' = 'This rule lasts until #189''s exit gate makes the hosted battery the native governing proof.'
+}
+function Test-CiReuseRule([string]$Section) {
+  $compact = Compact-Text $Section
+  if ($compact.Contains($retiredReuseSentence, [StringComparison]::Ordinal)) { return $false }
+  foreach ($clause in $script:ciReuseClauses.Values) {
+    if (-not $compact.Contains($clause, [StringComparison]::Ordinal)) { return $false }
+  }
+  return $true
+}
+$section7Compact = Compact-Text (Get-Section $milestone 7)
+Assert-6997 (Test-CiReuseRule $section7Compact) "section 7 lacks the #9373 CI-sourced reuse rule"
+foreach ($clause in $script:ciReuseClauses.GetEnumerator()) {
+  Add-MutantClaim "ci-reuse-$($clause.Key)-deleted" $true (Test-CiReuseRule ($section7Compact.Replace($clause.Value, ''))) "section 7 CI-sourced reuse clause"
+}
+$iterationRule = $script:ciReuseClauses['iteration-only'] + ' ' + $script:ciReuseClauses['chained-local-prior']
+Add-MutantClaim "ci-reuse-old-sentence-restored" $true (Test-CiReuseRule ($section7Compact.Replace($iterationRule, $retiredReuseSentence))) "retired reuse sentence"
+Add-MutantClaim "ci-reuse-old-sentence-reinserted" $true (Test-CiReuseRule ($section7Compact + ' ' + $retiredReuseSentence)) "retired reuse sentence"
+Add-MutantClaim "ci-reuse-local-prior-governs" $true (Test-CiReuseRule ($section7Compact.Replace('reuse are author-iteration evidence only, never substitutes for', 'reuse may also serve'))) "impact-scope and local-prior reuse stay iteration evidence"
+Add-MutantClaim "ci-reuse-impact-scope-governs" $true (Test-CiReuseRule ($section7Compact.Replace('at `-Scope full` only.', 'at any scope.'))) "CI-sourced reuse governs at -Scope full only"
 
 # MUTANT_AUTONOMY_SURFACE_ACCEPTED: the corrected footprint ratchet tolerating an
 # unrelated descendant path must never widen into tolerating a corrupted protected
@@ -451,17 +510,17 @@ Add-MutantClaim "MUTANT_PROTECTED_6997_HISTORY_REBOUND" (Test-DescendantFootprin
 Assert-6997 (Test-Provenance $archive) "v2.45 provenance archive is incomplete or invents routing history"
 $provenanceRoutingMutant = $archive.Replace("**v2.45 encoded two-tier decision autonomy", "**v2.45 encoded two-tier decision autonomy`nmodel-routing mutant", [StringComparison]::Ordinal)
 Add-MutantClaim "provenance-routing-inside-block" $true (Test-Provenance $provenanceRoutingMutant) "extracted v2.45 provenance block"
-Assert-6997 (Test-AcceptedReplanContract $contract) "accepted-replan contract boundary is incomplete"
-# #8192: a recorded final independent decision-lane verdict may supply ceiling
-# authority, but only already governing, exactly bound, and never self-supplied.
-$ceilingSelfMutant = $contract -replace 'Neither\s+this\s+replan\s+nor\s+its\s+semantic\s+PASS\s+can\s+supply\s+it\.', 'This replan''s semantic PASS may supply it.'
-Add-MutantClaim "8192-ceiling-self-authorized" $true (Test-AcceptedReplanContract $ceilingSelfMutant) "replan cannot supply its own ceiling authority"
-$ceilingBindingMutant = $contract -replace 'bound\s+to that lineage root, terminal receipt, and exact absolute ceiling', 'bound to the issue'
-Add-MutantClaim "8192-ceiling-decision-unbound" $true (Test-AcceptedReplanContract $ceilingBindingMutant) "decision-lane ceiling authority binds lineage root, terminal receipt, and absolute ceiling"
-$ceilingSeparationMutant = $contract -replace 'That\s+decision\s+lane\s+is\s+separate\s+from\s+this\s+replan''s\s+author,\s+repairer,\s+and\s+reviewers\.', 'Any lane may decide it.'
-Add-MutantClaim "8192-ceiling-decision-not-independent" $true (Test-AcceptedReplanContract $ceilingSeparationMutant) "ceiling decision lane is independent of the replan"
-$ceilingResetMutant = $contract -replace 'resets\s+no\s+lineage\s+history\s+or\s+consumed\s+count', 'resets the consumed count'
-Add-MutantClaim "8192-ceiling-resets-count" $true (Test-AcceptedReplanContract $ceilingResetMutant) "accepted replan resets no consumed count"
+Assert-6997 (Test-RecoveryReentryContract $contract) "recovery re-entry contract boundary is incomplete"
+$hypothesisRepeatMutant = $contract -replace 'A\s+plan\s+that\s+can\s+only\s+repeat\s+a\s+prior\s+hypothesis\s+returns\s+`level`\s+one\s+step\s+higher\s+instead\s+of\s+re-entering\s+at\s+the\s+same\s+level\.', 'A plan may repeat a prior hypothesis.'
+Add-MutantClaim "hypothesis-may-repeat" $true (Test-RecoveryReentryContract $hypothesisRepeatMutant) "repeated hypothesis escalates the level"
+$ceilingAuthorityMutant = $contract -replace 'It\s+needs\s+no\s+attempt-ceiling\s+authority', 'It needs attempt-ceiling authority; nonPass=PARK'
+Add-MutantClaim "ceiling-authority-restored" $true (Test-RecoveryReentryContract $ceilingAuthorityMutant) "re-entry needs no ceiling authority"
+$resetMutant = $contract -replace 'resets\s+no\s+lineage\s+history\s+or\s+consumed\s+count', 'resets the consumed count'
+Add-MutantClaim "reentry-resets-count" $true (Test-RecoveryReentryContract $resetMutant) "re-entry resets no consumed count"
+$exhaustionMutant = $contract -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+the\s+artifact,\s+and\s+it\s+is\s+never\s+self-review\.', 'Reviewer exhaustion leaves the item parked.'
+Add-MutantClaim "contract-reviewer-exhaustion-parks" $true (Test-RecoveryReentryContract $exhaustionMutant) "reviewer exhaustion never parks"
+$legacyPacketMutant = $contract + "`n### changedSinceLastFailure`n"
+Add-MutantClaim "legacy-terminal-packet-restored" $true (Test-RecoveryReentryContract $legacyPacketMutant) "changedSinceLastFailure packet retired"
 
 Assert-6997 (Test-Vocabulary $archive) "archived two-tier/five-mode/two-cause vocabulary is invalid"
 foreach ($token in @('`adopt`', '`gate`', '`auto-adopted`', '`hard-gated`', '`ratified`', '`overridden`', '`superseded`', '`stale-premise`', '`judgment`')) {
@@ -519,35 +578,56 @@ Assert-6997 ($milestoneCompact.Contains("File genuine product, domain, legal, pr
 Assert-6997 (-not $milestoneCompact.Contains("new-spend-authority", [StringComparison]::Ordinal)) "v2.51 retains the spend-authority Decision class"
 Assert-6997 ($milestoneCompact.Contains("Do not file recurring cap-only, final-review, or park-or-continue Decisions after v2.45 cutover.", [StringComparison]::Ordinal)) "post-cutover cap-only Decision removal missing"
 Assert-6997 ($archiveCompact.Contains('Product main is not authority for those `.orchestrator/` artifacts', [StringComparison]::Ordinal)) "controller premise-artifact authority missing from the archive"
-Assert-6997 ($routingCompact.Contains("one idempotent terminal receipt with no cap-only Decision", [StringComparison]::Ordinal)) "v4.8 artifact-spend replacement incomplete"
+Assert-6997 ($routingCompact.Contains("neither parks an artifact (4388/6022146271). The controller never files a cap-only Decision.", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("PARK at the one idempotent terminal receipt", [StringComparison]::Ordinal)) "v4.22 artifact checkpoints still park or file cap-only Decisions"
 Assert-6997 ($routingCompact.Contains("No per-dispatch, per-artifact, lineage, daily, or monthly USD limit exists", [StringComparison]::Ordinal)) "v4.8 spend telemetry statement missing"
 Assert-6997 (-not $routingCompact.Contains("Per dispatch (binding)", [StringComparison]::Ordinal)) "v4.8 retains a binding per-dispatch cap"
 Assert-6997 (-not $milestoneCompact.Contains('$50', [StringComparison]::Ordinal)) "v2.51 retains a USD ceiling literal"
-Assert-6997 ($routingCompact.Contains("four-implementation-attempt ceiling", [StringComparison]::Ordinal)) "v4.9 lacks the four-implementation-attempt ceiling"
+Assert-6997 ($routingCompact.Contains("fourth-attempt step-back review", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("four-implementation-attempt ceiling", [StringComparison]::Ordinal)) "v4.22 lacks the fourth-attempt step-back review or keeps the retired ceiling"
 Assert-6997 (-not $routingCompact.Contains("eight-round", [StringComparison]::Ordinal)) "v4.9 retains the removed eight-round rule"
 Assert-6997 (-not $routingCompact.Contains("spend authorization", [StringComparison]::Ordinal)) "v4.9 retains a spend authorization stop"
 Assert-6997 ($routingCompact.Contains('Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch', [StringComparison]::Ordinal)) "v4.10 lacks the Fable 5.1 in-place replacement"
 Assert-6997 ($routingCompact.Contains('`claude-fable-5` is never selectable', [StringComparison]::Ordinal)) "v4.10 does not retire claude-fable-5"
 Assert-6997 (-not $routingCompact.Contains("| Fable 5 |", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("Fable 5 medium", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("Fable 5 high", [StringComparison]::Ordinal)) "v4.10 still routes to Fable 5"
-Assert-6997 ($routingCompact.Contains("| 12 | Precision-facing review | Opus 5.5 medium override-Todd; high for ambiguous/high-risk review; Sol 6.1 high independent fallback; Astra high independent reviewer (override-Todd). Never Luna", [StringComparison]::Ordinal)) "v4.17 lacks the Opus 5.5 row-12 precision placement or the independent Astra reviewer"
-Assert-6997 ($routingCompact.Contains("| 11 | High-recall money/contracts/infra review | Sol 6.1 high provisional; Opus 5.5 high fallback; Astra high independent reviewer (override-Todd); never Fable", [StringComparison]::Ordinal)) "v4.17 lacks Sol 6 row-11 recall succession or the independent Astra reviewer"
+Assert-6997 ($routingCompact.Contains('| 12 | Precision-facing review | `claude-opus-5-5/medium` override-Todd; `claude-opus-5-5/high` for ambiguous/high-risk review. Never Luna; use row 11 for high-recall risk | `gpt-6.1-sol/high` independent fallback; `gpt-6-astra/high` independent reviewer (override-Todd)', [StringComparison]::Ordinal)) "v4.23 lacks the Opus 5.5 row-12 precision placement or the independent Astra reviewer"
+Assert-6997 ($routingCompact.Contains('| 11 | High-recall money/contracts/infra review | `gpt-6.1-sol/high` provisional; never Fable | `claude-opus-5-5/high`; `gpt-6-astra/high` independent reviewer (override-Todd)', [StringComparison]::Ordinal)) "v4.23 lacks Sol 6.1 row-11 recall succession or the independent Astra reviewer"
+# v4.22 (Todd 4388/6022146271, #8903 F2): full-history exclusion is the
+# preferred ordinary route; an exhausted roster falls back to the best
+# row-qualified reviewer that is not the exact revision's author or repairer,
+# with disclosure, instead of returning to the host or independent decision.
 function Test-ReviewHistoryExclusion([string]$Text) {
   foreach ($rule in @(
-    "exclude every model on the artifact's author and repair history",
-    'If no admitted reviewer remains, return to the host; never self-review or restore Sonnet to reach a reviewer count.',
-    'FINAL nonterminal proof route only when all its predicates hold; otherwise return to independent decision.',
+    "Prefer a fully independent reviewer: exclude every model on the artifact's author and repair history",
+    'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer that did not author or repair the exact revision under review.',
+    'The host retains and inspects the complete history, and the receipt discloses that reviewer''s earlier participation in the lineage.',
+    'Never self-review the exact revision, and never restore Sonnet to reach a reviewer count.',
+    'Reviewer exhaustion never parks or stalls the artifact.',
+    'FINAL nonterminal proof route only when all its predicates hold',
     'independently check code author/repair history and platform author ladders.',
-    'Effort/session changes never cleanse model history.'
+    'Effort/session changes never cleanse model history.',
+    'Protected authorship below still takes precedence over ordinary row fallbacks.'
   )) {
     if (-not $Text.Contains($rule, [StringComparison]::Ordinal)) { return $false }
   }
-  return (-not $Text.Contains('Sonnet 5 medium fallback', [StringComparison]::Ordinal))
+  foreach ($retired in @(
+    'If no admitted reviewer remains, return to the host',
+    'otherwise return to independent decision',
+    'Sonnet 5 medium fallback'
+  )) {
+    if ($Text.Contains($retired, [StringComparison]::Ordinal)) { return $false }
+  }
+  return $true
 }
-Assert-6997 (Test-ReviewHistoryExclusion $routingCompact) 'v4.20 must preserve history exclusion and the bounded host-return route'
-foreach ($boundary in @('never self-review', 'only when all its predicates hold', 'code author/repair history', 'never cleanse model history')) {
-  Add-MutantClaim "review-exclusion-$boundary" $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($boundary, 'MUTANT_REMOVED'))) 'exhausted brief roster never weakens independent code review'
+Assert-6997 (Test-ReviewHistoryExclusion $routingCompact) 'v4.22 must keep full-history preference and the disclosed exhausted-roster fallback'
+foreach ($boundary in @('Never self-review the exact revision', 'only when all its predicates hold', 'code author/repair history', 'never cleanse model history',
+    'did not author or repair the exact revision under review', 'discloses that reviewer''s earlier participation', 'retains and inspects the complete history',
+    'Prefer a fully independent reviewer: exclude every model', 'Reviewer exhaustion never parks or stalls the artifact', 'Protected authorship below still takes precedence')) {
+  Add-MutantClaim "review-exclusion-$boundary" $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($boundary, 'MUTANT_REMOVED'))) 'exhausted roster falls back with disclosure and never weakens independent code review'
 }
-Assert-6997 ($routingCompact.Contains("Core authorship stays Astra high / Fable 5.1 high under reserve", [StringComparison]::Ordinal) -and $routingCompact.Contains("Other work: Sol 6.1 high provisional; Fable admitted for named money/contract/event slices. No new Opus primary authorship", [StringComparison]::Ordinal)) "v4.16 changes row-7 upper-tier authorship or grants Opus new primary authorship"
+$exhaustedFallback = 'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer that did not author or repair the exact revision under review.'
+Add-MutantClaim 'review-exclusion-unconditional-restored' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($exhaustedFallback, 'If no admitted reviewer remains, return to the host.'))) 'exhausted roster never returns to the host for lack of a fully independent reviewer'
+Add-MutantClaim 'review-exclusion-exact-author-admitted' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($exhaustedFallback, 'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer, including the author or repairer of the exact revision under review.'))) 'exhausted roster never admits the exact revision author or repairer'
+Add-MutantClaim 'review-exclusion-exhausted-brief-returns-to-decision' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace('FINAL nonterminal proof route only when all its predicates hold', 'FINAL nonterminal proof route only when all its predicates hold; otherwise return to independent decision'))) 'exhausted brief roster uses the disclosed fallback instead of returning to independent decision'
+Assert-6997 ($routingCompact.Contains('Core: `gpt-6-astra/high` / `claude-fable-5-1/high` under reserve, override-Todd', [StringComparison]::Ordinal) -and $routingCompact.Contains('Other work: `gpt-6.1-sol/high` provisional; Fable admitted for named money/contract/event slices. No new Opus primary authorship', [StringComparison]::Ordinal)) "v4.23 changes row-7 upper-tier authorship or grants Opus new primary authorship"
 Assert-6997 ($routingCompact.Contains("## Challenger quotas and rebalance", [StringComparison]::Ordinal) -and $routingCompact.Contains("Rebalance runs every two weeks and on any model release", [StringComparison]::Ordinal) -and $routingCompact.Contains("Between rebalances the row table is the only routing authority", [StringComparison]::Ordinal)) "v4.12 lacks the challenger-quota and rebalance rule"
 Assert-6997 (-not $routingCompact.Contains("## Astra trial", [StringComparison]::Ordinal) -and $routingCompact.Contains("The legacy trial/shadow process, per-trial budgets, and experiment ledger are retired", [StringComparison]::Ordinal) -and $routingCompact.Contains('Quota and successor dispatches still require the `provisional` evidence label', [StringComparison]::Ordinal)) "v4.16 restores trial ceremony or drops provisional evidence labels"
 Assert-6997 (-not $routingCompact.Contains("shadow trial", [StringComparison]::Ordinal) -and $routingCompact.Contains('The cost contract is the generated `measuredAt.byRowConfig[row, model, effort].usdPerRun`', [StringComparison]::Ordinal)) "v4.13 quota cost contract is not the generated per-configuration usdPerRun"

@@ -710,7 +710,8 @@ if (Test-Path -LiteralPath (Join-Path $fixture.RuntimeRoot 'verify-lock.d')) { t
 exit $exitCode
 '@
     $parameters = @{
-      Harness = 'codex'; Model = 'gpt-6-astra'; Effort = 'high'; LaneRole = 'review'
+      Harness = 'codex'; Model = 'gpt-6-astra'; Effort = 'high'; LaneRole = 'implementation'
+      Row = 7; Placement = 'override-Todd'
       PromptFile = $inputPath; Worktree = $Directory; Label = $label
       ExecutablePath = $pwsh; TestRuntimeRoot = $orchestrator; TestTempRoot = $privateTemp
       TestArgumentList = @('-NoProfile', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand)))
@@ -789,6 +790,7 @@ exit $exitCode
       $output = @{ stdout = [IO.File]::ReadAllText($fixture.Transcript); stderr = [IO.File]::ReadAllText($fixture.ErrorLog) }
       $fixture.Identity = Get-Content -LiteralPath "$marker.identity" -Raw | ConvertFrom-Json -DateKind String
       $dispatch = Get-Content -LiteralPath "$marker.dispatch" -Raw | ConvertFrom-Json -DateKind String
+      Assert-True ($dispatch.laneRole -ceq 'implementation') "$Name positive continuation uses an eligible native implementation dispatch"
       . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
       $dispatchPath = Join-Path $orchestrator "dispatch-launch-$($dispatch.launchId).json"
       if (Test-Path -LiteralPath $dispatchPath) {
@@ -1030,7 +1032,54 @@ exit $exitCode
   Assert-True ($derivedFailures.Count -eq 0) "derived admission failures ($($derivedFailures.Count)):`n$($derivedFailures -join "`n")"
 }
 
+function Test-PreloadRoleEligibility {
+  $tree=Join-Path $container 'review-preload'
+  $clone=@(& git clone --quiet $laneA $tree 2>&1)
+  Assert-True ($LASTEXITCODE -eq 0) 'role preload fixture clone'
+  $head=Invoke-RepoGit $tree @('rev-parse','HEAD')
+  $branch=Invoke-RepoGit $tree @('branch','--show-current')
+  $launchId=[guid]::NewGuid().ToString()
+  $self=Get-Process -Id $PID
+  $parentId=[int](Get-CimInstance Win32_Process -Filter "ProcessId = $PID").ParentProcessId
+  $parent=Get-Process -Id $parentId
+  $recordPath=Join-Path $orchestrator "dispatch-launch-$launchId.json"
+  $transcript=Join-Path $orchestrator 'review-preload.jsonl'
+  $record=[ordered]@{
+    schemaVersion=4;launchId=$launchId;laneRole='review';promptPath=(Join-Path $orchestrator "dispatch-heavy-verifier-$launchId.prompt.txt")
+    reviewIsolationRoot=(Join-Path $privateTemp "chase-sets-review-$launchId")
+    launcherPid=$parentId;launcherStartIdentity=$parent.StartTime.ToUniversalTime().ToString('o');recordedAt=[DateTime]::UtcNow.ToString('o')
+    state='started';childPid=$PID;childStartIdentity=$self.StartTime.ToUniversalTime().ToString('o')
+    worktree=$tree;lane='review-preload';identityMode='branch';branch=$branch;head=$head;label='review-preload';transcriptPath=$transcript
+  }
+  $raw=$record|ConvertTo-Json -Compress
+  [IO.File]::WriteAllText($recordPath,$raw)
+  [IO.File]::WriteAllText($record.promptPath,'inert native review fixture')
+  [IO.File]::WriteAllText($transcript,"{`"type`":`"item.completed`"}`n")
+  try {
+    foreach($case in @(
+      @{Name='node-gate';Script=$pnpmScript;Args=@('run','verify:static')},
+      @{Name='playwright';Script=$playwrightScript;Args=@('test')},
+      @{Name='full-vitest';Script=$vitestScript;Args=@('run')},
+      @{Name='script-battery';Script=$pnpmScript;Args=@('run','test:scripts')},
+      @{Name='build';Script=$pnpmScript;Args=@('run','build')},
+      @{Name='alias';Script=$pnpmScript;Args=@('run','dev:e2e:probe')},
+      @{Name='derived-no-config';Script=$pnpmScript;Args=@('run','verify');Derived=$true},
+      @{Name='focused';Script=$vitestScript;Args=@('run','source/focused.test.ts');Cheap=$true},
+      @{Name='data-only';Script=$pnpmScript;Args=@('run','typecheck');Cheap=$true}
+    )) {
+      $marker=Join-Path $root "role-$($case.Name).marker"
+      $entry=Start-NodeFixture $case.Script $case.Args $tree 'review-preload' $marker 0 @{} @{Branch=$branch;ClaimedHead=$head} -Derived:([bool]$case.Derived)
+      $exit=if($case.Cheap){0}else{73}
+      $output=Complete-Fixture $entry $exit "native review $($case.Name)"
+      Assert-True ((Test-Path $marker) -eq [bool]$case.Cheap -and -not(Test-Path $lock)) 'preload role/body/reservation partition'
+      if(-not $case.Cheap){Assert-True ($output.stderr -match 'role=review') "native role refusal, not an unrelated failure: $($output.stderr)"}
+      Assert-True ([IO.File]::ReadAllText($recordPath) -ceq $raw) 'preload denial retains exact native ownership'
+      Write-Output "PASS native review preload $($case.Name) exit=$exit marker=$([bool]$case.Cheap) owner=0"
+    }
+  } finally { foreach($path in @($recordPath,$record.promptPath,$transcript)){Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue} }
+}
 function Test-AdmissionGitIdentity {
+  Test-PreloadRoleEligibility
   # A direct heavy command carrying a branch from an earlier assignment fails
   # in the preload before its body, even when both branches share the commit.
   Invoke-RepoGit $laneA @("checkout", "-b", "codex/lane-a-reused") | Out-Null
@@ -1139,14 +1188,11 @@ function Test-LaneEvolution {
   $h1 = Invoke-RepoGit $laneA @('rev-parse', 'HEAD')
   Assert-True ($h0 -cne $h1) 'ordinary rebase rewrites pinned HEAD'
 
-  # Copy the product adapter read-only into the isolated fixture: it calls the
-  # container client without configuration, exactly as production does.
+  # Replay the pinned product adapter without reading another checkout.
   $adapter = Join-Path $laneA 'heavy-slot.mjs'
-  $adapterSource = @(
-    (Join-Path $PSScriptRoot '../main/scripts/lib/heavy-slot.mjs'),
-    (Join-Path $PSScriptRoot '../../main/scripts/lib/heavy-slot.mjs')
-  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
-  Assert-True ($null -ne $adapterSource) 'read-only product adapter is available'
+  $adapterSource = Join-Path $PSScriptRoot 'fixtures/product-heavy-slot-adapter/heavy-slot.mjs'
+  $adapterBlob = & git hash-object --no-filters -- $adapterSource
+  Assert-True ($LASTEXITCODE -eq 0 -and $adapterBlob -ceq '30327bd78fe8eb15130f63faafee42172b4d8eed') 'product adapter fixture matches source object'
   Copy-Item -LiteralPath $adapterSource -Destination $adapter
   $adapterProbe = Join-Path $laneA 'adapter-probe.mjs'
   Set-Content $adapterProbe @'

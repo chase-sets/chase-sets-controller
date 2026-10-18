@@ -33,6 +33,12 @@ param(
   # directly to [int], which would otherwise fabricate a different PR identity.
   [object]$Pr,
   [string]$Lane,
+  [string]$ObservedEndAt,
+  [string]$ObservedStartAt,
+  [string]$ObservedEvidence,
+  [string]$ObservationSchema,
+  [string]$LaneTimeTarget,
+  [string]$LaneTimeSource,
   # What the lane was dispatched to do. Recorded for its own sake, and read by
   # the delivery board's lane-owned states (§14): a `review` dispatch puts the
   # issue In review, anything else puts it In lane.
@@ -64,13 +70,19 @@ param(
   # unlabeled override silently credits human judgment to the rubric, which is
   # how the #5863/#5864/#5869 Fable-max reviews were mis-attributed until Todd
   # said so. Provisional rows must never be read as measured results.
-  [ValidatePattern('^(measured|provisional|reserve|override-[a-z0-9._-]+)$')]
+  [ValidatePattern('^(|measured|provisional|reserve|override-[a-z0-9._-]+)$')]
   [string]$Placement,
   # Lane stream-json transcript filename. This is the JOIN KEY to
   # cost-ledger.jsonl — cost is not knowable at dispatch time, so it is
   # reconciled afterwards by cost-harvest.ps1 and matched on this.
   [string]$Transcript,
   [string]$Outcome,
+  # Closed once-only threshold decision payload; validated against canonical history under the append lock.
+  [string]$DispatchDecision,
+  # Independent eligibility marker/target and mandatory consumed declaration.
+  [string]$BriefRevision,
+  [string]$BriefAttribution,
+  [string]$BriefEvidencePath,
   [ValidatePattern("^[a-f0-9]{40}$")][string]$LandingHead,
   [ValidatePattern("^[A-Z][A-Z0-9_]{0,127}$")][string]$RefusalReason,
   [ValidatePattern("^[a-f0-9]{64}$")][string]$PassReceiptIdentity,
@@ -110,7 +122,13 @@ param(
   [ValidateRange(0,3)][int]$RelaunchCount,
   [string]$ResumedPartial,
   [string]$WatchdogObservedAt,
-  [ValidateSet('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2')][string]$DispatchRoutingSchema,
+  [ValidateSet('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')][string]$DispatchRoutingSchema,
+  [Parameter(DontShow)][switch]$StrictControllerLaunch,
+  [object]$CapacityForecastStatus,
+  [object]$CapacityDecisionDigest,
+  [object]$CapacityFlip,
+  [object]$CapacityShadowFlip,
+  [object]$CapacityFlipSkip,
   [object]$PolicyGeneration,
   [string]$RegistryAuthorityDigest,
   [string]$RoutingFamily,
@@ -121,7 +139,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$DispatchAttemptId,
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$')][string]$DispatchLabel,
   [string]$DispatchWorktree,
-  [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$')][string]$DispatchBranch,
+  [ValidatePattern('^([A-Za-z0-9][A-Za-z0-9._/-]{0,255})?$')][string]$DispatchBranch,
   [ValidatePattern('^[a-f0-9]{40}$')][string]$DispatchHead,
   [Parameter(DontShow)][string]$LandedIntegrationFixture,
   [Parameter(DontShow)][string]$LandedIntegrationScript=(Join-Path $PSScriptRoot 'landed-integration-dispatch.ps1'),
@@ -176,7 +194,14 @@ param(
   # Test seam for the board wiring. -OutFile alone means "test row" and
   # suppresses the board write; supplying this re-enables it against a stub, so
   # the positive path is covered without a live board.
-  [Parameter(DontShow)][string]$BoardScript
+  [Parameter(DontShow)][string]$BoardScript,
+  # todd-action/v1: stable per-action identity, its issue (-Issue), state, the
+  # one runnable step, its time estimate, and what it unblocks.
+  [string]$ActionId,
+  [string]$ActionState,
+  [string]$Action,
+  [string]$ActionTime,
+  [string]$Unblocks
 )
 
 $ErrorActionPreference = "Stop"
@@ -184,9 +209,13 @@ Import-Module (Join-Path $PSScriptRoot "orchestration-log-lock.psm1") -Force -Di
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 
+if ($StrictControllerLaunch -and ($Kind -cne 'dispatch' -or $DispatchRoutingSchema -cne 'watchdog-dispatch-routing/v3' -or $LaneRole -cne 'review')) {
+  throw 'STRICT_CONTROLLER_LAUNCH_INVALID: launcher-only review v3 dispatch required'
+}
+
 function Assert-ExactModelVersion([string]$Field, [string]$Value) {
   if (-not $Value) { return }
-  if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v2') {
+  if ($DispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')) {
     # The v2 producer validates registry admission at the closed routing boundary below.
     return
   }
@@ -239,8 +268,42 @@ function Test-SupportedPositivePr($Value) {
 Assert-ExactModelVersion "model" $Model
 Assert-ExactModelVersion "authorModel" $AuthorModel
 
+$briefPresent=@('BriefRevision','BriefAttribution','BriefEvidencePath' | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+if ($briefPresent) {
+  $allowed=@('Log','Kind','Issue','BriefRevision','BriefAttribution','BriefEvidencePath','OutFile','NoBoard')
+  if ($Kind -cne 'decision-resolved' -or @($PSBoundParameters.Keys | Where-Object { $_ -cnotin $allowed }).Count -or
+      -not (Test-SupportedPositivePr $Issue) -or -not $BriefRevision) { throw 'BRIEF_ATTRIBUTION_INVALID: closed parameters' }
+  if (-not $BriefAttribution) { throw 'BRIEF_ATTRIBUTION_REQUIRED' }
+  $briefTarget=ConvertFrom-BriefJson $BriefRevision
+  $briefDeclaration=ConvertFrom-BriefJson $BriefAttribution
+  if (-not (Test-RoutingObject $briefTarget) -or -not (Test-RoutingObject $briefDeclaration)) { throw 'BRIEF_ATTRIBUTION_INVALID: target/declaration object required' }
+  if ($briefDeclaration.operation -ceq 'attestation') {
+    # The author/reviewer report, not a hash of the host's publication file,
+    # attests these bytes. Persist its digest before the publication event.
+    if (-not $BriefEvidencePath -or -not [IO.File]::Exists($BriefEvidencePath)) { throw 'BRIEF_ATTRIBUTION_INVALID: attestation report required' }
+    try {
+      $reportBytes=[IO.File]::ReadAllBytes($BriefEvidencePath)
+      $report=[Text.UTF8Encoding]::new($false,$true).GetString($reportBytes)
+    } catch { throw 'BRIEF_ATTRIBUTION_INVALID: unreadable UTF-8 attestation report' }
+    $reportHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($reportBytes)).ToLowerInvariant()
+    if ($reportHash -cne $briefDeclaration.byteProof.reportSha256 -or
+        -not $report.Contains([string]$briefTarget.bodySha256) -or
+        -not $report.Contains([string]$briefDeclaration.authors[0].attemptId) -or
+        -not $report.Contains([string]$briefDeclaration.authors[0].model)) { throw 'BRIEF_ATTRIBUTION_INVALID: report does not attest bound bytes/author' }
+  } elseif ($BriefEvidencePath) { throw 'BRIEF_ATTRIBUTION_INVALID: report only on attestation' }
+}
+
 $hasPr = $PSBoundParameters.ContainsKey("Pr")
 $rawPr = $Pr
+$laneTimePresent = $Kind -ceq 'lane-time-correction' -or $PSBoundParameters.ContainsKey('ObservationSchema') -or
+  $PSBoundParameters.ContainsKey('LaneTimeTarget') -or $PSBoundParameters.ContainsKey('LaneTimeSource')
+if ($laneTimePresent) {
+  $allowed = @('Log','Kind','Issue','Lane','ObservationSchema','LaneTimeTarget','LaneTimeSource',
+    'ObservedStartAt','ObservedEndAt','ObservedEvidence','OutFile','NoBoard')
+  if (@($PSBoundParameters.Keys | Where-Object { $_ -cnotin $allowed }).Count -or
+      -not $ObservationSchema -or -not $LaneTimeTarget -or -not $LaneTimeSource -or
+      -not (Test-SupportedPositivePr $Issue)) { throw 'LANE_TIME_SCHEMA_INVALID: closed observation parameters required' }
+}
 if ($IntegrationAuthoritySchema) {
   $allowed = @('Log','Kind','IntegrationAuthoritySchema','Pr','Issue','TargetBranch','LineageRoot','TargetHead','AuthorityState','AuthorityIssue','AuthorityCommentId','OperatorAuthority','Supersedes','Note','OutFile','NoBoard','BoardScript')
   if ($Kind -cne 'rule-change' -or $IntegrationAuthoritySchema -cne 'landed-integration-authority/v1' -or
@@ -257,6 +320,16 @@ if ($IntegrationAuthoritySchema) {
   }
 } elseif (@('LineageRoot','AuthorityState','AuthorityIssue','AuthorityCommentId','Supersedes') | Where-Object { $PSBoundParameters.ContainsKey($_) }) {
   throw 'AUTHORITY_INVALID: authority fields require IntegrationAuthoritySchema'
+}
+# todd-action/v1 (SKILL.md §11, #9228) is a closed variant: one row per packaged
+# Todd action change, read only by waiting-on-todd.ps1, which shares its schema.
+$toddAction = $Kind -eq 'todd-action' -or
+  @('ActionId','ActionState','Action','ActionTime','Unblocks' | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+if ($toddAction) {
+  $allowed = @('Log','Kind','Issue','ActionId','ActionState','Action','ActionTime','Unblocks','OutFile','NoBoard','BoardScript')
+  if ($Kind -cne 'todd-action' -or @($PSBoundParameters.Keys | Where-Object { $_ -cnotin $allowed }).Count -or
+      -not (Test-SupportedPositivePr $Issue)) { throw 'TODD_ACTION_SCHEMA_INVALID: closed todd-action parameters required' }
+  . (Join-Path $PSScriptRoot 'waiting-on-todd.ps1') -Library
 }
 if($PSBoundParameters.ContainsKey('Issue')){$Issue=[int]$Issue}
 if ($hasPr) {
@@ -424,7 +497,12 @@ if($WatchdogSchema){
   }
 }elseif($watchdogFieldsPresent){throw 'watchdog fields require -WatchdogSchema watchdog-relaunch/v1'}
 $dispatchRoutingFieldsPresent=[bool]$DispatchAttemptId-or[bool]$DispatchLabel-or[bool]$DispatchWorktree-or[bool]$DispatchBranch-or[bool]$DispatchHead
-if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v2') {
+foreach($field in @('Placement','DispatchBranch')) {
+  if(-not $DispatchRoutingSchema -and $PSBoundParameters.ContainsKey($field) -and -not $PSBoundParameters[$field]) {
+    throw "empty $field requires closed dispatch routing identity"
+  }
+}
+if ($DispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')) {
   . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library -StateRoot $RoutingStateRoot -LkgPath $RoutingLkgPath
   if ($PolicyGeneration -isnot [long] -and $PolicyGeneration -isnot [int]) { throw 'ROUTING_EVIDENCE_INVALID: policyGeneration' }
   if ($PolicyGeneration -lt 1 -or $RegistryAuthorityDigest -cnotmatch '^[a-zA-Z0-9._:-]{1,128}$' -or
@@ -436,36 +514,58 @@ if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v2') {
   if ($selection.family -cne $RoutingFamily) { throw 'ROUTING_EVIDENCE_INVALID: family identity' }
 } elseif (-not $WatchdogSchema -and ($PSBoundParameters.ContainsKey('PolicyGeneration') -or $RegistryAuthorityDigest -or $RoutingFamily -or
           $RoutingSlot -or $PSBoundParameters.ContainsKey('UsedLastKnownGood'))) {
+  if ($ControllerHead -and $Kind -cin @('dispatch','review-complete','controller-review-audit-correction')) { throw 'STRICT_CONTROLLER_V1_REQUIRED: strict controller producers remain v1' }
   throw 'ROUTING_EVIDENCE_INVALID: dispatch routing v2 required'
 }
 if($DispatchRoutingSchema){
-  if($Kind-cne'dispatch'-or-not$DispatchAttemptId-or-not$DispatchLabel-or-not$Lane-or$LaneRole-cne'implementation'-or-not$Transcript-or-not$Harness-or-not$Model-or-not$Effort-or-not$Row-or-not$Placement-or
-    [string]::IsNullOrWhiteSpace($DispatchWorktree)-or-not$DispatchBranch-or-not$DispatchHead){throw 'watchdog-dispatch-routing/v1 requires closed attempt, lane, transcript, configuration, worktree, branch, and head identity'}
+  if($Kind-cne'dispatch'-or-not$DispatchAttemptId-or-not$DispatchLabel-or-not$Lane-or$LaneRole-cnotin@('implementation','planning','review')-or-not$Transcript-or-not$Harness-or-not$Model-or-not$Effort-or-not$Row-or
+    [string]::IsNullOrWhiteSpace($DispatchWorktree)-or-not$DispatchHead-or
+    ($LaneRole -ceq 'implementation' -and (-not $Placement -or -not $DispatchBranch))){throw 'watchdog-dispatch-routing/v1 requires closed attempt, lane, transcript, configuration, worktree, branch, and head identity'}
 }elseif($dispatchRoutingFieldsPresent){throw 'dispatch routing fields require -DispatchRoutingSchema watchdog-dispatch-routing/v1'}
+$capacityFields=@('CapacityForecastStatus','CapacityDecisionDigest','CapacityFlip','CapacityShadowFlip','CapacityFlipSkip')
+if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') {
+  # v3 is the routing row for every role (implementation, planning, review);
+  # the five capacity fields are always present and validated.
+  . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
+  if (@($capacityFields | Where-Object {-not $PSBoundParameters.ContainsKey($_)}).Count) { throw 'CAPACITY_EVIDENCE_INVALID: five fields required' }
+  $capacityRecord=[pscustomobject]@{capacityForecastStatus=$CapacityForecastStatus;capacityDecisionDigest=$CapacityDecisionDigest
+    capacityFlip=$CapacityFlip;capacityShadowFlip=$CapacityShadowFlip;capacityFlipSkip=$CapacityFlipSkip
+    row=$Row;harness=$Harness;family=$RoutingFamily;effort=$Effort;slot=$RoutingSlot;placement=$Placement}
+  if (-not (Test-DispatchCapacityEvidence $capacityRecord)) { throw 'CAPACITY_EVIDENCE_INVALID' }
+  $proposed=if($null -ne $CapacityFlip){$CapacityFlip}else{$CapacityShadowFlip}
+  if($null -ne $proposed){
+    $own=Resolve-RoutingSelection -Row ([int]$Row) -Harness $proposed.toward -ReadOnly
+    # Family, effort and slot are the row's own slot. A Claude flip is Todd-placed
+    # override-Todd (4388/6098327249); a Codex flip keeps the slot placement.
+    if($proposed.toward -ceq 'claude'){$own.placement='override-Todd'}
+    foreach($field in @('harness','family','effort','slot','placement')){
+      if($proposed.to.$field -cne $own.$field){throw 'CAPACITY_EVIDENCE_INVALID: own policy slot mismatch'}
+    }
+  }
+} elseif (@($capacityFields | Where-Object {$PSBoundParameters.ContainsKey($_)}).Count) { throw 'CAPACITY_EVIDENCE_INVALID: v3 required' }
 
 $strictMarkerPath = Join-Path $PSScriptRoot "controller-review-strict-v1-capability.json"
+$controllerPrelogVoid = $Kind -ceq 'controller-review-prelog-void'
+$controllerReviewKind = $Kind -cin @("dispatch", "review-complete", "controller-review-audit-correction", 'controller-review-prelog-void')
+$strictController = $controllerReviewKind -and [bool]$ControllerHead -and (
+  [bool]$ReviewAuthority -or [bool]$ReviewerAttempt -or [bool]$AuthorAttempt -or
+  (Test-Path -LiteralPath $strictMarkerPath -PathType Leaf)
+)
 $controllerCorrection = $Kind -ceq 'controller-review-audit-correction'
-if ($controllerCorrection) {
+if ($controllerPrelogVoid) {
+  $allowed=@('Log','Kind','Issue','ControllerHead','Lane','Transcript','ReviewerAttempt','OriginalDispatchRawSha256','OutFile','NoBoard')
+  if (@($PSBoundParameters.Keys | Where-Object {$_ -cnotin $allowed}).Count -or -not $ControllerHead -or -not $OriginalDispatchRawSha256) { throw 'PRELOG_VOID_INVALID: closed launcher evidence required' }
+} elseif ($controllerCorrection) {
   if (-not $ControllerHead -or -not $OriginalDispatchRawSha256 -or -not $OperatorAuthority) {
     throw 'controller audit correction requires exact head, the original dispatch raw row hash (plus the original terminal raw row hash for a dispatch+terminal pair), and explicit -OperatorAuthority Todd:<reference>'
   }
 } elseif ($OriginalDispatchRawSha256 -or $OriginalTerminalRawSha256 -or ($OperatorAuthority -and -not $IntegrationAuthoritySchema)) {
   throw 'audit correction fields require -Kind controller-review-audit-correction'
 }
-$controllerReviewKind = $Kind -cin @("dispatch", "review-complete", "controller-review-audit-correction")
-$strictController = $controllerReviewKind -and [bool]$ControllerHead -and (
-  [bool]$ReviewAuthority -or [bool]$ReviewerAttempt -or [bool]$AuthorAttempt -or
-  (Test-Path -LiteralPath $strictMarkerPath -PathType Leaf)
-)
 $strictRoutingPresent = $PSBoundParameters.ContainsKey('PolicyGeneration') -or [bool]$RegistryAuthorityDigest -or
   [bool]$RoutingFamily -or [bool]$RoutingSlot -or $PSBoundParameters.ContainsKey('UsedLastKnownGood')
 if ($strictController -and $strictRoutingPresent) {
-  if ($PolicyGeneration -isnot [long] -and $PolicyGeneration -isnot [int]) { throw 'ROUTING_EVIDENCE_INVALID: strict policyGeneration' }
-  if ($PolicyGeneration -lt 1 -or $RegistryAuthorityDigest -cnotmatch '^[a-zA-Z0-9._:-]{1,128}$' -or
-      $RoutingFamily -cnotmatch '^[a-z0-9][a-z0-9._-]{0,63}$' -or
-      $RoutingSlot -cnotmatch '^(explicit|(codex|claude)\.(primary|fallback))$' -or $UsedLastKnownGood -isnot [bool]) {
-    throw 'ROUTING_EVIDENCE_INVALID: strict review provenance incomplete'
-  }
+  throw 'STRICT_CONTROLLER_V1_REQUIRED: strict controller producers remain v1'
 }
 $claimsPlanningReview = $Kind -ceq "review-complete" -and (
   $LaneRole -ceq "planning" -or -not [string]::IsNullOrWhiteSpace($PlanningContract)
@@ -490,11 +590,11 @@ if ($ControllerHead -and ($Kind -eq "dispatch" -or $controllerCorrection) -and $
 }
 
 $canonicalKinds = @(
-  "dispatch", "lane-complete", "lane-blocked", "review-complete", "controller-review-audit-correction",
+  "dispatch", "lane-complete", "lane-blocked", "review-complete", "controller-review-audit-correction", "controller-review-prelog-void", "lane-time-correction",
   "verify-complete", "repair-complete", "enqueue", "dequeue", "landed",
     "deploy-verified", "stall", "landing-stall", "breaker-open", "breaker-clear",
   "decision-filed", "decision-resolved", "scale", "escaped-defect",
-    "rule-change", "gc"
+    "rule-change", "gc", "todd-action"
   )
 if ($Kind -notin $canonicalKinds) {
   $hint = $canonicalKinds | Where-Object { $k = $_; ($Kind -split "[-_]" | Where-Object { $k -match [regex]::Escape($_) }).Count -gt 0 } | Select-Object -First 3
@@ -739,7 +839,10 @@ if ($Outcome -in $replanCanon) {
 }
 
 $eventTs = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'")
-if ($IntegrationAuthoritySchema) {
+if ($toddAction) {
+  $entry = [ordered]@{ts=$eventTs;kind='todd-action';toddActionSchema='todd-action/v1';actionId=$ActionId;issue=$Issue
+    state=$ActionState;action=$Action;time=$ActionTime;unblocks=$Unblocks}
+} elseif ($IntegrationAuthoritySchema) {
   $entry = [ordered]@{ts=$eventTs;kind='rule-change';integrationAuthoritySchema=$IntegrationAuthoritySchema;pr=[int]$rawPr;issue=$Issue
     targetBranch=$TargetBranch;lineageRoot=$LineageRoot;targetHead=$TargetHead;authorityState=$AuthorityState
     authorityIssue=$AuthorityIssue;authorityCommentId=$AuthorityCommentId;operatorAuthority=$(if($OperatorAuthority){$OperatorAuthority}else{$null})}
@@ -763,6 +866,9 @@ if ($IntegrationAuthoritySchema) {
       jump = $false
     }
   }
+} elseif ($controllerPrelogVoid) {
+  $entry=[ordered]@{ts=$eventTs;kind=$Kind;controllerReviewSchema='controller-review-prelog-void/v1';issue=$Issue;controllerHead=$ControllerHead
+    lane=$Lane;transcript=$Transcript;reviewerAttempt=$ReviewerAttempt;originalDispatchRawSha256=$OriginalDispatchRawSha256}
 } elseif ($strictController) {
   $schema = if ($controllerCorrection) { "controller-review-audit-correction/v1" } elseif ($strictRoutingPresent) {
     if ($Kind -eq "dispatch") { "controller-review-dispatch/v2" } else { "controller-review-receipt/v2" }
@@ -826,12 +932,21 @@ if ($IntegrationAuthoritySchema) {
   }
 } elseif ($DispatchRoutingSchema) {
   $entry=[ordered]@{ts=$eventTs;kind='dispatch';dispatchRoutingSchema=$DispatchRoutingSchema;attemptId=$DispatchAttemptId;label=$DispatchLabel
-    lane=$Lane;laneRole='implementation';transcript=$Transcript;harness=$Harness;model=$Model;effort=$Effort;row=$Row;placement=$Placement
+    lane=$Lane;laneRole=$LaneRole;transcript=$Transcript;harness=$Harness;model=$Model;effort=$Effort;row=$Row;placement=$Placement
     worktree=[IO.Path]::GetFullPath($DispatchWorktree).TrimEnd('\','/');branch=$DispatchBranch;head=$DispatchHead}
-  if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v2') {
+  if(-not $Placement) {
+    $entry.placement=$null
+    $entry.placementSource=if($Row -ceq '0'){'row-0-explicit'}else{'non-implementation-unspecified'}
+  }
+  if ($DispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3')) {
     $entry.policyGeneration=[long]$PolicyGeneration;$entry.registryAuthorityDigest=$RegistryAuthorityDigest
     $entry.family=$RoutingFamily;$entry.slot=$RoutingSlot;$entry.usedLastKnownGood=$UsedLastKnownGood
   }
+  if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') {
+    $entry.capacityForecastStatus=$CapacityForecastStatus;$entry.capacityDecisionDigest=$CapacityDecisionDigest
+    $entry.capacityFlip=$CapacityFlip;$entry.capacityShadowFlip=$CapacityShadowFlip;$entry.capacityFlipSkip=$CapacityFlipSkip
+  }
+  if ($PSBoundParameters.ContainsKey('Issue') -and $Issue -gt 0) { $entry.issue=$Issue }
 } elseif ($IntegrationDispatchSchema) {
   $entry = [ordered]@{
     ts=$eventTs; kind='dispatch'; integrationDispatchSchema=$IntegrationDispatchSchema
@@ -903,7 +1018,47 @@ if ($Classes) { $entry.classes = @($Classes) }
 if ($Note) { $entry.note = $Note }
 }
 
-$line = $entry | ConvertTo-Json -Compress -Depth 4
+if ($laneTimePresent) {
+  $entry.observationSchema = $ObservationSchema
+  $entry.dispatchTarget = ConvertFrom-LaneTimeJson $LaneTimeTarget
+  $entry.sourceCapture = ConvertFrom-LaneTimeJson $LaneTimeSource
+}
+foreach ($field in @('ObservedEndAt','ObservedStartAt','ObservedEvidence')) {
+  if ($PSBoundParameters.ContainsKey($field)) {
+    $entry[([char]::ToLowerInvariant($field[0]) + $field.Substring(1))] = $PSBoundParameters[$field]
+  }
+}
+Assert-ObservedLaneFields ([pscustomobject]$entry) ([datetime]::UtcNow)
+$hasObservedTime = $PSBoundParameters.ContainsKey('ObservedEndAt') -or $PSBoundParameters.ContainsKey('ObservedStartAt')
+$dispatchDecisionPresent = $PSBoundParameters.ContainsKey('DispatchDecision')
+if ($dispatchDecisionPresent) {
+  if ($Kind -cnotin @('decision-filed','decision-resolved') -or $strictController -or $ContinuationSchema -or
+      $IntegrationAuthoritySchema -or $DispatchRoutingSchema -or $WatchdogSchema -or $IntegrationDispatchSchema) {
+    throw 'DISPATCH_DECISION_KIND_INVALID'
+  }
+  if ($Issue -is [string] -and $Issue -cmatch '^[1-9][0-9]{0,9}$') {
+    $Issue=[long]$Issue
+    $entry.issue=$Issue
+  }
+  $document=[System.Text.Json.JsonDocument]::Parse($DispatchDecision)
+  try {
+    $names=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach($property in $document.RootElement.EnumerateObject()) {
+      if (-not $names.Add($property.Name)) { throw 'DISPATCH_DECISION_DUPLICATE_FIELD' }
+    }
+  } finally { $document.Dispose() }
+  $entry.dispatchDecision = $DispatchDecision | ConvertFrom-Json -DateKind String -ErrorAction Stop
+}
+if ($briefPresent) {
+  $entry=[ordered]@{ts=$eventTs;kind=$Kind;issue=$Issue;briefSchema='brief-attribution/v1';briefRevision=$briefTarget;briefAttribution=$briefDeclaration}
+}
+$line = $entry | ConvertTo-Json -Compress -Depth $(if($briefPresent){20}else{8})
+if ($toddAction) { Assert-ToddActionRow ($line | ConvertFrom-Json -DateKind String) }
+
+$dispatchHistory = if ($dispatchDecisionPresent) { & {
+  . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library
+  Read-DispatchCountHistory $target
+} }
 
 if ($strictController -and -not $controllerCorrection) {
   $classification = Get-ControllerReviewRowClassification ($line | ConvertFrom-Json -DateKind String)
@@ -914,11 +1069,107 @@ if ($strictController -and -not $controllerCorrection) {
 
 # Serialize appends across concurrent orchestrator/watchdog processes.
 $integrationDuplicate = $false
+$laneTimeAlreadyRecorded = $false
 Invoke-WithOrchestrationLogLock -Body {
   $targetParent = Split-Path -Parent ([IO.Path]::GetFullPath($target))
   if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
     throw "log target parent does not exist: $targetParent"
   }
+  if ($controllerPrelogVoid -or ($strictController -and $Kind -ceq 'dispatch') -or ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3' -and $StrictControllerLaunch)) {
+    # Read once under the same append lock as v3 publication. A refusal and a
+    # launch cannot both win by observing the other's row outside this lock.
+    $history=Read-ExactHeadReviewHistory -Path $target
+    if (-not $history.complete -and $history.reason -cne 'HISTORY_MISSING') { throw "PRELOG_VOID_HISTORY_INVALID: $($history.reason)" }
+    if ([IO.File]::Exists($target)) {
+      $bytes=[IO.File]::ReadAllBytes($target)
+      if ($bytes.Length -and $bytes[-1] -ne 10) { throw 'PRELOG_VOID_HISTORY_INVALID: unterminated history' }
+    }
+    $nextLine=1
+    foreach($prior in $history.rows){$nextLine=[math]::Max($nextLine,1+[int]$prior.line)}
+    $proposed=[pscustomobject]@{line=$nextLine;value=($line|ConvertFrom-Json -DateKind String)
+      rawSha256=([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($line)))).ToLowerInvariant()}
+    $history=[pscustomobject]@{complete=$true;reason='HISTORY_COMPLETE';rows=@($history.rows)+@($proposed)}
+    $voidVocabulary=Get-ReviewRecordVocabulary
+    if ($controllerPrelogVoid) {
+      $binding=Get-ControllerPrelogVoidValidation $proposed $history $voidVocabulary
+      if (-not $binding.valid) { throw $binding.reason }
+    } else {
+      foreach($prior in $history.rows) {
+        $void=$prior.value
+        if ([string](Get-ObservedLaneValue $void 'controllerReviewSchema') -cne 'controller-review-prelog-void/v1') { continue }
+        $relevant=if ($DispatchRoutingSchema) {
+          ($DispatchHead -cnotmatch '^[a-f0-9]{40}$' -or $DispatchHead -ceq $void.controllerHead) -and $Lane -ceq $void.lane -and $Transcript -ceq $void.transcript
+        } else {
+          $Issue -eq $void.issue -and $ControllerHead -ceq $void.controllerHead -and ($Transcript -ceq $void.transcript -or $ReviewerAttempt -ceq $void.reviewerAttempt)
+        }
+        if ($relevant) {
+          $binding=Get-ControllerPrelogVoidValidation $prior $history $voidVocabulary
+          if (-not $binding.valid) { throw $binding.reason }
+        }
+      }
+    }
+  }
+  if ($briefPresent) {
+    $history=Read-ExactHeadReviewHistory -Path $target
+    if (-not $history.complete -and $history.reason -cne 'HISTORY_MISSING') { throw 'BRIEF_ATTRIBUTION_INVALID: incomplete history' }
+    if ([IO.File]::Exists($target)) {
+      $bytes=[IO.File]::ReadAllBytes($target)
+      if ($bytes.Length -and $bytes[-1] -ne 10) { throw 'BRIEF_ATTRIBUTION_INVALID: truncated history' }
+    }
+    $values=@($history.rows | ForEach-Object { $_.value })+@((ConvertFrom-BriefJson $line))
+    $hashes=@($history.rows | ForEach-Object { $_.rawSha256 })+@((Get-BriefRawSha256 $line))
+    $projection=Get-BriefAttributionProjection $values $hashes (Get-RoutingData -ReadOnly).registry
+    if ($projection.errors.ContainsKey('*')) { throw $projection.errors['*'] }
+    if ($projection.errors.ContainsKey([string]$Issue)) { throw $projection.errors[[string]$Issue] }
+    if (-not $projection.validated.ContainsKey($hashes[-1])) { throw 'BRIEF_ATTRIBUTION_INVALID: unvalidated declaration' }
+  }
+  if (-not ($hasObservedTime -or $laneTimePresent) -and $Lane -and (Test-ObservedLaneTerminal $Kind)) {
+    Assert-LaneTimeTerminalTarget $target $Lane
+  }
+  if ($hasObservedTime -or $laneTimePresent) {
+    $observedHistory = Read-ExactHeadReviewHistory -Path $target
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+      $original = [IO.File]::ReadAllBytes($target)
+      if ($original.Length -and $original[-1] -ne 10) { throw 'OBSERVED_HISTORY_INVALID: unterminated history' }
+    }
+    $projection = Get-LaneTimeProjection $observedHistory
+    if ($projection.gaps.Count) { throw "LANE_TIME_HISTORY_INVALID: $($projection.gaps[0])" }
+    if ($laneTimePresent) {
+      $binding = Assert-LaneTimeObservationHistory ([pscustomobject]$entry) $observedHistory -RequireCorrection
+      if ($binding.alreadyRecorded) { $script:laneTimeAlreadyRecorded=$true; return }
+    } else {
+      $effectiveHistory = [pscustomobject]@{complete=$observedHistory.complete;reason=$observedHistory.reason
+        rows=@($projection.rows | ForEach-Object { [pscustomobject]@{value=$_} })}
+      Assert-ObservedLaneHistory ([pscustomobject]$entry) $effectiveHistory
+      if (Test-ObservedLaneTerminal $Kind) {
+        $latest=@($projection.rows | Where-Object {
+          [string](Get-ObservedLaneValue $_ 'lane') -ceq $Lane -and (Test-LaneTimeLaunch $_)
+        } | Select-Object -Last 1)
+        if($latest.Count -and (Get-ObservedLaneValue $latest[0] 'laneTimeSourceCapture')) {
+          throw 'LANE_TIME_TARGET_REQUIRED: corrected terminal must bind its dispatch'
+        }
+      }
+    }
+  }
+  if ($toddAction) {
+    # An actionId names one action for life; rebinding it to another issue
+    # would make ownership ambiguous, which goes to host triage, never Todd.
+    $rebound = @((Read-ToddActionRows $target -AllowMissing) | Where-Object { $_.value.actionId -ceq $ActionId -and $_.value.issue -ne $Issue })
+    if ($rebound.Count) { throw "TODD_ACTION_ID_CONFLICT: $ActionId is bound to #$($rebound[0].value.issue)" }
+  }
+  if ($dispatchDecisionPresent) { & {
+    . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library
+    $history=Read-DispatchCountHistory $target -PrefixHistory $dispatchHistory
+    $before=Get-DispatchCountDecision $history $Issue open clear
+    if ($before.state -ceq 'UNKNOWN') { throw 'DISPATCH_DECISION_HISTORY_UNKNOWN' }
+    $phase=$entry.dispatchDecision.phase
+    $expected=@{CLAIMED='DUE';ACKNOWLEDGED='PENDING';FINAL='PENDING';APPLYING='FINAL';APPLIED='APPLYING'}
+    if ($null -eq $phase -or $before.state -cne $expected[$phase]) { throw 'DISPATCH_DECISION_TRANSITION_INVALID' }
+    $hash=([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($line)))).ToLowerInvariant()
+    $history.rows=@($history.rows)+@([pscustomobject]@{value=($line | ConvertFrom-Json -DateKind String);rawSha256=$hash})
+    $after=Get-DispatchCountDecision $history $Issue open clear
+    if ($after.state -ceq 'UNKNOWN') { throw 'DISPATCH_DECISION_TRANSITION_INVALID' }
+  } }
   if ($controllerCorrection) {
     $history = Read-ExactHeadReviewHistory -Path $target
     if (-not $history.complete) { throw "controller audit correction refuses $($history.reason)" }
@@ -986,12 +1237,7 @@ Invoke-WithOrchestrationLogLock -Body {
     if ($duplicate.Count -gt 0) { $script:integrationDuplicate=$true; return }
   }
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($line + [Environment]::NewLine)
-  $stream = [IO.File]::Open(
-    [IO.Path]::GetFullPath($target),
-    [IO.FileMode]::Append,
-    [IO.FileAccess]::Write,
-    [IO.FileShare]::Read
-  )
+  $stream = Open-OrchestrationLogAppendStream -Path ([IO.Path]::GetFullPath($target))
   try {
     $stream.Write($bytes, 0, $bytes.Length)
     $stream.Flush($true)
@@ -1000,6 +1246,7 @@ Invoke-WithOrchestrationLogLock -Body {
   }
 }
 if ($integrationDuplicate) { throw $(if($WatchdogSchema){'WATCHDOG_OBSERVATION_DUPLICATE'}else{'INTEGRATION_DISPATCH_DUPLICATE'}) }
+if ($laneTimeAlreadyRecorded) { Write-Output 'LANE_TIME_ALREADY_RECORDED: no row appended'; return }
 
 # --- Delivery board, lane-owned half (SKILL.md §14) --------------------------
 # The board derives Backlog/Refined/Blocked hourly (scripts/project-status-sync.mjs)
@@ -1018,7 +1265,7 @@ if ($integrationDuplicate) { throw $(if($WatchdogSchema){'WATCHDOG_OBSERVATION_D
 $boardScript = if ($BoardScript) { $BoardScript } else { Join-Path $PSScriptRoot "board-set.ps1" }
 $boardEnabled =
   -not $IntegrationAuthoritySchema -and
-  -not $controllerCorrection -and
+  -not $controllerCorrection -and -not $laneTimePresent -and -not $toddAction -and
   $PSBoundParameters.ContainsKey("Issue") -and
   -not $NoBoard -and
   $env:ORCH_BOARD_SYNC -ne "0" -and

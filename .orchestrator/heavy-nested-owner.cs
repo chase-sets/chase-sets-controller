@@ -433,13 +433,38 @@ namespace ChaseSets.HeavyAdmission
         public string DispatchChildStartUtc;
     }
 
+    public sealed class NestedOwnerFailure
+    {
+        public readonly long Connection;
+        public readonly string Head;
+        public readonly string ExceptionClass;
+        public readonly string Category;
+        public readonly string Phase;
+        // The exchange token is linked to owner shutdown. These two observations
+        // distinguish exchange-only cancellation from a shutdown in progress.
+        public readonly bool ExchangeCancellationRequested;
+        public readonly bool OwnerShutdownRequested;
+
+        internal NestedOwnerFailure(long connection, string head, string exceptionClass, string category,
+            string phase, bool exchangeCancellationRequested, bool ownerShutdownRequested)
+        {
+            Connection = connection;
+            Head = head;
+            ExceptionClass = exceptionClass;
+            Category = category;
+            Phase = phase;
+            ExchangeCancellationRequested = exchangeCancellationRequested;
+            OwnerShutdownRequested = ownerShutdownRequested;
+        }
+    }
+
     public sealed class NestedOwnerStatistics
     {
         public long Served;
         public long Refused;
         public long Connections;
         public string LastRefusal;
-        public string LastError;
+        public NestedOwnerFailure LastFailure;
         public bool ThreadAlive;
         public double LastServiceMs;
         public double TotalServiceMs;
@@ -474,6 +499,10 @@ namespace ChaseSets.HeavyAdmission
         private Thread _thread;
         private bool _disposed;
         private readonly HashSet<string> _challenges = new HashSet<string>(StringComparer.Ordinal);
+        private enum FailurePhase { RequestRead, RequestParse, Authority, ReplyWrite, ReplyFlush, ReplyDrain }
+        // Only the service thread writes connection-local diagnostic state.
+        private FailurePhase _phase;
+        private bool _peerDisconnected;
 
         private NestedOwnerServer(string lockId, SafePipeHandle handle, NamedPipeServerStream pipe, ECDsa key, string pipeName)
         {
@@ -621,7 +650,7 @@ namespace ChaseSets.HeavyAdmission
                     Refused = _statistics.Refused,
                     Connections = _statistics.Connections,
                     LastRefusal = _statistics.LastRefusal,
-                    LastError = _statistics.LastError,
+                    LastFailure = _statistics.LastFailure,
                     ThreadAlive = _thread != null && _thread.IsAlive,
                     LastServiceMs = _statistics.LastServiceMs,
                     TotalServiceMs = _statistics.TotalServiceMs
@@ -671,17 +700,18 @@ namespace ChaseSets.HeavyAdmission
                 }
                 consecutiveFailures = 0;
                 lock (_gate) { _statistics.Connections += 1; }
+                _phase = FailurePhase.RequestRead;
+                _peerDisconnected = false;
                 System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
                     ServeConnection();
                 }
-                catch (Exception error)
+                catch (Exception)
                 {
                     lock (_gate)
                     {
                         _statistics.Refused += 1;
-                        _statistics.LastError = error.GetType().Name + ": " + error.Message;
                     }
                 }
                 finally
@@ -702,42 +732,106 @@ namespace ChaseSets.HeavyAdmission
             using (CancellationTokenSource exchange = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token))
             {
                 exchange.CancelAfter(ExchangeTimeoutMs);
-                byte[] buffer = new byte[MaxRequestBytes + 1];
-                int total = 0;
-                int newline = -1;
-                while (newline < 0)
+                try
                 {
-                    int read = _pipe.ReadAsync(buffer, total, buffer.Length - total, exchange.Token).GetAwaiter().GetResult();
-                    if (read <= 0)
+                    byte[] buffer = new byte[MaxRequestBytes + 1];
+                    int total = 0;
+                    int newline = -1;
+                    while (newline < 0)
                     {
-                        Refuse(exchange.Token, "request ended before its newline");
-                        return;
-                    }
-                    int found = Array.IndexOf(buffer, (byte)'\n', total, read);
-                    total += read;
-                    if (found >= 0)
-                    {
-                        if (found != total - 1)
+                        int read = _pipe.ReadAsync(buffer, total, buffer.Length - total, exchange.Token).GetAwaiter().GetResult();
+                        if (read <= 0)
                         {
-                            Refuse(exchange.Token, "request carried bytes after its newline");
+                            _peerDisconnected = true;
+                            Refuse(exchange.Token, "request ended before its newline");
                             return;
                         }
-                        newline = found;
-                        break;
+                        int found = Array.IndexOf(buffer, (byte)'\n', total, read);
+                        total += read;
+                        if (found >= 0)
+                        {
+                            if (found != total - 1)
+                            {
+                                Refuse(exchange.Token, "request carried bytes after its newline");
+                                return;
+                            }
+                            newline = found;
+                            break;
+                        }
+                        if (total > MaxRequestBytes)
+                        {
+                            Refuse(exchange.Token, "request exceeded 16 KiB");
+                            return;
+                        }
                     }
-                    if (total > MaxRequestBytes)
-                    {
-                        Refuse(exchange.Token, "request exceeded 16 KiB");
-                        return;
-                    }
+                    if (total > MaxRequestBytes) { Refuse(exchange.Token, "request exceeded 16 KiB"); return; }
+                    Evaluate(buffer, newline, exchange.Token);
                 }
-                if (total > MaxRequestBytes) { Refuse(exchange.Token, "request exceeded 16 KiB"); return; }
-                Evaluate(buffer, newline, exchange.Token);
+                catch (Exception error)
+                {
+                    // Capture before disposing the linked token, then preserve
+                    // the existing refusal/count/disconnect path in ServeLoop.
+                    RecordFailure(error, exchange.Token, null);
+                    throw;
+                }
+            }
+        }
+
+        private static string SafeExceptionClass(Exception error)
+        {
+            if (error == null) return "none";
+            Type type = error.GetType();
+            if (type == typeof(OperationCanceledException)) return "OperationCanceledException";
+            if (type == typeof(System.Threading.Tasks.TaskCanceledException)) return "TaskCanceledException";
+            if (type == typeof(IOException)) return "IOException";
+            if (type == typeof(ObjectDisposedException)) return "ObjectDisposedException";
+            if (type == typeof(UnauthorizedAccessException)) return "UnauthorizedAccessException";
+            if (type == typeof(InvalidOperationException)) return "InvalidOperationException";
+            if (type == typeof(JsonException)) return "JsonException";
+            return "unknown"; // unrecognized exception class
+        }
+
+        private void RecordFailure(Exception error, CancellationToken token, string category)
+        {
+            string exceptionClass = SafeExceptionClass(error);
+            if (category == null)
+            {
+                if (exceptionClass == "OperationCanceledException" || exceptionClass == "TaskCanceledException") category = "cancellation";
+                else if (exceptionClass == "IOException")
+                {
+                    int code = error.HResult & 0xffff;
+                    category = code == 109 || code == 232 || code == 233 ? "peer-disconnect" : "io";
+                }
+                else if (exceptionClass == "ObjectDisposedException") category = "disposed";
+                else if (exceptionClass == "UnauthorizedAccessException") category = "access";
+                else if (exceptionClass == "InvalidOperationException") category = "invalid-operation";
+                else if (exceptionClass == "JsonException") category = "json";
+                else category = "unknown";
+            }
+            string phase;
+            switch (_phase)
+            {
+                case FailurePhase.RequestRead: phase = "request-read"; break;
+                case FailurePhase.RequestParse: phase = "request-parse"; break;
+                case FailurePhase.Authority: phase = "authority"; break;
+                case FailurePhase.ReplyWrite: phase = "reply-write"; break;
+                case FailurePhase.ReplyFlush: phase = "reply-flush"; break;
+                case FailurePhase.ReplyDrain: phase = "reply-drain"; break;
+                default: phase = "unknown"; break;
+            }
+            lock (_gate)
+            {
+                _statistics.LastFailure = new NestedOwnerFailure(_statistics.Connections, _binding.Head,
+                    exceptionClass, category, phase, token.IsCancellationRequested,
+                    _stop.IsCancellationRequested); // failure snapshot
             }
         }
 
         private void Refuse(CancellationToken token, string reason)
         {
+            string category = _peerDisconnected ? "peer-disconnect" :
+                (_phase == FailurePhase.RequestRead || _phase == FailurePhase.RequestParse ? "protocol-refusal" : "authority-refusal");
+            RecordFailure(null, token, category);
             lock (_gate)
             {
                 _statistics.Refused += 1;
@@ -749,11 +843,14 @@ namespace ChaseSets.HeavyAdmission
 
         private void Reply(CancellationToken token, byte[] bytes)
         {
+            _phase = FailurePhase.ReplyWrite;
             _pipe.WriteAsync(bytes, 0, bytes.Length, token).GetAwaiter().GetResult();
+            _phase = FailurePhase.ReplyFlush;
             _pipe.FlushAsync(token).GetAwaiter().GetResult();
             // DisconnectNamedPipe discards unread data, so hold the connection
             // until the client has consumed the reply and closed its end.
             byte[] drain = new byte[64];
+            _phase = FailurePhase.ReplyDrain;
             try
             {
                 while (true)
@@ -762,8 +859,8 @@ namespace ChaseSets.HeavyAdmission
                     if (read <= 0) break;
                 }
             }
-            catch (IOException) { }
-            catch (OperationCanceledException) { }
+            catch (IOException error) { RecordFailure(error, token, null); }
+            catch (OperationCanceledException error) { RecordFailure(error, token, null); }
         }
 
         private sealed class Request
@@ -917,7 +1014,7 @@ namespace ChaseSets.HeavyAdmission
             {
                 if (IsReparsePoint(transition)) return "transition entry is not a regular file";
                 try {
-                    if (!BytesEqual(File.ReadAllBytes(transition), File.ReadAllBytes(Path.Combine(lockDirectory, "owner.json"))))
+                    if (!BytesEqual(ReadOwnerBytes(transition), ReadOwnerBytes(Path.Combine(lockDirectory, "owner.json"))))
                         return "transition conflicts with the unchanged admitted owner";
                 } catch { return "transition content is unreadable"; }
                 return null;
@@ -926,6 +1023,16 @@ namespace ChaseSets.HeavyAdmission
             // The writer completed its atomic move after the directory read.
             string[] current = Directory.GetFileSystemEntries(lockDirectory);
             return current.Length == 1 && Path.GetFileName(current[0]) == "owner.json" ? null : "lock directory changed during writer transition";
+        }
+
+        private static byte[] ReadOwnerBytes(string path)
+        {
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (MemoryStream buffer = new MemoryStream())
+            {
+                stream.CopyTo(buffer);
+                return buffer.ToArray();
+            }
         }
 
         private static bool BytesEqual(byte[] left, byte[] right)
@@ -956,7 +1063,7 @@ namespace ChaseSets.HeavyAdmission
             string ownerPath = Path.Combine(binding.LockDirectory, "owner.json");
             if (!File.Exists(ownerPath) || IsReparsePoint(ownerPath)) return "owner.json absent or unsafe";
             byte[] raw;
-            try { raw = File.ReadAllBytes(ownerPath); } catch { return "owner.json unreadable"; }
+            try { raw = ReadOwnerBytes(ownerPath); } catch { return "owner.json unreadable"; }
             if (!BytesEqual(raw, _ownerRawBytes)) return "owner.json no longer equals the admitted record";
             try
             {
@@ -1424,9 +1531,11 @@ namespace ChaseSets.HeavyAdmission
             NestedOwnerBinding binding;
             lock (_gate) { binding = _binding; }
             string failure;
+            _phase = FailurePhase.RequestParse;
             Request request = ParseRequest(buffer, length, out failure);
             if (request == null) { Refuse(token, failure); return null; }
 
+            _phase = FailurePhase.Authority;
             uint actualPid;
             if (!Native.GetNamedPipeClientProcessId(_handle, out actualPid)) { Refuse(token, "actual client pid unavailable"); return null; }
             if (actualPid != (uint)request.Pid) { Refuse(token, "request pid is not the actual pipe client"); return null; }

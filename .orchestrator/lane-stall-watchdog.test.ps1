@@ -1,4 +1,4 @@
-param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control)
+param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -85,6 +85,510 @@ function Test-SonnetCutover {
   }
   Write-Output 'PASS Sonnet cutover/rebalance: historical workers preserved, rows 3/13 medium and high quota recover exactly, row-10 fallback retained, quota/session exhaustion closed, placement case enforced'
 }
+# #9092: a cross-harness move at relaunch 1-3 needs an authenticated lineage, so a
+# continuation is built from a real watchdog relaunch (canonical relaunch row and start
+# acknowledgement) of its predecessor, never as a bare count>0 spec.
+function New-Continuation($Prior,$Result,[string]$Model,[string]$Effort,[string]$Placement){
+  $item=New-Spec ([string]$Result.label) $Model $Effort ([int]$Prior.spec.relaunchCount+1) ([int]$Prior.spec.row) $Placement
+  $item.spec.attemptId=$Prior.spec.attemptId;$item.spec.launchId=[string]$Result.launchId;$item.spec.resumeOfLaunchId=$Prior.spec.launchId
+  $item.spec.ownershipRecordPath=Join-Path $runtime "dispatch-launch-$($Result.launchId).json"
+  # g2-r1:F2: a continuation retains the child its start acknowledgement names, and the
+  # acknowledgement's routing provenance when it carries one, as dispatch-lane writes them.
+  $found=@(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-start-*.json' -File|Where-Object{$value=Get-Content -LiteralPath $_.FullName -Raw|ConvertFrom-Json -DateKind String;$value.label-ceq$item.spec.label-and$value.launchId-ceq$item.spec.launchId})
+  if($found.Count-ne1){throw "fixture start acknowledgement missing for $($item.spec.label)"}
+  $ack=Get-Content -LiteralPath $found[0].FullName -Raw|ConvertFrom-Json -DateKind String
+  $item.spec.childPid=[long]$ack.childPid;$item.spec.childStartIdentity=[string]$ack.childStartIdentity
+  foreach($key in @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')){if($null-ne$ack.PSObject.Properties[$key]){$item.spec[$key]=$ack.$key}}
+  Save-Spec $item;$item
+}
+function New-RelaunchedContinuation([string]$Label,[string]$Model,[string]$Effort,[int]$Row,[string]$Placement){
+  $origin=New-Spec "$Label-origin" $Model $Effort 0 $Row $Placement
+  $before=Get-CallCount;$result=Invoke-Watchdog $origin "$Label-origin"
+  Assert-Recovery $origin $result $Model $Effort $Placement $before
+  New-Continuation $origin $result $Model $Effort $Placement
+}
+# model-routing v4.24 / #9092. Every case enters through the public watchdog with the
+# synthetic dispatch stub, in both quota and session envelopes, and prints CASE PASS or
+# CASE FAIL, so each guard mutant is judged at its named case. -PolicyFallbackCase runs
+# one case family (the id before '/'). Policy slots are set per case and restored.
+function Test-PolicyFallback {
+  $policyPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json'
+  $policyBytes=[IO.File]::ReadAllBytes($policyPath)
+  $failures=[Collections.Generic.List[string]]::new();$passes=[Collections.Generic.List[string]]::new()
+  # Production generation-2 rows 1 and 2 (Opus stands in for the Haiku family the fixture lacks).
+  $gen2=@{'1|claude.fallback'=[ordered]@{family='opus';effort='low';placement='provisional'};'1|codex.fallback'=[ordered]@{family='luna';effort='medium';placement='provisional'};'2|claude.fallback'=[ordered]@{family='opus';effort='medium';placement='override-Todd'}}
+  # Row 3 Opus/high becomes a policy slot whose other-harness slot (Sol/medium) has a closed entry back to Opus.
+  $chain=@{'3|claude.fallback'=[ordered]@{family='opus';effort='high';placement='override-Todd'}}
+  # Protected rows given lower-tier policy slots that have no closed entry.
+  $protected=@{}
+  foreach($row in @(7,14,15)){$protected["$row|claude.primary"]=[ordered]@{family='opus';effort='medium';placement='provisional'};$protected["$row|codex.fallback"]=[ordered]@{family='sol';effort='medium';placement='provisional'}}
+  function Set-PolicySlots([hashtable]$Slots){
+    [IO.File]::WriteAllBytes($policyPath,$policyBytes)
+    if($Slots.Count-eq0){return}
+    $policy=[Text.Encoding]::UTF8.GetString($policyBytes)|ConvertFrom-Json -AsHashtable
+    foreach($key in $Slots.Keys){$row,$slot=$key.Split('|');$policy.rows[$row].slots[$slot]=$Slots[$key]}
+    [IO.File]::WriteAllText($policyPath,($policy|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
+  }
+  function Invoke-PolicyCase([string]$CaseId,[hashtable]$CaseSlots,[scriptblock]$CaseBody){
+    if($PolicyFallbackCase-and$CaseId.Split('/')[0]-cne$PolicyFallbackCase){return}
+    try{Set-PolicySlots $CaseSlots;& $CaseBody|Out-Null;$passes.Add($CaseId);Write-Output "CASE PASS $CaseId"}
+    catch{$failures.Add($CaseId);Write-Output "CASE FAIL $CaseId :: $($_.Exception.Message)"}
+    finally{[IO.File]::WriteAllBytes($policyPath,$policyBytes)}
+  }
+  # A spec the watchdog already refuses (an implementation lane on review row 12) is also no move.
+  function Assert-Blocked($Item,[string]$Why,[switch]$AllowSpecRefusal){
+    $before=Get-CallCount;$result=$null;$refusal=''
+    try{$result=Invoke-Watchdog $Item $Item.spec.label}catch{$refusal=$_.Exception.Message;if(-not$AllowSpecRefusal-or$refusal-cne'WATCHDOG_UNKNOWN_SPEC_INVALID'){throw}}
+    Assert-True (($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-or$refusal-ceq'WATCHDOG_UNKNOWN_SPEC_INVALID')-and(Get-CallCount)-eq$before) "policy fallback must not move: $Why (status=$($result.status) refusal=$refusal)"
+  }
+  # An authentic closed-only lineage: a row-3 Sol/medium origin and its real same-config
+  # relaunch. Unchanged, the continuation's quota/session death takes the closed Opus move.
+  function New-ClosedLineage([string]$Name){
+    $origin=New-Spec "$Name-origin" 'gpt-6.1-sol' medium 0 3 provisional
+    $before=Get-CallCount;$first=Invoke-Watchdog $origin "$Name-origin"
+    Assert-Recovery $origin $first 'gpt-6.1-sol' medium provisional $before
+    $hop=New-Continuation $origin $first 'gpt-6.1-sol' medium provisional;Set-Content $hop.error $envelope
+    [pscustomobject]@{origin=$origin;hop=$hop;originPath=(Join-Path $runtime "watchdog-lane-$($origin.spec.label).json")}
+  }
+  function Assert-ClosedMove($Item,[string]$Model='claude-opus-5-5',[string]$Placement='override-Todd'){
+    $before=Get-CallCount;$result=Invoke-Watchdog $Item $Item.spec.label
+    Assert-Recovery $Item $result $Model medium $Placement $before;$result
+  }
+  # Rewrites the origin envelope in place (its file name stays the original label's).
+  function Edit-Origin($Lineage,[scriptblock]$Change){
+    & $Change $Lineage.origin.spec
+    [IO.File]::WriteAllText($Lineage.originPath,($Lineage.origin.spec|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+  }
+  function Edit-RelaunchRow([string]$Lane,[scriptblock]$Change,[switch]$Duplicate){
+    $lines=[Collections.Generic.List[string]]::new([string[]][IO.File]::ReadAllLines($history));$index=-1
+    for($i=0;$i-lt$lines.Count;$i++){if($lines[$i].Contains("`"lane`":`"$Lane`"")-and$lines[$i].Contains('"watchdogSchema"')-and$lines[$i].Contains('"kind":"dispatch"')){$index=$i}}
+    Assert-True ($index-ge0) "fixture relaunch row missing for $Lane"
+    if($Duplicate){$lines.Insert($index+1,$lines[$index])}else{$row=$lines[$index]|ConvertFrom-Json -AsHashtable -DateKind String;& $Change $row;$lines[$index]=$row|ConvertTo-Json -Compress}
+    [IO.File]::WriteAllText($history,($lines-join"`n")+"`n",[Text.UTF8Encoding]::new($false))
+  }
+  function Get-AckFile($Item){
+    $found=@(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-start-*.json'|Where-Object{[IO.File]::ReadAllText($_.FullName).Contains($Item.spec.launchId)-and(Get-Content -LiteralPath $_.FullName -Raw|ConvertFrom-Json -DateKind String).label-ceq$Item.spec.label})
+    Assert-True ($found.Count-eq1) "fixture start acknowledgement missing for $($Item.spec.label)";$found[0]
+  }
+  function Edit-Ack($Item,[scriptblock]$Change){
+    $file=Get-AckFile $Item;$ack=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json -AsHashtable -DateKind String
+    & $Change $ack;[IO.File]::WriteAllText($file.FullName,($ack|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+  }
+  # A closed lineage whose acknowledgements carry dispatch-lane's routing provenance.
+  function New-ProvenanceLineage([string]$Name){
+    $env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK='1'
+    try{New-ClosedLineage $Name}finally{Remove-Item Env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK -ErrorAction SilentlyContinue}
+  }
+  # Sets the same provenance facts on the relaunch row, acknowledgement and continuation.
+  function Set-LineageProvenance($Lineage,[hashtable]$Values){
+    Edit-RelaunchRow $Lineage.hop.spec.label {param($r)foreach($k in $Values.Keys){$r[$k]=$Values[$k]}}
+    Edit-Ack $Lineage.hop {param($a)foreach($k in $Values.Keys){$a[$k]=$Values[$k]}}
+    foreach($k in $Values.Keys){$Lineage.hop.spec[$k]=$Values[$k]};Save-Spec $Lineage.hop
+  }
+  function New-Hex([string]$Prefix=''){$Prefix+(([guid]::NewGuid().ToString('N')+[guid]::NewGuid().ToString('N')).Substring(0,64-$Prefix.Length))}
+  function Write-PolicyRecord([string]$FileId,[string]$Source,[string]$Target){
+    $path=Join-Path $runtime "watchdog-policy-move-$FileId.json"
+    $record=[ordered]@{schemaVersion='watchdog-policy-move/v1';attemptId='synthetic-semantic-attempt';sourceLaunchId=$Source;sourceLabel='synthetic-record-source';startRequest=(New-Hex);targetLabel=$Target;harness='codex';model='gpt-6.1-sol';effort='medium';row='3';placement='provisional'}
+    [IO.File]::WriteAllText($path,($record|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$path
+  }
+  # A real first policy move: row-3 Opus/high moves to the codex.fallback Sol/medium slot.
+  function New-PolicyMove([string]$Name){
+    $origin=New-Spec $Name 'claude-opus-5-5' high 0 3 'override-Todd';Set-Content $origin.error $envelope
+    $before=Get-CallCount;$moved=Invoke-Watchdog $origin $origin.spec.label
+    Assert-Recovery $origin $moved 'gpt-6.1-sol' medium provisional $before
+    $hop=New-Continuation $origin $moved 'gpt-6.1-sol' medium provisional;Set-Content $hop.error $envelope
+    [pscustomobject]@{origin=$origin;moved=$moved;hop=$hop;record=(Join-Path $runtime "watchdog-policy-move-$($origin.spec.launchId).json")}
+  }
+  foreach($envelope in @('provider quota exceeded','session limit reached')){
+    $tag=$envelope.Split(' ')[0]
+    # AC1-AC3: the first policy move, both directions, with its bound reservation.
+    foreach($case in @(
+      @('ac1-row2',2,'gpt-6.1-sol','medium','provisional','claude-opus-5-5','medium','override-Todd'),
+      @('ac2-row1-codex',1,'gpt-6-luna','low','provisional','claude-opus-5-5','low','provisional'),
+      @('ac2-row1-claude',1,'claude-opus-5-5','low','provisional','gpt-6-luna','low','provisional'),
+      @('ac3-row8',8,'claude-opus-5-5','high','provisional','gpt-6.1-sol','high','provisional'))){
+      Invoke-PolicyCase "$($case[0])/$tag" $gen2 {
+        $item=New-Spec "pf-$($case[0])-$tag" $case[2] $case[3] 0 $case[1] $case[4];Set-Content $item.error $envelope
+        $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+        Assert-Recovery $item $result $case[5] $case[6] $case[7] $before
+        $row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+        $record=Get-Content (Join-Path $runtime "watchdog-policy-move-$($item.spec.launchId).json") -Raw|ConvertFrom-Json -DateKind String
+        Assert-True ($record.schemaVersion-ceq'watchdog-policy-move/v1'-and$record.attemptId-ceq$item.spec.attemptId-and$record.sourceLaunchId-ceq$item.spec.launchId-and$record.sourceLabel-ceq$item.spec.label-and$record.startRequest-ceq$row.observationIdentity-and$record.targetLabel-ceq$result.label-and$record.harness-ceq(Get-Harness $case[5])-and$record.model-ceq$case[5]-and$record.effort-ceq$case[6]-and$record.row-ceq[string]$case[1]-and$record.placement-ceq$case[7]) 'policy move reservation is not bound to the attempt, source, request, target and configuration'
+      }
+    }
+    Invoke-PolicyCase "ac4-precedence/$tag" $gen2 {
+      $ruled=New-Spec "pf-ac4-$tag" 'gpt-6.1-sol' high 0 4 provisional;Set-Content $ruled.error $envelope
+      $before=Get-CallCount;$result=Invoke-Watchdog $ruled $ruled.spec.label
+      Assert-Recovery $ruled $result 'claude-opus-5-5' high 'override-Todd' $before
+      Assert-True (-not(Test-Path (Join-Path $runtime "watchdog-policy-move-$($ruled.spec.launchId).json"))) 'a closed-table move wrote a policy reservation'
+    }
+    Invoke-PolicyCase "ac5-count1/$tag" $gen2 {
+      $again=New-RelaunchedContinuation "pf-ac5-$tag" 'gpt-6.1-sol' medium 2 provisional;Set-Content $again.error $envelope
+      Assert-Blocked $again 'relaunch 1 takes no policy move'
+    }
+    foreach($case in @(@('ac6-row9',9,'gpt-6.1-sol','high','provisional'),@('ac6-row11',11,'gpt-6.1-sol','high','provisional'),@('ac6-row12',12,'claude-opus-5-5','medium','override-Todd'))){
+      Invoke-PolicyCase "$($case[0])/$tag" $gen2 {
+        $excluded=New-Spec "pf-$($case[0])-$tag" $case[2] $case[3] 0 $case[1] $case[4];Set-Content $excluded.error $envelope
+        Assert-Blocked $excluded "row $($case[1]) is excluded" -AllowSpecRefusal:($case[1]-eq12)
+      }
+    }
+    Invoke-PolicyCase "ac7-off-slot/$tag" @{} {
+      $offSlot=New-Spec "pf-ac7-$tag" 'claude-opus-5-5' high 0 3 'override-Todd';Set-Content $offSlot.error $envelope
+      Assert-Blocked $offSlot 'route is not its row''s policy slot'
+    }
+    Invoke-PolicyCase "ac8-unadmitted/$tag" @{'2|claude.fallback'=[ordered]@{family='opus';effort='max';placement='override-Todd'}} {
+      $registry=Set-ProductionShapedRoutingRegistry -Path (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json')
+      try{
+        $unadmitted=New-Spec "pf-ac8-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $unadmitted.error $envelope
+        Assert-Blocked $unadmitted 'target effort is not admitted'
+      }finally{Restore-RoutingRegistryBytes $registry}
+    }
+    Invoke-PolicyCase "ac9-absent-slot/$tag" @{} {
+      $absent=New-Spec "pf-ac9-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $absent.error $envelope
+      Assert-Blocked $absent 'row has no other-harness slot'
+    }
+    # r1:F1: protected rows 7/14/15 move only on a closed entry.
+    foreach($row in @(7,14,15)){
+      Invoke-PolicyCase "f1-protected-$row/$tag" $protected {
+        $item=New-Spec "pf-f1-$row-$tag" 'gpt-6.1-sol' medium 0 $row provisional;Set-Content $item.error $envelope
+        Assert-Blocked $item "protected row $row has no closed entry"
+      }
+    }
+    # r1:F2: one policy move per lineage. The policy target's closed entry would cross back.
+    Invoke-PolicyCase "r1f2-policy-to-closed/$tag" $chain {
+      $move=New-PolicyMove "pf-r1f2-$tag"
+      Assert-Blocked $move.hop 'an authenticated continuation of a consumed policy move takes a closed cross-harness move'
+    }
+    Invoke-PolicyCase "r1f2-two-hop/$tag" $chain {
+      $move=New-PolicyMove "pf-r1f2-hop-$tag";Set-Content $move.hop.error 'native owner ended'
+      $before=Get-CallCount;$same=Invoke-Watchdog $move.hop "$($move.hop.spec.label)-owner"
+      Assert-Recovery $move.hop $same 'gpt-6.1-sol' medium provisional $before
+      $third=New-Continuation $move.hop $same 'gpt-6.1-sol' medium provisional;Set-Content $third.error $envelope
+      Assert-Blocked $third 'a consumed policy move two authenticated links back'
+    }
+    # r2:F2: missing, unlinked, forged, deleted and incomplete lineage evidence.
+    Invoke-PolicyCase "r2f2-unlinked-1/$tag" @{} {
+      $item=New-Spec "pf-r2-unlinked1-$tag" 'gpt-6.1-sol' medium 1 3 provisional;Set-Content $item.error $envelope
+      Assert-Blocked $item 'a count-1 continuation with no link'
+    }
+    Invoke-PolicyCase "r2f2-unlinked-2/$tag" @{} {
+      $item=New-Spec "pf-r2-unlinked2-$tag" 'claude-opus-5-5' medium 2 3 'override-Todd';Set-Content $item.error $envelope
+      Assert-Blocked $item 'a count-2 continuation with no link'
+    }
+    Invoke-PolicyCase "r2f2-missing-origin/$tag" @{} {
+      $item=New-Spec "pf-r2-missing-$tag" 'gpt-6.1-sol' medium 1 3 provisional;$item.spec.resumeOfLaunchId=[guid]::NewGuid().ToString();Save-Spec $item;Set-Content $item.error $envelope
+      Assert-Blocked $item 'a count-1 continuation whose origin is missing'
+    }
+    Invoke-PolicyCase "r2f2-forged/$tag" @{} {
+      $plain=New-Spec "pf-r2-plain-$tag" 'gpt-6.1-sol' medium 0 3 provisional
+      $forged=New-Spec "pf-r2-forged-$tag" 'claude-opus-5-5' medium 1 3 'override-Todd';$forged.spec.resumeOfLaunchId=$plain.spec.launchId;Save-Spec $forged;Set-Content $forged.error $envelope
+      Assert-Blocked $forged 'a continuation naming a valid origin without its relaunch row and start acknowledgement'
+    }
+    Invoke-PolicyCase "r2f2-deleted-origin/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r2-deleted-$tag";Remove-Item -LiteralPath $lineage.originPath
+      Assert-Blocked $lineage.hop 'a continuation whose origin envelope is deleted'
+    }
+    Invoke-PolicyCase "r2f2-four-field/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r2-fourfield-$tag";Set-Content $lineage.hop.error 'native owner ended'
+      $before=Get-CallCount;$same=Invoke-Watchdog $lineage.hop "$($lineage.hop.spec.label)-owner"
+      Assert-Recovery $lineage.hop $same 'gpt-6.1-sol' medium provisional $before
+      $last=New-Continuation $lineage.hop $same 'gpt-6.1-sol' medium provisional;Set-Content $last.error $envelope
+      [IO.File]::WriteAllText((Join-Path $runtime "watchdog-lane-$($lineage.hop.spec.label).json"),([ordered]@{launchId=$lineage.hop.spec.launchId;attemptId=$lineage.hop.spec.attemptId;relaunchCount=1;label=$lineage.hop.spec.label}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+      Assert-Blocked $last 'a count-2 continuation whose count-1 predecessor is a four-field record'
+    }
+    # r3:F2 envelope: each predecessor invariant refuses on its own.
+    foreach($case in @(
+      @('r3-envelope-state',{param($s)$s.state='SYNTHETIC_INVALID_STATE'}),
+      @('r3-envelope-pid',{param($s)$s.launcherPid=[long]-1}),
+      @('r3-envelope-instant',{param($s)$s.launcherStartIdentity='2000-01-01'}),
+      @('r3-envelope-extra-key',{param($s)$s['synthetic']='unexpected'}),
+      @('r3-envelope-exit-type',{param($s)$s.exitCode='1'}),
+      @('r3-envelope-child-null',{param($s)$s.childPid=$null}),
+      @('r3-envelope-head',{param($s)$s.head='SYNTHETIC-NOT-A-SHA'}),
+      @('r3-envelope-placement',{param($s)$s.placement='synthetic-placement'}),
+      @('r3-envelope-provenance',{param($s)$s['family']='sol'}),
+      @('r3-envelope-attempt',{param($s)$s.attemptId='synthetic-other-attempt'}),
+      @('r3-envelope-count',{param($s)$s.relaunchCount=[long]1;$s.resumeOfLaunchId=[guid]::NewGuid().ToString()}),
+      @('r3-envelope-label',{param($s)$s.label='synthetic-renamed-origin'}))){
+      Invoke-PolicyCase "$($case[0])/$tag" @{} {
+        $lineage=New-ClosedLineage "pf-$($case[0])-$tag";Edit-Origin $lineage $case[1]
+        Assert-Blocked $lineage.hop "$($case[0]) predecessor"
+      }
+    }
+    # r3:F2 history: the continuation's relaunch row is closed and unique.
+    foreach($case in @(
+      @('r3-history-death',{param($r)$r.Remove('deathSignature')}),
+      @('r3-history-extra',{param($r)$r['synthetic']='unexpected'}),
+      @('r3-history-type',{param($r)$r['relaunchCount']='1'}),
+      @('r3-history-provenance-partial',{param($r)foreach($k in @('policyGeneration','registryAuthorityDigest','slot','usedLastKnownGood')){$r.Remove($k)};$r['family']='sol'}),
+      @('r3-history-provenance-invalid',{param($r)$r['policyGeneration']=[long]1;$r['registryAuthorityDigest']='synthetic';$r['family']='sol';$r['slot']='synthetic-invalid-slot';$r['usedLastKnownGood']=$false}),
+      # Only the row's own provenance shape check rejects this group: its slot and family agree with the continuation.
+      @('r3-history-provenance-shape',{param($r)$r['policyGeneration']=[long]1;$r['registryAuthorityDigest']='synthetic digest with spaces';$r['family']='sol';$r['slot']='explicit';$r['usedLastKnownGood']=$false}),
+      @('r3-history-outcome',{param($r)$r['outcome']='SYNTHETIC_OUTCOME'}),
+      @('r3-history-observed-at',{param($r)$r['observedAt']='2000-01-01'}))){
+      Invoke-PolicyCase "$($case[0])/$tag" @{} {
+        $lineage=New-ClosedLineage "pf-$($case[0])-$tag";Edit-RelaunchRow $lineage.hop.spec.label $case[1]
+        Assert-Blocked $lineage.hop "$($case[0]) relaunch row"
+      }
+    }
+    Invoke-PolicyCase "r3-history-replayed/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-replayed-$tag";Edit-RelaunchRow $lineage.hop.spec.label {} -Duplicate
+      Assert-Blocked $lineage.hop 'a replayed relaunch row'
+    }
+    # r3:F2 source and request: the row and acknowledgement bind the predecessor's partial and request.
+    Invoke-PolicyCase "r3-source-resumed-partial/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-resumed-$tag";Edit-RelaunchRow $lineage.hop.spec.label {param($r)$r['resumedPartial']=Join-Path $runtime 'SYNTHETIC_UNRELATED_PARTIAL.jsonl'}
+      Assert-Blocked $lineage.hop 'a relaunch row naming an unrelated partial'
+    }
+    Invoke-PolicyCase "r3-source-missing/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-source-$tag";Remove-Item -LiteralPath $lineage.origin.partial
+      Assert-Blocked $lineage.hop 'a predecessor whose source partial is missing'
+    }
+    Invoke-PolicyCase "r3-request-row/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-reqrow-$tag";Edit-RelaunchRow $lineage.hop.spec.label {param($r)$r['observationIdentity']=(New-Hex)}
+      Assert-Blocked $lineage.hop 'a relaunch row whose observation identity is not the recomputed request'
+    }
+    Invoke-PolicyCase "r3-request-ack/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-reqack-$tag";$file=Get-AckFile $lineage.hop
+      $ack=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json -DateKind String;$ack.requestIdentity=(New-Hex)
+      [IO.File]::WriteAllText((Join-Path $runtime "dispatch-start-$($ack.requestIdentity).json"),($ack|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));Remove-Item -LiteralPath $file.FullName
+      Assert-Blocked $lineage.hop 'a start acknowledgement for a different request'
+    }
+    Invoke-PolicyCase "r3-ack-duplicate/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-ackdup-$tag";$file=Get-AckFile $lineage.hop
+      $ack=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json -DateKind String;$ack.requestIdentity=(New-Hex 'ffff')
+      [IO.File]::WriteAllText((Join-Path $runtime "dispatch-start-$($ack.requestIdentity).json"),($ack|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+      Assert-Blocked $lineage.hop 'a second start acknowledgement for the same continuation'
+    }
+    Invoke-PolicyCase "r3-ack-missing/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-ackmissing-$tag";Remove-Item -LiteralPath (Get-AckFile $lineage.hop).FullName
+      Assert-Blocked $lineage.hop 'a continuation without its start acknowledgement'
+    }
+    # r3:F2 record scan: each check refuses on its own, independent of the file name.
+    Invoke-PolicyCase "r3-scan-renamed/$tag" $chain {
+      $move=New-PolicyMove "pf-r3-renamed-$tag";$renamed=Join-Path $runtime "watchdog-policy-move-$([guid]::NewGuid()).json";[IO.File]::Move($move.record,$renamed)
+      try{Assert-Blocked $move.hop 'a renamed valid policy record'}finally{Remove-Item -LiteralPath $renamed}
+    }
+    Invoke-PolicyCase "r3-scan-target/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-target-$tag";$source=[guid]::NewGuid().ToString();$record=Write-PolicyRecord $source $source $lineage.hop.spec.label
+      try{Assert-Blocked $lineage.hop 'a record naming the continuation as target with a conflicting source'}finally{Remove-Item -LiteralPath $record}
+    }
+    Invoke-PolicyCase "r3-scan-source/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-source-record-$tag";$record=Write-PolicyRecord $lineage.origin.spec.launchId $lineage.origin.spec.launchId "synthetic-unrelated-target-$tag"
+      try{Assert-Blocked $lineage.hop 'a record whose source is a predecessor launch'}finally{Remove-Item -LiteralPath $record}
+    }
+    Invoke-PolicyCase "r3-scan-filename/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-filename-$tag";$record=Write-PolicyRecord ([guid]::NewGuid().ToString()) ([guid]::NewGuid().ToString()) "synthetic-unrelated-target-$tag"
+      try{Assert-Blocked $lineage.hop 'a record stored under another launch''s name'}finally{Remove-Item -LiteralPath $record}
+    }
+    Invoke-PolicyCase "r3-scan-malformed/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-r3-malformed-$tag";$record=Join-Path $runtime "watchdog-policy-move-$([guid]::NewGuid()).json";Set-Content -LiteralPath $record -Value 'synthetic malformed record'
+      try{Assert-Blocked $lineage.hop 'an unreadable policy record'}finally{Remove-Item -LiteralPath $record}
+    }
+    # g2-r1:F1: schema-owned strings are scalar strings; a singleton array, null or object
+    # never stands in for one, on a predecessor or on the current spec.
+    foreach($case in @(
+      @('g2f1-origin-model-array',{param($s)$s.model=@('gpt-6.1-sol')}),
+      @('g2f1-origin-schema-array',{param($s)$s.schemaVersion=@('watchdog-lane/v2')}),
+      @('g2f1-origin-harness-array',{param($s)$s.harness=@('codex')}),
+      @('g2f1-origin-effort-array',{param($s)$s.effort=@('medium')}),
+      @('g2f1-origin-state-array',{param($s)$s.state=@('exited')}),
+      @('g2f1-origin-role-array',{param($s)$s.laneRole=@('implementation')}),
+      @('g2f1-origin-placement-array',{param($s)$s.placement=@('provisional')}),
+      @('g2f1-origin-branch-array',{param($s)$s.branch=@('synthetic/branch')}),
+      @('g2f1-origin-model-null',{param($s)$s.model=$null}),
+      @('g2f1-origin-effort-object',{param($s)$s.effort=[ordered]@{value='medium'}}))){
+      Invoke-PolicyCase "$($case[0])/$tag" @{} {
+        $lineage=New-ClosedLineage "pf-$($case[0])-$tag";Edit-Origin $lineage $case[1]
+        Assert-Blocked $lineage.hop "$($case[0]) predecessor"
+      }
+    }
+    foreach($case in @(
+      @('g2f1-current-model-array',{param($s)$s.model=@('gpt-6.1-sol')}),
+      @('g2f1-current-effort-array',{param($s)$s.effort=@('medium')}),
+      @('g2f1-current-placement-object',{param($s)$s.placement=[ordered]@{value='provisional'}}))){
+      Invoke-PolicyCase "$($case[0])/$tag" $gen2 {
+        $item=New-Spec "pf-$($case[0])-$tag" 'gpt-6.1-sol' medium 0 2 provisional;& $case[1] $item.spec;Save-Spec $item;Set-Content $item.error $envelope
+        Assert-Blocked $item "$($case[0]) current spec" -AllowSpecRefusal
+      }
+    }
+    # g2-r1:F2: the acknowledged child is the continuation's retained child.
+    foreach($case in @(
+      @('g2f2-ack-child-pid',{param($a)$a.childPid=[long]123456789}),
+      @('g2f2-ack-child-start',{param($a)$a.childStartIdentity='2001-01-01T00:00:00.0000000Z'}))){
+      Invoke-PolicyCase "$($case[0])/$tag" @{} {
+        $lineage=New-ClosedLineage "pf-$($case[0])-$tag";Edit-Ack $lineage.hop $case[1]
+        Assert-Blocked $lineage.hop "$($case[0]) acknowledgement"
+      }
+    }
+    Invoke-PolicyCase "g2f2-spec-child/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-g2f2-spec-child-$tag";$lineage.hop.spec.childStartIdentity='2001-01-01T00:00:00.0000000Z';Save-Spec $lineage.hop
+      Assert-Blocked $lineage.hop 'a continuation whose retained child is not its acknowledged child'
+    }
+    # g2-r1:F2: present provenance groups are one selection naming the continuation's
+    # model family, provider and harness slot.
+    Invoke-PolicyCase "g2f2-row-provenance/$tag" @{} {
+      $lineage=New-ProvenanceLineage "pf-g2f2-row-prov-$tag";Edit-RelaunchRow $lineage.hop.spec.label {param($r)$r['registryAuthorityDigest']='synthetic-conflicting-digest'}
+      Assert-Blocked $lineage.hop 'a relaunch row whose provenance conflicts with its acknowledgement and continuation'
+    }
+    Invoke-PolicyCase "g2f2-ack-provenance/$tag" @{} {
+      $lineage=New-ProvenanceLineage "pf-g2f2-ack-prov-$tag";Edit-Ack $lineage.hop {param($a)$a.policyGeneration=[long]999}
+      Assert-Blocked $lineage.hop 'an acknowledgement whose provenance conflicts with its row and continuation'
+    }
+    Invoke-PolicyCase "g2f2-family-unbound/$tag" @{} {
+      $lineage=New-ProvenanceLineage "pf-g2f2-family-$tag";Set-LineageProvenance $lineage @{family='opus'}
+      Assert-Blocked $lineage.hop 'consistent provenance naming another family than the continuation model'
+    }
+    Invoke-PolicyCase "g2f2-slot-harness/$tag" @{} {
+      $lineage=New-ProvenanceLineage "pf-g2f2-slot-$tag";Set-LineageProvenance $lineage @{slot='claude.primary'}
+      Assert-Blocked $lineage.hop 'consistent provenance naming another harness slot than the continuation'
+    }
+    Invoke-PolicyCase "pos-coherent-provenance/$tag" @{} {
+      $lineage=New-ProvenanceLineage "pf-pos-coherent-$tag"
+      Assert-True ($null-ne$lineage.hop.spec['family']-and[string]$lineage.hop.spec['slot']-ceq'explicit') 'coherent fixture lost its acknowledged provenance'
+      Assert-ClosedMove $lineage.hop
+    }
+    # Positive controls: authentic closed-only, Fable, retained and legacy lineages keep their moves.
+    Invoke-PolicyCase "pos-closed-chain/$tag" @{} {
+      $origin=New-Spec "pf-pos-chain-$tag" 'gpt-6.1-sol' medium 0 3 provisional;Set-Content $origin.error $envelope
+      $first=Assert-ClosedMove $origin
+      $hop1=New-Continuation $origin $first 'claude-opus-5-5' medium 'override-Todd';Set-Content $hop1.error $envelope
+      $second=Assert-ClosedMove $hop1 'gpt-6.1-sol'
+      $hop2=New-Continuation $hop1 $second 'gpt-6.1-sol' medium 'override-Todd';Set-Content $hop2.error $envelope
+      $third=Assert-ClosedMove $hop2
+      $hop3=New-Continuation $hop2 $third 'claude-opus-5-5' medium 'override-Todd';Set-Content $hop3.error $envelope
+      $before=Get-CallCount;$ceiling=Invoke-Watchdog $hop3 $hop3.spec.label
+      Assert-True ($ceiling.status-ceq'HARNESS_CEILING'-and-not$ceiling.relaunch-and(Get-CallCount)-eq$before) 'an authentic count-3 continuation did not stop at the harness ceiling'
+    }
+    Invoke-PolicyCase "pos-closed-count1/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-pos-count1-$tag";Assert-ClosedMove $lineage.hop
+    }
+    Invoke-PolicyCase "pos-fable/$tag" @{} {
+      $fable=New-RelaunchedContinuation "pf-pos-fable-$tag" 'claude-fable-5-1' high 7 'override-Todd';Set-Content $fable.error $envelope
+      $before=Get-CallCount;$result=Invoke-Watchdog $fable $fable.spec.label
+      Assert-Recovery $fable $result 'gpt-6-astra' high 'override-Todd' $before
+    }
+    Invoke-PolicyCase "pos-provenance/$tag" @{} {
+      . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
+      $selection=Resolve-RoutingSelection -Row 3 -Harness codex -Model gpt-6.1-sol -Effort medium -ReadOnly
+      $origin=New-Spec "pf-pos-provenance-$tag-origin" 'gpt-6.1-sol' medium 0 3 provisional
+      $origin.spec.policyGeneration=[long]$selection.policyGeneration;$origin.spec.registryAuthorityDigest=[string]$selection.registryAuthorityDigest;$origin.spec.family=[string]$selection.family;$origin.spec.slot=[string]$selection.slot;$origin.spec.usedLastKnownGood=[bool]$selection.usedLastKnownGood;Save-Spec $origin
+      $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
+      Assert-Recovery $origin $first 'gpt-6.1-sol' medium provisional $before
+      $hop=New-Continuation $origin $first 'gpt-6.1-sol' medium provisional;Set-Content $hop.error $envelope
+      Assert-ClosedMove $hop
+    }
+    Invoke-PolicyCase "pos-legacy-origin/$tag" @{} {
+      $legacy=New-LegacySpec "pf-pos-legacy-$tag";Add-LegacyRoutingRow $legacy 4 provisional
+      $before=Get-CallCount;$first=Invoke-Watchdog $legacy $legacy.spec.label
+      Assert-True ($first.status-ceq'RELAUNCHED'-and$first.model-ceq'gpt-6.1-sol'-and(Get-CallCount)-eq$before+1) 'legacy v1 origin did not relaunch same-config'
+      # The v1 origin's row and placement come only from its authenticated legacy routing row.
+      $legacyView=[pscustomobject]@{spec=[ordered]@{relaunchCount=[long]0;row=[long]4;attemptId=$legacy.spec.attemptId;launchId=$legacy.spec.launchId}}
+      $hop=New-Continuation $legacyView $first 'gpt-6.1-sol' high provisional;Set-Content $hop.error $envelope
+      $before=Get-CallCount;$result=Invoke-Watchdog $hop $hop.spec.label
+      Assert-Recovery $hop $result 'claude-opus-5-5' high 'override-Todd' $before
+    }
+    Invoke-PolicyCase "pos-unrelated-record/$tag" @{} {
+      $lineage=New-ClosedLineage "pf-pos-unrelated-$tag";$source=[guid]::NewGuid().ToString();$record=Write-PolicyRecord $source $source "synthetic-unrelated-target-$tag"
+      try{Assert-ClosedMove $lineage.hop}finally{Remove-Item -LiteralPath $record}
+    }
+    # Reservation lifecycle: a launch failure before receipt retries the exact request and
+    # target; a replay is a duplicate; a conflicting reservation refuses.
+    Invoke-PolicyCase "pos-retry/$tag" $gen2 {
+      $item=New-Spec "pf-pos-retry-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $item.error $envelope
+      $recordPath=Join-Path $runtime "watchdog-policy-move-$($item.spec.launchId).json"
+      $env:SYNTHETIC_WATCHDOG_FAIL_LABEL=$item.spec.label
+      try{$before=Get-CallCount;$failed=Invoke-Watchdog $item $item.spec.label}finally{Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL}
+      Assert-True ($failed.status-ceq'LAUNCH_FAILED'-and-not$failed.relaunch-and(Get-CallCount)-eq$before+1-and(Test-Path $recordPath)) 'a failed policy launch did not keep its reservation'
+      $reserved=[IO.File]::ReadAllBytes($recordPath);$target=(Get-Content $recordPath -Raw|ConvertFrom-Json -DateKind String).targetLabel
+      $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+      Assert-Recovery $item $result 'claude-opus-5-5' medium 'override-Todd' $before
+      Assert-True ($result.label-ceq$target-and[Convert]::ToBase64String([IO.File]::ReadAllBytes($recordPath))-ceq[Convert]::ToBase64String($reserved)) 'the retry did not reuse the exact reserved target'
+    }
+    Invoke-PolicyCase "pos-replay/$tag" $gen2 {
+      $item=New-Spec "pf-pos-replay-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $item.error $envelope
+      $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+      Assert-Recovery $item $result 'claude-opus-5-5' medium 'override-Todd' $before
+      $before=Get-CallCount;$replay=Invoke-Watchdog $item $item.spec.label
+      Assert-True ($replay.status-ceq'DUPLICATE_SKIPPED'-and(Get-CallCount)-eq$before) 'a replayed policy move launched again'
+    }
+    Invoke-PolicyCase "pos-reserve-conflict/$tag" $gen2 {
+      $item=New-Spec "pf-pos-conflict-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $item.error $envelope
+      $record=Write-PolicyRecord $item.spec.launchId $item.spec.launchId "synthetic-conflict-target-$tag";$bytes=[IO.File]::ReadAllBytes($record)
+      Assert-Blocked $item 'a reservation for another request'
+      Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($record))-ceq[Convert]::ToBase64String($bytes)) 'a conflicting reservation was overwritten'
+    }
+  }
+  if($failures.Count-gt0){throw "ASSERTION FAILED: 9092 policy fallback cases failed: $($failures-join', ')"}
+  if($PolicyFallbackCase){Write-Output "PASS 9092 policy fallback case family $PolicyFallbackCase cases=$($passes.Count)";return}
+  Write-Output 'PASS policy fallback v4.24: rows 1/2/8 move once to the other-harness slot in both directions and envelopes with a bound reservation; closed table precedence; relaunch 1, rows 9/11/12, off-slot route, unadmitted target and absent slot stay blocked'
+  Write-Output 'PASS 9092 protected rows 7/14/15 and one policy move per lineage: protected policy-only gaps, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
+  Write-Output "PASS 9092 lineage authentication: predecessor envelope with scalar types, closed relaunch row, source/request binding, unique acknowledgement joined to the retained child and provenance, and record-scan refusals; closed-only count 1/2/3, Fable, retained-provenance and legacy lineages, retry, replay and conflict controls cases=$($passes.Count)"
+}
+# #9092 guard discriminators: each mutant removes one guard, and its named
+# -PolicyFallbackOnly case family must turn red at that case (CASE FAIL <case>/...)
+# in a fresh child run.
+function Test-PolicyFallbackMutants {
+  $source=[IO.File]::ReadAllText($watchdog)
+  $mutantRoot=Join-Path $root 'mutants-9092';New-Item -ItemType Directory -Force -Path $mutantRoot|Out-Null
+  Get-ChildItem $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $mutantRoot
+  New-Item -ItemType Directory -Force -Path (Join-Path $mutantRoot 'controller-skills/model-routing')|Out-Null
+  Copy-Item (Join-Path $PSScriptRoot 'controller-skills/model-routing/capability-matrix.json') (Join-Path $mutantRoot 'controller-skills/model-routing/capability-matrix.json')
+  $mutants=@(
+    # AC11's six guards.
+    @{name='no-policy-fallback';case='ac1-row2';old='    if($null-ne$policyFallback){';new='    if($false){'},
+    @{name='second-move-allowed';case='ac5-count1';old='  if([long]$Spec.relaunchCount-ne0){return $null}';new=''},
+    @{name='excluded-rows-allowed';case='ac6-row9';old='-or$row-in@(7,9,11,12,14,15)';new=''},
+    @{name='policy-overrides-closed-table';case='ac4-precedence';old='  if(-not$consumed-and-not$fallback.ContainsKey($routeKey)){';new='  if(-not$consumed){'},
+    @{name='admission-ignored';case='ac8-unadmitted';old='    if($null-eq$model-or(Get-RoutingAdmissionReason $Data.registry $model ([string]$slot[0].Value.effort))){continue}';new='    if($null-eq$model){continue}'},
+    @{name='own-slot-ignored';case='ac7-off-slot';old='  if($own.Count-eq0){return $null}';new=''},
+    # r1/r2 lineage guards.
+    @{name='protected-rows-14-15-allowed';case='f1-protected-14';old='@(7,9,11,12,14,15)';new='@(7,9,11,12)'},
+    @{name='consumed-policy-move-ignored';case='r1f2-policy-to-closed';old='-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)';new='-and$false'},
+    @{name='missing-lineage-allowed';case='r2f2-unlinked-1';old='    if($hop-ge3-or$link-cnotmatch''^[a-f0-9-]{36}$''-or$launches.Contains($link)){return $true}';new='    if($link-cnotmatch''^[a-f0-9-]{36}$''){break};if($hop-ge3-or$launches.Contains($link)){return $true}'},
+    @{name='missing-predecessor-allowed';case='r2f2-missing-origin';old='    if($null-eq$predecessor){return $true}';new='    if($null-eq$predecessor){break}'},
+    @{name='unbound-continuation-allowed';case='r2f2-forged';old='if(-not(Test-WatchdogContinuationBinding $Root $current';new='if($false-and(Test-WatchdogContinuationBinding $Root $current'},
+    @{name='incomplete-predecessor-allowed';case='r3-envelope-state';old='if(-not(Test-WatchdogLineageEnvelope $Root';new='if($false-and(Test-WatchdogLineageEnvelope $Root'},
+    @{name='predecessor-record-ignored';case='r3-scan-source';old='    if($launches.Contains([string]$record.sourceLaunchId)){return $true}';new=''},
+    # r3:F2 predecessor envelope facts.
+    @{name='envelope-state-unchecked';case='r3-envelope-state';old='$Value.state-cnotin@(''launching'',''running'',''exited'')-or';new=''},
+    @{name='envelope-pid-unchecked';case='r3-envelope-pid';old='-or$Value.launcherPid-lt1';new=''},
+    @{name='envelope-instant-unchecked';case='r3-envelope-instant';old='  foreach($instant in @($view.launcherStartIdentity,$view.updatedAt)){if(-not(Test-WatchdogZonedInstant $instant)){return $false}}';new=''},
+    # r3:F2 closed relaunch row.
+    @{name='history-keys-unchecked';case='r3-history-extra';old='  if(-not(Test-ExactKeys $row $expected)){return $false}';new=''},
+    @{name='history-types-unchecked';case='r3-history-type';old='  if(@($script:RelaunchRowKeys|Where-Object{$_-cne''relaunchCount''-and$row.$_-isnot[string]}).Count-gt0-or$row.relaunchCount-isnot[long]){return $false}';new=''},
+    @{name='history-provenance-unchecked';case='r3-history-provenance-shape';old='  if(-not(Test-WatchdogRoutingProvenance $row)){return $false}';new=''},
+    @{name='history-uniqueness-unchecked';case='r3-history-replayed';old='  if($rows.Count-ne1){return $false}';new='  if($rows.Count-lt1){return $false}'},
+    # r3:F2 source and request bindings.
+    @{name='resumed-partial-unbound';case='r3-source-resumed-partial';old='  if(-not(Test-DispatchSamePath $row.resumedPartial ([string]$Predecessor.partialReportPath))){return $false}';new=''},
+    @{name='source-partial-unchecked';case='r3-source-missing';old='  if(-not(Test-Path -LiteralPath ([string]$Predecessor.partialReportPath) -PathType Leaf)){return $false}';new=''},
+    @{name='row-identity-unbound';case='r3-request-row';old='  if($row.observationIdentity-cne$identity){return $false}';new=''},
+    @{name='ack-request-unbound';case='r3-request-ack';old='-and$request-cne$identity){return $false}';new='-and$false){return $false}'},
+    @{name='ack-uniqueness-unchecked';case='r3-ack-duplicate';old='  if($acks.Count-ne1){return $false}';new='  if($acks.Count-lt1){return $false}'},
+    # r3:F2 record scan; each check is independent of the file-name lookup.
+    @{name='record-filename-unchecked';case='r3-scan-filename';old='    if($file.Name-cne"watchdog-policy-move-$($record.sourceLaunchId).json"){return $true}';new=''},
+    @{name='record-target-unchecked';case='r3-scan-target';old='    if($labels.Contains([string]$record.targetLabel)){return $true}';new=''},
+    @{name='record-malformed-ignored';case='r3-scan-malformed';old='    try{$record=Read-WatchdogPolicyMove $file.FullName}catch{return $true}';new='    try{$record=Read-WatchdogPolicyMove $file.FullName}catch{continue}'},
+    # g2-r1:F1 scalar types and F2 continuation joins; each guard alone.
+    @{name='predecessor-scalar-unchecked';case='g2f1-origin-model-array';old='  if(-not(Test-WatchdogScalarFields $Value)){return $false}';new=''},
+    @{name='current-scalar-unchecked';case='g2f1-current-model-array';old='if(-not(Test-WatchdogScalarFields $spec)){throw ''WATCHDOG_UNKNOWN_SPEC_INVALID''}';new=''},
+    @{name='ack-child-unbound';case='g2f2-ack-child-pid';old='  if($Continuation.childPid-isnot[long]-or[long]$ack.childPid-ne[long]$Continuation.childPid-or[string]$ack.childStartIdentity-cne[string]$Continuation.childStartIdentity){return $false}';new=''},
+    @{name='provenance-join-unchecked';case='g2f2-row-provenance';old='-or[bool]$group.usedLastKnownGood-ne[bool]$selected.usedLastKnownGood){return $false}';new='-and$false){return $false}'},
+    @{name='provenance-family-unbound';case='g2f2-family-unbound';old='-or[string]$modelIdentity.family-cne[string]$selected.family';new=''},
+    @{name='provenance-slot-unbound';case='g2f2-slot-harness';old='  if([string]$selected.slot-cne''explicit''-and([string]$selected.slot).Split(''.'')[0]-cne[string]$Continuation.harness){return $false}';new=''}
+  )
+  foreach($m in $mutants){
+    Assert-True (([regex]::Matches($source,[regex]::Escape($m.old))).Count-eq1) "9092 mutation anchor not unique: $($m.name)"
+    $mutantPath=Join-Path $mutantRoot "9092-$($m.name).ps1";[IO.File]::WriteAllText($mutantPath,$source.Replace($m.old,$m.new),[Text.UTF8Encoding]::new($false))
+    $parseErrors=$null;[void][Management.Automation.Language.Parser]::ParseFile($mutantPath,[ref]$null,[ref]$parseErrors);Assert-True ($parseErrors.Count-eq0) "9092 mutant does not parse: $($m.name)"
+    $mutantOut=& (Get-Command pwsh).Source -NoProfile -NonInteractive -File (Join-Path $mutantRoot 'lane-stall-watchdog.test.ps1') -PolicyFallbackOnly -PolicyFallbackCase $m.case -WatchdogScript $mutantPath 2>&1|Out-String;$mutantExit=$LASTEXITCODE
+    [IO.File]::WriteAllText((Join-Path $mutantRoot "9092-$($m.name).log"),"exit=$mutantExit`n$mutantOut")
+    $named=$mutantOut-cmatch('(?m)^CASE FAIL '+[regex]::Escape($m.case)+'/')
+    Assert-True (($mutantExit-ne0)-and$named) "9092 mutant survived: $($m.name) case=$($m.case) (exit=$mutantExit)"
+    Write-Output "MUTANT 9092 $($m.name) RED at $($m.case) (exit=$mutantExit)"
+  }
+  Write-Output "PASS 9092 policy fallback guard discriminators mutants=$($mutants.Count) survivors=0"
+}
 try{
   New-Item -ItemType Directory -Path $runtime,$worktree|Out-Null;Set-Content -LiteralPath (Join-Path $runtime 'original.prompt.txt') -Value 'unmistakably synthetic original'
   $stub=Join-Path $root 'dispatch-lane.ps1';Set-Content -LiteralPath $stub -Value @'
@@ -129,8 +633,55 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
       }
     } finally { Remove-Item Env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK -ErrorAction SilentlyContinue }
   }
+  if(-not $CapacityOnly -and -not $BeforeFixControl -and -not $Row15MeasuredControl -and -not $Named8098Control -and -not $Named8186Control -and -not $PolicyFallbackOnly -and -not $PolicyFallbackMutantsOnly) {
+    $beforeCapacity=Get-CallCount
+    & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $PSCommandPath -CapacityOnly -WatchdogScript $watchdog
+    Assert-True ($LASTEXITCODE -eq 0) 'isolated capacity watchdog cases failed'
+    Assert-True ((Get-CallCount) -eq $beforeCapacity) 'capacity child changed parent dispatch fixture'
+  }
+  if($CapacityOnly) {
+    foreach($entry in @(@(13,'low','medium'),@(10,'medium','high'),@(4,'medium','high'),@(5,'high','high'))) {
+      foreach($envelope in @('provider quota exceeded','session limit reached')) {
+        $item=New-Spec "capacity-$($entry[0])-$($envelope.Split(' ')[0])" 'claude-opus-5-5' $entry[1] 0 $entry[0] 'override-Todd'
+        Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+        Assert-Recovery $item $result 'gpt-6.1-sol' $entry[2] 'override-Todd' $before
+      }
+    }
+    foreach($row in @(8,11,12)) {
+      $item=New-Spec "capacity-no-fable-$row" 'gpt-6-astra' high 0 $row 'override-Todd';Set-Content $item.error 'provider quota exceeded'
+      $before=Get-CallCount;$result=$null;$refusal=''
+      try{$result=Invoke-Watchdog $item $item.spec.label}catch{$refusal=$_.Exception.Message}
+      Assert-True (($result.status -ceq 'NO_QUALIFIED_FALLBACK' -or $refusal -ceq 'WATCHDOG_UNKNOWN_SPEC_INVALID') -and (Get-CallCount) -eq $before) 'Fable never rows 8/11/12'
+    }
+    . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
+    $selection=Resolve-RoutingSelection -Row 4 -Harness codex -Model gpt-6.1-sol -Effort high -ReadOnly
+    foreach($version in @('v1','v2','v3')) {
+      foreach($issue in @(0,908526)) {
+        $item=New-LegacySpec "capacity-retained-$version-$issue"
+        $args=@{Log='dispatch';Kind='dispatch';DispatchRoutingSchema="watchdog-dispatch-routing/$version";DispatchAttemptId=$item.spec.attemptId
+          DispatchLabel=$item.spec.label;Lane=(Split-Path -Leaf $worktree);LaneRole='implementation';Transcript=(Split-Path -Leaf $item.partial)
+          Harness='codex';Model='gpt-6.1-sol';Effort='high';Row='4';Placement='provisional';DispatchWorktree=$worktree
+          DispatchBranch=$item.spec.branch;DispatchHead=$item.spec.head;OutFile=$history;NoBoard=$true}
+        if($version -cne 'v1'){
+          $args.PolicyGeneration=$selection.policyGeneration;$args.RegistryAuthorityDigest=$selection.registryAuthorityDigest
+          $args.RoutingFamily=$selection.family;$args.RoutingSlot=$selection.slot;$args.UsedLastKnownGood=$selection.usedLastKnownGood
+        }
+        if($version -ceq 'v3'){
+          $args.CapacityForecastStatus='not-evaluated';$args.CapacityDecisionDigest=$null;$args.CapacityFlip=$null;$args.CapacityShadowFlip=$null;$args.CapacityFlipSkip=$null
+        }
+        if($issue){$args.Issue=$issue}
+        & (Join-Path $PSScriptRoot 'log-event.ps1') @args|Out-Null
+        $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+        Assert-True ($result.status -ceq 'RELAUNCHED' -and $result.row -eq 4 -and (Get-CallCount) -eq $before+1) "retained $version reader issue=$issue"
+      }
+    }
+    Write-Output 'PASS capacity watchdog four own-slot quota routes, both envelopes, Fable exclusions'
+    if($CapacityOnly){return}
+  }
   if($ExplicitRoutingOnly){Test-ExplicitRoutingRelaunch;return}
   if($SonnetOnly){Test-SonnetCutover;return}
+  if($PolicyFallbackOnly){Test-PolicyFallback;return}
+  if($PolicyFallbackMutantsOnly){Test-PolicyFallbackMutants;return}
   # 8186: planning/review lanes are observed on dispatch-lane's own envelope and never recovered here.
   function New-RoleSpec([string]$Label,[string]$Role,[int]$Row=0,[string]$Placement='',[string]$Model='claude-opus-5-5',[string]$Effort='medium',[string]$State='exited',$ExitCode=1,[string]$Branch='synthetic/branch'){
     $item=New-Spec $Label $Model $Effort 0 $Row $Placement
@@ -402,11 +953,12 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     $before=Get-CallCount;$result=Invoke-Watchdog $item $label
     Assert-Recovery $item $result $entry[1] $entry[2] 'override-Todd' $before
     if($entry[0]-in@(3,13)-and$entry[2]-ceq'medium'-and$entry[1]-cin@('gpt-6.1-sol','claude-opus-5-5')){continue}
+    if($entry[1] -ceq 'claude-opus-5-5' -and (($entry[0] -in @(4,10) -and $entry[2] -ceq 'medium') -or ($entry[0] -eq 13 -and $entry[2] -ceq 'low'))){continue} # covered by capacity quota controls above
     $quota=New-Spec "$label-quota" $entry[1] $entry[2] 0 $entry[0] 'override-Todd';Set-Content $quota.error 'provider quota exhausted'
     $before=Get-CallCount;$blocked=Invoke-Watchdog $quota "$label-quota"
     Assert-True ($blocked.status-ceq'NO_QUALIFIED_FALLBACK'-and$blocked.relaunch-eq$false-and(Get-CallCount)-eq$before) 'benchmark placement invented an unruled automatic quota fallback'
   }
-  Write-Output 'PASS benchmark routing: 12 exact policy recoveries; 8 closed quota blocks; no measurement or attempt inheritance'
+  Write-Output 'PASS benchmark routing: 12 exact policy recoveries; remaining unruled routes block; capacity quota routes separately covered'
   foreach($entry in @(@(3,'gpt-6.1-sol','claude-opus-5-5'),@(13,'gpt-6.1-sol','claude-opus-5-5'),@(3,'claude-opus-5-5','gpt-6.1-sol'),@(13,'claude-opus-5-5','gpt-6.1-sol'))){
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $row=$entry[0];$primary=$entry[1];$target=$entry[2];$tag="$row-$primary-$($envelope.Replace(' ','-'))"
@@ -446,7 +998,17 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     $plain503RetryLine='2026-09-21T04:14:32.994240Z  WARN codex_core::responses_retry: stream disconnected - retrying sampling request (1/6 in 199ms)... turn_id=01a0c22a-3dd2-70c3-bab6-21c17d745535 retries=1 max_retries=6 sampling_error=unexpected status 503 Service Unavailable: upstream temporarily unavailable, url: http://127.0.0.1:8317/v1/responses'
     $plain503TranscriptRecords=@('{"type":"error","message":"unexpected status 503 Service Unavailable: upstream temporarily unavailable, url: http://127.0.0.1:8317/v1/responses"}','{"type":"turn.failed","error":{"message":"unexpected status 503 Service Unavailable: upstream temporarily unavailable, url: http://127.0.0.1:8317/v1/responses"}}')
     $recoveredTranscriptRecords=@('{"type":"error","message":"Reconnecting... 1/6 (unexpected status 503 Service Unavailable: upstream temporarily unavailable, url: http://127.0.0.1:8317/v1/responses)"}','{"type":"item.completed","item":{"type":"agent_message","text":"synthetic recovered turn"}}')
-    $named8098=@('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead')
+    # 9315: the Claude stream-json harness ends a pool-quota death with a `result` record whose
+    # is_error is true and whose result string carries the envelope. The fixture replays the final
+    # two native records of .orchestrator/9293-impl-g1.wd1.f2b8defe.jsonl (captured
+    # 2026-10-10T16:59:21Z beside a 0-byte err.log); [U+00B7] stands for the one non-ASCII character
+    # (U+00B7 middle dot) so this file stays ASCII, and the SHA256 guard pins the rebuilt bytes.
+    $claudeQuotaTranscriptRecords=@(@(
+      '{"type":"assistant","message":{"diagnostics":null,"id":"a1874ae4-827d-4b42-bf72-358c2152717e","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"output_tokens_details":null,"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":null,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":null,"iterations":null,"speed":null,"fallback_credit":null},"content":[{"type":"text","text":"API Error: Request rejected (429) [U+00B7] All credentials for model claude-fable-5-1 are cooling down (last error: rate_limit_error: This request would exceed your account''s rate limit. Please try again later.)"}],"context_management":null},"parent_tool_use_id":null,"session_id":"1e191336-85fc-4f33-bf66-7cd7f05e358b","uuid":"ad2a18f2-4c72-45be-863c-288c67464913","timestamp":"2026-10-10T16:59:21.733Z","error":"rate_limit","is_api_error_message":true}',
+      '{"duration_api_ms":0,"stop_reason":"stop_sequence","session_id":"1e191336-85fc-4f33-bf66-7cd7f05e358b","total_cost_usd":0,"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard","fallback_credit":null},"modelUsage":{},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subagent_stats":{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"started_in_background":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"user":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},"safety_stops":0,"is_error":true,"num_turns":1,"subtype":"success","api_error_status":429,"result":"API Error: Request rejected (429) [U+00B7] All credentials for model claude-fable-5-1 are cooling down (last error: rate_limit_error: This request would exceed your account''s rate limit. Please try again later.)","type":"result","duration_ms":420,"uuid":"608c7e07-1417-47c9-8de9-2d8187ea0c0a","queued_turn_count":0,"result_index":0}'
+    )|ForEach-Object{$_.Replace('[U+00B7]',[string][char]0xB7)})
+    Assert-True ((Get-TextSha256 (($claudeQuotaTranscriptRecords-join"`n")+"`n"))-ceq'70117787d1d2fe94501f19d6634f5160fd84fd5408b8e439ea9a06a99322ad33') 'captured Claude records drifted from the final two records of 9293-impl-g1.wd1.f2b8defe.jsonl'
+    $named8098=@('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')
     if($Named8098Control){$named8098=@($Named8098Control)}
     foreach($name in $named8098){
       if($name-ceq'pool-quota-envelope-classifies-provider-quota'){
@@ -501,6 +1063,43 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
           else{$failures+=($control[0]+': unexpected recovery route')}
         }
         Assert-True ($failures.Count-eq0) "negative controls changed classification or route: $($failures-join', ')"
+      }elseif($name-ceq'claude-result-quota-envelope-classifies-provider-quota'){
+        # 9315 AC1: a 7|fable/high author whose err.log is empty and whose transcript ends in the captured
+        # Claude `result`/is_error:true 429 envelope is PROVIDER_QUOTA and takes this head's closed
+        # 7|fable/high entry, asserted literally as Astra rather than read from the selector under test.
+        $item=New-Spec $name 'claude-fable-5-1' 'high' 0 7 'override-Todd';[IO.File]::WriteAllText($item.error,'');Write-LfLines $item.partial $claudeQuotaTranscriptRecords
+        $before=Get-CallCount;$result=Invoke-Watchdog $item $name;$row=Get-LastHistoryRow
+        Write-Output "CONTROL 9315 AC1 row=7 from=claude-fable-5-1/high/override-Todd errBytes=$((Get-Item -LiteralPath $item.error).Length) partialBytes=$((Get-Item -LiteralPath $item.partial).Length) status=$($result.status) deathSignature=$($row.deathSignature) selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) relaunchCount=$($result.relaunchCount) semanticIncrement=$($result.implementationAttemptIncrement) launches=$((Get-CallCount)-$before)"
+        Assert-True ((Get-Item -LiteralPath $item.error).Length-eq0) 'captured Claude quota case did not keep an empty err.log'
+        Assert-True ($row.deathSignature-ceq'PROVIDER_QUOTA') "captured Claude quota death classified $($row.deathSignature), not PROVIDER_QUOTA"
+        Assert-Recovery $item $result 'gpt-6-astra' 'high' 'override-Todd' $before
+        Assert-True ($result.harness-ceq'codex'-and$result.relaunchCount-eq1-and$result.implementationAttemptIncrement-eq0-and$row.kind-ceq'dispatch'-and$row.harness-ceq'codex'-and$row.model-ceq'gpt-6-astra'-and$row.effort-ceq'high'-and$row.placement-ceq'override-Todd'-and$row.deathSignature-ceq'PROVIDER_QUOTA'-and$row.relaunchCount-eq1) "captured Claude quota death did not relaunch the closed Astra fallback as PROVIDER_QUOTA relaunch 1: $($row.deathSignature)"
+      }elseif($name-ceq'claude-result-without-quota-error-stays-owner-dead'){
+        # 9315 AC2: the same result text with is_error false, an is_error:true result without a quota
+        # envelope, an absent or non-boolean is_error, and an error result followed by a completed final
+        # record all stay OWNER_DEAD and take the ordinary same-author relaunch. A reader that ignores
+        # is_error, or accepts a truthy non-boolean, classifies the first or fourth case PROVIDER_QUOTA.
+        $claudeErrorResult=$claudeQuotaTranscriptRecords[1]
+        Assert-True ($claudeErrorResult.Contains('"is_error":true,')) 'captured Claude result record lost its is_error:true literal'
+        $claudeOverloadedResult='{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":500,"result":"API Error: 500 overloaded","session_id":"synthetic-session","uuid":"synthetic-uuid"}'
+        $claudeCompletedResult='{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","result":"synthetic completed turn","session_id":"synthetic-session","uuid":"synthetic-uuid"}'
+        $controls=@(
+          @('same-text-is-error-false',@($claudeQuotaTranscriptRecords[0],$claudeErrorResult.Replace('"is_error":true,','"is_error":false,'))),
+          @('is-error-true-500-overloaded',@($claudeQuotaTranscriptRecords[0],$claudeOverloadedResult)),
+          @('is-error-absent',@($claudeQuotaTranscriptRecords[0],$claudeErrorResult.Replace('"is_error":true,',''))),
+          @('is-error-string-true',@($claudeQuotaTranscriptRecords[0],$claudeErrorResult.Replace('"is_error":true,','"is_error":"true",'))),
+          @('error-result-then-completed-final',@($claudeErrorResult,$claudeCompletedResult))
+        )
+        $failures=@()
+        foreach($control in $controls){
+          $item=New-Spec "$name-$($control[0])" 'claude-fable-5-1' 'high' 0 7 'override-Todd';[IO.File]::WriteAllText($item.error,'');Write-LfLines $item.partial $control[1]
+          $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;$row=Get-LastHistoryRow
+          Write-Output "CONTROL 9315 AC2 case=$($control[0]) expected=OWNER_DEAD status=$($result.status) deathSignature=$($row.deathSignature) selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) launches=$((Get-CallCount)-$before)"
+          if($row.deathSignature-cne'OWNER_DEAD'){$failures+=($control[0]+': '+$row.deathSignature);continue}
+          if($result.status-ceq'RELAUNCHED'-and$result.model-ceq'claude-fable-5-1'){Assert-Recovery $item $result 'claude-fable-5-1' 'high' 'override-Todd' $before}
+          else{$failures+=($control[0]+': unexpected recovery route')}
+        }
+        Assert-True ($failures.Count-eq0) "Claude result controls changed classification or route: $($failures-join', ')"
       }
     }
     if($Named8098Control){return}
@@ -648,7 +1247,7 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   Write-Output 'CONTROL 7955 GUARDS routeMutations=36 routeRefusals=32 restoredRow15Acceptances=4 lowerTierMutations=15 acknowledgementMutations=6 unauthorizedLaunches=0 acknowledgementSuccessRows=0'
   foreach($entry in @(@(7,'high'),@(14,'medium'),@(14,'high'),@(15,'high'))){
     foreach($envelope in @('provider quota exceeded','session limit reached')){
-      $item=New-Spec "synthetic-fable-$($entry[0])-$($entry[1])-$($envelope.Replace(' ','-'))" 'claude-fable-5-1' $entry[1] 1 $entry[0] 'override-Todd'
+      $item=New-RelaunchedContinuation "synthetic-fable-$($entry[0])-$($entry[1])-$($envelope.Replace(' ','-'))" 'claude-fable-5-1' $entry[1] $entry[0] 'override-Todd'
       Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
       Assert-Recovery $item $result 'gpt-6-astra' 'high' 'override-Todd' $before
       Write-Output "CONTROL 7955 FALLBACK row=$($entry[0]) from=claude-fable-5-1/$($entry[1]) envelope=$envelope selected=$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
@@ -656,8 +1255,8 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   }
   # 8063 re-points the former Astra rows-7/14/15 closed-block control: Astra now falls to Fable 5.1
   # under 4388/5743533387, so the unruled primaries are the ruled claude-opus-5-5/high targets at
-  # rows 4/5/7/10, which end at NO_QUALIFIED_FALLBACK without inventing a further move.
-  foreach($route in @(4,5,7,10)){
+  # rows 4/7/10. Row 5 now has the independently tested capacity quota move.
+  foreach($route in @(4,7,10)){
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $item=New-Spec "synthetic-opus-blocked-$route-$($envelope.Replace(' ','-'))" 'claude-opus-5-5' 'high' 2 $route 'override-Todd';Set-Content $item.error $envelope
       $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;$row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
@@ -756,6 +1355,8 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   Assert-True ($result.status-ceq'RETIRED_MODEL_REQUIRES_REDISPATCH'-and-not$result.relaunch) 'historical Todd placement lost predecessor refusal'
   Test-SonnetCutover
   Test-ExplicitRoutingRelaunch
+  Test-PolicyFallback
+  Test-PolicyFallbackMutants
   $same=New-Spec 'same-config';$sameResult=Invoke-Watchdog $same 'same';Assert-True ($sameResult.status-ceq'RELAUNCHED'-and$sameResult.model-ceq'gpt-6.1-sol'-and$sameResult.effort-ceq'high') 'dead owner was not relaunched same-config'
   $beforeDuplicate=@(Get-Content -LiteralPath $calls).Count;$duplicate=Invoke-Watchdog $same 'same-duplicate';Assert-True ($duplicate.status-ceq'DUPLICATE_SKIPPED'-and@(Get-Content -LiteralPath $calls).Count-eq$beforeDuplicate) 'confirmed relaunch was not duplicate-suppressed'
   $prose=New-Spec 'prose-quota' 'gpt-6-astra' 'high';Set-Content -LiteralPath $prose.partial -Value 'unmistakably synthetic task prose discusses quota policy';$proseResult=Invoke-Watchdog $prose 'prose-quota';Assert-True ($proseResult.status-ceq'RELAUNCHED'-and$proseResult.model-ceq'gpt-6-astra') 'ordinary report prose authorized provider fallback'
@@ -822,6 +1423,8 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 Test-7963ResumeCarrier 'watchdog'
+Test-9334OrdinaryCarrier 'ordinary-watchdog'
+Test-9334OrdinaryCarrier 'successor-watchdog'
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

@@ -12,6 +12,9 @@ reference maintained by the scheduled sync.
 - `.orchestrator/salvage/`: unfinished work requiring an explicit disposition.
 - `.archive/cleanup-2026-09-12-pass2/`: compact Git and local-file recovery data
   and the cleanup's inventories, action records, and report.
+- `.archive/cleanup-2026-10-03/`: the 2026-10-03/04 worktree, branch, salvage,
+  runtime-output, and remote-branch cleanup; recovery refs, bundles, and zips
+  are described in its `README.md`.
 - `lane-*/` and other sibling worktrees: retain active work, open PRs, and local
   changes; maintain two or three clean idle worktrees for reuse.
 
@@ -28,7 +31,31 @@ once the owning work is closed and retained evidence no longer depends on them.
 Keep final receipts in a compact archive. Preserve the current ledgers, live
 ownership records, local configuration, and evidence supporting open work.
 
-These are maintenance rules, not a newly installed scheduled deletion job.
+The delivery cycle runs `.orchestrator/runtime-retention.ps1 -Apply` when no
+verified manifest in `.archive/runtime/` is newer than 24 hours. With no switch,
+the script reports candidate actions and retaining reasons without changing files.
+It covers `.orchestrator` top-level entries and `logs/` and `artifacts/` children;
+protected state, open-work receipts, referenced output, live processes, sealed
+packages and unsupported nested transcripts remain in place. Apply first runs
+`cost-harvest.ps1 -Backfill`; only exactly byte-covered top-level transcripts
+are eligible, including rows whose cost remains null.
+
+Archives and manifests are published without overwrite after a closed-ZIP exact
+path-set and SHA-256 verification. Reference text (tracked readers and installed
+skills) is read once per run, with reference matches cached by filename. Tracked
+path and live-process protection sets are built at gather and refreshed using
+only `git ls-files` and a fresh process snapshot before each delete batch of at
+most 128 items. Unknown protection authority retains items. Metadata/age checks
+precede hashing, so recent items are not hashed. Each deletion rechecks metadata,
+then verifies content through the same exclusive native handle that marks
+delete-on-close. Per-old-candidate I/O includes the gather hash, archive source
+read, closed-partial and locked
+published ZIP verification hashes, metadata rechecks, and an additional full
+hash read on that deletion handle. Cadence revalidates recent archive contents.
+Changed or in-use files remain; directories are removed only when empty, never
+recursively. Top-level links archive their raw reparse data as base64 `.link.txt`
+receipts, not their targets. Archives are never pruned by this script.
+
 New run output should be grouped by run where its producer supports that layout;
 existing runtime paths must be updated with their readers before relocation.
 

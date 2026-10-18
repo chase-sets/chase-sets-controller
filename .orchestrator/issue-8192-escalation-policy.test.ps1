@@ -50,8 +50,12 @@ $script:sectionRules = @(
   @(7, 'A brief that already names one takes the hosted substitution with a PR-body disclosure, and no per-issue decision is needed.'),
   @(7, 'Hosted gates, timeouts, skips and reviews are unchanged, and local failures are not classified as environmental.'),
   @(7, 'Local-gate investigation stays in the #8159 lineage, and no new local-gate probe or diagnostic issue opens outside it.'),
-  @(7, 'When that lineage yields no bounded repair, #8159 parks with a terminal comment.'),
-  @(7, 'force replan-or-park through an independent decision lane (§11) whose verdict is final.'),
+  @(7, 'When that lineage yields no bounded repair, #8159 escalates through the recovery ladder below; it never parks automatically, and only Todd may defer it.'),
+  @(1, 'Parked means Todd deliberately deferred the work, with a stated un-park condition (4388/6022146271).'),
+  @(1, 'No attempt count, dispatch count, reviewer-eligibility gap, or environment or tooling failure parks work.'),
+  @(7, 'one independent step-back review (§11) over the whole lineage, its siblings and its epic. Its verdict is final'),
+  @(7, 'The step-back review never parks and never asks Todd for a ceiling.'),
+  @(12, 'No artifact parks on attempts'),
   @(11, 'Todd receives exactly two kinds of request'),
   @(11, 'A decision is one comment on #4388 only when it is a product priority or scope question for Todd.'),
   @(11, 'Process decisions never become #4388 questions for Todd; they follow the host and decision-lane routes below.'),
@@ -73,6 +77,10 @@ $script:sectionRules = @(
 $script:forbidden = @(
   'Queue Todd-only decisions and operator actions without globally waiting.',
   'force replan-or-park and file a decision issue naming the artifact',
+  'force replan-or-park',
+  'parks with one terminal comment',
+  '#8159 parks with a terminal comment',
+  'replan with a material changed fact',
   'Escalate when a tradeoff would change the accepted product outcome or requires product, legal, or external authority',
   'queuing Todd decisions as tasks instead of waiting',
   'A decision is one comment on #4388 that states the question',
@@ -83,12 +91,12 @@ $script:forbidden = @(
 # controller contract (review finding F3).
 $script:forbiddenTokens = @('TODD_RULING_NEEDED')
 
+# v2.103 (Todd 4388/6022146271, #8903): re-entry needs no ceiling authority at all.
 $script:ceilingRules = @(
-  'Attempt-ceiling authority must already govern before admission.',
-  'It is either a Todd-authored ruling or a recorded final independent decision-lane verdict under milestone-orchestrator section 11',
-  'bound to that lineage root, terminal receipt, and exact absolute ceiling.',
-  'That decision lane is separate from this replan''s author, repairer, and reviewers.',
-  'Neither this replan nor its semantic PASS can supply it.'
+  'It needs no attempt-ceiling authority and no Todd or decision-lane ceiling ruling',
+  'Consumed counts are history and step-back triggers, never a stop.',
+  'A product scope conflict is not a planning disposition.',
+  'Reviewer exhaustion never parks or stalls the artifact'
 )
 
 function Test-CeilingContract([string]$Contract) {
@@ -97,6 +105,7 @@ function Test-CeilingContract([string]$Contract) {
     if (-not $compact.Contains((Compact-Text $rule), [StringComparison]::Ordinal)) { return $false }
   }
   if ($compact.Contains('Attempt-ceiling authority must be Todd-authored and already ruled', [StringComparison]::Ordinal)) { return $false }
+  if ($compact.Contains('leaves the item parked', [StringComparison]::Ordinal)) { return $false }
   foreach ($token in $script:forbiddenTokens) {
     if ($Contract.Contains($token, [StringComparison]::Ordinal)) { return $false }
   }
@@ -147,13 +156,13 @@ foreach ($entry in $contractTexts.GetEnumerator()) {
   }
 }
 $planningContract = $contractTexts["planning-repair-v1.md"]
-Assert-8192 (Test-CeilingContract $planningContract) "planning-repair ceiling authority does not admit a bound, final independent decision"
+Assert-8192 (Test-CeilingContract $planningContract) "planning-repair re-entry still requires ceiling authority or can park"
 $contractMutants = [ordered]@{
-  "ceiling-todd-only-restored" = $planningContract -replace 'Attempt-ceiling\s+authority must already govern before admission\.', 'Attempt-ceiling authority must be Todd-authored and already ruled; it must already govern before admission.'
-  "ceiling-decision-unbound" = Remove-Phrase $planningContract 'bound to that lineage root, terminal receipt, and exact absolute ceiling.'
-  "ceiling-decision-not-separate" = Remove-Phrase $planningContract 'That decision lane is separate from this replan''s author, repairer, and reviewers.'
-  "ceiling-self-supplied" = Remove-Phrase $planningContract 'Neither this replan nor its semantic PASS can supply it.'
-  "contract-todd-ruling-outcome-added" = $planningContract -replace 'Neither this replan nor its\s+semantic PASS can supply it\.', 'Neither this replan nor its semantic PASS can supply it. Decision outcomes: FINAL, TODD_RULING_NEEDED.'
+  "ceiling-todd-only-restored" = $planningContract -replace 'It\s+needs\s+no\s+attempt-ceiling\s+authority\s+and\s+no\s+Todd\s+or\s+decision-lane\s+ceiling\s+ruling', 'Attempt-ceiling authority must be Todd-authored and already ruled'
+  "consumed-count-stops-work" = Remove-Phrase $planningContract 'Consumed counts are history and step-back triggers, never a stop.'
+  "scope-conflict-planned-around" = Remove-Phrase $planningContract 'A product scope conflict is not a planning disposition.'
+  "reviewer-exhaustion-parks" = $planningContract -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+the\s+artifact', 'Reviewer exhaustion leaves the item parked'
+  "contract-todd-ruling-outcome-added" = $planningContract -replace 'Consumed\s+counts\s+are\s+history\s+and\s+step-back\s+triggers,\s+never\s+a\s+stop\.', 'Consumed counts are history and step-back triggers, never a stop. Decision outcomes: FINAL, TODD_RULING_NEEDED.'
 }
 
 
@@ -170,8 +179,12 @@ $mutants = [ordered]@{
   "heavy-owner-preempted" = Remove-Phrase $skill 'Heavy-verifier slot order is unchanged, and nothing preempts a live heavy owner.'
   "local-db-gate-required" = Remove-Phrase $skill 'While #8159 is open, no brief, decision or host prompt makes a full local `verify:test-db` a prerequisite for push, draft, ready or landing.'
   "hosted-gates-weakened" = Remove-Phrase $skill 'Hosted gates, timeouts, skips and reviews are unchanged, and local failures are not classified as environmental.'
+  "tooling-lineage-auto-park-restored" = $skill -replace '#8159\s+escalates\s+through\s+the\s+recovery\s+ladder\s+below;\s+it\s+never\s+parks\s+automatically,\s+and\s+only\s+Todd\s+may\s+defer\s+it\.', '#8159 parks with a terminal comment.'
   "local-gate-probes-unbounded" = Remove-Phrase $skill 'Local-gate investigation stays in the #8159 lineage, and no new local-gate probe or diagnostic issue opens outside it.'
-  "ceiling-goes-to-todd" = $skill.Replace('force replan-or-park through an independent decision lane (§11)', 'force replan-or-park and file a decision issue naming the artifact (§11)')
+  "ceiling-goes-to-todd" = $skill.Replace('one independent step-back review (§11)', 'one ceiling question to Todd (§11)')
+  "park-definition-widened" = $skill -replace 'Parked means Todd deliberately\s+deferred the work', 'Parked means deliberately deferred work, including work past its attempt ceiling'
+  "attempt-park-restored" = $skill.Replace('No artifact parks on attempts', 'An artifact past the four-attempt ceiling (§7) parks with one terminal comment')
+  "step-back-may-park" = $skill -replace 'The step-back review never parks and never asks Todd for\s+a ceiling\.', 'The step-back review may park.'
   "todd-reserved-rules-dropped" = Remove-Phrase $skill 'The existing Todd-reserved rules are unchanged'
   "old-queue-invariant-restored" = $skill.Replace('- Send Todd only product priority or scope questions and packaged operator', '- Queue Todd-only decisions and operator actions without globally waiting.`n- Send Todd only product priority or scope questions and packaged operator')
   "todd-ruling-outcome-added" = $skill.Replace('A decision lane never returns a Todd ruling for a process question.', 'Accepted decision lane outcomes: FINAL, TODD_RULING_NEEDED. A decision lane never returns a Todd ruling for a process question.')

@@ -500,6 +500,7 @@ function Get-LiveParentIdentity {
 }
 function Write-DispatchOwnership(
   [string]$LaneRole = "implementation",
+  [int]$Row = 7,
   [switch]$ImmutableHead,
   [string]$RecordWorktree = $worktree,
   [string]$RecordLane = $laneName,
@@ -524,7 +525,7 @@ function Write-DispatchOwnership(
     reviewIsolationRoot = $isolationRoot
     launcherPid = [int]$launcher.pid
     launcherStartIdentity = [string]$launcher.processStartUtc
-    recordedAt = [DateTime]::UtcNow.ToString("o")
+    recordedAt = [DateTimeOffset]::Parse($ChildStartUtc).UtcDateTime.AddTicks(-2).ToString("o")
     state = "started"
     childPid = $ChildPid
     childStartIdentity = $ChildStartUtc
@@ -540,11 +541,40 @@ function Write-DispatchOwnership(
   [IO.File]::WriteAllText($recordPath, $raw, [Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText($promptPath, "fixture prompt", [Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText($transcriptPath, "{`"type`":`"item.completed`"}`n", [Text.UTF8Encoding]::new($false))
-  return [pscustomobject]@{ Path = $recordPath; PromptPath = $promptPath; TranscriptPath = $transcriptPath; LaunchId = $launchId; Raw = $raw; Record = $record }
+  $routingRaw = [ordered]@{
+    ts=[DateTimeOffset]::Parse($ChildStartUtc).UtcDateTime.AddTicks(-1).ToString('o'); kind='dispatch'; dispatchRoutingSchema='watchdog-dispatch-routing/v1'
+    attemptId=$Label; label=$Label; lane=$RecordLane; laneRole='implementation'; transcript="$Label.jsonl"
+    harness='codex'; model='gpt-6-astra'; effort='high'; row=[string]$Row; placement='override-Todd'
+    worktree=$RecordWorktree; branch=$record.branch; head=$Head
+  } | ConvertTo-Json -Compress
+  [IO.File]::AppendAllText((Join-Path $orchestrator 'dispatch-log.jsonl'), $routingRaw + "`n")
+  return [pscustomobject]@{ Path = $recordPath; PromptPath = $promptPath; TranscriptPath = $transcriptPath; LaunchId = $launchId; Raw = $raw; Record = $record; RoutingRaw = $routingRaw }
 }
 function Remove-DispatchOwnership($Ownership) {
+  $history = Join-Path $orchestrator 'dispatch-log.jsonl'
+  if (Test-Path $history) {
+    $remaining = @([IO.File]::ReadAllLines($history) | Where-Object { $_ -cne $Ownership.RoutingRaw })
+    [IO.File]::WriteAllLines($history, $remaining)
+  }
   foreach ($path in @($Ownership.Path, $Ownership.PromptPath, $Ownership.TranscriptPath)) {
     Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
+function Test-DeniedRoleClients {
+  foreach ($case in @(@{Role='review';Row=12},@{Role='planning';Row=8},@{Role='implementation';Row=13})) {
+    $ownership=Write-DispatchOwnership -LaneRole $case.Role -Row $case.Row -Label "denied-$($case.Role)"
+    foreach ($kind in $allKinds) {
+      $marker=Join-Path $root "denied-$($case.Role)-$kind.marker"
+      $entry=Start-Fixture -ExtraEnvironment @{SLOT_ROOT_KIND=$kind;SLOT_MARKER=$marker}
+      $output=Complete-Fixture $entry 73 "denied $($case.Role)/$kind"
+      Assert-True ($output.stderr -match 'caller eligibility:' -and -not (Test-Path $marker) -and -not (Test-Path $lock)) "direct client has no denied body/reservation: $($output.stderr)"
+      Assert-True ([IO.File]::ReadAllText($ownership.Path) -ceq $ownership.Raw) 'direct denial leaves native dispatch unchanged'
+      Write-Output "PASS denied direct $($case.Role)/row-$($case.Row)/$kind exit=73 marker=0 owner=0"
+    }
+    $entry=Start-Fixture -ExtraEnvironment @{CHASE_SETS_HEAVY_SLOT_ID=('f'*32)}
+    Complete-Fixture $entry 73 'denied copied token' | Out-Null
+    Assert-True (-not (Test-Path $lock)) 'copied token creates no reservation'
+    Remove-DispatchOwnership $ownership
   }
 }
 
@@ -1035,7 +1065,7 @@ const timer = setInterval(() => {
     [IO.File]::WriteAllText($foreign.TranscriptPath, "{`"type`":`"item.completed`"}`n", [Text.UTF8Encoding]::new($false))
     $barrier = Join-Path $root $case.Name
     $sourceText = [IO.File]::ReadAllText($guard)
-    $anchor = '$beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)'
+    $anchor = if($case.Baseline) { '$beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)' } else { '$before = Get-HeavyCallerAncestry $rootPid $rootStart $oldestLaunch $candidatePids' }
     Assert-True (($sourceText.Split($anchor)).Count -eq 2) "one admission barrier anchor"
     $barrierCode = @'
     [IO.File]::WriteAllText($env:CENSUS_BARRIER + '.ready', 'captured')
@@ -1128,7 +1158,10 @@ console.log(`BINDING_BODY ${process.argv[2]} pid=${process.pid}`);
     $inputTree = Invoke-FixtureGit @("write-tree")
     $marker = Join-Path $root "$Name.body"
     $entry = Start-CmdFixture "pnpm run verify:static:scoped" @{ BINDING_MARKER = $marker }
-    Wait-Condition { (Read-Owner) -and (Read-Owner).state -ceq "attached" } "ordinary scoped $Name actual owner" 1200
+    Wait-Condition {
+      if ($entry.Process.HasExited) { throw "scoped $Name exited before owner: $($entry.Process.StandardError.ReadToEnd())" }
+      (Read-Owner) -and (Read-Owner).state -ceq "attached"
+    } "ordinary scoped $Name actual owner" 1200
     $scopedOwnerRaw = Read-OwnerRaw
     $output = Complete-Fixture $entry $ExpectedExit "ordinary scoped $Name" 60000
     Wait-Condition { -not (Test-Path -LiteralPath $lock) } "scoped $Name exact release" 1200
@@ -1198,13 +1231,12 @@ console.log(`BINDING_BODY ${process.argv[2]} pid=${process.pid}`);
   Invoke-FixtureGit @("checkout", "--detach", $advancedHead) | Out-Null
   $script:dispatchRecord = Write-DispatchOwnership -ImmutableHead -Head $advancedHead -Label "goal-current-binding-immutable"
   Invoke-FixtureGit @("checkout", "--detach", $barrierHead) | Out-Null
-  $immutableHolder = Start-DriverHolder
   $immutableMarker = Join-Path $root "immutable-head-moved.body"
-  $immutableChild = Invoke-NestedChild $immutableHolder "immutable-launch-head-moved" @{ SLOT_MARKER=$immutableMarker }
-  Assert-True ($immutableChild.status -eq 73 -and -not (Test-Path -LiteralPath $immutableMarker) -and
-    $immutableChild.stdout -notmatch '"bodyCounter":1' -and $immutableChild.stderr -match "no provable dispatch binding") "immutable launch refuses new actual detached head before body"
+  $immutableEntry = Start-Fixture -ExtraEnvironment @{ SLOT_MARKER=$immutableMarker }
+  $immutableChild = Complete-Fixture $immutableEntry 73 'immutable launch head moved before acquisition'
+  Assert-True (-not (Test-Path -LiteralPath $immutableMarker) -and -not (Test-Path -LiteralPath $lock) -and
+    $immutableChild.stdout -notmatch '"bodyCounter":1' -and $immutableChild.stderr -match 'caller eligibility: containing dispatch is stale') "immutable launch refuses new actual detached head before reservation and body"
   Write-Output "BINDING_NEGATIVE name=immutable-launch-head-moved original=$advancedHead current=$barrierHead exit=73 marker=absent"
-  Stop-DriverHolder $immutableHolder | Out-Null
   Remove-DispatchOwnership $dispatchRecord
   Invoke-FixtureGit @("switch", "codex/heavy-slot-fixture") | Out-Null
   Invoke-FixtureGit @("reset", "--hard", $fixtureHead) | Out-Null
@@ -1570,13 +1602,14 @@ try {
   }
   if ($CurrentBindingOnly -or (-not $IdentityOnly -and -not $Baseline -and -not $NestedOnly -and -not $NestedSmoke)) {
     $fixtureStage = "current-canonical-binding"
+    Test-DeniedRoleClients
     Invoke-CurrentBindingControls
     if ($CurrentBindingOnly) { return }
   }
   if ($IdentityOnly -or (-not $NestedOnly -and -not $NestedSmoke -and -not $Baseline)) {
     $fixtureStage = "detached-branch-protocol"
     Invoke-FixtureGit @("checkout", "--detach", $fixtureHead) | Out-Null
-    $dispatchRecord = Write-DispatchOwnership -LaneRole review -ImmutableHead
+    $dispatchRecord = Write-DispatchOwnership -LaneRole implementation -ImmutableHead
     foreach ($launchMode in @("attached", "started")) {
       $identityHolder = if ($launchMode -ceq "attached") { Start-DriverHolder } else {
         Start-GateDriverHolder "test:scripts" -ImmutableHead
@@ -2214,42 +2247,51 @@ try {
   $wrapperSummary = @($wrappedOutput.stderr -split "`r?`n" | Where-Object { $_ -match "^heavy-verifier: nested-owner " })
   Assert-True ($wrapperSummary.Count -eq 1 -and $wrapperSummary[0] -match "served=2 refused=0" -and $wrapperSummary[0] -match "role=implementation") `
     "Gate wrapper reports exactly the root and child continuations (summary=$($wrapperSummary -join '|'))"
+  Assert-True ($wrapperSummary[0] -match ' failure=(none|\{.*\})$') 'Gate wrapper emits the bounded failure diagnostic or explicit none'
+  if ($Matches[1] -cne 'none') {
+    $wrapperFailure = $Matches[1] | ConvertFrom-Json
+    Assert-True ($wrapperFailure.Head -ceq $fixtureHead -and $wrapperFailure.Connection -in @(1, 2)) `
+      'Gate wrapper failure belongs to this exact head and one of its two connections'
+  }
   $measurements.Add("MEASURE wrapper-initialization gate=test:scripts $($wrapperSummary[0].Substring('heavy-verifier: nested-owner '.Length))")
   Wait-Condition { -not (Test-Path -LiteralPath $lock) } "wrapped gate release" 1200
   Write-Output "PASS wrapped gate root and nested child admitted through the Gate owner"
 
-  # Binding negatives: no record, planning-only record, and two implementation
-  # records that both contain the root each leave the root without nested authority.
+  # No record admits an unbound host root. Denied roles and conflicting native
+  # identities refuse before reservation; only an eligible unique binding nests.
   $fixtureStage = "binding-negatives"
+  function Assert-PreReservationBindingRefusal([string]$Name, [string]$Reason, [object[]]$Ownership) {
+    $marker = Join-Path $root "$Name.body"
+    $entry = Start-Fixture -ExtraEnvironment @{ SLOT_MARKER = $marker }
+    $output = Complete-Fixture $entry 73 $Name
+    Assert-True ($output.stderr -match ("caller eligibility: " + $Reason) -and
+      -not (Test-Path -LiteralPath $marker) -and -not (Test-Path -LiteralPath $lock) -and
+      $output.stdout -notmatch '"bodyCounter":1') "$Name refuses before reservation and body"
+    foreach ($ownershipRecord in $Ownership) {
+      Assert-True ([IO.File]::ReadAllText($ownershipRecord.Path) -ceq $ownershipRecord.Raw) "$Name preserves native dispatch bytes"
+    }
+    Write-Output "PASS binding refusal name=$Name exit=73 marker=0 owner=0"
+  }
   Remove-DispatchOwnership $dispatchRecord
   $unboundHolder = Start-DriverHolder
   $unboundChild = Invoke-NestedChild $unboundHolder "unbound-child"
   Assert-True ($unboundChild.status -eq 73 -and $unboundChild.stderr -match "no provable dispatch binding") "root without any dispatch record grants no nested authority"
   Stop-DriverHolder $unboundHolder | Out-Null
   $planningRecord = Write-DispatchOwnership -LaneRole "planning" -Label "goal-heavy-slot-planning"
-  $planningHolder = Start-DriverHolder
-  $planningChild = Invoke-NestedChild $planningHolder "planning-child"
-  Assert-True ($planningChild.status -eq 73 -and $planningChild.stderr -match "no provable dispatch binding") "planning-role dispatch record grants no nested authority"
-  Stop-DriverHolder $planningHolder | Out-Null
+  Assert-PreReservationBindingRefusal "planning-root" 'role=planning routing-row= cannot reserve heavy verification' @($planningRecord)
   Remove-DispatchOwnership $planningRecord
   $reviewRecord = Write-DispatchOwnership -LaneRole "review" -Label "goal-heavy-slot-review"
-  $reviewHolder = Start-DriverHolder
-  $reviewChild = Invoke-NestedChild $reviewHolder "review-child"
-  Assert-True ($reviewChild.status -eq 0) "real review dispatch role admits"
-  Stop-DriverHolder $reviewHolder | Out-Null
+  Assert-PreReservationBindingRefusal "review-root" 'role=review routing-row= cannot reserve heavy verification' @($reviewRecord)
   Remove-DispatchOwnership $reviewRecord
   $dispatchRecord = Write-DispatchOwnership
   $secondRecord = Write-DispatchOwnership -RecordWorktree $secondWorktree -RecordLane $secondLaneName -Branch "codex/heavy-slot-second" -Head $secondHead -Label "goal-heavy-slot-second"
-  $ambiguousHolder = Start-DriverHolder
-  $ambiguousChild = Invoke-NestedChild $ambiguousHolder "ambiguous-child"
-  Assert-True ($ambiguousChild.status -eq 73 -and $ambiguousChild.stderr -match "no provable dispatch binding") "two live dispatch ownerships containing the root are ambiguous and grant nothing"
-  Stop-DriverHolder $ambiguousHolder | Out-Null
+  Assert-PreReservationBindingRefusal "conflicting-identities-root" 'dispatch identity differs from admitted identity' @($dispatchRecord, $secondRecord)
   Remove-DispatchOwnership $secondRecord
   $reboundHolder = Start-DriverHolder
   $reboundChild = Invoke-NestedChild $reboundHolder "rebound-child"
   Assert-True ($reboundChild.status -eq 0) "single implementation record binds again (stderr=$($reboundChild.stderr))"
   Stop-DriverHolder $reboundHolder | Out-Null
-  Write-Output "PASS missing, planning-only, and ambiguous dispatch bindings grant no nested authority; unique binding admits"
+  Write-Output "PASS missing dispatch grants no nested authority; planning/review/conflicting identities refuse before reservation; unique implementation binding admits"
 
   # Dead wrapper: once the exact holder dies the reserved pipe is gone, no
   # descendant can continue, and the guarded process keeps the lock protected.
@@ -2549,7 +2591,7 @@ try {
   $planningOnly = Write-DispatchOwnership -LaneRole "planning" -Label "goal-heavy-slot-planning-mutant"
   # One policy mutant admits the unchanged planning role at every protocol
   # boundary. It never relabels the real record as an implementation launch.
-  Set-SourceMutant $guardSource $guard @(@('if ([string]$activeLane.laneRole -cnotin @("implementation", "review")) { continue }', '# MUTANT dispatch-role')) "dispatch-role"
+  Set-SourceMutant $guardSource $guard @(@('if ($binding.Record -and ($binding.Record.laneRole -cne ''implementation'' -or $binding.Row -eq 13)) {', 'if ($false) { # MUTANT dispatch-role')) "dispatch-role"
   Set-SourceMutant $nestedOwnerSource $nestedOwner @(
     @('if (binding.LaneRole != "implementation" && binding.LaneRole != "review") throw new ArgumentException("binding.LaneRole");', '/* MUTANT dispatch-role */'),
     @('(role != "implementation" && role != "review")', '(false /* MUTANT dispatch-role */)')

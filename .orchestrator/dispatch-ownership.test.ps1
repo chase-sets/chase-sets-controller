@@ -1,11 +1,24 @@
-param([switch]$ProductCensusOnly)
+param([switch]$ProductCensusOnly,[switch]$OrdinaryProofOnly)
 $ErrorActionPreference = "Stop"
+if ($OrdinaryProofOnly) {
+  . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+  Test-9334OrdinaryProof
+  return
+}
 
 . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
 . (Join-Path $PSScriptRoot 'product-census-test-support.ps1')
-Test-ProductCensusProjection
-Test-ProductCensusProofMatrix
-Test-ProductCensusNativeBoundaries
+# #9619: census verdicts run under the deterministic budget meter, never elapsed
+# real time. The real-clock deadline keeps its own directional controls: the
+# -DeadlineMs 0 truncation control below and product-census-budget.test.ps1.
+Invoke-DeterministicBudget {
+  Test-ProductCensusProjection
+  Test-ProductCensusProofMatrix
+  Test-ProductCensusNativeBoundaries
+  Test-CensusGitLatencyInjection
+  Test-CensusGitOutputBound
+  Test-CensusGitWaitSchedule
+}
 if ($ProductCensusOnly) { return }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("dispatch-ownership-test-" + [guid]::NewGuid())
@@ -124,7 +137,9 @@ function New-TestOwnershipRecord(
   [AllowNull()][string]$Branch = "codex/issue-6073",
   [int]$SchemaVersion = 4
 ) {
-  $launchId = [guid]::NewGuid().ToString()
+  # Fixed ascending IDs keep every multi-record scan of $runtime in one order.
+  $script:testOwnershipRecordCount += 1
+  $launchId = '00000000-0000-0000-0001-{0:d12}' -f $script:testOwnershipRecordCount
   $promptPath = Join-Path $runtime "dispatch-heavy-verifier-$launchId.prompt.txt"
   $recordPath = Join-Path $runtime "dispatch-launch-$launchId.json"
   $isolationRoot = if ($LaneRole -in @("review", "planning")) {
@@ -166,6 +181,26 @@ function New-TestOwnershipRecord(
   $record = [pscustomobject]$values
   Write-DispatchOwnershipRecord $recordPath $record -CreateNew
   [pscustomobject]@{ path = $recordPath; record = $record }
+}
+
+# #9619 AC5: the dense-ceiling and ac15 work bound, metered deterministically.
+# A transcript read inside the bounded suffix Get-DispatchAttemptState
+# publishes (the 1048576-byte tail window and the 64-row sample) charges
+# nothing; a read beyond it grows with the transcript and charges the whole
+# inherited deadline, so the next record's deadline check truncates.
+function Get-BoundedAttemptProjection([scriptblock]$Projection, [string]$MutationOld, [string]$MutationNew, [int]$ExhaustMs = 5000) {
+  Invoke-DeterministicBudget -MutationOld $MutationOld -MutationNew $MutationNew -Probe {
+    $nativeAttemptState = ${function:Get-DispatchAttemptState}
+    function Get-DispatchAttemptState([string]$TranscriptPath) {
+      $transcriptLength = if ([IO.File]::Exists($TranscriptPath)) { ([IO.FileInfo]::new($TranscriptPath)).Length } else { 0L }
+      $boundedAttemptState = & $nativeAttemptState $TranscriptPath
+      if ($transcriptLength - $boundedAttemptState.windowStartByte -gt 1048576 -or $boundedAttemptState.completeRows -gt 64) {
+        $deterministicBudgetMeter.Charge($ExhaustMs)
+      }
+      return $boundedAttemptState
+    }
+    & $Projection
+  }
 }
 
 try {
@@ -401,6 +436,7 @@ try {
   Assert-True ($duplicateOwners.health.status -eq "partial" -and
     @($duplicateOwners.activeLanes).Count -eq 1 -and
     @($duplicateOwners.health.diagnostics | Where-Object { $_.code -ceq "duplicate-live-ownership" }).Count -eq 1) "two live records for one canonical worktree collapse to one and diagnose duplicate ownership"
+  Write-Output "CONTROL duplicate-live-ownership order=fixed launchIds=00000000-0000-0000-0000-000000000001<ffffffff-ffff-ffff-ffff-ffffffffffff"
 
   foreach ($liveFirst in @($true, $false)) {
     $mixedRuntime = New-ControlRuntime ("mixed-runtime-" + $liveFirst)
@@ -414,6 +450,7 @@ try {
     Assert-True ($mixedOwners.health.status -eq "ok" -and
       @($mixedOwners.activeLanes).Count -eq 1 -and
       $mixedOwners.health.counts.inactive -eq 1) "one live plus one dead record retains exactly the live owner in both record orders ($liveFirst)"
+    Write-Output "CONTROL mixed-live-dead order=$(if ($liveFirst) { 'live-first' } else { 'dead-first' }) PASS"
   }
 
   $pidRuntime = New-ControlRuntime "pid-reuse-runtime"
@@ -471,6 +508,7 @@ try {
     $capDiagnostic.Count -eq 1 -and
     $capDiagnostic[0].unexamined -eq 1 -and
     $capDiagnostic[0].unexaminedIsLowerBound -eq $true) "record-cap truncation names its proven unexamined lower bound and degrades health"
+  Write-Output "CONTROL record-cap-truncated order=fixed launchIds=00000000-0000-0000-0000-000000000004<00000000-0000-0000-0000-000000000005"
 
   $deadlineRuntime = New-ControlRuntime "deadline-runtime"
   New-ReducerOwnershipRecord $deadlineRuntime $duplicateWorktree | Out-Null
@@ -520,7 +558,7 @@ try {
     [void]$candidateWorktrees.Add((Get-DispatchCanonicalRoot $candidateWorktree))
     New-ReducerOwnershipRecord -ControlRuntime $resolutionRuntime `
       -Worktree $candidateWorktree -RecordedBranch "control/single-resolution" `
-      -RecordedHead ("c" * 40) | Out-Null
+      -RecordedHead ("c" * 40) -LaunchId ('00000000-0000-0000-0000-{0:d12}' -f $number) | Out-Null
   }
   $resolutionCounts = @{}
   $dateKindProbe = [pscustomobject]@{ count = 0 }
@@ -553,6 +591,7 @@ try {
   Assert-True ($resolutionCounts.Count -eq 5 -and
     @($resolutionCounts.Values | Where-Object { $_ -ne 1 }).Count -eq 0) "each candidate-record worktree receives exactly one final-path resolution"
   Assert-True ($dateKindProbe.count -eq 1) "DateKind support is resolved once per invocation and never per record"
+  Write-Output "CONTROL single-resolution order=fixed launchIds=00000000-0000-0000-0000-000000000020..24"
   Write-Output ("PROBE_COUNTS " + ([ordered]@{
         candidatePaths = $resolutionCounts
         finalPathCalls = ($resolutionCounts.Values | Measure-Object -Sum).Sum
@@ -756,7 +795,8 @@ try {
     $denseWorktree = Join-Path $container $lane
     New-Item -ItemType Directory -Path $denseWorktree | Out-Null
     $denseRecord = New-ReducerOwnershipRecord $denseRuntime $denseWorktree `
-      -RecordedBranch "control/dense-ceiling" -RecordedHead ("d" * 40)
+      -RecordedBranch "control/dense-ceiling" -RecordedHead ("d" * 40) `
+      -LaunchId ('00000000-0000-0000-0000-{0:d12}' -f $number)
     [IO.File]::WriteAllText(
       [string]$denseRecord.record.transcriptPath,
       $denseText,
@@ -768,24 +808,33 @@ try {
   Assert-True ($denseAttempt.state -ceq "active" -and
     $denseAttempt.completeRows -eq 64 -and
     $denseAttempt.malformedRows -eq 0) "dense transcript parsing examines only the bounded suffix sample"
-  $denseWatch = [Diagnostics.Stopwatch]::StartNew()
-  $denseOwners = Get-LiveDispatchOwnership $denseRuntime $providerTemp $container `
-    -DeadlineMs 5000 `
-    -ProcessStateResolver { param($ProcessId, $StartIdentity) "live" } `
-    -GitIdentityResolver {
-      param($Worktree)
-      [pscustomobject]@{
-        status = "ok"
-        worktree = $Worktree
-        branch = "control/dense-ceiling"
-        head = "d" * 40
+  $denseProjection = {
+    Get-LiveDispatchOwnership $denseRuntime $providerTemp $container `
+      -DeadlineMs 5000 `
+      -ProcessStateResolver { param($ProcessId, $StartIdentity) "live" } `
+      -GitIdentityResolver {
+        param($Worktree)
+        [pscustomobject]@{
+          status = "ok"
+          worktree = $Worktree
+          branch = "control/dense-ceiling"
+          head = "d" * 40
+        }
       }
-    }
+  }
+  $denseWatch = [Diagnostics.Stopwatch]::StartNew()
+  $denseOwners = Get-BoundedAttemptProjection $denseProjection
   $denseWatch.Stop()
   Assert-True ($denseOwners.health.counts.candidates -eq 12 -and
     $denseOwners.health.counts.examined -eq 12 -and
     $denseOwners.health.counts.truncated -eq 0) "twelve dense schema-v4 owners complete within the inherited 5000ms deadline"
   Write-Output "DENSE_CEILING elapsedMs=$($denseWatch.ElapsedMilliseconds) examined=12/12 truncated=0"
+  Write-Output "CONTROL dense-ceiling order=fixed launchIds=00000000-0000-0000-0000-000000000060..71 meter=deterministic"
+  # Parse every row of the window instead of the bounded 64-row suffix sample.
+  $denseMutant = Get-BoundedAttemptProjection $denseProjection `
+    'while ($cursor -ge 0 -and $rows.Count -lt $MaxMalformedSampleRows) {' 'while ($cursor -ge 0) {'
+  Assert-True ($denseMutant.health.counts.truncated -gt 0) "dense-ceiling-work-growth-mutant KILLED"
+  Write-Output "MUTANT dense-ceiling-work-growth-mutant KILLED examined=$($denseMutant.health.counts.examined)/12 truncated=$($denseMutant.health.counts.truncated)"
 
   $attemptRuntime = New-ControlRuntime "attempt-authority-runtime"
   $attemptWorktree = Add-ControlWorktree $identityMain "lane-30" "control/attempt-authority"
@@ -829,8 +878,8 @@ try {
   $duplicateRuntime = New-ControlRuntime "duplicate-transcript-runtime"
   $duplicateWorktreeA = Add-ControlWorktree $identityMain "lane-31" "control/transcript-a"
   $duplicateWorktreeB = Add-ControlWorktree $identityMain "lane-32" "control/transcript-b"
-  $duplicateA = New-ReducerOwnershipRecord $duplicateRuntime $duplicateWorktreeA
-  $duplicateB = New-ReducerOwnershipRecord $duplicateRuntime $duplicateWorktreeB
+  $duplicateA = New-ReducerOwnershipRecord $duplicateRuntime $duplicateWorktreeA -LaunchId "00000000-0000-0000-0000-000000000031"
+  $duplicateB = New-ReducerOwnershipRecord $duplicateRuntime $duplicateWorktreeB -LaunchId "00000000-0000-0000-0000-000000000032"
   $duplicateB.record.label = $duplicateA.record.label
   $duplicateB.record.transcriptPath = $duplicateA.record.transcriptPath
   Write-DispatchOwnershipRecord $duplicateB.path $duplicateB.record
@@ -841,21 +890,26 @@ try {
     @($duplicateProjection.health.diagnostics | Where-Object {
       $_.code -ceq "duplicate-live-transcript"
     }).Count -eq 1) "ac13-duplicate-live-transcript"
+  Write-Output "CONTROL ac13-duplicate-live-transcript order=fixed launchIds=00000000-0000-0000-0000-000000000031<00000000-0000-0000-0000-000000000032"
 
   $boundedRuntime = New-ControlRuntime "attempt-bounded-runtime"
   foreach ($number in 33..37) {
     $boundedWorktree = Add-ControlWorktree $identityMain ("lane-{0:d2}" -f $number) `
       ("control/attempt-bounded-$number")
-    $boundedRecord = New-ReducerOwnershipRecord $boundedRuntime $boundedWorktree
+    $boundedRecord = New-ReducerOwnershipRecord $boundedRuntime $boundedWorktree `
+      -LaunchId ('00000000-0000-0000-0000-{0:d12}' -f $number)
     [IO.File]::WriteAllText(
       $boundedRecord.record.transcriptPath,
       (("x" * 1500000) + "`n{`"type`":`"item.completed`"}`n"),
       [Text.UTF8Encoding]::new($false)
     )
   }
+  $ac15Projection = {
+    Get-LiveDispatchOwnership $boundedRuntime $providerTemp $container `
+      -ProcessStateResolver { param($ProcessId, $StartIdentity) "live" }
+  }
   $boundedWatch = [Diagnostics.Stopwatch]::StartNew()
-  $boundedProjection = Get-LiveDispatchOwnership $boundedRuntime $providerTemp $container `
-    -ProcessStateResolver { param($ProcessId, $StartIdentity) "live" }
+  $boundedProjection = Get-BoundedAttemptProjection $ac15Projection
   $boundedWatch.Stop()
   Assert-True ($boundedProjection.health.status -ceq "ok" -and
     $boundedProjection.health.counts.examined -eq 5 -and
@@ -866,6 +920,12 @@ try {
     "elapsedMs=$($boundedWatch.Elapsed.TotalMilliseconds.ToString('F1', [Globalization.CultureInfo]::InvariantCulture)) " +
     "deadlineMs=5000 measurementOnly=true"
   )
+  Write-Output "CONTROL ac15-bounded-runtime order=fixed launchIds=00000000-0000-0000-0000-000000000033..37 meter=deterministic"
+  # Read the whole transcript instead of the bounded 1048576-byte tail.
+  $ac15Mutant = Get-BoundedAttemptProjection $ac15Projection `
+    '$readLength = [int][Math]::Min($length, [long]$MaxTailBytes)' '$readLength = [int]$length'
+  Assert-True ($ac15Mutant.health.counts.truncated -gt 0) "ac15-work-growth-mutant KILLED"
+  Write-Output "MUTANT ac15-work-growth-mutant KILLED examined=$($ac15Mutant.health.counts.examined)/5 truncated=$($ac15Mutant.health.counts.truncated)"
 
   $schemaControl = New-TestOwnershipRecord
   $validSchemaV4 = Get-ValidatedDispatchOwnershipRecord $schemaControl.path $runtime $providerTemp
@@ -919,5 +979,69 @@ try {
   Remove-Item -LiteralPath $rootResolved -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
+$ordinaryState = [ordered]@{branch='synthetic/9334';originalHead=('1'*40);onto=('2'*40);stoppedHead=('2'*40);stoppedCommit=('3'*40);oldBase=('4'*40);metadataSha256=('a'*64);indexSha256=('b'*64);stagesSha256=('c'*64);dirtySha256=('d'*64);stagedSha256=('e'*64);unstagedSha256=('f'*64)}
+$ordinaryBinding = [ordered]@{schemaVersion='interrupted-canonical-integration/v2'
+  obligation=[ordered]@{schemaVersion='ordinary-integration/v1';pr=[long]996334;targetHead=('1'*40);newBase=('2'*40);branch='synthetic/9334';worktree='D:\synthetic\9334-lane';integrationLane='9334-shape'}
+  sources=[ordered]@{priorLabel='ordinary-9334-seed';priorLaunchId='90d85825-df4d-40d5-abed-77b71ad91e34';attemptId='9334-impl-g1';watchdogSha256=('0'*64);promptSha256=('1'*64);transcriptSha256=('2'*64);routingIdentity=('3'*64);conflictSha256=$null;checkpointSha256=('4'*64)}
+  state=$ordinaryState}
+$ordinaryJson = $ordinaryBinding | ConvertTo-Json -Depth 8 -Compress
+Assert-True (Test-DispatchInterruptedBindingShape (ConvertFrom-DispatchClosedJson $ordinaryJson)) 'ordinary v2 binding shape is accepted'
+$ordinaryMutations = [ordered]@{
+  'v1 version with ordinary obligation' = $ordinaryJson.Replace('interrupted-canonical-integration/v2','interrupted-canonical-integration/v1')
+  'landed obligation under v2' = $ordinaryJson.Replace('"schemaVersion":"ordinary-integration/v1"','"schemaVersion":"landed-integration-owed/v1"')
+  'missing attemptId' = $ordinaryJson.Replace('"attemptId":"9334-impl-g1",','')
+  'extra source member' = $ordinaryJson.Replace('"checkpointSha256":','"unknownAuthority":true,"checkpointSha256":')
+  'conflictSha256 wrong type' = $ordinaryJson.Replace('"conflictSha256":null','"conflictSha256":"short"')
+  'state branch differs from obligation' = $ordinaryJson.Replace('"branch":"synthetic/9334","originalHead"','"branch":"synthetic/other","originalHead"')
+  'state original differs from target' = $ordinaryJson.Replace('"originalHead":"' + ('1'*40) + '"','"originalHead":"' + ('9'*40) + '"')
+  'pr zero' = $ordinaryJson.Replace('"pr":996334','"pr":0')
+  'relative worktree' = $ordinaryJson.Replace('D:\\synthetic\\9334-lane','synthetic\\9334-lane')
+}
+foreach ($name in $ordinaryMutations.Keys) {
+  $mutated = ConvertFrom-DispatchClosedJson $ordinaryMutations[$name]
+  Assert-True ($null -ne $mutated -and -not (Test-DispatchInterruptedBindingShape $mutated)) "ordinary v2 binding shape refuses: $name"
+}
+Write-Output 'PASS 9334 ordinary binding shape controls'
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
-Test-7963ResumeCarrier 'ownership'
+Test-9334OrdinaryProof
+
+# #9619 AC3 ambient-routing-stale-injection: the ambient routing root and LKG
+# name a registry 4 h old (past the 3 h freshness bound) with no LKG. The
+# carrier routes only from its own test scope, as every other carrier caller
+# does, so every captured child input must name that scope's root.
+. (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
+$ambientRouting = [pscustomobject]@{ root = $env:CHASE_SETS_ROUTING_DATA_ROOT; lkg = $env:CHASE_SETS_ROUTING_LKG_PATH }
+$staleRoutingRoot = Join-Path ([IO.Path]::GetTempPath()) ('routing-stale-ambient-' + [guid]::NewGuid().ToString('N'))
+try {
+  $staleSnapshot = Get-Content (Join-Path $PSScriptRoot 'controller-skills/model-routing/capability-matrix.json') -Raw | ConvertFrom-Json
+  [void](New-RoutingMatrixFixture -Root $staleRoutingRoot -Snapshot $staleSnapshot -BenchmarkRows @(New-RoutingCostBenchmarkRows))
+  $staleRegistryPath = Join-Path $staleRoutingRoot 'model-registry.json'
+  $staleRegistry = Get-Content -LiteralPath $staleRegistryPath -Raw | ConvertFrom-Json -DateKind String
+  $staleAt = [DateTimeOffset]::UtcNow.AddHours(-4).ToString('o')
+  $staleRegistry.generatedAt = $staleAt
+  $staleRegistry.source.statusCheckedAt = $staleAt
+  [IO.File]::WriteAllText($staleRegistryPath, ($staleRegistry | ConvertTo-Json -Depth 50), [Text.UTF8Encoding]::new($false))
+  $env:CHASE_SETS_ROUTING_DATA_ROOT = $staleRoutingRoot
+  $env:CHASE_SETS_ROUTING_LKG_PATH = Join-Path $staleRoutingRoot 'absent-lkg.json'
+  $routingTestScope = Enter-RoutingDataTestScope
+  try {
+    Test-7963ResumeCarrier 'ownership' | Tee-Object -Variable ownershipCarrierOutput
+    $scopeRoot = [IO.Path]::GetFullPath($routingTestScope.root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $childInputs = @($ownershipCarrierOutput | ForEach-Object { [regex]::Matches([string]$_, 'raw=(\S+)\.result\.json') } |
+      ForEach-Object { "$($_.Groups[1].Value).input.json" } | Sort-Object -Unique | Where-Object { Test-Path -LiteralPath $_ })
+    $foreignRoutes = @($childInputs | Where-Object {
+        $routing = (Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json -DateKind String).routing
+        @($routing.root, $routing.lkg | Where-Object {
+            [string]::IsNullOrEmpty([string]$_) -or
+            -not ([IO.Path]::GetFullPath([string]$_) + [IO.Path]::DirectorySeparatorChar).StartsWith($scopeRoot, [StringComparison]::OrdinalIgnoreCase)
+          }).Count -gt 0
+      })
+    Assert-True ($childInputs.Count -gt 0 -and $foreignRoutes.Count -eq 0) "ambient-routing-stale-injection: every captured carrier child input routes under the test scope ($($foreignRoutes -join ','))"
+    Write-Output "CONTROL ambient-routing-stale-injection PASS ambientRegistryAgeHours=4 childInputs=$($childInputs.Count) routingRoot=$($routingTestScope.root)"
+  } finally { Exit-RoutingDataTestScope $routingTestScope }
+} finally {
+  $env:CHASE_SETS_ROUTING_DATA_ROOT = $ambientRouting.root
+  $env:CHASE_SETS_ROUTING_LKG_PATH = $ambientRouting.lkg
+  Remove-Item -LiteralPath $staleRoutingRoot -Recurse -Force -ErrorAction SilentlyContinue
+}

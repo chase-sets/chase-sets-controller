@@ -83,11 +83,94 @@ function Remove-CensusFixture([string]$Parent) {
   if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
 
+# #9619 deterministic budget meter: the Stopwatch members the production budget
+# reads (Restart, ElapsedMilliseconds), advanced only by Charge(), so a metered
+# verdict never depends on elapsed real time. The census Git reader also turns
+# the remaining budget into a real-time process wait; metered, that one wait
+# ends on the Git process's exit or on a capture reader completing at its fixed
+# bound. Nothing drains a full capture, so that Git may never exit: the meter
+# stops and reaps the owned Git tree, and the unchanged git-output-bound refusal
+# runs.
+# The harness swaps only those three budget reads in a subject otherwise
+# byte-identical to dispatch-ownership.ps1; the deadline, retry and fail-closed
+# reasons run unchanged, and production keeps its Stopwatch.
+function New-DeterministicBudgetMeter {
+  $meter = [pscustomobject]@{ charged = 0L; restarts = 0; processWaits = 0; reaps = [Collections.Generic.List[object]]::new() }
+  $meter | Add-Member -MemberType ScriptProperty -Name ElapsedMilliseconds -Value { $this.charged }
+  $meter | Add-Member -MemberType ScriptMethod -Name Restart -Value { $this.charged = 0L; $this.restarts += 1 }
+  $meter | Add-Member -MemberType ScriptMethod -Name Charge -Value { param([long]$Milliseconds) $this.charged += $Milliseconds }
+  $meter | Add-Member -MemberType ScriptMethod -Name WaitForProcess -Value {
+    param($Process, $Reads, $Bounds)
+    $exit = $Process.WaitForExitAsync()
+    # The wait set is taken before the exit/full-capture check: a reader that
+    # completes before the check is judged by it, and one that completes after
+    # it is still in the set WaitAny wakes on. A reader at EOF leaves the set.
+    while ($true) {
+      $pending = [Threading.Tasks.Task[]]@(@($exit) + @($Reads | Where-Object { -not $_.IsCompleted }))
+      if ($exit.IsCompleted -or @(0,1 | Where-Object { $Reads[$_].IsCompletedSuccessfully -and $Reads[$_].Result -eq $Bounds[$_] }).Count) { break }
+      [void][Threading.Tasks.Task]::WaitAny($pending)
+    }
+    if (-not $Process.HasExited) { $this.reaps.Add([pscustomobject]@{ tree = @(Stop-CensusFixtureGitTree $Process) }) }
+    $this.processWaits += 1
+    $Process.HasExited
+  }
+  return $meter
+}
+
+# Stops a census Git whose capture is full, with its descendants, and returns
+# once each has exited. Git for Windows' cmd\git.exe wrapper runs the real git
+# as its child, and a wrapper-only Kill() leaves that child holding both capture
+# pipes. Until it is stopped, a Git blocked on a full pipe can neither exit nor
+# spawn, so the tree read first is the whole tree, and each descendant is pinned
+# by its handle while it still holds its id: no stop or wait reaches a reused id.
+function Stop-CensusFixtureGitTree($Process) {
+  $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)
+  $tree = @($rows | Where-Object ProcessId -EQ $Process.Id)
+  for ($i = 0; $i -lt $tree.Count; $i++) {
+    $tree += @($rows | Where-Object { $_.ParentProcessId -eq $tree[$i].ProcessId -and $_.CreationDate -gt $tree[$i].CreationDate })
+  }
+  $descendants = @(foreach ($row in @($tree | Select-Object -Skip 1)) {
+    $member = Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue
+    if ($member) { [void]$member.Handle; $member }
+  })
+  $Process.Kill(); foreach ($member in $descendants) { $member.Kill() }
+  $Process.WaitForExit(); foreach ($member in $descendants) { $member.WaitForExit(); $member.Dispose() }
+  return @($tree | Select-Object ProcessId, CreationDate)
+}
+
+function ConvertTo-DeterministicBudgetSubject([string]$Source) {
+  $clock = '[Diagnostics.Stopwatch]::new()'; $wait = '$process.WaitForExit([int]$remaining)'
+  $meteredWait = '$deterministicBudgetMeter.WaitForProcess($process,@($outRead,$errRead),@($stdout.Length,$stderr.Length))'
+  Assert-CensusFixture (([regex]::Matches($Source,[regex]::Escape($clock))).Count -eq 2 -and
+    ([regex]::Matches($Source,[regex]::Escape($wait))).Count -eq 1) 'deterministic meter replaces exactly the two budget clocks and the one budget wait'
+  $metered = $Source.Replace($wait,$meteredWait).Replace($clock,'$deterministicBudgetMeter')
+  Assert-CensusFixture ($metered.Replace($meteredWait,$wait).Replace('$deterministicBudgetMeter',$clock) -ceq $Source) 'deterministic subject differs only at the budget reads'
+  return $metered
+}
+
+# Runs $Probe with the metered subject in scope, after at most one source
+# mutation. A projection run outside it finds no meter and fails closed.
+function Invoke-DeterministicBudget([scriptblock]$Probe, [string]$MutationOld, [string]$MutationNew) {
+  $deterministicBudgetRoot = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($deterministicBudgetRoot)
+  try {
+    $deterministicBudgetSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'))
+    if ($MutationOld) {
+      Assert-CensusFixture (([regex]::Matches($deterministicBudgetSource,[regex]::Escape($MutationOld))).Count -eq 1) 'single deterministic-budget mutation'
+      $deterministicBudgetSource = $deterministicBudgetSource.Replace($MutationOld,$MutationNew)
+    }
+    $deterministicBudgetSubject = Join-Path $deterministicBudgetRoot 'deterministic-budget.ps1'
+    [IO.File]::WriteAllText($deterministicBudgetSubject,(ConvertTo-DeterministicBudgetSubject $deterministicBudgetSource))
+    $deterministicBudgetMeter = New-DeterministicBudgetMeter
+    & { . $deterministicBudgetSubject; & $Probe }
+  } finally { Remove-CensusFixture $deterministicBudgetRoot }
+}
+
 function Invoke-CensusSourceMutant([string]$Name, [string]$Old, [string]$New, [scriptblock]$Probe, [string]$Parent) {
   $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'))
   Assert-CensusFixture (([regex]::Matches($text,[regex]::Escape($Old))).Count -eq 1) "single mutation $Name"
   $subject = Join-Path $Parent "$Name.ps1"
-  [IO.File]::WriteAllText($subject,$text.Replace($Old,$New))
+  [IO.File]::WriteAllText($subject,(ConvertTo-DeterministicBudgetSubject $text.Replace($Old,$New)))
   & { . $subject; & $Probe }
 }
 
@@ -194,6 +277,7 @@ function Test-ProductCensusProofMatrix([switch]$SkipPairs) {
     Write-Output 'CONTROL endpoint-grammar/Git-env/foreign-attempt/unreadable-register PASS; MUTANT reducer-reads-register KILLED'
   } finally { Remove-CensusFixture $parent }
 
+  $duplicateOrders = [Collections.Generic.List[string]]::new()
   foreach ($platformFirst in @($true,$false)) {
     $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
     try {
@@ -211,12 +295,18 @@ function Test-ProductCensusProofMatrix([switch]$SkipPairs) {
       Assert-CensusFixture ($mutant.health.status -ceq $(if ($platformFirst) {'ok'} else {'partial'})) "platform duplicate mutant/$platformFirst"
       Write-Output "CONTROL platform-seat-shares-product-transcript platformFirst=$platformFirst PASS; MUTANT skip-platform-duplicate-registration result=$($mutant.health.status)"
       Remove-Item -LiteralPath $product.path -Force
-      $duplicate = New-CensusFixtureOwner $f
+      # Fixed IDs on the far side of the foreign record: both orders, every run.
+      $duplicateIds = @('00000000-0000-0000-0000-000000000002','ffffffff-ffff-ffff-ffff-fffffffffffe')
+      $duplicate = New-CensusFixtureOwner $f $f.seat $duplicateIds[[int]$platformFirst]
       $good = Get-CensusFixtureProjection $f
       Assert-CensusFixture ($good.health.status -ceq 'partial' -and
         @($good.health.diagnostics | Where-Object code -CEQ 'duplicate-live-ownership').Count -eq 1) 'platform duplicate worktree'
+      # The reducer examines records in Sort-Object order of their paths.
+      $duplicateOrders.Add($(if (@(@($foreign.path,$duplicate.path) | Sort-Object)[0] -ceq $foreign.path) {'foreign-first'} else {'duplicate-first'}))
+      Write-Output "CONTROL platform-duplicate-worktree order=$($duplicateOrders[-1]) PASS"
     } finally { Remove-CensusFixture $parent }
   }
+  Assert-CensusFixture (@($duplicateOrders | Sort-Object -Unique).Count -eq 2) 'platform duplicate worktree runs both record orders'
 }
 
 function Test-ProductCensusFleetAdmission {
@@ -330,5 +420,150 @@ function Test-ProductCensusProjection {
     Write-Output 'CONTROL product-census-platform-seat PASS native-owner=true synthetic-topology=true'
   } finally {
     Remove-CensusFixture $parent
+  }
+}
+
+# #9619 AC1 census-git-latency-injection: a fixed real delay on every census Git
+# call pushes each projection's Git work past the unchanged 5000 ms budget. On a
+# real clock product-census-platform-seat fails; metered, its verdict holds.
+function Test-CensusGitLatencyInjection([int]$DelayMs = 500) {
+  $nativeCensusGit = ${function:Invoke-ProductCensusGit}
+  $injection = [Collections.Generic.List[object]]::new()
+  function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budget) {
+    $evaluation = @($injection | Where-Object { [object]::ReferenceEquals($_.budget,$Budget) })
+    if ($evaluation.Count -eq 0) { $evaluation = @([pscustomobject]@{ budget=$Budget; calls=0 }); $injection.Add($evaluation[0]) }
+    $evaluation[0].calls += 1
+    [Threading.Thread]::Sleep($DelayMs)
+    & $nativeCensusGit $Checkout $Arguments $Budget
+  }
+  Test-ProductCensusProjection
+  $injectedMs = @($injection | ForEach-Object { $_.calls * $DelayMs })
+  Assert-CensusFixture ($injection.Count -ge 1 -and @($injectedMs | Where-Object { $_ -le 5000 }).Count -eq 0) 'census-git-latency-injection exceeds the 5000 ms budget in every projection'
+  Write-Output "CONTROL census-git-latency-injection PASS evaluations=$($injection.Count) gitCalls=$(@($injection.calls) -join ',') delayMs=$DelayMs injectedMs=$($injectedMs -join ',') budgetMs=5000"
+}
+
+# #9619 census-git-output-bound: real Git writes far past the fixed 65537-char
+# capture bound, on stdout (a 1 MiB config value) and on stderr (4000
+# ambiguous-refname warnings from rev-list). Nothing drains a full capture, so
+# that Git cannot exit; metered, the census evaluation still completes with the
+# unchanged git-output-bound refusal and leaves no owned Git process running.
+function Test-CensusGitOutputBound {
+  $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory $parent | Out-Null
+  try {
+    foreach ($arguments in @(@('init','-q','--initial-branch=main'),@('config','user.name','Synthetic Census'),
+        @('config','user.email','synthetic-census@example.invalid'),@('config','core.warnAmbiguousRefs','true'),
+        @('commit','-q','--allow-empty','-m','synthetic root'),@('branch','s'),@('tag','s'))) {
+      [void](Invoke-CensusFixtureGit $parent $arguments)
+    }
+    $config = Join-Path $parent 'synthetic-large-git-config'
+    [IO.File]::WriteAllText($config,"[synthetic]`nvalue=$('x' * 1048576)`n")
+    foreach ($case in @(@{ stream='stdout'; arguments=@('config','--file',$config,'--get','synthetic.value') },
+        @{ stream='stderr'; arguments=@('rev-list','--count') + @('s') * 4000 })) {
+      $priorReaps = $deterministicBudgetMeter.reaps.Count
+      $reason = try {
+        [void](Invoke-ProductCensusEvaluation { param($budget) Invoke-ProductCensusGit $parent $case.arguments $budget }); 'accepted'
+      } catch { $_.Exception.Message }
+      $reaped = @($deterministicBudgetMeter.reaps | Select-Object -Skip $priorReaps)
+      $owned = @($reaped.tree)
+      $running = @(Get-CimInstance Win32_Process -Property ProcessId,CreationDate,ThreadCount -ErrorAction Stop | Where-Object {
+        $row = $_; $row.ThreadCount -ne 0 -and @($owned | Where-Object { $_.ProcessId -eq $row.ProcessId -and $_.CreationDate -eq $row.CreationDate }).Count })
+      Assert-CensusFixture ($reason -ceq 'git-output-bound' -and $reaped.Count -eq 1 -and $owned.Count -ge 1 -and $running.Count -eq 0) "census-git-output-bound/$($case.stream)"
+      Write-Output "CONTROL census-git-output-bound/$($case.stream) PASS refused=$reason reapedTree=$($owned.Count) running=$($running.Count)"
+    }
+  } finally { Remove-CensusFixture $parent }
+}
+
+# #9619 census-git-wait-schedule: the metered wait's lost-wakeup control. A
+# synthetic Git (no operating-system process) completes one capture, stdout or
+# stderr, at a fixed point of WaitForProcess: while the wait set reads its
+# IsCompleted ("snapshot"), or just after the exit/full-capture check reads it
+# ("check"). A full capture must be read, and its Git reaped, before the wait
+# blocks; an EOF capture or a plain exit must end the wait on the exit with no
+# reap. A wait that blocks with a full capture unread never wakes for real Git:
+# the observer records it as stranded and only then exits the synthetic Git, so
+# the control fails instead of hanging.
+function Invoke-CensusGitWaitSchedule([string]$Kind, [string]$Stream, [string]$Point) {
+  if (-not ('CensusGitWaitSchedule' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Threading;
+using System.Threading.Tasks;
+
+public sealed class CensusGitWaitCapture {
+  internal CensusGitWaitSchedule Schedule;
+  internal int Index;
+  internal readonly TaskCompletionSource<int> Read = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+  public bool IsCompleted { get { Schedule.Reach(Index, "snapshot"); return Read.Task.IsCompleted; } }
+  public bool IsCompletedSuccessfully { get { bool completed = Read.Task.IsCompletedSuccessfully; Schedule.Reach(Index, "check"); return completed; } }
+  public int Result { get { Schedule.Observe(Index); return Read.Task.Result; } }
+  public static implicit operator Task(CensusGitWaitCapture capture) { return capture.Read.Task; }
+}
+
+public sealed class CensusGitWaitSchedule {
+  readonly Thread owner = Thread.CurrentThread;
+  readonly Thread observer;
+  readonly TaskCompletionSource<bool> exit = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+  readonly int stream, count;
+  readonly string point;
+  readonly bool full;
+  volatile bool reached, observed, stranded, reaped;
+  public readonly CensusGitWaitCapture[] Reads;
+
+  public CensusGitWaitSchedule(int stream, string point, int count, int bound) {
+    this.stream = stream; this.point = point; this.count = count; full = count == bound;
+    Reads = new[] { new CensusGitWaitCapture { Schedule = this, Index = 0 }, new CensusGitWaitCapture { Schedule = this, Index = 1 } };
+    observer = new Thread(Watch) { IsBackground = true };
+    observer.Start();
+  }
+  public bool Stranded { get { return stranded; } }
+  public bool Reaped { get { return reaped; } }
+  public bool HasExited { get { return exit.Task.IsCompleted; } }
+  public Task WaitForExitAsync() { return exit.Task; }
+  public void Reap() { reaped = true; exit.TrySetResult(true); }
+  public void Release() { exit.TrySetResult(true); observer.Join(); }
+
+  internal void Reach(int index, string at) {
+    if (reached || index != stream || at != point) return;
+    if (count >= 0) Reads[index].Read.SetResult(count);
+    reached = true;
+  }
+  internal void Observe(int index) { if (reached && index == stream) observed = true; }
+
+  // From the scheduled point on, a full capture must be read before the owner
+  // blocks; blocking first strands the wait. Otherwise Git exits once awaited.
+  void Watch() {
+    while (!reached && !exit.Task.IsCompleted) Thread.Yield();
+    while (!(full && observed) && !exit.Task.IsCompleted && (owner.ThreadState & ThreadState.WaitSleepJoin) == 0) Thread.Yield();
+    if (full && observed) return;
+    if (exit.TrySetResult(true)) stranded = full;
+  }
+}
+'@
+  }
+  function Stop-CensusFixtureGitTree($Process) {
+    if ($Process -isnot [CensusGitWaitSchedule]) { throw 'synthetic-only reap' }
+    $Process.Reap()
+  }
+  $bound = 65537
+  $count = switch ($Kind) { 'full' { $bound } 'eof' { $bound - 1 } 'exit' { -1 } }
+  $meter = New-DeterministicBudgetMeter
+  $schedule = [CensusGitWaitSchedule]::new([int]($Stream -ceq 'stderr'), $Point, $count, $bound)
+  try { $returned = $meter.WaitForProcess($schedule, $schedule.Reads, @($bound,$bound)) }
+  finally { $schedule.Release() }
+  [pscustomobject]@{ returned=$returned; stranded=$schedule.Stranded; reaped=$schedule.Reaped; reaps=$meter.reaps.Count; waits=$meter.processWaits }
+}
+
+function Test-CensusGitWaitSchedule {
+  foreach ($kind in @('full','eof','exit')) {
+    $reap = $kind -ceq 'full'
+    $legs = foreach ($stream in @('stdout','stderr')) {
+      foreach ($point in @('snapshot','check')) {
+        $wait = Invoke-CensusGitWaitSchedule $kind $stream $point
+        Assert-CensusFixture ($wait.returned -eq $true -and -not $wait.stranded -and $wait.reaped -eq $reap -and
+          $wait.reaps -eq [int]$reap -and $wait.waits -eq 1) "census-git-wait-schedule/$kind/$stream/$point returned=$($wait.returned) stranded=$($wait.stranded) reaps=$($wait.reaps)"
+        "$stream/$point"
+      }
+    }
+    Write-Output "CONTROL census-git-wait-schedule/$kind PASS reaps=$([int]$reap) stranded=False legs=$($legs -join ',')"
   }
 }

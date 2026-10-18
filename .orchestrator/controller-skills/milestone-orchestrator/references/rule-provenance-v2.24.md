@@ -3,6 +3,119 @@ name: milestone-orchestrator
 description: Run the chase-sets delivery loop — complete all non-parked milestones by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, queuing Todd-decisions as tasks instead of waiting. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
 ---
 
+## Release notes moved in v2.115
+
+Version 2.114 (#9382) makes never-launched strict review prelogs voidable from
+launcher evidence and prints the exact v1 prelog. Review and install authority
+are unchanged.
+
+## Release notes moved in v2.113
+
+Version 2.112 paces new lanes to each provider's headroom before its reset
+(#9316). The read-only `capacity-pacing.ps1` reducer emits `capacity-pacing/v1`:
+each available account's headroom, hours to reset and the provider's measured
+burn per lane-hour become a per-provider lane budget and new-lane allowance,
+Fable capped at half the Claude budget and every allowance zero on an unknown
+status or census. Section 10 makes that allowance a scaling condition and
+supersedes 4388/6101785942 (the hand-read dashboard routine). Dispatch-lane,
+routing, the watchdog, the forecast, landing, review and hold authority and
+model-routing v4.25 are unchanged.
+
+## Release notes moved in v2.112
+
+Version 2.111 (Todd 2026-10-11, 4388/6112638067; #9373) lets a governing
+install proof at `-Scope full` reuse `test:*` PASS rows from a completed hosted
+battery run of the exact candidate head (section 7). Guards and
+`-NoReuseIdentity` items always execute, impact-scope and local-prior reuse
+stay author-iteration evidence, and a second safeguard occurrence ends CI
+reuse. Landing authority, holds, freshness rules, selection, gap proofs, the
+closed watchdog table and model-routing v4.25 are unchanged.
+
+## Release notes moved in v2.111
+
+Version 2.110 recovers an ordinary implementation author's interrupted canonical
+integration (#9334). A closed `interrupted-canonical-integration/v2` binding
+proves the actual wrapper/relative-helper/logging/NoPush first stop from the
+retained launch, transcript and routing row; the native plan is the sequencer's
+topo-order no-merges pick list; the same admitted owner finishes with `-NoPush`,
+commits repairs, and publishes once under the original-head lease. Landed v1
+bindings, freshness, routing, selection, velocity, DROUGHT, landing, review and
+hold authority and model-routing v4.25 are unchanged.
+
+## Release notes moved in v2.110
+
+Version 2.109 (Todd 2026-10-10, 4388/6098327249 with correction; #9282) routes
+every lane a Claude model can admissibly take to Claude while the capacity
+forecast balances toward Claude: planning and review lanes join implementation
+lanes as capacity-eligible, every off-Claude row flips to its own Claude slot
+as `override-Todd`, and a strict controller review is prepared, prelogged, then
+launched (section 5). Landing authority, holds, freshness rules, selection, gap
+proofs and the closed watchdog table are unchanged; model-routing v4.25 holds
+the routing rule.
+
+## Release notes moved in v2.109
+
+Version 2.108 keeps the pinned Waiting-on-Todd issue current from host-logged
+`todd-action` ledger rows (#9228). One per-cycle script renders it and assigns
+Todd to each issue with a Now action; status posts link it instead of listing
+operator actions. Freshness, routing, selection, velocity, DROUGHT, landing,
+review and hold authority and model-routing v4.24 are unchanged.
+
+## Release notes moved in v2.108
+
+Version 2.107 removes the per-PR velocity capture and projects canonical
+exact-head review history in facts (#9123). Every UNMET floor gets same-cycle
+host action; DROUGHT remains the only alarm. Landing authority, holds,
+freshness rules, selection, gap proofs and model-routing v4.23 are unchanged.
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## #9196 forward-integrated release note
+
+The divergent #9196 candidate carried this v2.108 note; forward integration
+retains the installed v2.110/v4.25 pins and current release note above it:
+
+Version 2.108 separates broad unblocked committed backlog from actionable
+ready-idle identities (#9196), consuming lazy considered-candidate dispatch
+qualification through main's canonical consumers. The all-kind census, flow,
+holds, section 4 admission, gap proofs, DROUGHT and model-routing v4.23 remain
+unchanged. Summary never generates readiness or sweeps the corpus.
+
+## Release notes moved in v2.107
+
+Version 2.106 makes velocity capture freshness depend on each original
+record's observedAt and the completed envelope, not cycle start age (#9056).
+The host and facts collector share the complete committed-product-milestone/v1
+candidate census before bounded Reports; stale, partial and moved-head evidence
+remain UNKNOWN. Landing authority, holds, gap proofs and model-routing v4.23
+are unchanged.
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## v2.106 #9056 install-route provenance
+
+Candidate cb9361cd18556b41c86e57fd52fbc7ee18a51a99 received R2
+BLOCK_REPLAN for an unaccounted proof row, not a blocking code defect.
+FINAL A 9056-lid-row-decision-r1 accounted that row under P3L;
+controller-9056-review-r3 then returned governing PASS at that exact head
+(dispatch-log.jsonl lines 29059/29075). The full proof still records
+76 PASS and four FAIL; R3 retains N3-N8, AC5 and the 48-hour check.
+The ordinary installer remained blocked by the earlier same-head R2 receipt
+(line 29041). FINAL A 9056-install-route-decision-r1 selected a factual
+provenance-only successor and an exact-successor DELTA review inheriting R3.
+This entry records those decisions; it changes no runtime or standing rule,
+supersedes no ledger row, and grants no installation authority.
+
+## Release notes moved in v2.106
+
+Version 2.105 binds velocity launch attribution to the validated launcher
+start rather than the later ownership record timestamp (#8674), on top of
+v2.104's unscoped host/lane runtime discovery fence and snapshot-derived
+retention report counts (#9021). Judged recovery and model-routing v4.23 remain
+unchanged (#8903, #8915).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
 # Milestone Orchestrator (v2.24, 2026-07-29)
 
 Sections follow the execution lifecycle: session (§2) → the cycle (§3) → the
@@ -2124,6 +2237,166 @@ Run `metrics-report.ps1 -Check` each cycle. Treat its escaped-defect,
 second-bite, breaker-duration, stall, cycle-time, telemetry-health,
 review-receipt, replan-debt, host-identity, and guard-debt signals as immediate
 retro inputs.
+
+## Release notes moved in v2.105
+
+Version 2.104 binds velocity launch attribution to the validated launcher
+start rather than the later ownership record timestamp (#8674).
+
+Version 2.104 fences unscoped host/lane runtime discovery and adds snapshot-derived
+retention report counts (#9021). Judged recovery and model-routing v4.23 remain
+unchanged (#8903, #8915).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## Release notes moved in v2.104
+
+Version 2.103 replaces attempt-count parking with judged recovery (Todd,
+4388/6022146271, #8903): every non-PASS gets a classified next step, a repeated
+cause escalates the recovery level, and the fourth-attempt and 15-dispatch
+thresholds trigger a step-back review that never parks. It integrates
+model-routing v4.23 (#8915 public-benchmark rebalance; protected rules unchanged).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## Release notes moved in v2.103
+
+Version 2.102 integrates model-routing v4.21 and Todd's capacity-balanced fresh
+dispatch (#8494), with inert shadow evidence and exact-author calibration
+partitions, and adds daily verified runtime retention (#8623).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+Version 4.21 consumes Todd's capacity forecast for fresh implementations (#8494), keeps
+shadow decisions inert, and separates active flips from calibration. Prior release
+notes are in milestone-orchestrator's `references/rule-provenance-v2.24.md`.
+
+### Attempt-count parking retired by v2.103
+
+Until v2.103 (Todd, 4388/6022146271, #8903), section 7 stopped an artifact
+after more than four implementation attempts and forced replan-or-park through
+an independent decision lane; section 12 parked it with one terminal comment
+whose un-park condition was an accepted replan with a material changed fact;
+section 15 and `contracts/planning-repair-v1.md` admitted re-entry only through
+an ordered `changedSinceLastFailure` packet with `newCeiling` authority; and the
+15-dispatch threshold FINAL accepted `REPLAN` or `PARK`. v2.103 replaces all
+of these with the classified recovery ladder and the step-back review.
+
+## Release notes moved in v2.102
+
+Version 2.101 integrates model-routing v4.21 and Todd's capacity-balanced fresh
+dispatch (#8494), with inert shadow evidence and exact-author calibration
+partitions.
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## Release notes moved in v2.101
+
+Version 2.100 adds per-cycle recognized-incumbent landed reclamation (#8622).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+Version 4.20 cross-references the exhausted-brief-reviewer proof route while
+preserving v4.19's data-bound routing, placements and exclusions. Prior release
+notes are in milestone-orchestrator's `references/rule-provenance-v2.24.md`.
+
+## Release notes moved in v2.100
+
+Version 2.99 adds the once-only 15-dispatch replan-or-park decision (#8527)
+and gap-scoped FLOOR proof without certifying incomplete facts (#8624).
+It retains v2.98's one fresh product-census evaluation only after an exact Git
+deadline, retaining the 5000 ms per-evaluation bound and all non-deadline
+refusals (#8578). It preserves v2.97's observation of held PASS PRs as a FLOOR
+cause, queued non-hold landing evidence, and live launch issue attribution
+(#8526). It projects
+implementation/review board ownership on events and runs
+the capped reconciliation backstop at most hourly (#8478). Native role/routing
+heavy-slot eligibility, role-specific verification prompts and trusted CI-prior
+battery reuse (#8528) remain unchanged, as do model-routing v4.20,
+host-attributed review handoffs, the nonterminal exhausted-brief-reviewer proof
+route and strict review-history reduction. Repair battery logs bind the admitted
+baseline receipt.
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+## Release notes moved in v2.99
+
+Version 2.98 adds one fresh product-census evaluation only after an exact Git
+deadline, retaining the 5000 ms per-evaluation bound and all non-deadline
+refusals (#8578). It preserves v2.97's observation of held PASS PRs as a FLOOR
+cause, queued non-hold landing evidence, and live launch issue attribution
+(#8526). It projects
+implementation/review board ownership on events and runs
+the capped reconciliation backstop at most hourly (#8478). Native role/routing
+heavy-slot eligibility, role-specific verification prompts and trusted CI-prior
+battery reuse (#8528) remain unchanged, as do model-routing v4.20,
+host-attributed review handoffs, the nonterminal exhausted-brief-reviewer proof
+route and strict review-history reduction. Repair battery logs bind the admitted
+baseline receipt.
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+The uninstalled #8527 v2.95 candidate becomes v2.99 after merging installed
+`b91c50680b8df9d65757dfeddb9623f118ed0b4a`. Its once-only 15-dispatch
+replan-or-park change is retained without resetting implementation attempts.
+Hermetic fixture repairs belong to #8548/#8549, not the v2.89.1 identity-only change.
+
+## Release notes moved in v2.98
+
+The #8526 v2.97 release at `3c58b5b5e618c850b6bb8310ae50700a23d8cc09`
+is merged into #8578 under Todd's installation-order ruling. Its release
+summary was:
+
+Version 2.97 observes held PASS PRs as a FLOOR cause, captures queued non-hold
+landing evidence, and preserves live launch issue attribution (#8526). It projects
+implementation/review board ownership on events and runs
+the capped reconciliation backstop at most hourly (#8478). Native role/routing
+heavy-slot eligibility, role-specific verification prompts and trusted CI-prior
+battery reuse (#8528) remain unchanged, as do model-routing v4.20,
+host-attributed review handoffs, the nonterminal exhausted-brief-reviewer proof
+route and strict review-history reduction. Repair battery logs bind the admitted
+baseline receipt.
+
+The installed v2.94 release at `038645f35a68aa645ed442f1030cde64edc2ea6d`
+was merged into #8578 in the preceding continuation. Its release summary was:
+
+Version 2.94 adds native role/routing heavy-slot eligibility and role-specific
+verification prompts, trusted CI-prior battery reuse (#8528), and event-driven
+implementation/review board ownership with a capped hourly reconciliation
+backstop (#8478). It retains model-routing v4.20 and host-attributed independent
+review handoffs (#8463), codifies the nonterminal exhausted-brief-reviewer proof
+route (#8466), and scales strict review-history reduction without changing
+authority (#8468). Repair battery logs bind the admitted baseline receipt (r4 N1).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+The #8527 continuation's provisional v2.93 was renumbered to v2.95 after
+merging the installed v2.94 head; it was not installed as v2.93. The outgoing
+v2.88 paragraph retained by that continuation follows unchanged.
+
+Version 2.88 adopts model-routing v4.20, requires host-attributed independent
+review handoffs (#8463), codifies the nonterminal exhausted-brief-reviewer proof
+route (#8466), and scales strict review-history reduction without changing
+authority (#8468). Repair battery logs bind the admitted baseline receipt (r4 N1).
+Routing remains data-bound as in v2.87; prior release notes are archived in
+`references/rule-provenance-v2.24.md`.
+
+v2.98 (2026-10-04): #8578 retains the 5000 ms product-census bound per evaluation
+and allows one fresh evaluation only after the exact Git-deadline outcome.
+Non-deadline refusals receive no allowance. v2.95 and v2.96 remain assigned to
+the separate #8527 and #8548 releases; Todd assigned #8578 v2.98.
+
+v2.89.1 (2026-10-03): re-identifies v2.89 at a new head after its same-head governing addendum (#8478, #8547); no rule, runtime or test change.
+
+## Release notes moved in v2.97
+
+Version 2.94 adds native role/routing heavy-slot eligibility and role-specific
+verification prompts, trusted CI-prior battery reuse (#8528), and event-driven
+implementation/review board ownership with a capped hourly reconciliation
+backstop (#8478). It retains model-routing v4.20 and host-attributed independent
+review handoffs (#8463), codifies the nonterminal exhausted-brief-reviewer proof
+route (#8466), and scales strict review-history reduction without changing
+authority (#8468). Repair battery logs bind the admitted baseline receipt (r4 N1).
 
 ## Release notes moved in v2.88
 
