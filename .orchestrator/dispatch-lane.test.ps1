@@ -24,7 +24,8 @@ if ($VerificationPolicyOnly) {
   }
   if($source -notmatch 'preamble = \$gatePreamble' -or $source -notmatch '\$gatePreamble \+ \$boundedRetrievalPreamble'){throw 'DryRun/live preamble diverged'}
   $skill=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md')) -replace '\s+',' '
-  if($skill -notmatch 'directly as focused tests, never through ControllerBattery, ControllerPrecursor or a battery rerun'){throw 'section 7 reviewer rerun route missing'}
+  # controller-v2.116 moved controller verification rules out of the product skill; the dispatch preamble above still enforces the reviewer route.
+  if($skill -match 'ControllerBattery|ControllerPrecursor' -or $skill -notmatch 'separate controller thread'){throw 'product skill must leave controller verification to the controller thread'}
   return
 }
 if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){ & $PSCommandPath -VerificationPolicyOnly }
