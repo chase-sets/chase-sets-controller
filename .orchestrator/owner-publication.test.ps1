@@ -273,7 +273,7 @@ function Invoke-ReaderInventory {
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928)
     'heavy-admission-preload.test.ps1'=@(82,582,611,980,986,1076,1133,1280,1326,1845,1849)
     'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
-    'install-controller-skills.test.ps1'=@(220,240,245,268)
+    'install-controller-skills.test.ps1'=@(191,208,213,233)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(304,307,429,499,903,947,959,973,1008,1012,1017,1029,1048,1078,1082,1093,1118,1129,1200,1474,1479,1498,1504,1635,1715,1725,1731,1738,1739,1750,1753,1763,1774,1796,1801,1813,1818,1835,1849,1950,1955,1974,1980,2207,2214,2226,2229,2239,2250,2272,2277,2289,2294,2311,2325)

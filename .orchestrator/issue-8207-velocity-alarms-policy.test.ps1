@@ -83,7 +83,7 @@ function Test-VelocityAlarms([string]$Text) {
   if ($compact.Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.')) { return $false }
   # Release history lives in the archive; only the current release note remains.
   $notes = [regex]::Matches($normalized, "(?m)^Version 2\.\d+ ")
-  if ($notes.Count -ne 1 -or -not $notes[0].Value.StartsWith("Version 2.115 ", [StringComparison]::Ordinal)) { return $false }
+  if ($notes.Count -ne 1 -or -not $notes[0].Value.StartsWith("Version 2.116 ", [StringComparison]::Ordinal)) { return $false }
   return $true
 }
 
@@ -148,6 +148,12 @@ launcher evidence and prints the exact v1 prelog. Review and install authority
 are unchanged.
 '@
 Assert-8207 ($archive.Contains($movedV2114, [StringComparison]::Ordinal)) 'archive lost the verbatim v2.114 release note'
+$movedV2115 = Normalize-Text @'
+Version 2.115 adds the AgentPools pace raise (#9737) so banked credits are
+spent before they lapse, in steps of at most two new lanes per run. A positive
+allowance with ready work is a reason to dispatch, not a ceiling to stay under.
+'@
+Assert-8207 ($archive.Contains($movedV2115, [StringComparison]::Ordinal)) 'archive lost the verbatim v2.115 release note'
 $movedV2105 = Normalize-Text @'
 ## Release notes moved in v2.106
 
@@ -266,8 +272,8 @@ $mutants = [ordered]@{
   "heartbeat-host-duty-omitted" = Remove-Phrase $skill 'the host checks `unacted` in each cycle''s summary'
   "heartbeat-present-tense-restored" = $skill.Replace("Until the heartbeat ships in #8222, the host checks ``unacted`` in each cycle's`n  summary (DROUGHT 4 hours only).", 'A heartbeat outside the host runs the same reducer and messages the host only about an alarm unacted past its grace (DROUGHT 4 hours only).')
   "summary-asks-todd" = Remove-Phrase $skill 'It asks Todd nothing.'
-  "history-restored" = $skill.Replace('Version 2.115 adds', "Version 2.94 adds archived history.`n`nVersion 2.115 adds")
-  "previous-note-restored" = $skill.Replace('Version 2.115 adds', 'Version 2.114 (#9382) makes')
+  "history-restored" = $skill.Replace('Version 2.116 makes', "Version 2.94 adds archived history.`n`nVersion 2.116 makes")
+  "previous-note-restored" = $skill.Replace('Version 2.116 makes', 'Version 2.115 adds')
   "floor-gap-scope-omitted" = Remove-Phrase $skill 'every gap is additive-only or proven issue-local'
   "floor-issue-not-removed" = Remove-Phrase $skill 'after removing the named issues.'
   "floor-unknown-kind-admitted" = Remove-Phrase $skill 'and unknown/future kinds, makes FLOOR UNKNOWN;'

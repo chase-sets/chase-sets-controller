@@ -1,53 +1,94 @@
 <#
 .SYNOPSIS
-Install the exact independently-reviewed controller skill release.
+Install a released controller: an annotated controller-v* tag on the public
+controller repository.
+
+.DESCRIPTION
+controller-release-install/v1. Release tags are the only install authority.
+Todd approves each release on the controller repository; this script never
+reads review receipts. It fetches the tag into the container (fetch only,
+never a remote and never a push), checks the tagged commit out detached, then
+re-runs the installer from that commit so the release installs itself.
+Rollback is the same command with the previous tag.
 
 .EXAMPLE
-./install-controller-skills.ps1 -ReviewedCommit <40-char-sha>
+./install-controller-skills.ps1 -ReleaseTag controller-v2.116
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
   [Parameter(Mandatory)]
-  [ValidatePattern("^[a-f0-9]{40}$")]
-  [string]$ReviewedCommit,
-  # Test seams: production callers omit both and use the canonical receipt log
-  # and live user skill root.
-  [Parameter(DontShow)]
-  [string]$ReceiptLog,
+  [ValidatePattern('^controller-v\d+\.\d+(\.\d+)?$')]
+  [string]$ReleaseTag,
+  [string]$ReleaseRepository = 'https://github.com/chase-sets/chase-sets-controller.git',
+  # Test seam: production callers omit it and install into the live user skill root.
   [Parameter(DontShow)]
   [string]$DestinationRoot
 )
 
 $ErrorActionPreference = "Stop"
 $container = Split-Path -Parent $PSScriptRoot
+$releaseMarker = 'controller-release-install/v1'
+$releaseRef = "refs/controller-releases/$ReleaseTag"
+
+function Invoke-ContainerGit {
+  param([Parameter(Mandatory)][string[]]$Arguments, [switch]$AllowFailure)
+  $output = @(& git -C $container @Arguments 2>&1)
+  $code = $LASTEXITCODE
+  if ($code -ne 0 -and -not $AllowFailure) {
+    throw "controller skill install refused: git $($Arguments[0]) failed: $(($output | Select-Object -First 3) -join ' ')"
+  }
+  [pscustomobject]@{ ExitCode = $code; Lines = @($output | ForEach-Object { [string]$_ }) }
+}
+
+if ((Invoke-ContainerGit @('status', '--porcelain', '--untracked-files=no')).Lines) {
+  throw "controller skill install refused: tracked controller worktree is dirty"
+}
+
+# Resolve the release. The tag must exist on the release repository as an
+# annotated tag, and a previously fetched copy must not differ from it: a
+# moved release tag is refused, never followed.
+$remote = Invoke-ContainerGit @('ls-remote', '--tags', '--refs', $ReleaseRepository, "refs/tags/$ReleaseTag") -AllowFailure
+if ($remote.ExitCode -ne 0) { throw "controller skill install refused: release repository unreadable: $ReleaseRepository" }
+$remoteLines = @($remote.Lines | Where-Object { $_ -match '^[a-f0-9]{40}\trefs/tags/' })
+if ($remoteLines.Count -ne 1) { throw "controller skill install refused: release tag $ReleaseTag not found on $ReleaseRepository" }
+$remoteObject = ($remoteLines[0] -split '\t')[0]
+$existing = Invoke-ContainerGit @('rev-parse', '--verify', '--quiet', $releaseRef) -AllowFailure
+if ($existing.ExitCode -eq 0 -and $existing.Lines[0] -cne $remoteObject) {
+  throw "controller skill install refused: release tag $ReleaseTag moved (local $($existing.Lines[0]), remote $remoteObject)"
+}
+if ($existing.ExitCode -ne 0) {
+  # Fetch by URL into a private namespace: no remote is configured, nothing is
+  # pushed, and a container-local tag with the same name is never touched.
+  [void](Invoke-ContainerGit @('fetch', '--no-tags', '--quiet', $ReleaseRepository, "refs/tags/$($ReleaseTag):$releaseRef"))
+}
+$localObject = (Invoke-ContainerGit @('rev-parse', '--verify', $releaseRef)).Lines[0]
+if ($localObject -cne $remoteObject) { throw "controller skill install refused: fetched release $ReleaseTag does not match the release repository" }
+if ((Invoke-ContainerGit @('cat-file', '-t', $localObject)).Lines[0] -cne 'tag') {
+  throw "controller skill install refused: $ReleaseTag is not an annotated tag"
+}
+$releaseCommit = (Invoke-ContainerGit @('rev-parse', '--verify', "$releaseRef^{commit}")).Lines[0].ToLowerInvariant()
+
+$head = (Invoke-ContainerGit @('rev-parse', 'HEAD')).Lines[0].ToLowerInvariant()
+if ($head -cne $releaseCommit) {
+  # The release installs itself: check it out, then hand over to its own
+  # installer, so its inventory and checks apply rather than this script's.
+  $targetInstaller = Invoke-ContainerGit @('show', "$($releaseCommit):.orchestrator/install-controller-skills.ps1") -AllowFailure
+  if ($targetInstaller.ExitCode -ne 0 -or -not (($targetInstaller.Lines -join ' ').Contains($releaseMarker, [StringComparison]::Ordinal))) {
+    throw "controller skill install refused: $ReleaseTag predates tag installs ($releaseMarker); it cannot be installed by tag"
+  }
+  if (-not $PSCmdlet.ShouldProcess($container, "check out $ReleaseTag ($releaseCommit) detached and install it")) { return }
+  [void](Invoke-ContainerGit @('checkout', '--quiet', '--detach', $releaseCommit))
+  $handover = @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'install-controller-skills.ps1'),
+    '-ReleaseTag', $ReleaseTag, '-ReleaseRepository', $ReleaseRepository)
+  if ($DestinationRoot) { $handover += @('-DestinationRoot', $DestinationRoot) }
+  & (Get-Process -Id $PID).Path @handover
+  exit $LASTEXITCODE
+}
+
 $installLockModule = Join-Path $PSScriptRoot "controller-install-lock.psm1"
 Import-Module $installLockModule -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "controller-heavy-paths.psm1") -Force -DisableNameChecking
-
-$head = (& git -C $container rev-parse HEAD).Trim().ToLowerInvariant()
-if ($head -ne $ReviewedCommit.ToLowerInvariant()) {
-  throw "controller skill install refused: HEAD $head does not equal reviewed commit $ReviewedCommit"
-}
-if ((& git -C $container status --porcelain --untracked-files=no)) {
-  throw "controller skill install refused: tracked controller worktree is dirty"
-}
-
-$receiptPath = if ($ReceiptLog) { [IO.Path]::GetFullPath($ReceiptLog) } else { Join-Path $PSScriptRoot "dispatch-log.jsonl" }
-$markerPath = Join-Path $PSScriptRoot "controller-review-strict-v1-capability.json"
-if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
-  throw "controller skill install refused: strict controller review capability marker is missing"
-}
-$directHistory = Read-ExactHeadReviewHistory -Path $receiptPath
-if (-not $directHistory.complete) { throw "controller skill install refused: review history is not complete" }
-$candidateIssues = @(Get-ControllerReviewClassifiedHistory -History $directHistory | ForEach-Object { $_.classification } | Where-Object {
-  $_.strict -and $_.valid -and $_.controllerHead -ceq $ReviewedCommit
-} | ForEach-Object { [int]$_.issue } | Sort-Object -Unique)
-if ($candidateIssues.Count -ne 1) { throw "controller skill install refused: exact positive controller issue identity is ambiguous" }
-$directReduction = Reduce-ControllerReleaseReview -Issue $candidateIssues[0] -ControllerHead $ReviewedCommit -Mode strict-v1 -History $directHistory
-if ($directReduction.state -cne "authorized") {
-  throw "controller skill install refused: shared controller review reduction is $($directReduction.state)/$($directReduction.reason)"
-}
 
 # capability-matrix.json is the only installed file with TWO owners. Its cell
 # scores, vetoes and bars are authored in the tracked source and reviewed like
@@ -80,7 +121,7 @@ $sourceRoot = Join-Path $PSScriptRoot "controller-skills"
 $destinationRoot = if ($DestinationRoot) { [IO.Path]::GetFullPath($DestinationRoot) } else { Join-Path $HOME ".claude/skills" }
 
 # The skill is the human-governing contract and these scripts are the execution
-# surface. They ship from one exact reviewed container commit, but semantic
+# surface. They ship from one released container commit, but semantic
 # constants could still drift inside that commit unless the installer binds
 # them. Runtime is canonical; every marker below is derived from its object.
 $runtimeFiles = @(
@@ -170,13 +211,13 @@ Invoke-WithControllerInstallLock -Body {
   # helper drift or unavailable Git history retains the existing fail-closed guard.
   $delta = $null
   try {
-    $delta = Get-ControllerInstalledHeavyDelta -ContainerRoot $container -DestinationRoot $destinationRoot -CandidateHead $ReviewedCommit
+    $delta = Get-ControllerInstalledHeavyDelta -ContainerRoot $container -DestinationRoot $destinationRoot -CandidateHead $releaseCommit
   } catch {
     Write-Output 'Controller install heavy classification: unknown; retaining product admission and owner refusal'
   }
   $requiresHeavyGuard = $null -eq $delta -or $delta.classification -cne 'non-heavy'
   if ($delta) {
-    Write-Output "Controller install heavy classification: $($delta.classification); installed=$($delta.installedHead); candidate=$ReviewedCommit; heavyPaths=$($delta.heavyPaths -join ',')"
+    Write-Output "Controller install heavy classification: $($delta.classification); installed=$($delta.installedHead); candidate=$releaseCommit; heavyPaths=$($delta.heavyPaths -join ',')"
   }
   $admissionMutex = $null
   $admissionHeld = $false
@@ -196,69 +237,24 @@ Invoke-WithControllerInstallLock -Body {
     $helperPath = Join-Path $PSScriptRoot 'native-db-admission.py'
     $helperBytes = [IO.File]::ReadAllBytes($helperPath)
     $helperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($helperBytes)).ToLowerInvariant()
-    if ($DestinationRoot) {
-      # The existing destination seam remains entirely machine-local and inert.
-      $helperDestination = Join-Path $destinationRoot 'native-db/admission.py'
-      $identityDestination = Join-Path $destinationRoot 'native-db/identity.json'
-      if (Test-Path -LiteralPath $helperDestination) {
-        if (-not (Test-Path -LiteralPath $identityDestination)) { throw 'controller skill install refused: native helper identity missing' }
-        $prior = Get-Content -LiteralPath $identityDestination -Raw | ConvertFrom-Json
-        if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $prior.digest) {
-          throw 'controller skill install refused: native helper drift'
-        }
+    # The helper and its identity live beside the skills. Every reader (the
+    # heavy-path classifier, the release battery, the freshness check) reads
+    # <skills root>/native-db; installs before tag releases wrote there too.
+    $helperDestination = Join-Path $destinationRoot 'native-db/admission.py'
+    $identityDestination = Join-Path $destinationRoot 'native-db/identity.json'
+    $releaseDestination = Join-Path $destinationRoot 'native-db/release.json'
+    if (Test-Path -LiteralPath $helperDestination) {
+      if (-not (Test-Path -LiteralPath $identityDestination)) { throw 'controller skill install refused: native helper identity missing' }
+      $prior = Get-Content -LiteralPath $identityDestination -Raw | ConvertFrom-Json
+      if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $prior.digest) {
+        throw 'controller skill install refused: native helper drift'
       }
-      if ($PSCmdlet.ShouldProcess($helperDestination, 'install exact reviewed native helper')) {
-        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $helperDestination))
-        [IO.File]::WriteAllBytes($helperDestination, $helperBytes)
-        [IO.File]::WriteAllText($identityDestination, (@{head=$ReviewedCommit;digest=$helperDigest} | ConvertTo-Json -Compress))
-        if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $helperDigest) { throw 'native helper install verification failed' }
-      }
-    } elseif ($PSCmdlet.ShouldProcess('/opt/chase-sets-native-db/admission.py', 'install exact reviewed native helper')) {
-      $installPython = @'
-import base64, hashlib, json, os, pathlib, stat, sys
-value = json.loads(sys.stdin.buffer.read(1048577))
-assert set(value) == {'head','digest','bytes'}
-payload = base64.b64decode(value['bytes'], validate=True)
-assert hashlib.sha256(payload).hexdigest() == value['digest']
-root = pathlib.Path('/opt/chase-sets-native-db')
-for path in (pathlib.Path('/'), pathlib.Path('/opt')):
-    info = path.lstat()
-    assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
-if not root.exists(): root.mkdir(mode=0o755)
-info = root.lstat()
-assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022 and root.resolve() == root
-target, identity = root/'admission.py', root/'identity.json'
-for path in (target, identity):
-    if path.exists() or path.is_symlink():
-        info = path.lstat()
-        assert stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
-if target.exists():
-    prior = json.loads(identity.read_text())
-    assert set(prior) == {'head','digest'} and hashlib.sha256(target.read_bytes()).hexdigest() == prior['digest'], 'native helper drift'
-temporary = root / ('admission.'+value['head']+'.tmp')
-with temporary.open('xb') as stream:
-    stream.write(payload); stream.flush(); os.fsync(stream.fileno())
-os.chmod(temporary, 0o644)
-os.replace(temporary, target)
-identity.write_text(json.dumps({'head':value['head'],'digest':value['digest']},separators=(',',':')))
-os.chmod(identity, 0o644)
-assert hashlib.sha256(target.read_bytes()).hexdigest() == value['digest']
-print('native helper installed '+value['head']+' '+value['digest'])
-'@
-      $start = [Diagnostics.ProcessStartInfo]::new()
-      $start.FileName = 'C:\Windows\System32\wsl.exe'; $start.UseShellExecute = $false; $start.CreateNoWindow = $true
-      $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-      $start.Environment.Clear()
-      foreach ($name in @('SystemRoot','WINDIR','SystemDrive')) { $start.Environment[$name] = [Environment]::GetEnvironmentVariable($name) }
-      $start.Environment['WSLENV'] = ''
-      foreach ($argument in @('-d','Ubuntu','--exec','/usr/bin/env','-i','PATH=/usr/bin:/bin','LANG=C','/usr/bin/python3','-c',$installPython)) { $start.ArgumentList.Add($argument) }
-      $installer = [Diagnostics.Process]::Start($start)
-      $output = $installer.StandardOutput.ReadToEndAsync(); $errors = $installer.StandardError.ReadToEndAsync()
-      $installer.StandardInput.WriteLine((@{head=$ReviewedCommit;digest=$helperDigest;bytes=[Convert]::ToBase64String($helperBytes)} | ConvertTo-Json -Compress))
-      $installer.StandardInput.Close()
-      if (-not $installer.WaitForExit(30000)) { $installer.Kill(); [void]$installer.WaitForExit(30000); throw 'native helper install expired' }
-      if ($installer.ExitCode -ne 0) { throw "native helper install refused: $($errors.GetAwaiter().GetResult())" }
-      Write-Output $output.GetAwaiter().GetResult()
+    }
+    if ($PSCmdlet.ShouldProcess($helperDestination, 'install released native helper')) {
+      [void][IO.Directory]::CreateDirectory((Split-Path -Parent $helperDestination))
+      [IO.File]::WriteAllBytes($helperDestination, $helperBytes)
+      [IO.File]::WriteAllText($identityDestination, (@{head=$releaseCommit;digest=$helperDigest} | ConvertTo-Json -Compress))
+      if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $helperDigest) { throw 'native helper install verification failed' }
     }
 foreach ($file in $installPlan) {
   if (-not $file.PreserveGenerated) { continue }
@@ -277,7 +273,7 @@ foreach ($file in $installPlan) {
   foreach ($file in $installPlan) {
     $source = $file.Source
     $destination = $file.Destination
-    if ($PSCmdlet.ShouldProcess($destination, "install reviewed controller skill file")) {
+    if ($PSCmdlet.ShouldProcess($destination, "install released controller skill file")) {
     $destinationDirectory = Split-Path -Parent $destination
     if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
       New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
@@ -300,10 +296,18 @@ foreach ($file in $installPlan) {
     }
     }
   }
+  if ($PSCmdlet.ShouldProcess($releaseDestination, 'record installed release')) {
+    # Written last: a release record exists only after every file verified.
+    $release = [ordered]@{
+      schemaVersion = 'controller-release/v1'; tag = $ReleaseTag; tagObject = $localObject
+      commit = $releaseCommit; repository = $ReleaseRepository; installedAt = [DateTime]::UtcNow.ToString('o')
+    }
+    [IO.File]::WriteAllText($releaseDestination, ($release | ConvertTo-Json -Compress) + [Environment]::NewLine)
+  }
   } finally {
     if ($admissionHeld) { $admissionMutex.ReleaseMutex() }
     if ($admissionMutex) { $admissionMutex.Dispose() }
   }
 }
 
-Write-Output "Installed reviewed controller skills from $ReviewedCommit"
+Write-Output "Installed controller release $ReleaseTag ($releaseCommit)"

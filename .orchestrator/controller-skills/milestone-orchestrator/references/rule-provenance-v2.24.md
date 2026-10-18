@@ -3,6 +3,12 @@ name: milestone-orchestrator
 description: Run the chase-sets delivery loop — complete all non-parked milestones by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, queuing Todd-decisions as tasks instead of waiting. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
 ---
 
+## Release notes moved in v2.116
+
+Version 2.115 adds the AgentPools pace raise (#9737) so banked credits are
+spent before they lapse, in steps of at most two new lanes per run. A positive
+allowance with ready work is a reason to dispatch, not a ceiling to stay under.
+
 ## Release notes moved in v2.115
 
 Version 2.114 (#9382) makes never-launched strict review prelogs voidable from

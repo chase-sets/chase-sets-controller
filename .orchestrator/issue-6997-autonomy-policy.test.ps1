@@ -76,7 +76,7 @@ function Test-ReleaseIdentity([string]$Milestone, [string]$Routing) {
   $routingHeaders = [regex]::Matches($Routing, "(?m)^# Model Routing \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)$")
   return (
     $milestoneHeaders.Count -eq 1 -and
-    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.115, 2026-10-16)" -and
+    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.116, 2026-10-18)" -and
     $routingHeaders.Count -eq 1 -and
     $routingHeaders[0].Value -ceq "# Model Routing (v4.26, 2026-10-16)" -and
     -not $Routing.Contains("v4.5", [StringComparison]::Ordinal) -and
@@ -220,12 +220,9 @@ $script:requiredMilestoneStatements = @(
   'A host continuation note is at most 2,000 bytes',
   'No packet manifest, evidence file, or hash comparison is required of any lane',
   'the relaunch continues from the partial, never from zero',
-  'A Todd-authored change takes one independent review and installs at once',
   'the controller never registers push sequences, evidence-only pushes, single-push limits, or a local full battery as a precondition',
   'the controller enqueues on its own authority and no held landing order exists; Todd never enqueues on the controller''s behalf',
-  'A refusal of a landing-authority-complete PR by any controller gate for a reason that is not a product finding is a controller P0',
   'enqueue the product PR directly once with GitHub `enqueuePullRequest`',
-  'Manual fallback on #4388 is used only when the direct mutation fails or the refused candidate is a controller release',
   'the host runs the representative refresh in-cluster itself',
   'The host reads the failing run''s log itself and dispatches no diagnosis lane',
   'Two blocking rounds on the same PR force a third repair that applies the reviewer''s prescribed remedies verbatim, never a replan',
@@ -236,29 +233,27 @@ $script:requiredMilestoneStatements = @(
   'Launch the pinned Codex executable',
   'Remove nothing else without Todd''s word',
   'No flow snapshot, replan reconciliation, or metrics check exists in the cycle',
-  'The selected battery runs once per candidate head, by the author lane, with its log bound to the exact head; the governing review verifies that log and re-runs only the tests the diff changed',
-  'A review report is the report alone: no manifest, evidence file, or hash comparison',
   'A breaker never blocks its own repair.',
-  'a controller P0 ships out of band by default without a Todd ruling',
-  'A P0 repair brief is exempt from the planning pressure sweep',
   'A breaker open more than four hours with no repair candidate in flight is a stall alert',
-  'parking a ruling''s implementation, or conditioning it on an empty product frontier, is prohibited',
   'a repair is re-read as a delta review over its changed hunks that inherits the predecessor sweep',
-  'Every controller release, Todd-authored or controller-authored, takes one governing review scoped to its change and installs on PASS; there is no packet lifecycle and no weekly release train',
   'There is no standing-cap continuation row and no ceiling authority ceremony',
   'No artifact parks on attempts',
-  'The author-iteration battery runs the impact scope: the smoke set (policy pin, contract enforcement, installer, battery self-test, landing preflight), the changed tests, the guard discriminators, and every test that reads a changed file, following code readers transitively and skill, contract and data readers directly.',
-  'No baseline, `-Scope full`, or a changed runtime file that no test reads runs the full battery; a battery change adds its full self-test.',
-  'In an impact run a guard-omission mutant or #8102 classifier leg runs only when its guarded file or the carrier support changed; candidate arms always run.',
-  'Tests run fastest first and the battery stops at the first failure that is not PREEXISTING, naming the rest not run (`-OnFailure all` runs all).',
-  'A failure that reproduces identically on the installed baseline ends `FAIL_PREEXISTING_ONLY`, which never prints PASS; the governing review accepts it once each named item has an open issue, and nothing waits on that issue.',
   'The #6026 protected sweep runs only after a landing that touches its footprint and at most once per 24 hours',
   'Only confirmed correctness, security, or objective quality findings block',
   'Every review receipt carries the `G0` gate answer, the quality profile, and a two-sided verdict on all twelve pairs of `contracts/quality-v2.md`, one line per key.',
   'a side blocks only on its reproducible sub-case at the weight its profile sets',
   'Non-blocking findings carry stable IDs and stay in the receipt; the controller files no issue, debt slice, or weekly review from them',
   'A non-blocking finding never delays landing.',
-  'Quality verdicts are retro input: recalibration reads `NOTE` counts by key, side, profile, and author model from the review receipts and tunes the profile weight table only when Todd asks for a recalibration'
+  'Quality verdicts are retro input: recalibration reads `NOTE` counts by key, side, profile, and author model from the review receipts and tunes the profile weight table only when Todd asks for a recalibration',
+  # v2.116 (Todd 2026-10-17/18): controller releases, batteries, the P0 release
+  # path and runtime rule changes moved to the controller repository; the product
+  # skill keeps only the boundary below. The removed rules remain in v2.115 history.
+  'Scope boundary: this orchestrator builds the Chase Sets platform and nothing else.',
+  'It files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.',
+  'Record each use of the exception as `escaped-defect`.',
+  'Release tags are the only install authority: never install an untagged commit, never edit the container checkout, and never copy a live edit over a mismatch.',
+  'Controller releases are not part of this loop.',
+  'is not a product finding is a controller defect'
 )
 
 function Get-SectionTitles([string]$Text) {
@@ -378,8 +373,6 @@ $attemptParkMutant = $milestone -replace 'The step-back review never parks and n
 Add-MutantClaim "attempt-count-park-restored" $true (Test-PreservedSections $attemptParkMutant $baseMilestone) "v2.103 step-back never parks"
 $reviewerParkMutant = $milestone -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+an\s+artifact', 'Reviewer exhaustion parks the artifact'
 Add-MutantClaim "reviewer-exhaustion-parks" $true (Test-PreservedSections $reviewerParkMutant $baseMilestone) "v2.103 reviewer exhaustion fallback"
-$packetExemptionMutant = $milestone.Replace("there is no packet`nlifecycle and no weekly release train", "a packet lifecycle and a weekly`nrelease train remain", [StringComparison]::Ordinal)
-Add-MutantClaim "release-packet-lifecycle-reintroduced" $true (Test-PreservedSections $packetExemptionMutant $baseMilestone) "v2.58 one review, no packets, no train"
 $leaseRotationMutant = $milestone.Replace("rotates only`nwhen Todd says so", "rotates daily`nor at the session limit", [StringComparison]::Ordinal)
 Add-MutantClaim "lease-rotation-reintroduced" $true (Test-PreservedSections $leaseRotationMutant $baseMilestone) "v2.58 host rotates only on Todd instruction"
 $noiseBreakerMutant = $milestone.Replace("retry with backoff`nand open no breaker", "open the affected breaker`nand stop")
@@ -390,14 +383,10 @@ $qualityVerdictMutant = $milestone.Replace("two-sided verdict on all twelve pair
 Add-MutantClaim "quality-verdict-partial" $true (Test-PreservedSections $qualityVerdictMutant $baseMilestone) "v2.56 two-sided verdict on all twelve pairs"
 $qualityWeightMutant = $milestone.Replace("its profile sets", "any profile allows", [StringComparison]::Ordinal)
 Add-MutantClaim "quality-weight-ignored" $true (Test-PreservedSections $qualityWeightMutant $baseMilestone) "v2.56 profile weight governs blocking"
-$landingStallMutant = $milestone.Replace("is a controller P0: enqueue", "is a routine refusal: enqueue", [StringComparison]::Ordinal)
-Add-MutantClaim "landing-refusal-not-p0" $true (Test-PreservedSections $landingStallMutant $baseMilestone) "v2.57 landing refusal of a complete-authority PR is a controller P0"
+$landingStallMutant = $milestone.Replace("is a controller defect: enqueue", "is a routine refusal: enqueue", [StringComparison]::Ordinal)
+Add-MutantClaim "landing-refusal-not-controller-defect" $true (Test-PreservedSections $landingStallMutant $baseMilestone) "v2.116 landing refusal of a complete-authority PR is a controller defect (was P0 in v2.57)"
 $breakerRepairMutant = $milestone.Replace("A breaker never blocks its own repair.", "A breaker blocks its own repair until cleared.", [StringComparison]::Ordinal)
 Add-MutantClaim "breaker-blocks-own-repair" $true (Test-PreservedSections $breakerRepairMutant $baseMilestone) "v2.57 breaker-repair admission"
-$outOfBandMutant = $milestone.Replace("ships out of band by default without a Todd ruling", "ships on the weekly train unless Todd rules P0", [StringComparison]::Ordinal)
-Add-MutantClaim "controller-p0-waits-for-train" $true (Test-PreservedSections $outOfBandMutant $baseMilestone) "v2.57 controller P0 out-of-band default"
-$parkRulingMutant = $milestone.Replace("is prohibited.", "is permitted when the product frontier is busy.", [StringComparison]::Ordinal)
-Add-MutantClaim "ruling-implementation-parked" $true (Test-PreservedSections $parkRulingMutant $baseMilestone) "v2.57 ruling implementation never parked"
 $noteDiscardMutant = $milestone.Replace("stay in the receipt; the controller`nfiles no issue, debt slice, or weekly review from them", "are discarded after landing", [StringComparison]::Ordinal)
 Add-MutantClaim "non-blocking-findings-discarded" $true (Test-PreservedSections $noteDiscardMutant $baseMilestone) "v2.54 non-blocking finding consumption"
 # v2.60: overhead removals pinned against reintroduction.
@@ -415,8 +404,6 @@ $recalibrationCadenceMutant = $milestone.Replace("only when Todd asks for a reca
 Add-MutantClaim "recalibration-cadence-reintroduced" $true (Test-PreservedSections $recalibrationCadenceMutant $baseMilestone) "v2.60 recalibration on request only"
 $opsTriggerMutant = $milestone.Replace("An ops-kind issue is dispatched only when a`nready product issue is blocked on it or Todd names it", "An ops-kind issue is dispatched whenever a`nlane is free", [StringComparison]::Ordinal)
 Add-MutantClaim "ops-dispatch-trigger-removed" $true (Test-PreservedSections $opsTriggerMutant $baseMilestone) "v2.60 ops dispatch only when product is blocked or Todd names it"
-$batteryTwiceMutant = $milestone.Replace("The selected battery runs once per candidate head, by the author lane,", "The selected battery runs twice per candidate head, by the author and the reviewer,", [StringComparison]::Ordinal)
-Add-MutantClaim "battery-run-twice-reintroduced" $true (Test-PreservedSections $batteryTwiceMutant $baseMilestone) "v2.60 full battery once per head"
 $qualityGateMutant = $milestone.Replace("Only confirmed correctness, security, or objective quality findings block", "Only confirmed correctness or security findings block", [StringComparison]::Ordinal)
 Add-MutantClaim "quality-gate-removed" $true (Test-PreservedSections $qualityGateMutant $baseMilestone) "v2.54 objective quality blocking class"
 $verdictRetroMutant = $milestone.Replace("Quality verdicts are retro input", "Quality verdicts are advisory only", [StringComparison]::Ordinal)
@@ -424,7 +411,7 @@ Add-MutantClaim "quality-verdict-not-retro-input" $true (Test-PreservedSections 
 $sectionTitleMutant = $milestone.Replace("## 8. Landing and deploy", "## 8. Landing, deploy, and manual attempts", [StringComparison]::Ordinal)
 Add-MutantClaim "section-title-moved" $true (Test-PreservedSections $sectionTitleMutant $baseMilestone) "section titles preserved in order"
 
-Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.115/v4.26 release identity is invalid"
+Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.116/v4.26 release identity is invalid"
 # v2.58: no live train authority. The only permitted mentions of a release train are the
 # section-7 retirement sentence and the v2.58 header retirement list.
 function Test-NoTrainAuthority([string]$Milestone) {
@@ -435,59 +422,26 @@ function Test-NoTrainAuthority([string]$Milestone) {
   return (-not $trainHit)
 }
 Assert-6997 (Test-NoTrainAuthority $milestone) "live skill retains release-train authority outside its retirement text"
-$trainMutant = $milestone.Replace("is implemented within seven days; parking a", "is implemented by the next weekly train at the latest; parking a", [StringComparison]::Ordinal)
+$trainMutant = $milestone.Replace("Controller releases are not part of this loop.", "Controller releases ship on the next weekly train.", [StringComparison]::Ordinal)
 Add-MutantClaim "train-authority-reintroduced" (Test-NoTrainAuthority $milestone) (Test-NoTrainAuthority $trainMutant) "v2.58 no live train authority"
-$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.115, 2026-10-16)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
+$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.116, 2026-10-18)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
 Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing) "milestone release header"
-$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.115, 2026-10-16)", "# Milestone Orchestrator (v2.114, 2026-10-16)")
+$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.116, 2026-10-18)", "# Milestone Orchestrator (v2.115, 2026-10-16)")
 Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing) "milestone release header"
 
-# #9373 (Todd 4388/6112638067): section 7's CI-sourced governing reuse rule.
-# Each clause has its own deletion mutant; the retired sentence stays absent.
-$retiredReuseSentence = 'Impact and prior-result reuse runs are author-iteration evidence only, never substitutes for the governing install proof.'
-$script:ciReuseClauses = [ordered]@{
-  'iteration-only' = 'Impact-scope and local-prior reuse are author-iteration evidence only, never substitutes for the governing install proof;'
-  'chained-local-prior' = 'a local prior that carries `ci:` rows is local-prior reuse.'
-  'full-scope-only' = 'CI-sourced reuse (Todd 4388/6112638067, #9373) may serve a governing install proof, initial or repair, at `-Scope full` only.'
-  'how-to-run' = 'Run `controller-release-battery.ps1 -Scope full -PriorResultPath <final.json>` with the `controller-battery-result` final.json of a completed hosted `chase-sets/chase-sets-controller` run of the exact candidate head,'
-  'per-item-rows-govern' = 'whatever its conclusion; per-item rows govern.'
-  'test-rows-only' = 'The battery lends only fresh `test:*` PASS rows with equal arguments that the diff cannot reach, never a CI row of another `scope.kind`.'
-  'local-remainder' = 'Everything else runs locally: FAIL, LOCAL_ONLY, restricted and not-hermetic items,'
-  'guards-local' = 'the guards (`direct:fail-closed-guard-evidence` and every `discriminator:*`, under every prior),'
-  'no-reuse-identity-local' = 'each `-NoReuseIdentity` item and anything the battery declines to lend.'
-  'no-fail-to-pass' = 'No item turns from FAIL or LOCAL_ONLY into PASS by reuse; such items get verdicts only from local execution.'
-  'check-counts' = 'executed + reused = satisfied = required;'
-  'check-reuse-line' = 'the log''s `REUSE ... source=ci:<runId>` line;'
-  'check-row-source' = '`provenance.source = ci:<runId>` on every reused row, for a completed run on the exact reviewed head;'
-  'check-empty-diff' = 'an empty diff since that run''s `controllerHead`;'
-  'check-guards-executed' = 'every guard/open safeguard identity executed locally;'
-  'check-no-reuse-after-second' = 'no reuse after the second occurrence.'
-  'safeguard-record' = 'Safeguard: record distinct local/weekly failures of CI-reused items on CI-passed heads in #189 `Bug`s titled `[controller] CI reuse safeguard: <identity>`.'
-  'safeguard-stop-identity' = 'While open, pass the identity in `-NoReuseIdentity` (one `;`-separated string) and verify local execution.'
-  'second-occurrence' = 'A second occurrence ends governing CI reuse (`reusedCount = 0`),'
-  'same-bug' = 'even for the same identity/Bug;'
-  'duplicates' = 'duplicates count once.'
-  'closure' = 'Closure does not undo termination; only a new Todd ruling reinstates it.'
-  'lifetime' = 'This rule lasts until #189''s exit gate makes the hosted battery the native governing proof.'
-}
-function Test-CiReuseRule([string]$Section) {
-  $compact = Compact-Text $Section
-  if ($compact.Contains($retiredReuseSentence, [StringComparison]::Ordinal)) { return $false }
-  foreach ($clause in $script:ciReuseClauses.Values) {
-    if (-not $compact.Contains($clause, [StringComparison]::Ordinal)) { return $false }
-  }
-  return $true
-}
+# v2.116: controller release proof, including the #9373 CI-sourced reuse rule,
+# left the product skill for the controller repository. Section 7 must not
+# regain controller release-proof authority.
 $section7Compact = Compact-Text (Get-Section $milestone 7)
-Assert-6997 (Test-CiReuseRule $section7Compact) "section 7 lacks the #9373 CI-sourced reuse rule"
-foreach ($clause in $script:ciReuseClauses.GetEnumerator()) {
-  Add-MutantClaim "ci-reuse-$($clause.Key)-deleted" $true (Test-CiReuseRule ($section7Compact.Replace($clause.Value, ''))) "section 7 CI-sourced reuse clause"
+function Test-NoReleaseProofAuthority([string]$Section) {
+  foreach ($retired in @('CI-sourced reuse', 'governing install proof', 'install-controller-skills.ps1 -ReviewedCommit')) {
+    if ($Section.Contains($retired, [StringComparison]::Ordinal)) { return $false }
+  }
+  return $Section.Contains('Controller releases are not part of this loop.', [StringComparison]::Ordinal)
 }
-$iterationRule = $script:ciReuseClauses['iteration-only'] + ' ' + $script:ciReuseClauses['chained-local-prior']
-Add-MutantClaim "ci-reuse-old-sentence-restored" $true (Test-CiReuseRule ($section7Compact.Replace($iterationRule, $retiredReuseSentence))) "retired reuse sentence"
-Add-MutantClaim "ci-reuse-old-sentence-reinserted" $true (Test-CiReuseRule ($section7Compact + ' ' + $retiredReuseSentence)) "retired reuse sentence"
-Add-MutantClaim "ci-reuse-local-prior-governs" $true (Test-CiReuseRule ($section7Compact.Replace('reuse are author-iteration evidence only, never substitutes for', 'reuse may also serve'))) "impact-scope and local-prior reuse stay iteration evidence"
-Add-MutantClaim "ci-reuse-impact-scope-governs" $true (Test-CiReuseRule ($section7Compact.Replace('at `-Scope full` only.', 'at any scope.'))) "CI-sourced reuse governs at -Scope full only"
+Assert-6997 (Test-NoReleaseProofAuthority $section7Compact) 'section 7 regained controller release-proof authority'
+Add-MutantClaim 'ci-reuse-rule-reinserted' $true (Test-NoReleaseProofAuthority ($section7Compact + ' CI-sourced reuse may serve a governing install proof.')) 'v2.116 release proof left the product skill'
+Add-MutantClaim 'release-boundary-deleted' $true (Test-NoReleaseProofAuthority ($section7Compact.Replace('Controller releases are not part of this loop.', ''))) 'v2.116 release boundary sentence'
 
 # MUTANT_AUTONOMY_SURFACE_ACCEPTED: the corrected footprint ratchet tolerating an
 # unrelated descendant path must never widen into tolerating a corrupted protected

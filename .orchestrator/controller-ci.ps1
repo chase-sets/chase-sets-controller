@@ -51,6 +51,7 @@ function Get-CiRestriction([string]$Identity, [string]$Root) {
   $history = @{
     'discriminator:issue-6289' = @('50e3695074960ed988996860ff9bf8a45d6b8bea','e396120d26a766e467e0d01052939d6abf945e21')
     'discriminator:issue-6289-bounded-probe' = @('1031c527aeb3705e7738f8d7a18cb7b04dba81f8')
+    'test:issue-6997-autonomy-policy.test.ps1' = @('af24feeabe2df0143e59461ad652291ab0b46936','c53405bd25eed66232cc3f470e0dd2da3fd69bbf')
   }
   if ($history.ContainsKey($Identity)) {
     foreach ($head in $history[$Identity]) {

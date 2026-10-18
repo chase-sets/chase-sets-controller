@@ -65,14 +65,16 @@ $milestoneText = Read-Strict "controller-skills/milestone-orchestrator/SKILL.md"
 $reviewContract = Read-Strict "contracts/review-v2.md"
 function Test-BatteryInstallProof([string]$Skill, [string]$Review) {
   $section = [regex]::Match($Skill, '(?ms)^## 7\.[^\r\n]*\r?\n.*?(?=^## \d+\.|\z)')
-  $skillRule = 'For governing install proof, an initial candidate requires `-Scope full` against the installed baseline; a repair against a governing `BLOCK_FIXABLE` baseline requires full scope when its diff changes a runtime script.'
+  # v2.116: controller release proof belongs to the controller repository; the
+  # product skill only applies released tags and must say so in section 7.
+  $skillRule = 'Controller releases are not part of this loop. The controller thread authors, verifies and tags them on `chase-sets/chase-sets-controller`, and Todd approves them; this orchestrator applies a new tag at cycle start (§2) and does nothing else with them.'
   $contractRule = 'The initial candidate always uses the installed controller baseline and full runtime proof.'
-  Assert-Enforced ($section.Success -and (Compact-Text $section.Value).Contains($skillRule, [StringComparison]::Ordinal)) 'skill section 7 lacks full install proof'
+  Assert-Enforced ($section.Success -and (Compact-Text $section.Value).Contains($skillRule, [StringComparison]::Ordinal)) 'skill section 7 lacks the controller release boundary'
   Assert-Enforced ((Compact-Text $Review).Contains($contractRule, [StringComparison]::Ordinal)) 'review-v2 lacks initial full install proof'
   Assert-Enforced ((Compact-Text $Review).Contains('any runtime-script change selects the full plan.', [StringComparison]::Ordinal)) 'review-v2 lacks repair runtime full plan'
 }
 Test-BatteryInstallProof $milestoneText $reviewContract
-Assert-Mutant 'skill-initial-full-proof-deleted' { Test-BatteryInstallProof ($milestoneText -replace 'For governing install proof, an initial candidate requires `-Scope full`\s+against the installed baseline; ', '') $reviewContract }
+Assert-Mutant 'skill-release-boundary-deleted' { Test-BatteryInstallProof ($milestoneText -replace 'Controller releases are not part of this loop\.\s+', '') $reviewContract }
 Assert-Mutant 'review-initial-full-proof-deleted' { Test-BatteryInstallProof $milestoneText ($reviewContract -replace 'The initial candidate always\s+uses the installed controller baseline and full runtime proof\.', '') }
 Assert-Enforced (($milestoneText.ToCharArray() | Where-Object { [int]$_ -gt 127 }).Count -gt 0) "mutant needs a non-ASCII character in the milestone skill"
 Assert-Mutant "cp1252-encoded-skill" { Test-ByteHygiene ([Text.Encoding]::GetEncoding(1252).GetBytes($milestoneText)) "mutant" }
@@ -348,36 +350,14 @@ Assert-Mutant "report-drops-non-blocking-ids" { Test-QualityKeys $qualityContrac
 # Policy-only boundary: pins are section-scoped and whitespace-insensitive.
 # Each negative control removes one permission boundary, not a runtime fixture.
 $platformRules = @(
+  # v2.116: the platform loop and its migration belong to the controller thread;
+  # the product loop reads only the ownership register and applies the partition.
   @(3, 'platform-handoff.md', 'unregistered-handoff.md'),
-  @(3, 'issuecomment-5664326394', 'issuecomment-SYNTHETIC-NONAUTHORITY'),
-  @(3, 'supervise both platform loops as below before step 7', 'supervise after backfill'),
-  @(3, 'Continue incumbent-owned product delivery in parallel.', 'Pause all product delivery.'),
-  @(3, 'wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log', 'read only an old M1 summary'),
-  @(3, '/root/orchestration-m2/supervisor.log', '/root/SYNTHETIC-NONLOOP/supervisor.log'),
-  @(3, 'PID, parent/process group, start instant, and command/config against the run''s start record', 'a PID alone'),
-  @(3, 'Once ISS-136 is installed and exercised on a real run, use its status command instead of routine log-tail and process reconstruction.', 'Use native status as soon as its issue closes.'),
-  @(3, 'Do not repeat those manual reads for a current, complete native observation.', 'Repeat all manual reads after every native observation.'),
-  @(3, 'Before adoption, or when native evidence is unavailable, stale or incomplete, observe both supervisor logs read-only', 'Treat unavailable native status as healthy without fallback.'),
-  @(3, 'ISS-138 alert silence is not health evidence and does not replace current-state or pre-mutation checks.', 'Quiet alerts authorize skipping current-state and pre-mutation checks.'),
-  @(3, 'Idle never transfers ownership.', 'Idle transfers ownership.'),
-  @(3, 'Todd; no host action on the work.', 'Host clears operator work.'),
-  @(3, 'host files the planning repair, but no incumbent implementation while platform-owned. Unpark returns work to the loop.', 'host files and implements the planning repair while platform-owned.'),
-  @(3, 'Learning note on the platform tracking issue plus a `ready` ISS in the platform repo; the self loop fixes it.', 'Host repairs the stopped platform loop.'),
-  @(3, 'Incumbent handles only its own scope: breaker and one bounded author lane, plus a platform tracking note. A second recurrence becomes an ISS.', 'Host repairs any scope without a tracking note.'),
-  @(3, 'never host rerun, close/reopen, or repair; PR #8005 belongs exclusively to that native path', 'host may rerun PR #8005'),
-  @(3, 'Trigger for ISS-109; until it lands, keep such issues out of platform milestones.', 'Dispatch Claude work through the platform immediately.'),
-  @(3, 'Another ready ISS there may run while ISS-110 is open.', 'M1 must always be idle while ISS-110 is open.'),
-  @(3, 'never repeatedly restart an expected idle run, edit the selector, or rehome ISS-136/137/138 to force selection', 'restart repeatedly or edit the selector to force selection'),
-  @(3, 'Never hand-edit the platform checkout or `/root/orchestration-m1/repo` executor', 'Hand-edit the platform checkout and executor'),
-  @(3, 'Start or resume only from Windows via the platform checkout''s `scripts/executor/start-loop.ps1 <config>`', 'Start supervisors directly in WSL'),
-  @(3, 'recording config path, run name, executor SHA, and supervisor PID', 'recording only the run name'),
-  @(3, 'only with no live M2 supervisor until ISS-137 pause exists', 'even with a live M2 supervisor before ISS-137'),
-  @(3, 'ISS-110 closed on its own single-invocation, end-to-end milestone terms (milestone 158 with restarts does not count)', 'milestone 158 with restarts satisfies ISS-110'),
-  @(3, 'ISS-136/137/138 landed AND used on a real run', 'ISS-136/137/138 merely filed'),
-  @(3, 'one full milestone delivered with zero incumbent touches, measured as manual host interventions per delivered issue on #367/#368', 'one issue with unmeasured incumbent help'),
-  @(3, 'rollback runbook landed AND exercised once', 'rollback runbook merely drafted'),
-  @(3, 'Only a later qualifying controller release may retire sections 3-10 for routine delivery, retaining section 11 and operator actions.', 'This release retires sections 3-10 and operator actions.'),
-  @(3, 'writing or reviewing it authorizes no rollback, platform process kill, or ownership change', 'writing it authorizes immediate rollback'),
+  @(3, 'The orchestration platform loop and its migration belong to the controller thread.', 'The orchestration platform loop belongs to this orchestrator.'),
+  @(3, 'This orchestrator does not observe, start, stop, upgrade or repair platform supervisors or executors and never touches the platform checkout.', 'This orchestrator supervises, restarts and repairs platform executors.'),
+  @(3, 'It reads only the ownership register (section 1) of', 'It reads all of'),
+  @(3, 'handle incumbent-owned scope as usual and leave platform-side causes to the controller thread.', 'repair platform-side causes directly.'),
+  @(3, 'Renew the host identity record and apply any newer controller release (§2).', 'Renew the host identity record.'),
   @(4, 'protected set must equal its platform-owned milestone rows', 'protected set may omit platform-owned milestones'),
   @(4, 'current ruling protects milestones 155 and 158 exactly', 'current ruling protects only milestone 155'),
   @(4, 'Future ownership changes require BOTH a Todd comment on #4388 and the register edit', 'Future ownership changes require only an idle log'),
@@ -402,13 +382,14 @@ function Test-PlatformPolicy([string]$Skill) {
     $script:assertions += 1
   }
   $cycle = [regex]::Match($Skill, '(?ms)^## 3\..*?^7\. Backfill').Value
-  if (-not (Compact-Text $cycle).Contains('supervise both platform loops as below before step 7')) {
-    throw 'ASSERTION FAILED: platform supervision must precede backfill'
+  if (-not $cycle -or (Compact-Text $cycle).Contains('platform loops')) {
+    throw 'ASSERTION FAILED: the product cycle must not supervise platform loops'
   }
 }
 
 Test-PlatformPolicy $milestoneText
 Test-PlatformPolicy ($milestoneText.Replace(' ', '  '))
+Assert-Mutant 'platform-supervision-restored' { Test-PlatformPolicy ($milestoneText.Replace('6. Validate completed lanes and run independent review.', '6. Validate completed lanes and run independent review; supervise both platform loops as below before step 7.')) }
 foreach ($rule in $platformRules) {
   $match = [regex]::Match($milestoneText, (([regex]::Escape($rule[1])) -replace '\\ ', '\s+'))
   Assert-Enforced $match.Success "platform negative control must change its boundary: $($rule[1])"

@@ -3,12 +3,15 @@ name: milestone-orchestrator
 description: Run the chase-sets delivery loop — complete all committed, non-parked outcomes by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, sending Todd only product priority or scope questions and packaged operator actions. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
 ---
 
-# Milestone Orchestrator (v2.115, 2026-10-16)
+# Milestone Orchestrator (v2.116, 2026-10-18)
 
-Version 2.115 adds the AgentPools pace raise (#9737) so banked credits are
-spent before they lapse, in steps of at most two new lanes per run. A positive
-allowance with ready work is a reason to dispatch, not a ceiling to stay under.
-Routing remains data-bound as in v2.87; prior release notes are archived in
+Version 2.116 makes this skill product-only (Todd, 2026-10-17/18). Controller
+code and releases, the orchestration-platform migration, and routing,
+velocity and capacity improvement belong to the separate controller thread in
+`D:\Users\ToddS\Source\Repos\chase-sets-controller`. A controller release is
+an annotated `controller-v*` tag on `chase-sets/chase-sets-controller`;
+this skill only applies released tags (§2). Routing remains data-bound as in
+v2.87; prior release notes are archived in
 `references/rule-provenance-v2.24.md`.
 
 Controller dispatch is data-bound rather than release-pinned: routing-policy
@@ -59,6 +62,17 @@ Standing invariants:
 - Route, verify, land, and record. Never implement, debug, or repair product
   work in the host context; dispatch a bounded lane.
 
+Scope boundary: this orchestrator builds the Chase Sets platform and nothing
+else. It never edits, dispatches, reviews, batteries or installs controller
+work (the `.orchestrator` runtime, contracts and controller skills, and
+routing, velocity or capacity policy), and it never supervises the
+orchestration platform loop. It files a controller defect as an issue on
+`chase-sets/chase-sets-controller` and continues product work. One
+exception: a controller defect that blocks product delivery right now may be
+handled here, first by reinstalling the previous release tag (§2); a forward
+fix follows the controller repository's own release process. Record each use
+of the exception as `escaped-defect`.
+
 Astra (`gpt-6-astra`) is selectable for Codex tasks and as the registered
 `astra-high` host arm. Sol high remains the default. Model selection does not
 relax single-writer exclusivity, exact review authority, release promotion,
@@ -81,11 +95,18 @@ State must survive in the logs, board, and artifacts rather than in an
 ever-growing chat.
 The orchestrator and its lanes never run an unscoped recursive enumeration of `.orchestrator`, `logs` or `artifacts`; use exact paths or `rg --files -g <glob>`.
 
-At session start, run `.orchestrator/check-controller-skill-freshness.ps1`.
-Use the installed controller only when it reports `current`. The installer
-binds the exact reviewed commit and hashes every installed static file.
-Source/install drift is a blocker: install the reviewed release or dispatch a
-controller-repair lane; never copy an unreviewed live edit over the mismatch.
+At session start and at step 1 of every cycle, run
+`.orchestrator/check-controller-skill-freshness.ps1 -Json`. It reports the
+installed release tag, the newest `controller-v*` tag on
+`chase-sets/chase-sets-controller`, and whether the installed skill files
+match the container checkout. When a newer tag exists, apply it before
+dispatching with `.orchestrator/install-controller-skills.ps1 -ReleaseTag
+<tag>` (it refuses while a heavy verifier owns the host; retry next cycle),
+then re-read this skill. Rollback is the same command with the previous tag.
+Release tags are the only install authority: never install an untagged
+commit, never edit the container checkout, and never copy a live edit over a
+mismatch. A `stale` report with no newer tag is a controller defect: file
+it and continue product work.
 
 Publish no routine narration while the board and generated digest are healthy.
 Post a status entry on #4388 only after a landing, a breaker change, or two
@@ -96,15 +117,14 @@ report that loss and fall back to terse check-ins until restored.
 
 On every wake:
 
-1. Renew the host identity record.
+1. Renew the host identity record and apply any newer controller release (§2).
 2. Verify the newest actual deploy execution; update breakers.
 3. Land only exact-head-authorized green PRs through `landing-preflight.ps1`.
 4. Run `cleanup-orphan-worktree-dirs.ps1 -Remove -ReportPath
    .orchestrator/logs/worktree-reclamation-<yyyyMMddTHHmmssZ>.json` every cycle.
    Run `runtime-retention.ps1 -Apply`; it archives seven-day-old eligible output only when no verified manifest is newer than 24 hours.
 5. Run the stall watchdog and inspect active-lane deltas.
-6. Validate completed lanes and run independent review; supervise both platform
-   loops as below before step 7.
+6. Validate completed lanes and run independent review.
 7. Backfill or scale from the live runnable frontier.
 8. Sweep for decisions and operator actions; log each packaged Todd action
    change as `todd-action` (§11).
@@ -116,64 +136,16 @@ On every wake:
 
 No flow snapshot, replan reconciliation, or metrics check exists in the cycle.
 
-### Platform supervision
+### Orchestration platform
 
-Read the complete canonical `.orchestrator/platform-handoff.md` at the container
-root for the ownership register, route table, executor policy, rollback, exit
-criteria, and current handoff log. It is the readable contract of
-[Todd's #4388 ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5664326394)
-and platform #368. Apply the partition in section 4 to the entire cycle, not
-only backfill. Continue incumbent-owned product delivery in parallel.
-
-Each wake before step 7, observe both loops. Once ISS-136 is installed and
-exercised on a real run, use its status command instead of routine log-tail
-and process reconstruction. Do not repeat those manual reads for a current,
-complete native observation. Before adoption, or when native evidence is
-unavailable, stale or incomplete, observe both supervisor logs read-only with
-`wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log` and the same
-command for `/root/orchestration-m2/supervisor.log`. Check the exact
-`supervise.mjs` process identity read-only: PID, parent/process group, start
-instant, and command/config against the run's start record. A historical log
-line or matching PID alone is not liveness. Unresolved evidence stays unknown;
-unrelated incumbent work continues. ISS-138 alert silence is not health
-evidence and does not replace current-state or pre-mutation checks.
-Record a stop's route as one line on
-`todd-skelton/orchestration-platform#367` while ISS-110 is open, then #368;
-routine observation adds no status beyond the existing #4388 cadence.
-
-Preserve the handoff route table without expanding its permissions:
-
-| Observation | Route |
-| --- | --- |
-| Idle, empty runnable set, no admitted work blocked | Verify milestone completion and the actual deploy under section 8; seek Todd's #4388 ownership change and register edit before incumbent adoption, and propose the next small platform milestone. Idle never transfers ownership. |
-| `status:needs-operator` work | Todd; no host action on the work. |
-| Work-caused park (attempt ceiling, review fail) | The loop parks and continues; host files the planning repair, but no incumbent implementation while platform-owned. Unpark returns work to the loop. |
-| Host/executor stop, including an unclassified stop or dead supervisor | Learning note on the platform tracking issue plus a `ready` ISS in the platform repo; the self loop fixes it. Resume only through the canonical path below. |
-| Chase Sets `main` or actual deploy red | Incumbent handles only its own scope: breaker and one bounded author lane, plus a platform tracking note. A second recurrence becomes an ISS. |
-| Failed hosted platform PR check | Native repair (ISS-124/ISS-141), never host rerun, close/reopen, or repair; PR #8005 belongs exclusively to that native path. |
-| Issue routed to Claude by model-routing | Trigger for ISS-109; until it lands, keep such issues out of platform milestones. |
-| M1 exits idle while ISS-110 is open | Expected when no ready issue exists in the earliest open registered milestone: the self adapter has no `targetMilestone`. Another ready ISS there may run while ISS-110 is open. Restart only when appropriate runnable work exists, including after ISS-110 closes; never repeatedly restart an expected idle run, edit the selector, or rehome ISS-136/137/138 to force selection. |
-
-Never hand-edit the platform checkout or `/root/orchestration-m1/repo` executor;
-platform defects stay with the self loop. Start or resume only from Windows via
-the platform checkout's `scripts/executor/start-loop.ps1 <config>`, recording
-config path, run name, executor SHA, and supervisor PID. Honor any active setup
-owner until it reports that identity and releases responsibility; historical
-setup completion is not a continuing setup hold. The shared executor moves to
-`origin/main` only with no live M2 supervisor until ISS-137 pause exists; then
-use its native pause contract. The self loop's between-cycle upgrade remains
-ISS-133. This is not permission to stop M2 to upgrade it.
-
-ISS-111 exit requires all of: ISS-110 closed on its own single-invocation,
-end-to-end milestone terms (milestone 158 with restarts does not count);
-ISS-136/137/138 landed AND used on a real run; one full milestone delivered
-with zero incumbent touches, measured as manual host interventions per
-delivered issue on #367/#368; and the rollback runbook landed AND exercised
-once. Only a later qualifying controller release may retire sections 3-10 for
-routine delivery, retaining section 11 and operator actions. The separate
-Chase Sets docs PR owns `docs/runbooks/platform-loop-rollback.md`; writing or
-reviewing it authorizes no rollback, platform process kill, or ownership change.
-Rollback requires Todd's authorization and the runbook, not ordinary reclamation.
+The orchestration platform loop and its migration belong to the controller
+thread. This orchestrator does not observe, start, stop, upgrade or repair
+platform supervisors or executors and never touches the platform checkout.
+It reads only the ownership register (section 1) of
+`.orchestrator/platform-handoff.md` to learn which milestones the platform
+loop owns, and applies the partition in section 4 of this skill. When
+Chase Sets `main` or the actual deploy is red, handle incumbent-owned scope
+as usual and leave platform-side causes to the controller thread.
 
 ## 4. Work selection and ready gate
 
@@ -769,118 +741,12 @@ explicitly matching the requested positive PR still poisons that PR. This
 boundary uses closed fields only, never dates, issue lists, prose, lanes, or
 model aliases.
 
-Every controller release, Todd-authored or controller-authored, takes one
-governing review scoped to its change and installs on PASS; there is no packet
-lifecycle and no weekly release train. A controller P0 is any landing-gate
-defect that refuses a landing-authority-complete PR (§8), any breaker-repair
-refusal, and any pipeline breaker on the controller itself; a controller P0
-ships out of band by default without a Todd ruling: bounded repair, full
-runtime battery, one governing review, install. A release identifier is never
-burned on a module whose prerequisite is unmet; such work waits at filing on
-that prerequisite as a native blocker, and an implementation of a Todd ruling
-is never parked (§15).
-
-Batch releases ([Todd's #4388 batch ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-6169900446),
-codified as a member of batch 1, #9614): while the ruling is in force, the
-preceding paragraph's no-packet-lifecycle clause and the re-anchor each install
-forces on every other in-flight candidate are suspended, and controller
-releases, Todd-authored or controller-authored, batch. A candidate joins a
-batch only if it has a strict governing `controller-review-receipt/v1` PASS at
-its own head before the batch is cut and merges onto the installed baseline
-without conflict alongside the other members; a candidate that is red,
-unreviewed, under review at the cut, or conflicting goes to the next batch and
-never holds the current one. The combined head gets one `-Scope full` battery,
-with CI-sourced reuse unchanged, and one governing review over the merge
-result, any conflict resolutions, any repairs and any member diff no receipt
-already covers; on PASS it installs once through
-`install-controller-skills.ps1 -ReviewedCommit`. Members are not re-anchored,
-re-batteried or re-reviewed individually. Each batch has one tracking
-controller issue naming its member issues and heads; that issue is the receipt
-identity, and each member gets its own installed/landed row. Unchanged:
-exact-head receipts, the strict governing PASS, the clean tracked-tree gate,
-guards that always run locally, the PREEXISTING baseline rule (Todd
-4388/6167918688) and the controller P0 out-of-band path; no gate is bypassed
-and no attempt is reset. The ruling ends when Todd rules battery cost fixed or
-when #189's exit gate makes the hosted battery the native governing proof,
-whichever comes first; the host records the end on #4388.
-
-A P0 repair brief is exempt from the planning pressure sweep: the failing
-run's log, read by the host, is its normative content, incorporated by
-reference, and the ready gates still apply. A P0 repair takes one exact-head code review and
-delta re-reads, never a fresh complete sweep per round.
-
-Change scope is derived by `controller-release-battery.ps1 -BaselineHead`.
-An initial candidate uses the installed baseline. A repair may instead use the
-ancestor head from exactly one governing `BLOCK_FIXABLE` receipt with named
-findings, supplying its complete canonical review history; malformed,
-non-ancestor, missing-finding, and non-fixable predecessors fail closed. The
-governing release proof follows `contracts/review-v2.md:126-132`.
-For governing install proof, an initial candidate requires `-Scope full`
-against the installed baseline; a repair against a governing `BLOCK_FIXABLE`
-baseline requires full scope when its diff changes a runtime script.
-For a skill/contract/test-only repair, impact scope satisfies the contract's
-"prose plan" because its smoke set includes the policy pin and contract
-enforcement. Impact-scope and local-prior reuse are author-iteration evidence
-only, never substitutes for the governing install proof; a local prior that
-carries `ci:` rows is local-prior reuse.
-
-CI-sourced reuse (Todd 4388/6112638067, #9373) may serve a governing install
-proof, initial or repair, at `-Scope full` only. Run
-`controller-release-battery.ps1 -Scope full -PriorResultPath <final.json>` with
-the `controller-battery-result` final.json of a completed hosted
-`chase-sets/chase-sets-controller` run of the exact candidate head, whatever
-its conclusion; per-item rows govern. The battery lends only fresh `test:*`
-PASS rows with equal arguments that the diff cannot reach, never a CI row of
-another `scope.kind`. Everything else runs locally: FAIL, LOCAL_ONLY,
-restricted and not-hermetic items, the guards
-(`direct:fail-closed-guard-evidence` and every `discriminator:*`, under every
-prior), each `-NoReuseIdentity` item and anything the battery declines to
-lend. No item turns from FAIL or LOCAL_ONLY into PASS by reuse; such items get
-verdicts only from local execution. The governing review checks:
-
-- executed + reused = satisfied = required;
-- the log's `REUSE ... source=ci:<runId>` line;
-- `provenance.source = ci:<runId>` on every reused row, for a completed run on
-  the exact reviewed head;
-- an empty diff since that run's `controllerHead`;
-- every guard/open safeguard identity executed locally;
-- no reuse after the second occurrence.
-
-Safeguard: record distinct local/weekly failures of CI-reused items on
-CI-passed heads in #189 `Bug`s titled
-`[controller] CI reuse safeguard: <identity>`. While open, pass the identity
-in `-NoReuseIdentity` (one `;`-separated string) and verify local execution.
-A second occurrence ends governing CI reuse (`reusedCount = 0`), even for the
-same identity/Bug; duplicates count once. Closure does not undo termination;
-only a new Todd ruling reinstates it. This rule lasts until #189's exit gate
-makes the hosted battery the native governing proof.
-
-The author-iteration battery runs the impact scope: the smoke set (policy pin,
-contract enforcement, installer, battery self-test, landing preflight), the changed
-tests, the guard discriminators, and every test that reads a changed file,
-following code readers transitively and skill, contract and data readers
-directly. No baseline, `-Scope full`, or a changed runtime file that no test
-reads runs the full battery; a battery change adds its full self-test. In an
-impact run a guard-omission mutant or #8102 classifier leg runs only when its
-guarded file or the carrier support changed; candidate arms always run. Tests
-run fastest first and the battery stops at the first failure that is not
-PREEXISTING, naming the rest not run (`-OnFailure all` runs all). A rerun
-passes `-PriorResultPath` and reuses passing tests the fix cannot reach;
-guard items always run. A failure that reproduces identically on
-the installed baseline ends `FAIL_PREEXISTING_ONLY`, which never prints PASS;
-the governing review accepts it once each named item has an open issue, and
-nothing waits on that issue. The host runs the full battery on the installed
-head at most weekly, hidden and never blocking a release; a failure there
-files an issue. The selected battery runs once per candidate head, by the author lane,
-with its log bound to the exact head; the governing review verifies that log
-and re-runs only the tests the diff changed, directly as focused tests, never
-through ControllerBattery, ControllerPrecursor or a battery rerun. Heavy
-reproduction returns to the host's attributed implementation/verifier lane.
-A review report is the report
-alone: no manifest, evidence file, or hash comparison. Install requires the
-exact reviewed head, a clean tracked tree, and the strict
-`controller-review-receipt/v1` PASS for that head; nothing else authorizes
-installation.
+Controller releases are not part of this loop. The controller thread
+authors, verifies and tags them on `chase-sets/chase-sets-controller`, and
+Todd approves them; this orchestrator applies a new tag at cycle start (§2)
+and does nothing else with them. It never cuts batches, runs controller
+batteries or precursors, dispatches controller reviews, or holds product
+lanes for controller work.
 
 Retired by v2.58 and archived in `references/rule-provenance-v2.24.md`: the
 three-packet lifecycle, the #7495 bootstrap authority, the H1/H2/H3
@@ -928,13 +794,13 @@ blocker is landing-authority-complete: the controller enqueues on its own
 authority and no held landing order exists; Todd never enqueues on the
 controller's behalf. A refusal of a
 landing-authority-complete PR by any controller gate for a reason that is not
-a product finding is a controller P0: enqueue the product PR directly once
+a product finding is a controller defect: enqueue the product PR directly once
 with GitHub `enqueuePullRequest` (exact PR node ID, expected head OID,
 `jump:false`) and append one `landing-stall` row containing the refusal reason
 and actual enqueue result. An unknown mutation response is reconciled against
 the queue before any retry; intent never becomes an enqueue fact. Manual
-fallback on #4388 is used only when the direct mutation fails or the refused
-candidate is a controller release. A non-authority-complete PR is never mutated,
+fallback on #4388 is used only when the direct mutation fails. File the gate
+refusal as a controller defect (§1). A non-authority-complete PR is never mutated,
 and the direct enqueue is reconciled as landed with no bypass finding.
 Landings are ordered by the merge queue alone. A pipeline breaker holds only
 landings that can change a deployable, as judged by the PR's Change Scope
@@ -1465,14 +1331,10 @@ failed irreversible operations, and remedy recurrence.
   a parallel routine. Use existing issue/PR and execution evidence to check
   whether the action, wait or failure disappeared; add no report, approval
   stage or delivery gate.
-- Standing behavior change: update this skill or the authoritative runtime,
-  bump the version, log `rule-change`, and pass independent review/install.
-  A Todd-authored change takes one independent review and installs at once,
-  with proof scoped to its change (§7); a controller-authored change takes
-  the same one review and installs at once. A Todd ruling
-  that changes runtime behavior is implemented within seven days; parking a
-  ruling's implementation, or conditioning it on an
-  empty product frontier, is prohibited.
+- Standing behavior change to this skill or any controller runtime: file it
+  on `chase-sets/chase-sets-controller` for the controller thread; never
+  edit the skill or runtime from this loop. A Todd ruling that changes runtime
+  behavior goes to the controller thread the same way.
 - Recurrent pattern after remedy: mark the remedy ineffective and re-diagnose.
 - Quality verdicts are retro input: recalibration reads `NOTE` counts by
   key, side, profile, and author model from the review receipts and tunes the
