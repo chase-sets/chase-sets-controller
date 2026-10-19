@@ -150,6 +150,50 @@ process.exitCode = 7;
   $smuggle=Invoke-Diagnostic @{} 'child-node-options-smuggle'
   Assert-True ((Test-Path $smuggle.Marker) -and ([IO.File]::ReadAllText($smuggle.Marker) -ceq 'tab-prefix,appended,execSync-null,getter-pinned')) 'altered NODE_OPTIONS and execSync(cmd, null, opts) are refused; a getter env is pinned to the checked value'
   Write-Output 'PASS diagnostic child callback-options=refused config-drop=refused node-options-smuggle=refused env-getter=pinned'
+  $prototypeRelative='.orchestrator/artifacts/child-env-prototype.mjs'; $prototypePath=Join-Path $worktree ($prototypeRelative -replace '/','\')
+  Set-Content -LiteralPath $prototypePath -Value @'
+import { spawnSync, execSync } from 'node:child_process';
+import fs from 'node:fs';
+const keep = process.env.NODE_OPTIONS;
+const probe = 'process.stdout.write(String(process.env.NODE_OPTIONS))';
+const held = [];
+// Each case passes only when the launch is refused or the child receives the checked value.
+const check = (name, launch) => {
+  try {
+    const output = String(launch());
+    if (output === keep) held.push(name);
+  } catch (error) {
+    if (String(error.message).includes('NODE_OPTIONS lacks the diagnostic preload')) held.push(name);
+  }
+};
+// keepFor(n) answers the checked value for n reads, then an empty string.
+const keepFor = (allowed) => { let reads = 0; return () => (reads++ < allowed ? keep : ''); };
+const run = (options) => spawnSync(process.execPath, ['-e', probe], { ...options, encoding: 'utf8' }).stdout;
+const withoutOptions = () => spawnSync(process.execPath, ['-e', probe]).stdout;
+const base = { ...process.env };
+delete base.NODE_OPTIONS;
+const ownProtoKey = { ...base };
+Object.defineProperty(ownProtoKey, '__proto__', { enumerable: true, configurable: true, writable: true, value: Object.defineProperty({}, 'NODE_OPTIONS', { enumerable: true, get: keepFor(1) }) });
+check('own-proto-key', () => run({ env: ownProtoKey }));
+Object.defineProperty(Object.prototype, 'NODE_OPTIONS', { enumerable: true, configurable: true, get: keepFor(2), set() {} });
+check('inherited-setter', () => run({ env: { ...base } }));
+delete Object.prototype.NODE_OPTIONS;
+delete process.env.NODE_OPTIONS;
+Object.defineProperty(Object.prototype, 'NODE_OPTIONS', { enumerable: true, configurable: true, get: keepFor(1) });
+check('process-env-inherited', withoutOptions);
+delete Object.prototype.NODE_OPTIONS;
+process.env.NODE_OPTIONS = keep;
+Object.defineProperty(Object.prototype, 'env', { configurable: true, get: () => ({ ...process.env, NODE_OPTIONS: '' }) });
+check('inherited-options-env', withoutOptions);
+check('inherited-options-env-exec', () => execSync(JSON.stringify(process.execPath) + ' -e ' + JSON.stringify(probe), { encoding: 'utf8' }));
+delete Object.prototype.env;
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, held.join(','));
+'@
+  $scriptRelative=$prototypeRelative; $scriptPath=$prototypePath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  $prototypeCase=Invoke-Diagnostic @{} 'child-env-prototype'
+  $prototypeHeld=if (Test-Path $prototypeCase.Marker) { [IO.File]::ReadAllText($prototypeCase.Marker) } else { '<no marker>' }
+  Assert-True ($prototypeHeld -ceq 'own-proto-key,inherited-setter,process-env-inherited,inherited-options-env,inherited-options-env-exec') "prototype tricks cannot change the child env after the check (held: $prototypeHeld)"
+  Write-Output 'PASS diagnostic child-env-prototype=pinned-or-refused'
 
   $manifestRemovalRelative='.orchestrator/artifacts/manifest-removal.mjs'; $manifestRemovalPath=Join-Path $worktree ($manifestRemovalRelative -replace '/','\')
   Set-Content -LiteralPath $manifestRemovalPath -Value @'

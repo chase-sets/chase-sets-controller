@@ -396,30 +396,45 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     });
   };
   const guardedMethods = ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"];
+  // Where options go when the caller passed none: exec/execSync take them at 1;
+  // the others take them after an args array, otherwise at 1.
+  const optionsSlot = (method, argumentsList) => {
+    if (method === "exec" || method === "execSync") return 1;
+    return Array.isArray(argumentsList[1]) ? 2 : 1;
+  };
+  // Null-prototype copies: no inherited setter can drop a write and no inherited
+  // getter can answer a later read, so the guard and Node see the same values.
+  const snapshotEnvironment = (source) => {
+    const copy = Object.create(null);
+    for (const key in source) copy[key] = source[key];
+    return copy;
+  };
   for (const method of guardedMethods) {
     const original = childProcess[method];
     childProcess[method] = function guardedDiagnosticLaunch(...argumentsList) {
-      const index = optionsIndex(method, argumentsList);
-      let environment = process.env;
-      if (index >= 0) {
-        // Snapshot once and hand Node the same data the guard checked. The env is
-        // copied with for...in (as Node enumerates it), so getters and proxies are
-        // read exactly once and Node receives plain values.
-        const snapshot = { ...argumentsList[index] };
-        if (Object.hasOwn(snapshot, "env")) {
-          if (snapshot.env !== null && typeof snapshot.env === "object") {
-            const copy = {};
-            for (const key in snapshot.env) copy[key] = snapshot.env[key];
-            snapshot.env = copy;
-          }
-          environment = snapshot.env;
-        }
-        argumentsList[index] = snapshot;
+      let index = optionsIndex(method, argumentsList);
+      const requested = index >= 0 ? argumentsList[index] : undefined;
+      if (index < 0) {
+        // Always hand Node explicit options so it never falls back to process.env
+        // or an inherited options.env.
+        index = optionsSlot(method, argumentsList);
+        if (argumentsList[index] !== undefined && argumentsList[index] !== null) argumentsList.splice(index, 0, undefined);
       }
-      if (environment?.NODE_OPTIONS !== requiredNodeOptions) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
+      // Snapshot once and hand Node the same data the guard checked. Getters and
+      // proxies are read exactly once and Node receives plain own values.
+      const snapshot = Object.assign(Object.create(null), requested);
+      const requestedEnvironment = requested === undefined ? undefined : requested.env;
+      if (requestedEnvironment !== undefined && requestedEnvironment !== null && typeof requestedEnvironment !== "object") {
+        refuseChildLaunch("the child environment was not an object");
+      }
+      // Node uses options.env || process.env and enumerates it with for...in.
+      const environment = snapshotEnvironment(requestedEnvironment || process.env);
+      snapshot.env = environment;
+      argumentsList[index] = snapshot;
+      if (environment.NODE_OPTIONS !== requiredNodeOptions) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
       // A child without the exact admission configuration would take the
       // unconfigured preload branch and load modules without the policy.
-      if (environment?.CHASE_SETS_HEAVY_ADMISSION_CONFIG !== encodedConfiguration) {
+      if (environment.CHASE_SETS_HEAVY_ADMISSION_CONFIG !== encodedConfiguration) {
         refuseChildLaunch("the diagnostic admission configuration was not inherited");
       }
       return original.apply(this, argumentsList);
