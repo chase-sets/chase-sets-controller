@@ -96,7 +96,8 @@ landing-preflight/v1
   function Assert-Refused([string]$Tag, [string]$Expected) {
     $result = Invoke-Installer $Tag
     Assert-True ($result.ExitCode -ne 0) "installer should refuse $($Tag): $Expected"
-    Assert-True (($result.Output -replace '\s+', ' ') -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output)"
+    $plainOutput = ($result.Output -replace '(?m)^\s*\|\s?', '') -replace '\s+', ' '
+    Assert-True ($plainOutput -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output)"
     $result
   }
   function Assert-Installed([string]$Tag, [string]$Commit) {
@@ -372,6 +373,8 @@ landing-preflight/v1
   $withoutShared = [regex]::Replace($lockText, ',\r?\n[ \t]*\[pscustomobject\]\[ordered\]@\{ source = "orchestrator-shared/SKILL\.md"[^\r\n]*\r?\n[ \t]*\[pscustomobject\]\[ordered\]@\{ source = "orchestrator-shared/agents/openai\.yaml"[^\r\n]*', '')
   Assert-True ($withoutShared -cne $lockText -and -not $withoutShared.Contains('orchestrator-shared')) 'fixture removes orchestrator-shared from the earlier inventory'
   $v20 = Publish-Release "controller-v2.0" { [IO.File]::WriteAllText($lockModule, $withoutShared) }
+  # Keep this fixture's manual directory removal and new-skill checks unchanged.
+  Set-Content -LiteralPath (Join-Path $destinationRoot 'orchestrator-shared/user.txt') -Value 'user file'
   $earlier = Invoke-Installer "controller-v2.0"
   Assert-True ($earlier.ExitCode -eq 0) "release without the shared skill installs: $($earlier.Output)"
   $sharedLive = Join-Path $destinationRoot "orchestrator-shared"
@@ -404,6 +407,233 @@ landing-preflight/v1
   Assert-True (-not (Test-Path -LiteralPath $sharedLive)) "refusal without a release record creates no directory"
   Move-Item -LiteralPath $recordAside -Destination $recordPath
   Write-Output 'PASS install-controller-skills new skill directory and Codex link; shipped-skill and no-record refusals; user Codex entry kept'
+
+  # --- dropped destinations -------------------------------------------------
+  # These releases and install surfaces are private fixtures, including malicious
+  # historical inventories. Never install those inventories as candidates.
+  $originalDestinationRoot = $destinationRoot
+  $originalCodexRoot = $codexRoot
+  $destinationRoot = Join-Path $sandbox 'removal-live'
+  $codexRoot = Join-Path $sandbox 'removal-codex'
+  Import-Module (Join-Path $PSScriptRoot 'controller-install-lock.psm1') -Force -DisableNameChecking
+  $baseInventory = @(Get-ControllerSkillInstallInventory)
+  function New-InventoryEntry([string]$Destination, [bool]$PreserveGenerated = $false) {
+    [pscustomobject]@{ source = 'model-routing/references/experiments.md'; destination = $Destination; preserveGenerated = $PreserveGenerated; transportText = $true }
+  }
+  function Publish-InventoryRelease([string]$Tag, [object[]]$Inventory) {
+    $json = ConvertTo-Json -InputObject @($Inventory) -Depth 5 -Compress
+    $inventoryFunction = "function Get-ControllerSkillInstallInventory {`n  @'`n$json`n'@ | ConvertFrom-Json`n}"
+    $start = $lockText.IndexOf('function Get-ControllerSkillInstallInventory {', [StringComparison]::Ordinal)
+    $end = $lockText.IndexOf('function Get-ControllerTransportNormalizedBytes {', $start, [StringComparison]::Ordinal)
+    Assert-True ($start -ge 0 -and $end -gt $start) 'fixture locates the inventory function'
+    Publish-Release $Tag {
+      [IO.File]::WriteAllText($lockModule, $lockText.Substring(0, $start) + $inventoryFunction + "`n`n" + $lockText.Substring($end))
+      Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value "revision $Tag"
+    }
+  }
+  function Get-InstallSurfaceSnapshot {
+    $rows = foreach ($root in @($destinationRoot, $codexRoot)) {
+      if (-not (Test-Path -LiteralPath $root)) { continue }
+      (@(Get-Item -LiteralPath $root -Force) + @(Get-ChildItem -LiteralPath $root -Recurse -Force)) | Sort-Object FullName | ForEach-Object {
+        # Enumeration can cache a parent's pre-junction timestamp on Windows.
+        $_.Refresh()
+        $content = if ($_.LinkType) { "$($_.LinkType)|$(@($_.Target)[0])" }
+          elseif ($_.PSIsContainer) { 'directory' }
+          else { [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName)) }
+        "$($_.FullName)|$content|$($_.CreationTimeUtc.Ticks)|$($_.LastWriteTimeUtc.Ticks)"
+      }
+    }
+    $rows -join "`n"
+  }
+  function Assert-RemovalInstall([string]$Tag) {
+    $result = Invoke-Installer $Tag
+    Assert-True ($result.ExitCode -eq 0) "removal release installs $($Tag): $($result.Output)"
+  }
+  function Assert-RemovalRecord([string]$Tag, [string]$Commit) {
+    $record = Get-Content -LiteralPath (Join-Path $destinationRoot 'native-db/release.json') -Raw | ConvertFrom-Json
+    Assert-True ($record.tag -ceq $Tag -and $record.commit -ceq $Commit) "removal record names $Tag"
+    $identity = Get-Content -LiteralPath (Join-Path $destinationRoot 'native-db/identity.json') -Raw | ConvertFrom-Json
+    Assert-True ($identity.head -ceq $Commit) 'native identity advances to the candidate'
+    $helperHash = (Get-FileHash -LiteralPath (Join-Path $destinationRoot 'native-db/admission.py')).Hash
+    Assert-True ($helperHash -ieq $identity.digest -and $helperHash -ceq (Get-FileHash -LiteralPath (Join-Path $container '.orchestrator/native-db-admission.py')).Hash) 'native helper and digest receive the candidate bytes'
+  }
+  try {
+    foreach ($entry in $baseInventory) {
+      [void][IO.Directory]::CreateDirectory((Join-Path $destinationRoot (($entry.destination -split '[/\\]')[0])))
+    }
+    $dropEntries = @(
+      (New-InventoryEntry 'removed-skill/nested/old.txt'),
+      (New-InventoryEntry 'user-kept-skill/old.txt'),
+      (New-InventoryEntry 'model-routing/old.txt'),
+      (New-InventoryEntry 'model-routing/generated.json' $true),
+      (New-InventoryEntry 'native-db2/old.txt')
+    )
+    $retainedEntry = New-InventoryEntry 'model-routing/keep.txt'
+    # Do not inherit the earlier telemetry fixture's extra trailing newline.
+    Set-Content -LiteralPath $sourceMatrix -Value ([ordered]@{ configs = @() } | ConvertTo-Json -Depth 10)
+    $v30 = Publish-InventoryRelease 'controller-v3.0' ($baseInventory + $dropEntries + $retainedEntry)
+    # First install requires existing skill directories without a release record.
+    foreach ($entry in $dropEntries) {
+      [void][IO.Directory]::CreateDirectory((Join-Path $destinationRoot (($entry.destination -split '/')[0])))
+    }
+    Assert-RemovalInstall 'controller-v3.0'
+    [IO.File]::WriteAllText((Join-Path $destinationRoot 'user-kept-skill/user.txt'), 'user-owned bytes')
+    [void][IO.Directory]::CreateDirectory((Join-Path $destinationRoot 'user-skill'))
+    [IO.File]::WriteAllText((Join-Path $destinationRoot 'user-skill/SKILL.md'), 'user skill bytes')
+    [IO.File]::WriteAllText((Join-Path $destinationRoot 'native-db/sentinel'), 'native state bytes')
+    [IO.File]::WriteAllText((Join-Path $destinationRoot 'model-routing/generated.json'), 'generated live bytes')
+    $pathsBeforeDrop = @(foreach ($root in @($destinationRoot, $codexRoot)) { Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object FullName })
+    $v31 = Publish-InventoryRelease 'controller-v3.1' ($baseInventory + $retainedEntry)
+    Assert-RemovalInstall 'controller-v3.1'
+    $pathsAfterDrop = @(foreach ($root in @($destinationRoot, $codexRoot)) { Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object FullName })
+    $removedPaths = @($pathsBeforeDrop | Where-Object { $_ -notin $pathsAfterDrop })
+    $expectedRemoved = @($dropEntries | ForEach-Object { Join-Path $destinationRoot $_.destination }) + @(
+      (Join-Path $destinationRoot 'removed-skill/nested'), (Join-Path $destinationRoot 'removed-skill'),
+      (Join-Path $destinationRoot 'native-db2'), (Join-Path $codexRoot 'removed-skill'), (Join-Path $codexRoot 'native-db2')
+    )
+    Assert-True (@(Compare-Object $expectedRemoved $removedPaths).Count -eq 0) 'only exact declared drops, their empty parents and their matching Codex junctions are removed'
+    foreach ($entry in $dropEntries) {
+      Assert-True (-not (Test-Path -LiteralPath (Join-Path $destinationRoot $entry.destination))) "dropped destination removed: $($entry.destination)"
+    }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $destinationRoot 'removed-skill'))) 'empty dropped skill root is removed'
+    Assert-True ($null -eq (Get-Item -LiteralPath (Join-Path $codexRoot 'removed-skill') -Force -ErrorAction SilentlyContinue)) 'matching dropped skill Codex junction is removed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $codexRoot 'user-kept-skill')) 'Codex junction remains when a user file keeps the skill root'
+    foreach ($sentinel in @(@('user-kept-skill/user.txt', 'user-owned bytes'), @('user-skill/SKILL.md', 'user skill bytes'), @('native-db/sentinel', 'native state bytes'))) {
+      Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $destinationRoot $sentinel[0]))) -ceq
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($sentinel[1]))) "non-inventory bytes survive: $($sentinel[0])"
+    }
+    foreach ($entry in @($baseInventory + $retainedEntry)) {
+      Assert-True ((Get-FileHash -LiteralPath (Join-Path $destinationRoot $entry.destination)).Hash -ceq
+        (Get-FileHash -LiteralPath (Join-Path $container ".orchestrator/controller-skills/$($entry.source)")).Hash) "retained file is byte-identical to B: $($entry.destination)"
+    }
+    Assert-RemovalRecord 'controller-v3.1' $v31
+    Write-Output 'PASS dropped destinations: whole skill and matching Codex junction, single file, preserveGenerated drop, native-db2; non-inventory state and normal native-db updates'
+
+    $renameOld = New-InventoryEntry 'model-routing/rename-old.txt'
+    [void](Publish-InventoryRelease 'controller-v3.2' ($baseInventory + $retainedEntry + $renameOld))
+    Assert-RemovalInstall 'controller-v3.2'
+    $unrelatedBefore = [IO.File]::ReadAllBytes((Join-Path $destinationRoot 'model-routing/keep.txt'))
+    $renameHashes = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $destinationRoot -Recurse -File -Force) {
+      if ($file.FullName -eq (Join-Path $destinationRoot $renameOld.destination) -or
+          $file.FullName -in @('admission.py', 'identity.json', 'release.json' | ForEach-Object { Join-Path $destinationRoot "native-db/$_" })) { continue }
+      $renameHashes[$file.FullName] = (Get-FileHash -LiteralPath $file.FullName).Hash
+    }
+    $renameNew = New-InventoryEntry 'model-routing/rename-new.txt'
+    $renameNew.source = 'model-routing/references/capability-recalibration.md'
+    # The same retained destination differs in both case and separator spelling.
+    $spelledRetained = New-InventoryEntry 'MODEL-ROUTING\KEEP.TXT'
+    [void](Publish-InventoryRelease 'controller-v3.3' ($baseInventory + $spelledRetained + $renameNew))
+    Assert-RemovalInstall 'controller-v3.3'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $destinationRoot $renameOld.destination))) 'renamed old destination is gone'
+    Assert-True ((Get-FileHash -LiteralPath (Join-Path $destinationRoot $renameNew.destination)).Hash -ceq
+      (Get-FileHash -LiteralPath (Join-Path $container ".orchestrator/controller-skills/$($renameNew.source)")).Hash) 'renamed new destination has B bytes'
+    Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $destinationRoot 'model-routing/keep.txt'))) -ceq [Convert]::ToBase64String($unrelatedBefore)) 'case/separator-retained destination and unrelated bytes survive'
+    foreach ($path in $renameHashes.Keys) {
+      Assert-True ((Get-FileHash -LiteralPath $path).Hash -ceq $renameHashes[$path]) "rename leaves unrelated file bytes unchanged: $path"
+    }
+    Write-Output 'PASS dropped destinations: rename by destination only; ordinal case-insensitive separator-normalized retention'
+
+    $removalRecordPath = Join-Path $destinationRoot 'native-db/release.json'
+    $validRecordBytes = [IO.File]::ReadAllBytes($removalRecordPath)
+    $record = Get-Content -LiteralPath $removalRecordPath -Raw | ConvertFrom-Json
+    $record.commit = '0' * 40
+    [IO.File]::WriteAllText($removalRecordPath, ($record | ConvertTo-Json -Compress))
+    $before = Get-InstallSurfaceSnapshot
+    [void](Assert-Refused 'controller-v3.3' "controller skill install refused: cannot compute dropped files: installed release $('0' * 40) is unreadable")
+    Assert-True ((Get-InstallSurfaceSnapshot) -ceq $before) 'unreadable inventory refusal leaves all install surfaces unchanged'
+    [IO.File]::WriteAllBytes($removalRecordPath, $validRecordBytes)
+    Write-Output 'PASS dropped destinations: unreadable installed commit refuses before any install-surface write'
+
+    $outside = Join-Path $sandbox 'outside'
+    [IO.File]::WriteAllText($outside, 'outside bytes')
+    $sibling = "$($destinationRoot)2"
+    [void][IO.Directory]::CreateDirectory($sibling)
+    [IO.File]::WriteAllText((Join-Path $sibling 'old.txt'), 'sibling bytes')
+    $junction = Join-Path $destinationRoot 'model-routing/redirect'
+    New-Item -ItemType Junction -Path $junction -Target $sibling | Out-Null
+    $droppedJunction = Join-Path $destinationRoot 'linked-skill'
+    New-Item -ItemType Junction -Path $droppedJunction -Target $sibling | Out-Null
+    $unsafeCases = @(
+      @('../outside', 'is outside the destination root'),
+      @('../removal-live2/old.txt', 'is outside the destination root'),
+      @('native-db/sentinel', 'is native-db state'),
+      @('model-routing/redirect/old.txt', 'traverses a reparse point'),
+      @('linked-skill', 'traverses a reparse point'),
+      @('user-skill', 'is a directory, not a file'),
+      @('.', 'is outside the destination root'),
+      @('model-routing/./keep.txt', 'resolves to a retained destination'),
+      @('model-routing//keep.txt', 'resolves to a retained destination'),
+      @('model-routing/references', 'resolves to a retained destination')
+    )
+    for ($i = 0; $i -lt $unsafeCases.Count; $i++) {
+      $unsafeDestination, $reason = $unsafeCases[$i]
+      $unsafeCommit = Publish-InventoryRelease "controller-v4.$i" ($baseInventory + $spelledRetained + $renameNew + (New-InventoryEntry $unsafeDestination))
+      # Make the historical inventory readable without installing its unsafe paths.
+      & git -C $container fetch --no-tags --quiet $publisher "refs/tags/controller-v4.$($i):refs/controller-releases/controller-v4.$i"
+      Assert-True ($LASTEXITCODE -eq 0) 'unsafe historical release is available to the container'
+      $record.commit = $unsafeCommit
+      [IO.File]::WriteAllText($removalRecordPath, ($record | ConvertTo-Json -Compress))
+      $before = Get-InstallSurfaceSnapshot
+      [void](Assert-Refused 'controller-v3.3' "controller skill install refused: cannot compute dropped files: dropped destination $reason")
+      $after = Get-InstallSurfaceSnapshot
+      $snapshotDelta = @(Compare-Object ($before -split "`n") ($after -split "`n") | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }) -join "`n"
+      Assert-True ($after -ceq $before) "unsafe destination refuses without writes: $unsafeDestination; snapshot delta: $snapshotDelta"
+      Assert-True ([IO.File]::ReadAllText($outside) -ceq 'outside bytes' -and [IO.File]::ReadAllText((Join-Path $sibling 'old.txt')) -ceq 'sibling bytes') 'outside and sibling bytes survive refusal'
+    }
+    [IO.File]::WriteAllBytes($removalRecordPath, $validRecordBytes)
+    [IO.Directory]::Delete($junction)
+    [IO.Directory]::Delete($droppedJunction)
+    Write-Output 'PASS dropped destinations: traversal, sibling-prefix, native-db, reparse-point, directory, root and retained-alias refusals preserve all install surfaces'
+
+    $lockedEntry = New-InventoryEntry 'locked-skill/old.txt'
+    $userCodexDrop = New-InventoryEntry 'user-codex-skill/old.txt'
+    $otherJunctionDrop = New-InventoryEntry 'other-junction-skill/old.txt'
+    [void](Publish-InventoryRelease 'controller-v5.0' ($baseInventory + $lockedEntry + $userCodexDrop + $otherJunctionDrop))
+    Assert-RemovalInstall 'controller-v5.0'
+    $userCodexPath = Join-Path $codexRoot 'user-codex-skill'
+    [IO.Directory]::Delete($userCodexPath)
+    [void][IO.Directory]::CreateDirectory($userCodexPath)
+    [IO.File]::WriteAllText((Join-Path $userCodexPath 'user.txt'), 'own Codex entry')
+    $otherJunctionPath = Join-Path $codexRoot 'other-junction-skill'
+    [IO.Directory]::Delete($otherJunctionPath)
+    New-Item -ItemType Junction -Path $otherJunctionPath -Target $sibling | Out-Null
+    $v51 = Publish-InventoryRelease 'controller-v5.1' $baseInventory
+    $lockedPath = Join-Path $destinationRoot $lockedEntry.destination
+    $oldRecord = [Convert]::ToBase64String([IO.File]::ReadAllBytes($removalRecordPath))
+    $copyTarget = Join-Path $destinationRoot 'model-routing/SKILL.md'
+    $copyHandle = [IO.File]::Open($copyTarget, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+      $failedCopy = Invoke-Installer 'controller-v5.1'
+      Assert-True ($failedCopy.ExitCode -ne 0 -and $failedCopy.Output -match 'SKILL.md') 'copy obstacle fails before removal'
+      Assert-True (Test-Path -LiteralPath $lockedPath) 'no dropped file is removed before the entire copy loop succeeds'
+      Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($removalRecordPath)) -ceq $oldRecord) 'copy failure keeps exact old release record'
+    } finally { $copyHandle.Dispose() }
+    $handle = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+      $failedRemoval = Invoke-Installer 'controller-v5.1'
+      Assert-True ($failedRemoval.ExitCode -ne 0 -and $failedRemoval.Output -match 'locked-skill[\\/]old\.txt') "locked dropped file fails removal: $($failedRemoval.Output)"
+      Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($removalRecordPath)) -ceq $oldRecord) 'failed removal keeps exact old release record'
+      $identity = Get-Content -LiteralPath (Join-Path $destinationRoot 'native-db/identity.json') -Raw | ConvertFrom-Json
+      Assert-True ($identity.head -ceq $v51) 'failed removal leaves candidate native identity in place'
+    } finally { $handle.Dispose() }
+    $skipRemoval = $installerText.Replace('Remove-Item -LiteralPath $dropped.Path -Force', '# skipped removal mutant')
+    Assert-True ($skipRemoval -cne $installerText) 'post-removal verification mutant changes its exact target'
+    [void](Publish-Release 'controller-v5.1.1' { [IO.File]::WriteAllText($installerPath, $skipRemoval) })
+    [void](Assert-Refused 'controller-v5.1.1' 'controller skill install verification failed: dropped path remains:')
+    Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($removalRecordPath)) -ceq $oldRecord) 'a leftover path prevents writing the candidate record even when removal reports success'
+    Assert-RemovalInstall 'controller-v5.1'
+    Assert-True (-not (Test-Path -LiteralPath $lockedPath)) 'same-tag rerun removes the previously locked file'
+    Assert-RemovalRecord 'controller-v5.1' $v51
+    Assert-True ([IO.File]::ReadAllText((Join-Path $userCodexPath 'user.txt')) -ceq 'own Codex entry') 'dropped skill never removes a user Codex directory'
+    $otherJunction = Get-Item -LiteralPath $otherJunctionPath -Force
+    Assert-True ($otherJunction.LinkType -eq 'Junction' -and $otherJunction.Target -ieq $sibling) 'dropped skill never removes a Codex junction targeting another directory'
+    Write-Output 'PASS dropped destinations: deletion failure keeps old release record; same-tag rerun completes removal; user Codex entry survives'
+    Write-Output 'PASS dropped destinations: copy failure precedes removal; leftover-path verification kills skipped-removal mutant; unrelated Codex junction survives'
+  } finally {
+    $destinationRoot = $originalDestinationRoot
+    $codexRoot = $originalCodexRoot
+  }
 
   Assert-True ((Get-CodexRootSnapshot $realCodexRoot) -ceq $realCodexBefore) "the real Codex skill root is unchanged"
   Write-Output "PASS install-controller-skills release-tag authority, fetch-only container, and install coverage"

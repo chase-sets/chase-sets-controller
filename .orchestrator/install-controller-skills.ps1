@@ -123,16 +123,16 @@ function Merge-GeneratedBlocks {
 }
 
 $sourceRoot = Join-Path $PSScriptRoot "controller-skills"
-$destinationRoot = if ($DestinationRoot) { [IO.Path]::GetFullPath($DestinationRoot) } else { Join-Path $HOME ".claude/skills" }
-$codexSkillRoot = if ($CodexSkillRoot) { [IO.Path]::GetFullPath($CodexSkillRoot) } else { Join-Path $HOME ".codex/skills" }
+$destinationRoot = [IO.Path]::GetFullPath($(if ($DestinationRoot) { $DestinationRoot } else { Join-Path $HOME ".claude/skills" }))
+$codexSkillRoot = [IO.Path]::GetFullPath($(if ($CodexSkillRoot) { $CodexSkillRoot } else { Join-Path $HOME ".codex/skills" }))
 
 # A skill directory may be created only for a skill the installed release did
 # not ship. Its inventory is read from the installed release commit, which the
 # container already holds. Any failure to prove the skill is new refuses, so a
 # missing directory for a shipped skill is still reported, never papered over.
-$script:previousReleaseSkills = $null
-function Get-PreviousReleaseSkills {
-  if ($null -ne $script:previousReleaseSkills) { return $script:previousReleaseSkills }
+$script:previousReleaseInventory = $null
+function Get-PreviousReleaseInventory {
+  if ($null -ne $script:previousReleaseInventory) { return $script:previousReleaseInventory }
   $recordPath = Join-Path $destinationRoot 'native-db/release.json'
   if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { throw 'no installed release record' }
   $previousCommit = [string](Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).commit
@@ -146,11 +146,10 @@ function Get-PreviousReleaseSkills {
     $modulePath = Join-Path $scratch 'previous-release-install-lock.psm1'
     [IO.File]::WriteAllText($modulePath, ($previousModule.Lines -join [Environment]::NewLine))
     $module = Import-Module $modulePath -Prefix 'PreviousRelease' -PassThru -Force -DisableNameChecking
-    $skills = @(& (Get-Command -Module $module.Name -Name 'Get-PreviousReleaseControllerSkillInstallInventory') |
-      ForEach-Object { ([string]$_.destination -split '[/\\]')[0] } | Sort-Object -Unique)
-    if ($skills.Count -eq 0) { throw 'installed release inventory is empty' }
-    $script:previousReleaseSkills = $skills
-    return $skills
+    $inventory = @(& (Get-Command -Module $module.Name -Name 'Get-PreviousReleaseControllerSkillInstallInventory'))
+    if ($inventory.Count -eq 0) { throw 'installed release inventory is empty' }
+    $script:previousReleaseInventory = $inventory
+    return $inventory
   } finally {
     if ($module) { Remove-Module -ModuleInfo $module -Force }
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
@@ -219,6 +218,62 @@ $files = @(Get-ControllerSkillInstallInventory | ForEach-Object {
   @{ Source = $_.source; Destination = $_.destination; PreserveGenerated = [bool]$_.preserveGenerated }
 })
 
+# Refuse every unsafe historical destination before touching either install
+# surface. Only destination identity matters, not source or preservation flags.
+$droppedFiles = @()
+function Get-DroppedPathItem([string]$Path) {
+  try { Get-Item -LiteralPath $Path -Force -ErrorAction Stop }
+  catch [System.Management.Automation.ItemNotFoundException] { return $null }
+}
+if (Test-Path -LiteralPath (Join-Path $destinationRoot 'native-db/release.json')) {
+  try {
+    $candidateDestinations = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $candidatePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $files) {
+      [void]$candidateDestinations.Add($file.Destination.Replace('\', '/'))
+      [void]$candidatePaths.Add([IO.Path]::GetFullPath($file.Destination, $destinationRoot))
+    }
+    $rootPrefix = $destinationRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $nativeRoot = [IO.Path]::GetFullPath((Join-Path $destinationRoot 'native-db'))
+    $nativePrefix = $nativeRoot + [IO.Path]::DirectorySeparatorChar
+    foreach ($entry in @(Get-PreviousReleaseInventory)) {
+      $normalized = ([string]$entry.destination).Replace('\', '/')
+      if ($candidateDestinations.Contains($normalized)) { continue }
+      $path = [IO.Path]::GetFullPath($normalized, $destinationRoot)
+      if ($path.Length -le $rootPrefix.Length -or -not $path.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "dropped destination is outside the destination root: $normalized"
+      }
+      if ($path.Equals($nativeRoot, [StringComparison]::OrdinalIgnoreCase) -or
+          $path.StartsWith($nativePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "dropped destination is native-db state: $normalized"
+      }
+      if ($candidatePaths.Contains($path)) {
+        throw "dropped destination resolves to a retained destination: $normalized"
+      }
+      foreach ($candidatePath in $candidatePaths) {
+        if ($candidatePath.StartsWith($path.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+          throw "dropped destination resolves to a retained destination: $normalized"
+        }
+      }
+      $ancestor = $path
+      while ($ancestor.Length -gt $destinationRoot.TrimEnd('\', '/').Length) {
+        $item = Get-DroppedPathItem $ancestor
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+          throw "dropped destination traverses a reparse point: $normalized"
+        }
+        if ($ancestor -eq $path -and $item -and $item.PSIsContainer) {
+          throw "dropped destination is a directory, not a file: $normalized"
+        }
+        $ancestor = Split-Path -Parent $ancestor
+      }
+      $skillName = ($path.Substring($rootPrefix.Length) -split '[/\\]')[0]
+      $droppedFiles += [pscustomobject]@{ Path = $path; SkillRoot = Join-Path $destinationRoot $skillName; SkillName = $skillName }
+    }
+  } catch {
+    throw "controller skill install refused: cannot compute dropped files: $($_.Exception.Message)"
+  }
+}
+
 $installPlan = @()
 foreach ($file in $files) {
   $source = Join-Path $sourceRoot $file.Source
@@ -230,7 +285,11 @@ foreach ($file in $files) {
   $liveSkillRoot = Join-Path $destinationRoot $skillName
   if (-not (Test-Path -LiteralPath $liveSkillRoot -PathType Container)) {
     $previousSkills = $null
-    try { $previousSkills = Get-PreviousReleaseSkills } catch {
+    try {
+      $previousSkills = @(Get-PreviousReleaseInventory | ForEach-Object {
+        ([string]$_.destination -split '[/\\]')[0]
+      } | Sort-Object -Unique)
+    } catch {
       throw "controller skill install refused: live skill directory missing: $liveSkillRoot (cannot prove the skill is new: $($_.Exception.Message))"
     }
     if ($previousSkills -contains $skillName) {
@@ -337,6 +396,41 @@ foreach ($file in $installPlan) {
         throw "controller skill install verification failed for $destination"
       }
     }
+    }
+  }
+  # Copy verification above must succeed before deleting any old destination.
+  # Prune only empty parents, never above the dropped file's skill root.
+  foreach ($dropped in $droppedFiles) {
+    if (-not $PSCmdlet.ShouldProcess($dropped.Path, 'remove dropped controller skill file')) { continue }
+    if (Get-DroppedPathItem $dropped.Path) {
+      Remove-Item -LiteralPath $dropped.Path -Force
+    }
+    $parent = Split-Path -Parent $dropped.Path
+    while ($parent.Length -ge $dropped.SkillRoot.Length) {
+      if (Test-Path -LiteralPath $parent) {
+        if (@(Get-ChildItem -LiteralPath $parent -Force).Count -ne 0) { break }
+        Remove-Item -LiteralPath $parent -Force
+      }
+      if ($parent.Equals($dropped.SkillRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+      $parent = Split-Path -Parent $parent
+    }
+    if (-not (Test-Path -LiteralPath $dropped.SkillRoot)) {
+      $codexEntry = Join-Path $codexSkillRoot $dropped.SkillName
+      $link = Get-Item -LiteralPath $codexEntry -Force -ErrorAction SilentlyContinue
+      if ($link -and $link.LinkType -eq 'Junction' -and
+          [IO.Path]::GetFullPath(@($link.Target)[0]).TrimEnd('\', '/').Equals(
+            $dropped.SkillRoot.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+        if ($PSCmdlet.ShouldProcess($codexEntry, 'remove dropped skill Codex junction')) {
+          Remove-Item -LiteralPath $codexEntry -Force
+        }
+      }
+    }
+  }
+  if (-not $WhatIfPreference) {
+    foreach ($dropped in $droppedFiles) {
+      if (Get-DroppedPathItem $dropped.Path) {
+        throw "controller skill install verification failed: dropped path remains: $($dropped.Path)"
+      }
     }
   }
   # Codex reads skills from its own root. Link each installed skill there when
