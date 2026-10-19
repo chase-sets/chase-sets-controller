@@ -55,7 +55,7 @@ function Assert-HistoryModels([string[]]$Expected,[string]$Artifact='code',[int]
   $args=@{Path=(Join-Path $runtime 'dispatch-log.jsonl');Registry=$registry;Artifact=$Artifact}
   if($Issue){$args.Issue=$Issue}else{$args.Branch=(& git -C $repo branch --show-current).Trim()}
   $history=Get-CapacityAuthorHistory @args
-  Assert-True ($history.complete -and ((@($history.models|Sort-Object -Unique)-join ',') -ceq (@($Expected|Sort-Object -Unique)-join ','))) "complete $Artifact history retains exact author attribution"
+  Assert-True ($history.complete -and ((@($history.models|Sort-Object -Unique)-join ',') -ceq (@($Expected|Sort-Object -Unique)-join ','))) "complete $Artifact history retains exact author attribution expected=[$(@($Expected|Sort-Object -Unique)-join ',')] actual=[$(@($history.models|Sort-Object -Unique)-join ',')] complete=$($history.complete) at=$((Get-PSCallStack)[1].ScriptLineNumber)"
 }
 function Test-CapacityCases([string]$Name) {
   if ($Name -cin @('capacity-roles','capacity-history','capacity-logger')) {
@@ -398,6 +398,7 @@ function Test-CapacityCases([string]$Name) {
       Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       # A later implementation attempt is code authorship through its dispatch row alone, before any receipt names it; it is not brief authorship.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{second=@{kind='dispatch';laneRole='implementation';issue=$issue;branch="codex/$issue-impl-g2";attemptId="$issue-impl-g2";model='claude-opus-5-5';row='7';transcript="$issue-impl-g2.jsonl"}}
+      Assert-HistoryModels @('gpt-6-astra','claude-opus-5-5') 'code' $issue
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'a dispatched code attempt is not brief authorship'
       # Astra planned and authored: planning flips to Opus 5.5 high on row 8 with override-Todd and the real logger accepts the planning v3 row.
@@ -475,10 +476,13 @@ function Test-CapacityCases([string]$Name) {
         $p=Plan $route
         Assert-True ($null -ne $p.capacityFlip -and $p.routing.model -ceq 'claude-opus-5-5' -and $p.routing.effort -ceq 'high') 'read-only planning receipt with attributed review dispatch allows Opus flip'
         $patch=$planningReceipt.Clone();$patch.reviewerPatch=$true
+        $h=Get-CapacityAuthorHistory -Path (Join-Path $runtime 'dispatch-log.jsonl') -Registry (Get-Content (Join-Path $fixture.stateRoot 'model-registry.json') -Raw | ConvertFrom-Json -DateKind String) -Artifact brief -Issue $issue
+        Assert-True ($h.complete -and @($h.models) -cnotcontains 'claude-opus-5-5') 'read-only planning receipt reviewer is not brief authorship'
         Write-History @($reviewDispatch,$patch)
         Assert-True ($null -ne (Plan $route).capacityFlip) 'valid attributed history does not exclude the row policy slot'
         $repair=$planningReceipt.Clone();$repair.outcome='BLOCK_FIXABLE_REPAIRED_IN_BODY'
         Write-History @($reviewDispatch,$repair)
+        Assert-HistoryModels @('claude-opus-5-5','gpt-6-astra') 'brief' $issue
         Assert-True ($null -ne (Plan $route).capacityFlip) 'valid attributed history does not exclude the row policy slot'
         Write-History @($planningReceipt)
         Assert-True ((Plan $route).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'planning receipt without attributed dispatch remains unknown'
@@ -509,29 +513,19 @@ function Test-CapacityCases([string]$Name) {
       Write-Output 'PASS capacity role flips per artifact (planning, brief review, code review)'
     }
     'capacity-continuation' {
-      # The resolver's closed continuation mirror must equal the watchdog's closed quota/session table.
-      . (Join-Path (Split-Path -Parent $LauncherPath) 'routing-data.ps1') -Library
-      $watchdogSource=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $LauncherPath) 'lane-stall-watchdog.ps1'))
-      $tableStart=$watchdogSource.IndexOf('$fallback=@{');$tableEnd=$watchdogSource.IndexOf('# One policy move per lineage',$tableStart)
-      Assert-True ($tableStart -ge 0 -and $tableEnd -gt $tableStart) 'watchdog closed table located'
-      $watchdogTable=@{}
-      foreach($m in [regex]::Matches($watchdogSource.Substring($tableStart,$tableEnd-$tableStart),"'(\d+\|[a-z]+/[a-z]+)'\s*=\s*@\('(codex|claude)','([a-z]+)'")) { $watchdogTable[$m.Groups[1].Value]=$m.Groups[3].Value }
-      Assert-True ($watchdogTable.Count -eq $script:CapacityClosedContinuations.Count -and $watchdogTable.Count -ge 20) "closed table entries watchdog=$($watchdogTable.Count) mirror=$($script:CapacityClosedContinuations.Count)"
-      foreach($key in $watchdogTable.Keys) { Assert-True ($script:CapacityClosedContinuations[$key] -ceq $watchdogTable[$key]) "closed continuation $key" }
-      # The target route's continuation is excluded, nothing else: row 6 Opus high continues as Sol, row 8 follows the
-      # policy slot (Sol), rows 9/11/12 have no continuation, and the Codex direction excludes the Sol route's Opus continuation.
+      # Route continuations no longer exclude reviewers: every row flips to its own slot regardless of history.
       $f=Copy-Forecast;$f.balance.steps=1;Set-Forecast $f
       $astra=@{Model='gpt-6-astra';Effort='high';Placement='override-Todd'}
       Assert-True ($null -ne (Plan ($astra+@{Row=6})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
-      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6}).capacityFlip) 'row 6 from Sol: Astra remains the reviewer'
+      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6}).capacityFlip) 'row 6 from Sol flips to its own Claude slot'
       Assert-True ($null -ne (Plan ($astra+@{Row=8})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
-      foreach($row in @(9,11,12)) { Assert-True ($null -ne (Plan ($astra+@{Row=$row})).capacityFlip) "row $row from Astra: no continuation, Sol remains" }
+      foreach($row in @(9,11,12)) { Assert-True ($null -ne (Plan ($astra+@{Row=$row})).capacityFlip) "row $row from Astra flips to its own Claude slot" }
       $f=Copy-Forecast;$f.balance.toward='codex';$f.balance.steps=1;Set-Forecast $f
-      Assert-True ($null -ne (Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlip) 'toward Codex row 3: Opus continuation already excluded, Astra remains'
+      Assert-True ($null -ne (Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlip) 'toward Codex row 3 flips to its own Codex slot'
       Write-History @(@{kind='dispatch';branch=(& git -C $repo branch --show-current).Trim();attemptId='synthetic-astra';model='gpt-6-astra';laneRole='implementation'})
       Assert-True ($null -ne (Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Write-History @()
-      Write-Output 'PASS capacity route continuation mirror and exclusion'
+      Write-Output 'PASS capacity slot flips without author or continuation exclusion'
     }
   }
 }

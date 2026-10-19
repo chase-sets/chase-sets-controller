@@ -160,7 +160,7 @@ function Test-BriefAttribution([string]$Mode) {
   Assert-True ($h.complete -and $h.models -ccontains 'claude-opus-5-5' -and $h.models -ccontains 'gpt-6-astra' -and $h.models -cnotcontains 'gpt-6.1-sol') 'explicit Packet/AC4 ancestry adds Opus only'
   $review=@{LaneRole='review';Row=11;Model='gpt-6.1-sol';Effort='high';Placement='provisional';Issue=990337;ReviewArtifact='brief'}
   $p=Plan $review
-  Assert-True ($p.capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE' -and $p.routing.model -ceq 'gpt-6.1-sol') 'producer reader resolver retains admitted Sol instead of Opus'
+  Assert-True ($null -ne $p.capacityFlip -and $p.routing.model -ceq 'claude-opus-5-5' -and $p.routing.slot -ceq 'claude.fallback') 'producer reader history does not exclude the row-11 Opus policy slot'
   # 30294 shape is explicit nonwriting participation, not publication.
   & $logger -Log dispatch -Kind decision-resolved -Issue 990337 -Model gpt-6.1-sol -Effort high -Outcome CONTINUE -OutFile $ledger -NoBoard | Out-Null
   $decision=Get-BriefRawSha256 (Get-Content $ledger -Tail 1)
@@ -323,7 +323,7 @@ function Test-BriefAttribution([string]$Mode) {
     }
     $null=Emit $t $a
     $p=Plan $review
-    Assert-True ($p.capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE' -and $p.routing.model -ceq 'gpt-6.1-sol') 'captured Packet plus AC4 excludes Opus and retains Sol'
+    Assert-True ($null -ne $p.capacityFlip -and $p.routing.model -ceq 'claude-opus-5-5') 'captured Packet plus AC4 history does not exclude the row-11 Opus policy slot'
     $h=Read-BriefFixture 9337
     Assert-True ($h.models -ccontains 'claude-opus-5-5' -and $h.models -cnotcontains 'gpt-6.1-sol') 'verbatim 29750 anomaly does not add Sol to consumed 9259 brief'
     $bad=Declaration retrospective $false;$bad.originalRowSha256=Get-BriefRawSha256 $raw[29750]

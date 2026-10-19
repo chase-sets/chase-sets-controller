@@ -476,16 +476,17 @@ A verified mechanical death is processed by `lane-stall-watchdog.ps1`, wired
 from `lane-stall-watchdog-batch.ps1`, within five minutes of observation. Harness
 death resumes the exact partial/worktree on the same configuration; quota or
 session death is classified only from the native provider terminal envelope
-and uses only the current routing row's closed qualified fallback table. Under
-Todd's vendor fallback ruling (4388/5743533387) that table sends a
+and uses only the current routing row's closed qualified fallback table. The
+installed runtime table sends a
 quota-blocked or refused `gpt-6-astra` author to `claude-fable-5-1` and a
 quota-blocked or refused `gpt-6.1-sol` author to `claude-opus-5-5`, each at the
 same effort and placed `override-Todd` in the closed table. The installed
 table carries Astra-to-Fable only on rows 7/14/15, never rows 8/11/12; that is
 runtime compatibility behavior pending its removal, not a Fable reserve or row
 restriction. A
-`watchdog-lane/v3` integration lane, whose author set stays closed to
-codex/`gpt-6-astra`/high/row 7/`override-Todd` pending a separate ruling,
+`watchdog-lane/v3` integration lane, whose installed author set is still
+hard-coded to codex/`gpt-6-astra`/high/row 7/`override-Todd` until the runtime
+moves it to row 7's policy slots,
 records `lane-blocked`/`NO_QUALIFIED_FALLBACK` instead of falling to
 Fable 5.1. Author lanes and watchdog relaunches retain that uppercase spelling;
 strict controller-review dispatch and receipt tuples instead use `override-todd`,
@@ -496,7 +497,7 @@ same attempt/lane/transcript/configuration/worktree/branch/head; missing,
 ambiguous, wrong-head, wrong-attempt, or wrong-configuration evidence is a
 closed provenance refusal and never selects a row or fallback. A
 supported configuration without one records `lane-blocked`/
-`NO_QUALIFIED_FALLBACK` instead of inventing a move; the ruled Astra-to-Fable
+`NO_QUALIFIED_FALLBACK` instead of inventing a move; the installed Astra-to-Fable
 5.1 and Sol 6.1-to-Opus 5.5 moves remain closed watchdog table entries, never
 recomputed from capacity on relaunch. The four own-slot Claude quota fallbacks
 in model-routing apply whether or not the original author was flipped. The

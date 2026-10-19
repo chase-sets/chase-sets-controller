@@ -826,64 +826,6 @@ function Get-CapacityAuthorHistory {
   return [pscustomobject]@{complete=$true;models=@($models)}
 }
 
-function Get-CapacityFableWindowState($Forecast) {
-  # Legacy forecast reader retained for compatibility; live provider windows govern capacity.
-  # Missing, non-object or non-string input is $null, never inferred from the
-  # provider states. This is telemetry, not a model-specific share policy.
-  $decision=if (Test-RoutingObject $Forecast) { $Forecast.PSObject.Properties['decision'] } else { $null }
-  if ($null -eq $decision -or $decision.Value -is [array] -or -not (Test-RoutingObject $decision.Value)) { return $null }
-  $windows=$decision.Value.PSObject.Properties['modelWindowStates']
-  if ($null -eq $windows -or $windows.Value -is [array] -or -not (Test-RoutingObject $windows.Value)) { return $null }
-  $claude=$windows.Value.PSObject.Properties['claude']
-  if ($null -eq $claude -or $claude.Value -is [array] -or -not (Test-RoutingObject $claude.Value)) { return $null }
-  $state=$claude.Value.PSObject.Properties['Fable']
-  if ($null -eq $state -or $state.Value -isnot [string]) { return $null }
-  return $state.Value
-}
-
-# Mirror of the watchdog's closed quota/session table (lane-stall-watchdog.ps1),
-# keyed row|family/effort -> continuation family. The watchdog owns the table and
-# dispatch-routing-data.test.ps1 pins this mirror to its source. Rows the table
-# does not reach follow the watchdog's policy-slot fallback: the row's
-# other-harness slot, primary before fallback, first admitted configuration;
-# rows 7/9/11/12/14/15 have no policy fallback.
-$script:CapacityClosedContinuations=@{
-  '2|luna/medium'='sol'
-  '4|astra/high'='sol';'4|sol/medium'='sol';'5|astra/high'='sol';'5|sol/xhigh'='sol'
-  '6|opus/high'='sol';'6|astra/high'='sol';'7|fable/high'='astra'
-  '10|astra/high'='sol';'10|sonnet/high'='sol'
-  '14|fable/medium'='astra';'14|fable/high'='astra';'15|fable/high'='astra'
-  '7|astra/high'='fable';'14|astra/high'='fable';'15|astra/high'='fable'
-  '4|sol/high'='opus';'5|sol/high'='opus';'6|sol/high'='opus';'7|sol/high'='opus';'10|sol/high'='opus'
-  '3|sol/medium'='opus';'13|sol/medium'='opus'
-  '3|opus/medium'='sol';'13|opus/medium'='sol';'13|opus/low'='sol'
-  '10|opus/medium'='sol';'4|opus/medium'='sol';'5|opus/high'='sol'
-}
-
-function Get-CapacityRouteContinuation($Data,[int]$Row,[string]$Family,[string]$Effort) {
-  # The exact current model a quota/session continuation of this route would
-  # run as, or $null when the watchdog records NO_QUALIFIED_FALLBACK.
-  $key="$Row|$Family/$Effort";$continuation=$null
-  if ($script:CapacityClosedContinuations.ContainsKey($key)) { $continuation=[string]$script:CapacityClosedContinuations[$key] }
-  elseif ($Row -notin @(7,9,11,12,14,15)) {
-    $identity=$Data.registry.families.PSObject.Properties[$Family]
-    if ($null -eq $identity) { return $null }
-    $other=if($identity.Value.provider -ceq 'codex'){'claude'}else{'codex'}
-    $slots=$Data.policy.rows.PSObject.Properties[[string]$Row].Value.slots
-    foreach($name in @("$other.primary","$other.fallback")) {
-      $slot=$slots.PSObject.Properties[$name]
-      if ($null -eq $slot) { continue }
-      $entry=$Data.registry.families.PSObject.Properties[[string]$slot.Value.family]
-      if ($null -eq $entry -or (Get-RoutingAdmissionReason $Data.registry ([string]$entry.Value.current) ([string]$slot.Value.effort))) { continue }
-      $continuation=[string]$slot.Value.family;break
-    }
-  }
-  if (-not $continuation) { return $null }
-  $continuationFamily=$Data.registry.families.PSObject.Properties[$continuation]
-  if ($null -eq $continuationFamily) { return $null }
-  return [string]$continuationFamily.Value.current
-}
-
 function Resolve-CapacityRouting {
   param($Selection,[string]$StateRoot,[string]$LkgPath,[string]$HistoryPath,[string]$Branch,[int]$Issue=0,
     [ValidateSet('implementation','planning','review')][string]$LaneRole='implementation',

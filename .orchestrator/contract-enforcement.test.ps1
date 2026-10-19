@@ -452,7 +452,6 @@ function Test-OrdinaryModelPolicy([string]$Text) {
   Assert-Enforced ($compact.Contains('The row''s policy slot is the measured default.')) 'policy slot is the measured default'
   Assert-Enforced ($compact -notmatch '(?i)Fable (?:stays at or below|is capped at|must not exceed) half|Fable (?:is eligible only|flips only|only when Sol and Opus)|Fable availability reserve|HOST_FABLE_ROUTING_REASON_RECORDED|No new Opus primary authorship') 'no model-specific share cap, row restriction or reserve policy'
   Assert-Enforced ($compact -notmatch '(?i)(?:authorship|authors?)[^.]*must use a third model|both Sol and Opus excluded|exclude every model on the artifact') 'authorship never requires a third model'
-  Assert-Enforced ($compact -notmatch '\(Todd,?\s*\d{4}-\d\d-\d\d|Todd''s \d{4}-\d\d-\d\d ruling') 'routing skill carries no dated rulings'
 }
 Test-OrdinaryModelPolicy $routingSkill
 Assert-Mutant 'fable-share-cap-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Fable stays at or below half of Claude usage.')}

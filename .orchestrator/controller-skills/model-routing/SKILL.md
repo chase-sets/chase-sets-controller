@@ -18,8 +18,14 @@ session with no shared transcript or conversation state with the author lane;
 a lane never reviews its own output within the same session. Exact-head
 receipts, full-history inspection and all other review gates remain required.
 
-`strictPrelogV1` binds prepared review routes and launcher-observed voids recover
-never-launched strict prelogs. Onboarding a model remains a data change.
+Version 4.27 (Todd, 2026-10-19, 4388/6268904121, 6109904570, 6229141245)
+moves rows 7, 14 and 15 to the routing-policy generation-4 slots, removes
+every Astra and Fable policy limit (share cap, row restriction, reserve,
+one-attempt rule and upper-tier authorship), and routes review and decision
+lanes to their policy slot regardless of authorship. `strictPrelogV1` binding
+and launcher-observed void recovery are unchanged. Onboarding a model remains
+a data change. Release notes for v4.26 and earlier are in milestone-orchestrator's
+`references/rule-provenance-v2.24.md`.
 
 ### Data-bound selection
 
@@ -49,7 +55,7 @@ readable without relabeling. Dead retired workers require fresh dispatch,
 not automatic recovery. The registered host arm is now `sonnet55-high`;
 this does not change the default host or authorize rotation.
 
-New model versions replace their predecessors when more capable at
+Todd ruled on September 29 that new model versions are always more capable at
 the same cost, or equally capable at lower cost, so a clean in-place swap goes
 first and benchmark recalibration follows. Sol means `gpt-6.1-sol`: it takes
 every Sol 6 row placement, effort, quota, fallback, watchdog route, vendor
@@ -62,7 +68,7 @@ Prices match Sol 6 (2/10, long 4/15) with $0.10/M cached input; OpenAI lists
 low through max efforts (no none/minimal). The live pool lists `gpt-6.1-sol`
 on 3 of 4 Codex accounts and routes it only there. The authored
 `benchmarkRebalance20260929` snapshot is historical policy-prior evidence.
-The public rebalance below is a policy prior, not local measurement.
+The October 6 rebalance below is the later Todd ruling, not local measurement.
 
 Only list actually reachable models as selectable; unreachable static models
 are historical comparators, never dispatch candidates. The pool owner verified
@@ -130,7 +136,8 @@ worker requires a fresh attributed dispatch, not an automatic version-changing
 mechanical retry. Historical host identity records remain readable but cannot
 be acquired or renewed with a retired selector.
 
-Unchanged successor defaults are continuity placements. The benchmark rebalance below is policy, not local measurement:
+Unchanged successor defaults are continuity placements. The September 23
+benchmark rebalance below is Todd-authorized policy, not local measurement:
 its new placements log `override-Todd`. Other successor placements remain
 `provisional`; standing vendor substitutions
 retain `override-Todd`. Never copy predecessor
@@ -297,7 +304,7 @@ forecast last-known-good or relaunch balance. Before Todd activated the
 forecast the interim Claude preference on rows 3/4/5/10/13 governed; the active
 forecast now governs.
 
-Toward Claude: while the forecast balances
+Toward Claude (Todd 2026-10-10, 4388/6098327249): while the forecast balances
 toward Claude with `balance.steps >= 1`, every lane a Claude model can
 admissibly take goes to Claude and Codex keeps the rest. Each row whose
 ordinary selection is not Claude flips to its own Claude policy slot (primary
@@ -342,7 +349,8 @@ Sol high, all `override-Todd`. Existing Sol-to-Opus entries are unchanged.
 
 ### September 23 benchmark rebalance
 
-The changed benchmark rows are standing `override-Todd` placements after
+Todd requested implementation of the benchmark recommendations on September
+23. The changed rows above are standing `override-Todd` placements after
 independent exact-head installation, not fabricated `measured` promotions.
 Read `references/capability-recalibration.md` for the dated evidence and
 limitations. Keep every generated matrix block and historical identity intact.
@@ -356,7 +364,8 @@ Sonnet 5.5 same-configuration mechanical recovery preserves its attribution.
 
 ### September 28 benchmark rebalance
 
-The authored `benchmarkRebalance20260928` snapshot records
+Todd ruled: "Sonnet 5.5 is more capable then 5 it should be recalibrated based
+on the benchmarks." The authored `benchmarkRebalance20260928` snapshot records
 AA Intelligence Index v4.3.2: medium improves 12.6 index points over Sonnet 5
 and Terminal-Bench 4.0 rises from 2% to about 30%, roughly Sol 6 medium / Opus
 5.5 low class. There is no inherited Sonnet-5 capability caveat. Opus remains
@@ -392,8 +401,8 @@ Codex breaks ties. Inspect the complete history and disclose participation in
 the receipt. Independence requires a fresh lane and session with no shared
 transcript or conversation state, not a different model family. A lane never
 reviews its own output within the same session; no reviewer validates its own
-patch. Strict governing PASS, exact-head receipts, batteries and the
-PREEXISTING rule are unchanged.
+patch. Never restore Sonnet to reach a reviewer count. Strict governing PASS,
+exact-head receipts, batteries and the PREEXISTING rule are unchanged.
 
 Review each new configuration at 20 determinate same-row outcomes, reporting
 severe escapes, repair burden, accepted-artifact resource use and p50/p95
@@ -434,7 +443,8 @@ swap must still clear the row's quality bar.
 
 ## Spend telemetry
 
-Model usage is billed through usage subscriptions, not API pricing. Spend is recorded, attributed, and
+Model usage is billed through usage subscriptions, not API pricing (Todd,
+2026-09-07, #4388 decision registry). Spend is recorded, attributed, and
 reported. It is never a gate.
 
 - Record billed-at-the-time USD and current-price-normalized USD for every
@@ -477,7 +487,7 @@ Never substitute a below-bar model merely to keep a lane occupied.
 ## Challenger quotas and rebalance
 
 The legacy trial/shadow process, per-trial budgets, and experiment ledger are
-retired. Quota and successor dispatches still require
+retired (v4.12, Todd 2026-09-07). Quota and successor dispatches still require
 the `provisional` evidence label. A challenger is a
 configuration, and a different effort on the incumbent's own model is a
 challenger like any other. A challenger enters a

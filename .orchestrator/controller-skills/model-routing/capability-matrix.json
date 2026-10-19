@@ -51,7 +51,8 @@
     "generatedVsAuthored": "GENERATED (never hand-edit): every config's `measured` block and the top-level `measuredAt` stamp. AUTHORED (human, citable-source rule): cell scores, vetoes, bars, provenance letters, notes, dimension definitions. Hand-copied numbers go stale within a day and hide sampling bugs. Exact-version enforcement now excludes aliases rather than guessing them into a version bucket.",
     "cellEditLog": "2026-07-24 recompute: agentic-coding sol/sonnet, routine-implementation terra/sol/sonnet, deep-repo fable — all set from dispatch-log joins (M) with row-stratified block rates. Source: matrix-refresh.ps1 measuredAt.blockRateByRow.",
     "fableVersionReplacement": "Fable 5.1 is the current exact selector and an ordinary candidate wherever best for the job. The row policy slot is the measured default; every off-slot lane records a reason in its dispatch row, the same for every model. Read its weekly provider window live from AgentPools /api/summary modelLimits, scope Fable, window limit:2; honor it like any quota window, not as a share rule. Predecessor evidence remains historical and never transfers.",
-    "v411Reseat": "Generation-4 slots: row 7 Codex gpt-6.1-sol/high, Claude claude-opus-5-5/xhigh; row 14 Claude claude-opus-5-5/high, Codex gpt-6-astra/high; row 15 Claude claude-opus-5-5/high, Codex gpt-6-astra/high. Astra and Fable are ordinary candidates on any row, not exclusive or reserved authors. Rows 8/11/12 reviews and decisions use their policy slots regardless of authorship; independence is a fresh lane/session with no shared transcript. Historical experiment results and benchmark cells are not successor vetoes.",
+    "v411Reseat": "Todd 2026-09-07 (v4.11): rows re-seated on September 2026 public evidence plus local telemetry: row 12 Opus 5 incumbent (P6 resolved), row 11 Sol with Opus 5 fallback (P5 resolved), row 7 Sol default with Fable 5.1 admitted under the reserve and Opus 5 withdrawn (P2 failed at 0.84), rows 4/5/10 Astra high challenger under the pre-registered P7 ten-dispatch trial (P3 retired), row 6 Opus 5 primary, row 2 Luna medium trial, row 15 Astra high substitute when the reserve refuses. B cells are authored from the cited public numbers with the dimension baseline named; matrix-refresh.ps1 regenerates only measured/measuredAt/adjudicated and never rewrites authored cells, which change only by human adjudication at a recompute.",
+    "generation4Slots": "Generation-4 slots: row 7 Codex gpt-6.1-sol/high, Claude claude-opus-5-5/xhigh; row 14 Claude claude-opus-5-5/high, Codex gpt-6-astra/high; row 15 Claude claude-opus-5-5/high, Codex gpt-6-astra/high. Astra and Fable are ordinary candidates on any row, not exclusive or reserved authors. Rows 8/11/12 reviews and decisions use their policy slots regardless of authorship; independence is a fresh lane/session with no shared transcript. Historical experiment results and benchmark cells are not successor vetoes.",
     "v412Rebalance": "Todd 2026-09-07 (v4.12): trials, shadow pairs, provisional placements, per-trial budgets, and the experiments ledger are retired. Challengers enter a row only through a quota rule in the routing skill's row table (share, n, threshold written first; each contested row carries the full quota inline). Rebalance runs every two weeks and on any model release: matrix-refresh regenerates measured/measuredAt, the host reads blockRateByRow by author model and row and byRowModel[row, model].usdPerRun, compares against the written thresholds and row bars, promotes or demotes, and records the decision on the #4388 registry. The cost contract is usdPerRun by row and model; a run is not an artifact and no threshold cites USD per artifact until the ledger groups runs into artifacts. Between rebalances the row table is the only routing authority. Host choice is the row-9 rotation rule, never a trial.",
     "v413EffortConfiguration": "Todd 2026-09-08 (v4.13): the routing unit is a configuration (exact model + exact effort). matrix-refresh.ps1 keys every measured block by both: a run's effort is its dispatch row joined on the transcript (effortUsed over effort), else the <issue>-<model>-<effort>- transcript-name token; a receipt's author effort is its authorEffort field (log-event.ps1 -AuthorEffort), else the author's own dispatch rows up to the receipt instant when they agree. Unresolved or ambiguous rows count for the model and the row but for no configuration, and are reported in measuredAt.effortIdentity. A config with no effort-resolved run carries no measured block; per-model pooled figures live only in measuredAt.byModel. Quota thresholds and rebalance comparisons read measuredAt.byRowConfig and measuredAt.blockRateByRowConfig; byRowModel and blockRateByRow answer per-model questions only. An effort step on the incumbent's model is a challenger like any other (row-4 Sol medium quota). Effort is ordinal within a model's authored ladder (effortLadders) and never comparable across models; price bands are reporting labels, never routing inputs.",
     "v413ConfigIdVersion": "Todd 2026-09-08 (v4.13): a configuration is two-dimensional (exact model selector + effort) and its id is DERIVED, never named: <exact selector>/<effort> (gpt-6-astra/high, gpt-5.6-sol/high, claude-fable-5-1/high). matrix-refresh.ps1 refuses a config whose id is not exactly its canonical model + '/' + effort, so an id can never drift from the configuration it keys and a successor version can never inherit a predecessor's key. Host-arm names in start-host-trial.ps1 (sonnet5-high, opus5-high, sol-high, astra-high) are arm names owned by milestone-orchestrator row 9, not configuration ids; transcript-name tokens (sol-high, astra6--high) are the cost-harvest naming convention, not ids.",
@@ -1466,7 +1467,7 @@
       "priceIn": 10.0,
       "priceOut": 50.0,
       "tier3": true,
-      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Historical comparator only; no current routing restriction follows. ",
+      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Historical comparator only; no current routing restriction follows.",
       "adjudicated": {
         "usdPerRun": 9.01,
         "medianMin": 7.6,
@@ -1484,7 +1485,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer. Pricing: https://developers.openai.com/api/docs/pricing."
     },
     {
       "id": "gpt-6-astra/medium",
@@ -1495,7 +1496,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer. Pricing: https://developers.openai.com/api/docs/pricing."
     },
     {
       "id": "gpt-6-astra/high",
@@ -1506,7 +1507,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer. Pricing: https://developers.openai.com/api/docs/pricing.",
       "measured": {
         "usdPerRun": 45.32,
         "medianMin": null,
@@ -1526,7 +1527,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer. Pricing: https://developers.openai.com/api/docs/pricing.",
       "tier3": true
     },
     {
@@ -1538,7 +1539,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer. Pricing: https://developers.openai.com/api/docs/pricing.",
       "tier3": true
     },
     {

@@ -2296,6 +2296,57 @@ partitions.
 Routing remains data-bound as in v2.87; prior release notes are archived in
 `references/rule-provenance-v2.24.md`.
 
+## Model-routing release notes moved in v4.27
+
+Model-routing v4.27 superseded the routing rules below (Fable reserve rows,
+authorship-based reviewer exclusion and the exhausted-roster fallback). They
+are kept verbatim as history, not current policy.
+
+Version 4.26 (#9382) exposes `strictPrelogV1` and recovers never-launched strict
+prelogs through launcher-observed voids. Routing and reviewer eligibility are
+unchanged.
+
+Version 4.25 (Todd, 2026-10-10, 4388/6098327249 with correction; #9282) routes
+every lane a Claude model can admissibly take to Claude while the capacity
+forecast balances toward Claude: every off-Claude row flips to its own Claude
+slot, planning and review lanes join implementation lanes as eligible, Fable
+flips only on its reserve rows 7/14/15 under the `spend`/`normal` Fable window
+with Opus 5.5 the default elsewhere, independence is judged per artifact and
+per route instead of by a blanket Sol/Opus exclusion, and a strict controller
+review is prepared before its tuple is prelogged (see "Capacity-balanced fresh
+dispatch"). Rows, slots, protected rules and the closed watchdog table are
+unchanged.
+
+Version 4.24 (Todd, 2026-10-08) gives the watchdog a policy-slot quota/session
+fallback: where its closed table has no entry, an implementation lane on its
+row's own policy slot moves once to that row's other-harness slot, and a
+lineage crosses harnesses on policy authority at most once (see "Policy-slot
+quota fallback" below). Routing-policy generation 2, which is the row
+authority, adds row 1 `claude.fallback` `haiku/low` and `codex.fallback`
+`luna/medium` (provisional) and row 2 `claude.fallback` `opus/medium`
+(override-Todd), so every row now has a slot on both harnesses. Onboarding a
+new model is a data change, not a controller release (see Maintenance
+routing). Rows, placements, protected rules and the closed table are
+unchanged.
+
+Version 4.23 implements Todd's #8915 benchmark rebalance from the October 6
+exact-effort public snapshot. Every row now names its default, fallback and
+governing benchmark; the row-2 Luna quota ends on the terminal-work prior,
+not an invented local failure rate. Admitted defaults remain where a cheaper
+configuration does not clear the row's benchmark comparator and constraints.
+See `references/benchmark-rebalance-20261006.md` for all 15 decisions, expected
+cost/latency effects and the separately owned selector-change ISS. Changed
+placements log `override-Todd`, never `measured`. September snapshots remain
+history; protected rules and closed watchdog routes are unchanged.
+
+Version 4.22 replaces attempt-count artifact parking with
+milestone-orchestrator's judged recovery ladder and fourth-attempt step-back
+review (Todd, 4388/6022146271, #8903), and lets an exhausted review roster fall
+back to the best reviewer that did not author or repair the exact revision,
+with disclosure. It keeps v4.21's data-bound routing and capacity-forecast
+behavior. Prior release notes are in milestone-orchestrator's
+`references/rule-provenance-v2.24.md`.
+
 ## Release notes moved in v2.101
 
 Version 2.100 adds per-cycle recognized-incumbent landed reclamation (#8622).
