@@ -94,6 +94,10 @@ resolved; it is not a release gate.
 
 ## 6. Defects and rulings
 
+Fixes, test repairs, reruns, sequencing and releases are this loop's
+decisions; make them and report, never ask Todd to approve them. Ask Todd only
+for a scope or ownership change.
+
 A Todd ruling that changes controller behavior is implemented within seven
 days; never park it or condition it on an empty product frontier.
 

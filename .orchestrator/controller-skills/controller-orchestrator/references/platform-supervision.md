@@ -32,6 +32,9 @@ instant, and command/config against the run's start record. A historical log
 line or matching PID alone is not liveness. Unresolved evidence stays unknown;
 unrelated incumbent work continues. ISS-138 alert silence is not health
 evidence and does not replace current-state or pre-mutation checks.
+A stop cap or chain stop is not a wait for Todd: this loop picks the fix
+(a narrow repair, a rerun, or reordering the chain), applies it, records the
+decision on the tracking issues, and continues.
 Record a stop's route as one line on
 `todd-skelton/orchestration-platform#367` while ISS-110 is open, then #368;
 routine observation adds no status beyond the existing #4388 cadence.
