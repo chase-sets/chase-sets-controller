@@ -34,16 +34,32 @@ entry. Its repository-relative path and SHA-256 remain pinned by
 `standalone-node`, and `-DiagnosticBudgetSeconds` is required and must be in
 the closed interval `(0, 86400]` (and no greater than the declaration's
 maximum). Diagnostic module imports are admitted only when the resolved file
-is tracked at the bound clean Git head or is under that worktree's
-`node_modules`; the preload refuses other files before evaluation and records
-each loaded file's path and SHA-256 in the receipt.
+is tracked at the bound clean Git head, is under the worktree root
+`node_modules`, or is under a nested package's `node_modules` only when that
+package's `package.json` is tracked at the bound head. The preload refuses
+other files before evaluation. It hashes the bytes returned by Node's
+`nextLoad` hook (falling back to file bytes only for CommonJS, whose hook
+source is null) and records each loaded file's path and SHA-256 in a
+per-process manifest. The verifier merges the manifests without allowing a
+child to overwrite its parent's records and requires the declared entry to
+be present.
 
 The diagnostic receipt schema is `host-heavy-diagnostic/v1`. A completed
-diagnostic reports its native exit code in `nativeExit`; a wall-clock timeout
-reports exit `124` while preserving the native termination code. Windows Job
-Object peak memory, total user/kernel time, and total process count are
-sampled before the Job Object is closed. Unsafe or pre-existing receipt paths
-are refusal failures and never produce a success result.
+diagnostic reports its native exit code in `nativeExit`; a result file written
+beside the entry during the run is hashed as `resultSha256`, while a
+pre-existing result file is a refusal. A wall-clock timeout reports exit `124`
+while preserving the native termination code. Windows Job Object peak memory,
+total user/kernel time, and total process count are sampled before the Job
+Object is closed. Unsafe or pre-existing receipt paths are refusal failures
+and never produce a success result.
+
+In diagnostic mode, `new Worker` is refused. Node child-process launches are
+refused unless the supplied environment retains the diagnostic preload in
+`NODE_OPTIONS`; this applies to `spawn`, `exec`, `fork`, `execFile`, and their
+synchronous variants. This protects only launches observed through these Node
+APIs: native launches, already-running external processes, and code that
+bypasses the patched module objects remain outside the diagnostic boundary.
+The Job Object still supplies descendant cleanup on Windows.
 
 ## Local E2E
 

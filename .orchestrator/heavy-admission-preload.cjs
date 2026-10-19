@@ -272,20 +272,19 @@ function installDiagnosticModulePolicy(config) {
   if (typeof moduleApi.registerHooks !== "function") refuse("diagnostic module hooks are unavailable");
   const worktree = path.resolve(diagnostic.worktree ?? config.worktree);
   const entry = path.resolve(diagnostic.entry ?? "");
-  const manifestPath = path.resolve(diagnostic.moduleManifestPath ?? "");
+  const manifestPrefix = path.resolve(diagnostic.moduleManifestPath ?? "");
   const boundHead = String(diagnostic.boundHead ?? "");
   const entrySha256 = String(diagnostic.entrySha256 ?? "").toLowerCase();
-  if (!/^[a-f0-9]{40}$/.test(boundHead) || !/^[a-f0-9]{64}$/.test(entrySha256) || !entry || !manifestPath) {
+  if (!/^[a-f0-9]{40}$/.test(boundHead) || !/^[a-f0-9]{64}$/.test(entrySha256) || !entry || !manifestPrefix) {
     refuse("diagnostic module policy configuration was invalid");
   }
   let tracked;
   try {
-    const output = childProcess.execFileSync("git", ["-C", worktree, "ls-tree", "-r", "--name-only", boundHead], {
-      encoding: "utf8",
+    const output = childProcess.execFileSync("git", ["-C", worktree, "ls-tree", "-r", "-z", "--name-only", boundHead], {
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    tracked = new Set(output.split(/\r?\n/).filter(Boolean).map((value) => value.replaceAll("\\", "/")));
+    tracked = new Set(output.toString("utf8").split("\0").filter(Boolean).map((value) => value.replaceAll("\\", "/")));
   } catch {
     refuse("diagnostic tracked-file inventory was unavailable");
   }
@@ -298,9 +297,27 @@ function installDiagnosticModulePolicy(config) {
   const isNodeModulesFile = (candidate) => {
     if (!inside(worktree, candidate)) return false;
     const relative = path.relative(worktree, candidate).split(path.sep);
-    return relative.includes("node_modules");
+    for (let index = 0; index < relative.length; index += 1) {
+      if (relative[index].toLowerCase() !== "node_modules") continue;
+      if (index === 0) return true;
+      const packageRoot = path.resolve(worktree, ...relative.slice(0, index));
+      const packageJson = path.relative(worktree, path.join(packageRoot, "package.json")).replaceAll("\\", "/");
+      if (tracked.has(packageJson)) return true;
+    }
+    return false;
   };
-  const digest = (candidate) => crypto.createHash("sha256").update(fs.readFileSync(candidate)).digest("hex");
+  const manifestPath = `${manifestPrefix}-${process.pid}.json`;
+  const digestBytes = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+  const loadedSourceBytes = (source, actual) => {
+    if (source === null || typeof source === "undefined") {
+      // CommonJS nextLoad returns null source; only that case falls back to file bytes.
+      return fs.readFileSync(actual);
+    }
+    if (typeof source === "string" || Buffer.isBuffer(source)) return Buffer.from(source);
+    if (ArrayBuffer.isView(source)) return Buffer.from(source.buffer, source.byteOffset, source.byteLength);
+    if (source instanceof ArrayBuffer) return Buffer.from(source);
+    refuse(`diagnostic module source had an unsupported type: ${actual}`);
+  };
   const modules = new Map();
   const writeManifest = () => {
     fs.writeFileSync(manifestPath, JSON.stringify({ schema: "host-heavy-diagnostic-modules/v1", modules: [...modules.values()] }), {
@@ -318,17 +335,20 @@ function installDiagnosticModulePolicy(config) {
     } catch {
       refuse(`diagnostic module could not be resolved: ${url}`);
     }
-    if (samePath(actual, entry)) {
-      if (digest(actual) !== entrySha256) refuse("declared diagnostic entry changed before evaluation");
-    } else if (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/")))) {
-      refuse(`diagnostic module was not tracked at the bound head or under node_modules: ${actual}`);
+    if (!samePath(actual, entry) &&
+        (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/"))))) {
+      refuse(`diagnostic module was not tracked at the bound head or under an admitted node_modules directory: ${actual}`);
     }
     return actual;
   };
-  const record = (url) => {
+  const record = (url, source) => {
     const actual = authorize(url);
     if (!actual || modules.has(actual)) return;
-    modules.set(actual, { module: actual, path: actual, sha256: digest(actual) });
+    const sha256 = digestBytes(loadedSourceBytes(source, actual));
+    if (samePath(actual, entry) && sha256 !== entrySha256) {
+      refuse("declared diagnostic entry changed before evaluation");
+    }
+    modules.set(actual, { module: actual, path: actual, sha256 });
     writeManifest();
   };
   moduleApi.registerHooks({
@@ -339,10 +359,43 @@ function installDiagnosticModulePolicy(config) {
     },
     load(url, context, nextLoad) {
       const result = nextLoad(url, context);
-      record(url);
+      record(url, result.source);
       return result;
     },
   });
+
+  const hasDiagnosticPreload = (nodeOptions) => {
+    if (typeof nodeOptions !== "string") return false;
+    const preload = path.resolve(__filename).replaceAll("\\", "/").toLowerCase();
+    const normalized = nodeOptions.replaceAll("\\", "/").toLowerCase();
+    return /(?:^|\s)--require(?:=|\s)/.test(normalized) && normalized.includes(preload);
+  };
+  const launchOptions = (argumentsList) => {
+    const last = argumentsList.at(-1);
+    return last && typeof last === "object" && !Array.isArray(last) ? last : null;
+  };
+  const refuseChildLaunch = () => {
+    throw Object.assign(new Error("heavy-admission: diagnostic child process launch refused because NODE_OPTIONS lacks the diagnostic preload"), {
+      code: "ERR_HEAVY_DIAGNOSTIC_CHILD_REFUSED",
+    });
+  };
+  const guardedMethods = ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"];
+  for (const method of guardedMethods) {
+    const original = childProcess[method];
+    childProcess[method] = function guardedDiagnosticLaunch(...argumentsList) {
+      const options = launchOptions(argumentsList);
+      const environment = options && Object.hasOwn(options, "env") ? options.env : process.env;
+      if (!hasDiagnosticPreload(environment?.NODE_OPTIONS)) refuseChildLaunch();
+      return original.apply(this, argumentsList);
+    };
+  }
+  const workerThreads = require("node:worker_threads");
+  const RefusedWorker = function RefusedWorker() {
+    throw Object.assign(new Error("heavy-admission: diagnostic Worker launch refused"), {
+      code: "ERR_HEAVY_DIAGNOSTIC_WORKER_REFUSED",
+    });
+  };
+  Object.defineProperty(workerThreads, "Worker", { configurable: true, writable: true, value: RefusedWorker });
 }
 
 function runAdmission(kind, config) {

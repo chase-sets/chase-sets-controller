@@ -489,6 +489,16 @@ function Stop-DiagnosticTree([int]$RootPid, [long]$RootStartTicks = 0, [int[]]$K
   try { if ($child -and -not $child.HasExited) { $child.Kill($true) } } catch { try { if ($child -and -not $child.HasExited) { $child.Kill() } } catch {} }
   foreach ($descendantPid in @($KnownPids)) { try { Stop-Process -Id $descendantPid -Force -ErrorAction SilentlyContinue } catch {} }
 }
+function Test-ObservedDiagnosticDescendants([int[]]$Pids) {
+  foreach ($descendantProcessId in @($Pids | Select-Object -Unique)) {
+    if ($descendantProcessId -le 0 -or -not $script:diagnosticObservedDescendantStarts.ContainsKey($descendantProcessId)) { continue }
+    try {
+      $candidate = Get-Process -Id $descendantProcessId -ErrorAction Stop
+      if ($candidate.StartTime.ToUniversalTime().Ticks -eq $script:diagnosticObservedDescendantStarts[$descendantProcessId]) { return $true }
+    } catch {}
+  }
+  return $false
+}
 # Read every native launch before interpreting roles or command shape. A failed
 # lookup is never evidence that the caller is a standalone host.
 function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$OldestLaunch, [int[]]$CandidatePids, [object[]]$DispatchRecords = @()) {
@@ -2196,6 +2206,10 @@ try {
       # opened with FileShare.Read. The handle remains live until child exit,
       # preventing a hash-to-launch replacement or deletion on Windows.
       Assert-DiagnosticPathNoReparse $diagnosticScriptFull 'diagnostic script path'
+      $diagnosticResultPath = Join-Path (Split-Path -Parent $diagnosticScriptFull) ([IO.Path]::GetFileNameWithoutExtension($diagnosticScriptFull) + '.result.json')
+      if (Test-Path -LiteralPath $diagnosticResultPath) {
+        throw "heavy-verifier: diagnostic result file already exists"
+      }
       $diagnosticSourceStream = [IO.File]::Open($diagnosticScriptFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
       $launchHashBytes = [Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)
       $launchHash = [Convert]::ToHexString($launchHashBytes).ToLowerInvariant()
@@ -2259,7 +2273,9 @@ try {
         originalScriptShell = $start.Environment['npm_config_script_shell']
       }
       if ($isDiagnostic) {
-        $diagnosticModuleManifestPath = Join-Path $container (".orchestrator\diagnostic-modules-$lockId.json")
+        # The preload appends its process id so descendants publish independent
+        # manifests and cannot truncate the parent's module records.
+        $diagnosticModuleManifestPath = Join-Path $container (".orchestrator\diagnostic-modules-$lockId")
         $configuration.diagnostic = [ordered]@{
           kind = $diagnosticDefinition.kind; entry = $diagnosticScriptFull
           entrySha256 = $diagnosticDefinition.sha256; worktree = $worktreeFull
@@ -2314,14 +2330,23 @@ try {
       $peakWorkingSet = [long]$child.WorkingSet64
       $workingSet = $peakWorkingSet
       $diagnosticObservedDescendants = @()
+      $script:diagnosticObservedDescendantStarts = @{}
       while ($true) {
         try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
-        if ($IsWindows) { $diagnosticObservedDescendants += @(Get-DiagnosticDescendantPids $child.Id $child.StartTime.ToUniversalTime().Ticks) | Select-Object -Unique }
+        if ($IsWindows) {
+          foreach ($descendantPid in @(Get-DiagnosticDescendantPids $child.Id $child.StartTime.ToUniversalTime().Ticks)) {
+            if ($descendantPid -gt 0 -and -not $script:diagnosticObservedDescendantStarts.ContainsKey($descendantPid)) {
+              try { $script:diagnosticObservedDescendantStarts[$descendantPid] = (Get-Process -Id $descendantPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch {}
+            }
+            $diagnosticObservedDescendants += $descendantPid
+          }
+          $diagnosticObservedDescendants = @($diagnosticObservedDescendants | Select-Object -Unique)
+        }
         if ($child.HasExited) {
           [void]$child.WaitForExit()
           $jobActive = $false
           if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { $jobActive = [HeavyDiagnosticJob]::HasActiveProcesses($diagnosticJobHandle) }
-          $possibleDescendant = if ($IsWindows) { $jobActive } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
+          $possibleDescendant = if ($IsWindows) { $jobActive -or (Test-ObservedDiagnosticDescendants $diagnosticObservedDescendants) } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
           if ($possibleDescendant -eq $false) { break }
         }
         $remaining = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
@@ -2348,19 +2373,36 @@ try {
     if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) {
       $diagnosticJobResources = [HeavyDiagnosticJob]::QueryResources($diagnosticJobHandle)
     }
-    if ($isDiagnostic -and $diagnosticModuleManifestPath -and (Test-SafeFile $diagnosticModuleManifestPath)) {
+    if ($isDiagnostic -and $diagnosticModuleManifestPath) {
+      $manifestDirectory = Split-Path -Parent $diagnosticModuleManifestPath
+      $manifestPrefix = Split-Path -Leaf $diagnosticModuleManifestPath
+      $manifestFiles = if (Test-SafeDirectory $manifestDirectory) {
+        @(Get-ChildItem -LiteralPath $manifestDirectory -Filter "$manifestPrefix-*.json" -File -Force | Where-Object { Test-SafeFile $_.FullName })
+      } else { @() }
+      if ($manifestFiles.Count -eq 0) { throw "heavy-verifier: diagnostic module manifest is missing" }
+      [hashtable]$moduleByPath = @{}
       try {
-        $manifest = [IO.File]::ReadAllText($diagnosticModuleManifestPath) | ConvertFrom-Json -ErrorAction Stop
-        $diagnosticModules = @($manifest.modules | ForEach-Object {
-          if ([string]$_.path -and [string]$_.sha256 -cmatch '^[a-f0-9]{64}$') {
-            [ordered]@{ module = if ([string]$_.module) { [string]$_.module } else { [string]$_.path }; path = [string]$_.path; sha256 = [string]$_.sha256 }
+        foreach ($manifestFile in $manifestFiles) {
+          $manifest = [IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json -ErrorAction Stop
+          foreach ($module in @($manifest.modules)) {
+            if ([string]$module.path -and [string]$module.sha256 -cmatch '^[a-f0-9]{64}$') {
+              $moduleByPath[[string]$module.path] = [ordered]@{
+                module = if ([string]$module.module) { [string]$module.module } else { [string]$module.path }
+                path = [string]$module.path
+                sha256 = [string]$module.sha256
+              }
+            }
           }
-        })
+        }
       } catch { throw "heavy-verifier: diagnostic module manifest is unreadable" }
+      $diagnosticModules = @($moduleByPath.Values)
+      $entryModule = @($diagnosticModules | Where-Object { Test-SamePath $_.path $diagnosticScriptFull })
+      if ($entryModule.Count -eq 0) {
+        throw "heavy-verifier: diagnostic module manifest did not record the declared entry"
+      }
     }
     if ($isDiagnostic) {
       # The declared diagnostic writes <name>.result.json beside its entry script.
-      $diagnosticResultPath = Join-Path (Split-Path -Parent $diagnosticScriptFull) ([IO.Path]::GetFileNameWithoutExtension($diagnosticScriptFull) + '.result.json')
       if (Test-SafeFile $diagnosticResultPath) {
         $diagnosticResultSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($diagnosticResultPath))).ToLowerInvariant()
       }
@@ -2394,8 +2436,8 @@ try {
         throw "heavy-verifier: receipt directory is unsafe"
       }
       if (-not $receiptPath) { $receiptPath = Join-Path $receiptRoot "host-heavy-verifier-$lockId.json" }
-      $receipt = if ($isDiagnostic) {
-        [ordered]@{
+      if ($isDiagnostic) {
+        $receipt = [ordered]@{
           schema = "host-heavy-diagnostic/v1"; authority = "host-verifier"
           diagnostic = $diagnosticDefinition; worktree = $worktreeFull; cwd = $worktreeFull
           head = $acquiredGitIdentity.Head; lane = $Lane; identityMode = $identityMode; branch = $owner.branch
@@ -2413,9 +2455,9 @@ try {
             jobTotalProcesses = if ($diagnosticJobResources) { [uint32]$diagnosticJobResources.totalProcesses } else { $null }
           }
         }
-        if ($diagnosticResultSha256) { $receipt.resultSha256 = $diagnosticResultSha256 }
+        if ($diagnosticResultSha256) { $receipt.Add('resultSha256', $diagnosticResultSha256) }
       } else {
-        [ordered]@{
+        $receipt = [ordered]@{
           schema = "host-heavy-verifier/v1"; authority = "host-verifier"
           worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
           identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
@@ -2443,8 +2485,13 @@ try {
     [HeavyDiagnosticJob]::Close($diagnosticJobHandle)
     $diagnosticJobHandle = [IntPtr]::Zero
   }
-  if ($diagnosticModuleManifestPath -and (Test-Path -LiteralPath $diagnosticModuleManifestPath -PathType Leaf)) {
-    Remove-Item -LiteralPath $diagnosticModuleManifestPath -Force -ErrorAction SilentlyContinue
+  if ($diagnosticModuleManifestPath) {
+    $manifestDirectory = Split-Path -Parent $diagnosticModuleManifestPath
+    $manifestPrefix = Split-Path -Leaf $diagnosticModuleManifestPath
+    if (Test-SafeDirectory $manifestDirectory) {
+      Get-ChildItem -LiteralPath $manifestDirectory -Filter "$manifestPrefix-*.json" -File -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    }
   }
   if ($isDiagnostic -and $child -and -not $child.HasExited) {
     try { $child.Kill($true); [void]$child.WaitForExit(2000) } catch {}
