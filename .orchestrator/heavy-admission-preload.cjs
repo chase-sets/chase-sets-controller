@@ -402,10 +402,19 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
       const index = optionsIndex(method, argumentsList);
       let environment = process.env;
       if (index >= 0) {
-        // Snapshot once and hand Node the same data properties the guard checked.
+        // Snapshot once and hand Node the same data the guard checked. The env is
+        // copied with for...in (as Node enumerates it), so getters and proxies are
+        // read exactly once and Node receives plain values.
         const snapshot = { ...argumentsList[index] };
+        if (Object.hasOwn(snapshot, "env")) {
+          if (snapshot.env !== null && typeof snapshot.env === "object") {
+            const copy = {};
+            for (const key in snapshot.env) copy[key] = snapshot.env[key];
+            snapshot.env = copy;
+          }
+          environment = snapshot.env;
+        }
         argumentsList[index] = snapshot;
-        if (Object.hasOwn(snapshot, "env")) environment = snapshot.env;
       }
       if (environment?.NODE_OPTIONS !== requiredNodeOptions) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
       // A child without the exact admission configuration would take the
