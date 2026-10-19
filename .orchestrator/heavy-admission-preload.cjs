@@ -265,7 +265,7 @@ function refuse(message) {
   process.exit(73);
 }
 
-function installDiagnosticModulePolicy(config) {
+function installDiagnosticModulePolicy(config, encodedConfiguration) {
   const diagnostic = config?.diagnostic;
   if (!diagnostic) return;
   if (diagnostic.kind !== "standalone-node") refuse("diagnostic declaration kind was not standalone-node");
@@ -364,18 +364,31 @@ function installDiagnosticModulePolicy(config) {
     },
   });
 
+  const preloadPath = path.resolve(__filename).replaceAll("\\", "/").toLowerCase();
+  const unquote = (value) => value.replace(/"([^"]*)"|'([^']*)'/g, (_match, double, single) => double ?? single);
+  // Tokenize NODE_OPTIONS and require a --require/-r whose operand is exactly this preload.
   const hasDiagnosticPreload = (nodeOptions) => {
     if (typeof nodeOptions !== "string") return false;
-    const preload = path.resolve(__filename).replaceAll("\\", "/").toLowerCase();
-    const normalized = nodeOptions.replaceAll("\\", "/").toLowerCase();
-    return /(?:^|\s)--require(?:=|\s)/.test(normalized) && normalized.includes(preload);
+    const tokens = nodeOptions.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    const isPreload = (operand) => path.resolve(unquote(operand)).replaceAll("\\", "/").toLowerCase() === preloadPath;
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      const assigned = /^--require=(.+)$/s.exec(token);
+      if (assigned && isPreload(assigned[1])) return true;
+      if ((token === "--require" || token === "-r") && index + 1 < tokens.length && isPreload(tokens[index + 1])) return true;
+    }
+    return false;
   };
+  // Every child_process API takes (command, [args], [options], [callback]); the
+  // options object is the first plain object after the command, never a trailing callback.
   const launchOptions = (argumentsList) => {
-    const last = argumentsList.at(-1);
-    return last && typeof last === "object" && !Array.isArray(last) ? last : null;
+    for (const candidate of argumentsList.slice(1)) {
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate;
+    }
+    return null;
   };
-  const refuseChildLaunch = () => {
-    throw Object.assign(new Error("heavy-admission: diagnostic child process launch refused because NODE_OPTIONS lacks the diagnostic preload"), {
+  const refuseChildLaunch = (reason) => {
+    throw Object.assign(new Error(`heavy-admission: diagnostic child process launch refused because ${reason}`), {
       code: "ERR_HEAVY_DIAGNOSTIC_CHILD_REFUSED",
     });
   };
@@ -385,7 +398,12 @@ function installDiagnosticModulePolicy(config) {
     childProcess[method] = function guardedDiagnosticLaunch(...argumentsList) {
       const options = launchOptions(argumentsList);
       const environment = options && Object.hasOwn(options, "env") ? options.env : process.env;
-      if (!hasDiagnosticPreload(environment?.NODE_OPTIONS)) refuseChildLaunch();
+      if (!hasDiagnosticPreload(environment?.NODE_OPTIONS)) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
+      // A child without the exact admission configuration would take the
+      // unconfigured preload branch and load modules without the policy.
+      if (environment?.CHASE_SETS_HEAVY_ADMISSION_CONFIG !== encodedConfiguration) {
+        refuseChildLaunch("the diagnostic admission configuration was not inherited");
+      }
       return original.apply(this, argumentsList);
     };
   }
@@ -479,7 +497,7 @@ function main() {
     return;
   }
   const config = acquireHeavySlot.launcherConfiguration(encoded, { useForAcquisition: true });
-  installDiagnosticModulePolicy(config);
+  installDiagnosticModulePolicy(config, encoded);
   if (
     process.env.CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL === "node-check-proxy" &&
     process.execArgv.some((argument) => argument === "-c" || argument === "--check")

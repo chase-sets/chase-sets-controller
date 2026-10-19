@@ -2386,6 +2386,10 @@ try {
           $manifest = [IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json -ErrorAction Stop
           foreach ($module in @($manifest.modules)) {
             if ([string]$module.path -and [string]$module.sha256 -cmatch '^[a-f0-9]{64}$') {
+              # Processes never overwrite one another: one path, one loaded digest.
+              if ($moduleByPath.ContainsKey([string]$module.path) -and $moduleByPath[[string]$module.path].sha256 -cne [string]$module.sha256) {
+                throw "heavy-verifier: diagnostic module manifests disagree on a module digest"
+              }
               $moduleByPath[[string]$module.path] = [ordered]@{
                 module = if ([string]$module.module) { [string]$module.module } else { [string]$module.path }
                 path = [string]$module.path

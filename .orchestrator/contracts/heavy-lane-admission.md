@@ -54,11 +54,16 @@ Object is closed. Unsafe or pre-existing receipt paths are refusal failures
 and never produce a success result.
 
 In diagnostic mode, `new Worker` is refused. Node child-process launches are
-refused unless the supplied environment retains the diagnostic preload in
-`NODE_OPTIONS`; this applies to `spawn`, `exec`, `fork`, `execFile`, and their
+refused unless the supplied environment retains the diagnostic preload as a
+`--require` operand in `NODE_OPTIONS` and the exact
+`CHASE_SETS_HEAVY_ADMISSION_CONFIG` value; this applies to `spawn`, `exec`, `fork`, `execFile`, and their
 synchronous variants. This protects only launches observed through these Node
 APIs: native launches, already-running external processes, and code that
 bypasses the patched module objects remain outside the diagnostic boundary.
+The check reads only the environment handed to the API: a permitted shell or
+non-Node child that clears `NODE_OPTIONS` before starting Node is not seen.
+Manifests from different processes that disagree on a module's digest refuse
+the run.
 The Job Object still supplies descendant cleanup on Windows.
 
 ## Local E2E

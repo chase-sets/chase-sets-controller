@@ -134,6 +134,17 @@ process.exitCode = 7;
   $workerRefusal=Invoke-Diagnostic @{} 'worker-refusal'
   Assert-True ($workerRefusal.Result.Code -ne 0 -and $workerRefusal.Result.Stderr -match [regex]::Escape('heavy-admission: diagnostic Worker launch refused') -and -not (Test-Path $workerRefusal.Marker)) 'Worker launch is refused'
   Write-Output 'PASS diagnostic worker=refused marker=absent'
+  $callbackRelative='.orchestrator/artifacts/child-callback-refusal.mjs'; $callbackPath=Join-Path $worktree ($callbackRelative -replace '/','\')
+  Set-Content -LiteralPath $callbackPath -Value "import { execFile } from 'node:child_process'; import fs from 'node:fs'; const childEnv={...process.env}; delete childEnv.NODE_OPTIONS; try { execFile(process.execPath, ['-e', ''], { env: childEnv }, () => {}); } catch (error) { process.stderr.write(String(error.message)); process.exit(73); } fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'callback-ran');"
+  $scriptRelative=$callbackRelative; $scriptPath=$callbackPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  $callbackRefusal=Invoke-Diagnostic @{} 'child-callback-refusal'
+  Assert-True ($callbackRefusal.Result.Code -ne 0 -and $callbackRefusal.Result.Stderr -match [regex]::Escape('heavy-admission: diagnostic child process launch refused because NODE_OPTIONS lacks the diagnostic preload') -and -not (Test-Path $callbackRefusal.Marker)) 'execFile with options and callback reads the child env'
+  $configDropRelative='.orchestrator/artifacts/child-config-drop.mjs'; $configDropPath=Join-Path $worktree ($configDropRelative -replace '/','\')
+  Set-Content -LiteralPath $configDropPath -Value "import { spawnSync } from 'node:child_process'; import fs from 'node:fs'; const childEnv={...process.env}; delete childEnv.CHASE_SETS_HEAVY_ADMISSION_CONFIG; try { spawnSync(process.execPath, ['-e', ''], { env: childEnv }); } catch (error) { process.stderr.write(String(error.message)); process.exit(73); } fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'config-drop-ran');"
+  $scriptRelative=$configDropRelative; $scriptPath=$configDropPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  $configDrop=Invoke-Diagnostic @{} 'child-config-drop'
+  Assert-True ($configDrop.Result.Code -ne 0 -and $configDrop.Result.Stderr -match [regex]::Escape('heavy-admission: diagnostic child process launch refused because the diagnostic admission configuration was not inherited') -and -not (Test-Path $configDrop.Marker)) 'child that keeps the preload but drops the admission configuration is refused'
+  Write-Output 'PASS diagnostic child callback-options=refused config-drop=refused marker=absent'
 
   $manifestRemovalRelative='.orchestrator/artifacts/manifest-removal.mjs'; $manifestRemovalPath=Join-Path $worktree ($manifestRemovalRelative -replace '/','\')
   Set-Content -LiteralPath $manifestRemovalPath -Value @'
