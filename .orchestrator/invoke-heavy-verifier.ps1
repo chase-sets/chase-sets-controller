@@ -2359,7 +2359,8 @@ try {
       } catch { throw "heavy-verifier: diagnostic module manifest is unreadable" }
     }
     if ($isDiagnostic) {
-      $diagnosticResultPath = Join-Path $worktreeFull '.orchestrator\artifacts\worst13-no-fit.result.json'
+      # The declared diagnostic writes <name>.result.json beside its entry script.
+      $diagnosticResultPath = Join-Path (Split-Path -Parent $diagnosticScriptFull) ([IO.Path]::GetFileNameWithoutExtension($diagnosticScriptFull) + '.result.json')
       if (Test-SafeFile $diagnosticResultPath) {
         $diagnosticResultSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($diagnosticResultPath))).ToLowerInvariant()
       }
