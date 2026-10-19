@@ -3,52 +3,23 @@ name: model-routing
 description: Route a task to the cheapest registry-admitted family configuration and reasoning effort that clears its quality bar. Use when orchestrating chase-sets lanes, dispatching work to Codex/Claude lanes, choosing a model or effort, escalating a failed worker, or onboarding a newly released model.
 ---
 
-# Model Routing (v4.26, 2026-10-16)
+# Model Routing (v4.27, 2026-10-19)
 
-Version 4.26 (#9382) exposes `strictPrelogV1` and recovers never-launched strict
-prelogs through launcher-observed voids. Routing and reviewer eligibility are
-unchanged.
+The row's policy slot is the measured default. Astra and Fable are ordinary
+candidates that route wherever they are the best model for the job. Any lane
+routed off its slot records the reason in its dispatch row, the same for every
+model. There is no model-specific share cap, row restriction, attempt limit,
+approval requirement or protected-author requirement for Astra or Fable.
 
-Version 4.25 (Todd, 2026-10-10, 4388/6098327249 with correction; #9282) routes
-every lane a Claude model can admissibly take to Claude while the capacity
-forecast balances toward Claude: every off-Claude row flips to its own Claude
-slot, planning and review lanes join implementation lanes as eligible, Fable
-flips only on its reserve rows 7/14/15 under the `spend`/`normal` Fable window
-with Opus 5.5 the default elsewhere, independence is judged per artifact and
-per route instead of by a blanket Sol/Opus exclusion, and a strict controller
-review is prepared before its tuple is prelogged (see "Capacity-balanced fresh
-dispatch"). Rows, slots, protected rules and the closed watchdog table are
-unchanged.
+Reviews and decision lanes on rows 8, 11 and 12 route to their policy slot even
+when the same family wrote or repaired the artifact. Authorship never forces
+Astra, Fable or a third model. Reviewer independence means a fresh lane and
+session with no shared transcript or conversation state with the author lane;
+a lane never reviews its own output within the same session. Exact-head
+receipts, full-history inspection and all other review gates remain required.
 
-Version 4.24 (Todd, 2026-10-08) gives the watchdog a policy-slot quota/session
-fallback: where its closed table has no entry, an implementation lane on its
-row's own policy slot moves once to that row's other-harness slot, and a
-lineage crosses harnesses on policy authority at most once (see "Policy-slot
-quota fallback" below). Routing-policy generation 2, which is the row
-authority, adds row 1 `claude.fallback` `haiku/low` and `codex.fallback`
-`luna/medium` (provisional) and row 2 `claude.fallback` `opus/medium`
-(override-Todd), so every row now has a slot on both harnesses. Onboarding a
-new model is a data change, not a controller release (see Maintenance
-routing). Rows, placements, protected rules and the closed table are
-unchanged.
-
-Version 4.23 implements Todd's #8915 benchmark rebalance from the October 6
-exact-effort public snapshot. Every row now names its default, fallback and
-governing benchmark; the row-2 Luna quota ends on the terminal-work prior,
-not an invented local failure rate. Admitted defaults remain where a cheaper
-configuration does not clear the row's benchmark comparator and constraints.
-See `references/benchmark-rebalance-20261006.md` for all 15 decisions, expected
-cost/latency effects and the separately owned selector-change ISS. Changed
-placements log `override-Todd`, never `measured`. September snapshots remain
-history; protected rules and closed watchdog routes are unchanged.
-
-Version 4.22 replaces attempt-count artifact parking with
-milestone-orchestrator's judged recovery ladder and fourth-attempt step-back
-review (Todd, 4388/6022146271, #8903), and lets an exhausted review roster fall
-back to the best reviewer that did not author or repair the exact revision,
-with disclosure. It keeps v4.21's data-bound routing and capacity-forecast
-behavior. Prior release notes are in milestone-orchestrator's
-`references/rule-provenance-v2.24.md`.
+`strictPrelogV1` binds prepared review routes and launcher-observed voids recover
+never-launched strict prelogs. Onboarding a model remains a data change.
 
 ### Data-bound selection
 
@@ -78,7 +49,7 @@ readable without relabeling. Dead retired workers require fresh dispatch,
 not automatic recovery. The registered host arm is now `sonnet55-high`;
 this does not change the default host or authorize rotation.
 
-Todd ruled on September 29 that new model versions are always more capable at
+New model versions replace their predecessors when more capable at
 the same cost, or equally capable at lower cost, so a clean in-place swap goes
 first and benchmark recalibration follows. Sol means `gpt-6.1-sol`: it takes
 every Sol 6 row placement, effort, quota, fallback, watchdog route, vendor
@@ -91,7 +62,7 @@ Prices match Sol 6 (2/10, long 4/15) with $0.10/M cached input; OpenAI lists
 low through max efforts (no none/minimal). The live pool lists `gpt-6.1-sol`
 on 3 of 4 Codex accounts and routes it only there. The authored
 `benchmarkRebalance20260929` snapshot is historical policy-prior evidence.
-The October 6 rebalance below is the later Todd ruling, not local measurement.
+The public rebalance below is a policy prior, not local measurement.
 
 Only list actually reachable models as selectable; unreachable static models
 are historical comparators, never dispatch candidates. The pool owner verified
@@ -159,10 +130,9 @@ worker requires a fresh attributed dispatch, not an automatic version-changing
 mechanical retry. Historical host identity records remain readable but cannot
 be acquired or renewed with a retired selector.
 
-Unchanged successor defaults are continuity placements. The September 23
-benchmark rebalance below is Todd-authorized policy, not local measurement:
+Unchanged successor defaults are continuity placements. The benchmark rebalance below is policy, not local measurement:
 its new placements log `override-Todd`. Other successor placements remain
-`provisional`; standing vendor substitutions and upper-tier policy placements
+`provisional`; standing vendor substitutions
 retain `override-Todd`. Never copy predecessor
 scores, vetoes, costs, sample counts, or completed quotas. Matrix baselines
 remain named historical comparators, not selectable defaults.
@@ -180,19 +150,17 @@ never rewrite the curated catalog or transfer orchestration in this release.
 
 | Model | $/M short input/output | $/M long input/output | Decision-changing constraints |
 |---|---:|---:|---|
-| GPT-6 Astra | 10 / 50 | 20 / 75 | Upper-tier Codex author; existing challenger evidence remains its own |
+| GPT-6 Astra | 10 / 50 | 20 / 75 | Ordinary candidate wherever best for the job; existing evidence remains its own |
 | GPT-6 Luna | 0.10 / 0.50 | 0.20 / 0.75 | Bounded triage/scoped-fix placement; under-60K routing envelope pending evidence, not a claimed context limit |
 | GPT-6.1 Sol | 2 / 10 | 4 / 15 | Provisional executor (in-place Sol 6 replacement, 3 of 4 Codex accounts): medium routine implementation; high execution/debugging/recall review |
 | Sonnet 5.5 | 2 / 10 | - | Conditional medium low-latency/capacity option; high challenger quota on rows 3/13, not a general default; no protected authorship |
 | Opus 5.5 | 4 / 20 | - | Low bounded work, medium execution/precision review, high difficult execution/judgment; exact harness admission required |
-| Fable 5.1 | 10 / 50 | - | Existing copy, design-system, novel UI/UX, architectural-core and named row-7 specialist under reserve; no general expansion |
+| Fable 5.1 | 10 / 50 | - | Ordinary candidate wherever best for the job; live provider quota windows apply |
 
-Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch. Todd
-retired Fable 5 on 2026-09-07 with an in-place replacement: Fable 5.1 takes
-every Fable row, effort default, reserve rule, and tier limit as written, with
-no trial, shadow, or independent measurement before eligibility. Dispatches
-log `placement: override-Todd` as a standing placement until the matrix
-carries measured Fable 5.1 values. `claude-fable-5` is never selectable; its
+Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch. No trial,
+shadow, or independent measurement precedes eligibility. Use the row slot's
+placement and record the reason for an off-slot choice just as for any model.
+`claude-fable-5` is never selectable; its
 scores, provider constraints, and measurements are historical comparators
 only and do not transfer to 5.1. Fable 5.1 cache reads cost $0.25/M tokens;
 model ID and prices:
@@ -227,9 +195,8 @@ classifier-vocabulary and retention vetoes do not apply to 5.1 without
 version-specific evidence.
 
 Astra uses exact selector `gpt-6-astra`; supported task efforts are low, medium,
-high, xhigh, and max (never minimal/none). High is the initial choice for
-complex task rows 4-8 and 10-12; it enters a row through a challenger quota in
-the row table or an explicit operator override. Availability does not
+high, xhigh, and max (never minimal/none). Choose the configuration best suited
+to the task and record the reason when off-slot. Availability does not
 establish quality or change any default. Host selection uses
 `start-host-trial.ps1 -Arm astra-high -Register` with a new `-Holder` at high
 effort, one active host only, under the row-9 rotation rule. End transcript
@@ -252,15 +219,15 @@ and artifact cost must be measured anew; predecessor behavior does not transfer.
 | 4 | Multi-file, terminal-heavy, migrations, infra, CI | `gpt-6.1-sol/high` provisional; Claude: `claude-opus-5-5/medium`, high for difficult execution (override-Todd). Retain Astra high every-third quota across rows 4/5/10, aggregate n=10, against historical Sol 5.6 high as below. Sol 6.1 medium takes the next row-4 dispatch after Astra, then every third once Astra quota ends, until n=20; threshold: no worse than Sol 6.1 high row 4 once both have n>=20 | `claude-opus-5-5/medium` for fresh cross-harness dispatch; `claude-opus-5-5/high` for ruled Sol-high continuation | Terminal-Bench 4: Sol high 51.52%; medium 47.98% does not clear that comparator |
 | 5 | Multi-hour checklist/campaign/drain | `gpt-6.1-sol/high` provisional; Claude: `claude-opus-5-5/high`, `claude-opus-5-5/medium` for a fully specified checkable campaign (override-Todd). Retained Astra quota as row 4; Sol 6.1 xhigh only on evidenced need | `claude-opus-5-5/high` under the same-effort vendor rule | Terminal-Bench 4 / horizon; index is not proof of long-running artifact completion |
 | 6 | Browser/computer use | `claude-opus-5-5/high` provisional after native tool-contract smoke; `gpt-6-astra/high` on Codex-native fit | `gpt-6.1-sol/high` | Computer-use benchmark at exact effort not published in snapshot; native smoke governs, index is secondary |
-| 7 | Core, deep cross-context, invariants, money/contracts | Core: `gpt-6-astra/high` / `claude-fable-5-1/high` under reserve, override-Todd. Other work: `gpt-6.1-sol/high` provisional; Fable admitted for named money/contract/event slices. No new Opus primary authorship; old Opus P2 failure is historical, not a successor veto | `claude-fable-5-1/high` for Astra core under reserve; `gpt-6-astra/high` when reserve refuses core; `gpt-6.1-sol/high` only for non-core slices | AA-LCR / index; protected upper-tier authorship precedes all cost comparisons |
-| 8 | Decomposition audits, irreversible judgment, final judge | `claude-opus-5-5/high` provisional; authoring core decisions remains row 7 | `gpt-6.1-sol/high` admitted independent cross-harness fallback, not claimed GDPval parity | GDPval / index: Opus high 1706.88 / 53.58; cheaper configurations do not match |
+| 7 | Core, deep cross-context, invariants, money/contracts | Codex: `gpt-6.1-sol/high`; Claude: `claude-opus-5-5/xhigh`, generation-4 policy slots | `claude-opus-5-5/xhigh` for Codex; `gpt-6.1-sol/high` for Claude | AA-LCR / index and same-row outcomes; no protected-author requirement |
+| 8 | Decomposition audits, irreversible judgment, final judge | `claude-opus-5-5/high` policy slot regardless of authorship; authoring core decisions remains row 7 | `gpt-6.1-sol/high` admitted independent cross-harness fallback, not claimed GDPval parity | GDPval / index: Opus high 1706.88 / 53.58; cheaper configurations do not match |
 | 9 | Orchestrator host | Keep the operator-selected host. Codex-native: `gpt-6.1-sol/high` provisional; Claude-native: `claude-opus-5-5/high` override-Todd, not Sonnet | Registered `gpt-6-astra/high` arm, only on Todd's request; no automatic rotation or cross-provider hosting without separately reviewed lease admission | Operator authority first; Terminal-Bench 4 / GDPval are priors, never rotation authority; milestone-orchestrator section 2 |
-| 10 | Debugging/root cause | `gpt-6.1-sol/high` provisional; retained Astra quota as row 4; Claude: `claude-opus-5-5/medium`, high for difficult or persistent reasoning failures (override-Todd); never Fable | `claude-opus-5-5/medium` for fresh cross-harness dispatch; `claude-opus-5-5/high` for ruled Sol-high continuation | Terminal-Bench 4: cheapest default matching the incumbent terminal prior; never Fable |
-| 11 | High-recall money/contracts/infra review | `gpt-6.1-sol/high` provisional; never Fable | `claude-opus-5-5/high`; `gpt-6-astra/high` independent reviewer (override-Todd), subject to full-history preference and exhausted-roster rule below | Omniscience / index, GDPval cross-check; benchmark scores do not certify review recall |
-| 12 | Precision-facing review | `claude-opus-5-5/medium` override-Todd; `claude-opus-5-5/high` for ambiguous/high-risk review. Never Luna; use row 11 for high-recall risk | `gpt-6.1-sol/high` independent fallback; `gpt-6-astra/high` independent reviewer (override-Todd) | GDPval / index: medium 1586.25 / 51.24; review-history constraints precede cost |
+| 10 | Debugging/root cause | `gpt-6.1-sol/high` provisional; retained Astra quota as row 4; Claude: `claude-opus-5-5/medium`, high for difficult or persistent reasoning failures (override-Todd) | `claude-opus-5-5/medium` for fresh cross-harness dispatch; `claude-opus-5-5/high` for ruled Sol-high continuation | Terminal-Bench 4: cheapest default matching the incumbent terminal prior |
+| 11 | High-recall money/contracts/infra review | `gpt-6.1-sol/high` policy slot regardless of authorship | `claude-opus-5-5/high` policy slot on Claude | Omniscience / index, GDPval cross-check; fresh lane/session independence |
+| 12 | Precision-facing review | `claude-opus-5-5/medium` policy slot regardless of authorship; `claude-opus-5-5/high` for ambiguous/high-risk review. Never Luna; use row 11 for high-recall risk | `gpt-6.1-sol/high` policy slot on Codex | GDPval / index: medium 1586.25 / 51.24; fresh lane/session independence |
 | 13 | Internal technical documentation/factual notes | `gpt-6.1-sol/medium`; Claude: `claude-opus-5-5/low` for factual notes, `claude-opus-5-5/medium` for multi-source synthesis (override-Todd). Sonnet 5.5 medium conditional on named latency/capacity constraint (override-Todd); Sonnet 5.5 high takes every third Claude dispatch otherwise going to Opus 5.5 medium until n=20 determinate row-13 outcomes (provisional); threshold: block rate no worse than Opus 5.5 medium on row 13 once both have n>=20; end quota after two consecutive mechanical failures. Extraction-only summaries use row 1; public prose goes to row 14 | `claude-opus-5-5/medium` for Sol medium; `gpt-6.1-sol/medium` for Opus low/medium under the existing closed routes | GDPval / AA-LCR; Sol low factual-note candidate needs separate selector admission, not an inferred watchdog route |
-| 14 | Copywriting/localization/listings/public prose | `claude-fable-5-1/medium`; `claude-fable-5-1/high` flagship, override-Todd | `gpt-6-astra/high` when Codex-bound or reserve refuses | GDPval / index; protected copy authorship and Fable reserve govern, no benchmark certifies voice |
-| 15 | Design-system changes and novel UI design | `claude-fable-5-1/high` override-Todd | `gpt-6-astra/high` when Codex-bound or reserve refuses | GDPval / index; exact-effort visual-design benchmark not published; protected design authorship governs |
+| 14 | Copywriting/localization/listings/public prose | `claude-opus-5-5/high` generation-4 Claude policy slot | `gpt-6-astra/high` generation-4 Codex policy slot | Creative-writing evidence; **Candidate note:** Fable is an ordinary candidate here, not restricted to this row |
+| 15 | Design-system changes and novel UI design | `claude-opus-5-5/high` generation-4 Claude policy slot | `gpt-6-astra/high` generation-4 Codex policy slot | Exact-effort visual-design benchmark not published; **Candidate note:** Fable is an ordinary candidate here, not an exclusive author |
 
 ### October 6 benchmark rebalance
 
@@ -273,7 +240,8 @@ The row-2 Luna quota is retired, preserving its historical comparator and
 receipts; it cannot be selected for a fresh coding task under that quota.
 This is `override-Todd` selection policy, not a fabricated measured failure.
 Fresh-dispatch alternatives above do not add watchdog continuations. Closed
-routes, vendor fallbacks, host ownership and protected authorship stay intact.
+runtime routes and vendor fallbacks remain compatibility behavior, not protected
+authorship policy; host ownership stays intact.
 
 ### Policy-slot quota fallback
 
@@ -284,9 +252,8 @@ lane is at relaunch 0 and running its row's own policy slot (same harness,
 family and effort), it relaunches the same semantic attempt on that row's
 other-harness slot, `primary` before `fallback`, at that slot's effort and
 placement, provided the registry admits that effort with usable accounts. The
-closed table always takes precedence. Rows 7, 9, 14 and 15 (protected
-authorship, host; registry admission is not upper-tier authorship authority),
-rows 11 and 12 (review independence), integration lanes, non-implementation
+closed table always takes precedence. Rows 7, 9, 14 and 15 (installed runtime compatibility exclusions),
+rows 11 and 12 (installed runtime compatibility exclusions), integration lanes, non-implementation
 lanes, lanes that have already relaunched, and routes that are not their row's
 policy slot keep `NO_QUALIFIED_FALLBACK` for host diagnosis. Placement comes
 from the policy slot, never from capability evidence.
@@ -330,7 +297,7 @@ forecast last-known-good or relaunch balance. Before Todd activated the
 forecast the interim Claude preference on rows 3/4/5/10/13 governed; the active
 forecast now governs.
 
-Toward Claude (Todd 2026-10-10, 4388/6098327249): while the forecast balances
+Toward Claude: while the forecast balances
 toward Claude with `balance.steps >= 1`, every lane a Claude model can
 admissibly take goes to Claude and Codex keeps the rest. Each row whose
 ordinary selection is not Claude flips to its own Claude policy slot (primary
@@ -349,40 +316,13 @@ row, the author record and watchdog records; a strict controller-review
 dispatch or receipt tuple binds `override-todd` instead (see "Harness binding"
 below). No schema is relaxed and no history is case-normalized.
 
-Fable flips only on rows 7/14/15, only to its own reserve slot, and only while
-`decision.modelWindowStates.claude.Fable` is `spend` or `normal`; `conserve`,
-`unknown`, a missing or malformed window, a planning or review lane, Fable on
-any other row, or a second Fable attempt on the same artifact refuses
-`SLOT_NOT_ADMITTED`. The resolver reads only that window state; the 25/50%
-quota tiers, the maximum half share of Claude capacity and reset-window
-detection stay host duties (see "Fable availability reserve").
-
-Independence is per artifact and per route, read from the complete ledger, and
-a skip grants nothing:
-
-- Implementation: the complete branch history (actual authors, repairs,
-  continuations, reviewer patches and recorded unused ladders) plus the
-  original and target models and the target route's real quota/session
-  continuation (the watchdog's closed table, Fable to Astra, else the row's
-  other-harness policy slot) must leave one admitted row-11/12 reviewer. No
-  blanket Sol/Opus exclusion.
-- Planning: the target must be absent from the issue's implementation, repair
-  and planning models on any branch, plus reviewer patches; read-only reviewers
-  are not authors and several planning branches are not unknown.
-- Review (`-ReviewArtifact brief|code`, `code` for a controller review): a
-  brief review excludes that brief's author/repair history; a code review
-  excludes that code's author, repair and continuation history and required
-  ladders, never brief-only authors. No reviewer-of-review.
-
-A present model skips `REVIEWER_INDEPENDENCE`; partial history, no positive
-`-Issue` or an unnamed review artifact skips `REVIEWER_HISTORY_UNKNOWN`; target
-refusal or fall-through skips `SLOT_NOT_ADMITTED`. Unknown history never
-cleanses history. The v3 dispatch row carries status, digest, active/shadow
-flip and skip reason for every role; historical v1/v2 rows remain readable.
-Active flips and proven same-config continuations are separate
-`capacityFlipped` calibration cells; shadow and unflipped planning/review v3
-rows calibrate in the ordinary cohort. Ambiguous or unbound joins never
-enter either cohort.
+Capacity balancing uses the row's own policy slot for implementation, planning
+and review lanes. No blanket Sol/Opus exclusion or authorship-derived fallback
+applies. Retain complete artifact history and review receipts; unknown or
+malformed history still refuses, but a model's participation never excludes it.
+The v3 dispatch row carries status, digest, active/shadow flip and skip reason
+for every role. Active flips and proven same-config continuations remain
+separate calibration cells; ambiguous or unbound joins never enter a cohort.
 
 A strict controller review is prepared, prelogged, then launched:
 `dispatch-lane.ps1 -PrepareRoute` runs the same admission, exemption and
@@ -402,8 +342,7 @@ Sol high, all `override-Todd`. Existing Sol-to-Opus entries are unchanged.
 
 ### September 23 benchmark rebalance
 
-Todd requested implementation of the benchmark recommendations on September
-23. The changed rows above are standing `override-Todd` placements after
+The changed benchmark rows are standing `override-Todd` placements after
 independent exact-head installation, not fabricated `measured` promotions.
 Read `references/capability-recalibration.md` for the dated evidence and
 limitations. Keep every generated matrix block and historical identity intact.
@@ -417,8 +356,7 @@ Sonnet 5.5 same-configuration mechanical recovery preserves its attribution.
 
 ### September 28 benchmark rebalance
 
-Todd ruled: "Sonnet 5.5 is more capable then 5 it should be recalibrated based
-on the benchmarks." The authored `benchmarkRebalance20260928` snapshot records
+The authored `benchmarkRebalance20260928` snapshot records
 AA Intelligence Index v4.3.2: medium improves 12.6 index points over Sonnet 5
 and Terminal-Bench 4.0 rises from 2% to about 30%, roughly Sol 6 medium / Opus
 5.5 low class. There is no inherited Sonnet-5 capability caveat. Opus remains
@@ -448,26 +386,14 @@ above also have closed quota fallbacks. Other routes retain
 `NO_QUALIFIED_FALLBACK`, returning to the host for a
 fresh attributed dispatch to an admitted row alternative after proven vacancy,
 not an unrecorded watchdog substitution.
-Prefer a fully independent reviewer: exclude every model on the artifact's
-author and repair history, including quota/session continuation and repair
-rungs; any platform
-implementation must also exclude unused author-ladder rungs. On rows 11/12,
-Astra high is the admitted independent reviewer (`override-Todd`, #8146) when
-the row's Sol/Opus reviewers are excluded or unavailable. Exhausted roster
-(4388/6022146271): When that exclusion leaves no admitted reviewer, the host
-dispatches the best row-qualified admitted reviewer that did not author or
-repair the exact revision under review. The host retains and inspects the
-complete history, and the receipt discloses that reviewer's earlier
-participation in the lineage. Never self-review the exact revision, and never
-restore Sonnet to reach a reviewer count. Reviewer exhaustion never parks or
-stalls the artifact. For `brief-repair-exhausts-independent-reviewers` the same
-precedence holds: a fully independent reviewer first, then
-milestone-orchestrator section 7's FINAL nonterminal proof route only when all
-its predicates hold, then the exhausted-roster reviewer above. In-body brief
-repairs count in brief repair history. Brief history does not automatically
-exclude review of separately authored code: independently check code author/repair
-history and platform author ladders. Effort/session changes never cleanse model history.
-Protected authorship below still takes precedence over ordinary row fallbacks.
+Reviews and decision lanes use their row's policy slot regardless of the
+artifact's author or repair models. Capacity balancing between Claude and
+Codex breaks ties. Inspect the complete history and disclose participation in
+the receipt. Independence requires a fresh lane and session with no shared
+transcript or conversation state, not a different model family. A lane never
+reviews its own output within the same session; no reviewer validates its own
+patch. Strict governing PASS, exact-head receipts, batteries and the
+PREEXISTING rule are unchanged.
 
 Review each new configuration at 20 determinate same-row outcomes, reporting
 severe escapes, repair burden, accepted-artifact resource use and p50/p95
@@ -477,59 +403,29 @@ bar nor requires a new trial before the authorized defaults take effect.
 An observed below-bar configuration is ineligible; use the qualified fallback
 and record the rebalance. Never substitute cheapness for the quality bar.
 
-### Upper-tier authorship requirements
+### Scope classification
 
-Todd's 2026-09-12 ruling makes copywriting, design-system changes, and
-architectural-core changes hard upper-tier requirements: only `claude-fable-5-1`
-or `gpt-6-astra` at the row-7/14/15 configurations may author or repair them.
-Sol and Opus must not write copy or change the design system or architectural
-core; Sonnet, Terra, and Luna are also
-ineligible authors. Routine scope does not waive this rule, and these
-standing placements require no challenger quota. Log `placement: override-Todd`
-for the new row-7/14/15 placements; this is a policy ruling, not measured evidence.
+Architectural core routes on row 7, copy on row 14 and design-system or novel
+UI work on row 15. These are task classifications, not protected-author tiers.
+Copy means creating, rewriting, translating or polishing user-facing words.
+Design-system changes include tokens, styles, shared components, APIs and
+patterns with their supporting tests/docs. Wiring approved copy verbatim or
+consuming established components stays ordinary implementation.
 
-Copy includes creating, rewriting, translating, or polishing user-facing
-words. Design-system changes include tokens, styles, shared components,
-component behavior/APIs, patterns, and their supporting tests and documentation.
-Using existing components and wiring approved copy verbatim in a consuming
-feature is ordinary implementation; internal technical notes, code comments,
-and review reports are not copywriting. Split mixed tasks so their copy and
-design-system edits have an eligible author.
-
-Architectural core means changes to aggregate/context boundaries, event
-schemas, ordering, replay or projection semantics; shared authentication,
-authorization, tenancy isolation, persistence or public cross-context contracts;
-and execution authority such as orchestration, retries, idempotency,
-concurrency, deployment or merge authorization. It includes the design/ADRs,
-implementation, migrations, and supporting tests/docs that change these
-responsibilities. Routine consumers of established contracts stay on their
-ordinary rows. Classify by the responsibility being changed, not file count,
-directory name, or apparent difficulty, and split mixed tasks accordingly.
-A backend or review assignment does not grant core-authoring permission.
-
-Reviewers may inspect and report findings under rows 11/12, but must return
-all copy, design-system, and architectural-core edits, including mechanical
-fixes, to an eligible author. This overrides direct-fix permission and any
-lower-tier default, fallback, or escalation on other rows. Fable may design
-and repair this work within its one-attempt reserve; a later repair can use
-Astra high. If neither upper-tier configuration
-is available, queue the affected work instead of falling back to a lower tier.
+Architectural core includes aggregate/context boundaries, event schemas,
+ordering, replay/projection semantics, shared auth/tenancy/persistence/public
+contracts and execution authority such as retries, idempotency, concurrency,
+deployment or merge authorization. Classify by the responsibility changed,
+not file count or apparent difficulty; split mixed tasks accordingly.
 
 Keep row 1 on Luna 6 and row 2 on Sol 6.1 medium. Terra retirement consolidates
 roles, not capability evidence: Luna 6 is not a blanket Terra replacement.
 Its former row-2 quota is retired by #8915, not justified by price.
 
-Opus 5.5 now serves both execution and judgment at the row's exact effort;
-Sol remains the economical Codex executor. A reviewer applies mechanical fixes (pins, counts, generated
-outputs, lint) directly outside the upper-tier authorship requirements and lets hosted CI validate them; semantic repairs
-return to the author, and no reviewer validates its own patch. Fable is
-eligible only for rows 7 (architectural core, money, contract, and event-invariant slices), 14,
-and 15. Its only automatic routes are the closed Astra-to-Fable watchdog
-fallback and the ruled capacity reserve flip, both on rows 7/14/15 under the
-existing reserve and the `spend`/`normal` Fable window (v4.25). Never use it as a shadow reviewer or
-second opinion, or as an escalation rung outside those rows. A dispatch outside rows 7/14/15 requires Todd's
-explicit per-artifact override and logs `placement: override-Todd` plus the
-reason.
+Opus 5.5 serves execution and judgment at the row's exact effort; Sol is the
+economical Codex executor. Reviewers apply mechanical fixes (pins, counts,
+generated outputs, lint) directly and let hosted CI validate them. Semantic
+repairs return to the author, and no reviewer validates its own patch.
 
 Harness binding is real: Claude lanes run Claude models and Codex lanes run
 GPT-6. Soft specialization never justifies idling capacity,
@@ -538,8 +434,7 @@ swap must still clear the row's quality bar.
 
 ## Spend telemetry
 
-Model usage is billed through usage subscriptions, not API pricing (Todd,
-2026-09-07, #4388 decision registry). Spend is recorded, attributed, and
+Model usage is billed through usage subscriptions, not API pricing. Spend is recorded, attributed, and
 reported. It is never a gate.
 
 - Record billed-at-the-time USD and current-price-normalized USD for every
@@ -563,49 +458,26 @@ Use billed-at-the-time USD for reporting and current-price-normalized USD for
 routing comparisons. Host rotation is only on Todd's request (row 9),
 never on spend.
 
-## Fable availability reserve
+## Provider quota windows
 
-Treat provider availability as a gate before current-price cost selection.
-Fable dispatches must log the row, `fableReason`, observed remaining quota/reset
-window when available, and expected USD in the dispatch note.
+Read Fable's separate weekly window live from AgentPools `/api/summary`
+`modelLimits`, scope `Fable`, window `limit:2`. This is provider capacity and
+can change at any time. Honor it like any other quota window, not as a share
+rule. Respect live quota windows and `newLaneAllowance`; no model-specific
+lane-budget policy applies. Concurrent lanes remain bounded by ordinary lane
+capacity, heavy-verifier admission and single-writer-per-branch.
 
-- The same model may work on several tasks at once (v4.15, Todd 2026-09-19,
-  4388/5743836385): concurrent Fable lanes are bounded only by ordinary lane
-  capacity, heavy-verifier admission, and single-writer-per-branch.
-- Allow one Fable attempt per artifact; a second requires Todd's explicit
-  approval. Never spend Fable at multiple stages of the same artifact.
-- Never use Fable for shadows, routine review, semantic pressure, planning
-  outside architectural-core design, standalone debugging, repair outside the
-  upper-tier authorship requirements, controller review, or non-UI implementation outside the
-  row-7 slices named above.
-- Above 50% quota remaining, rows 14/15 and the named row-7 slices are
-  eligible normally. At 25–50%, admit copywriting, design-system changes,
-  important/novel UI/UX, architectural-core work, or a row-7 slice
-  whose brief names money, contract, or event-invariant scope. Below 25%,
-  preserve the reserve and use Astra high for rows 14/15 unless Todd marks Fable urgent;
-  architectural-core work uses Astra high; other row-7 slices fall back to Sol high.
-- When quota telemetry is unavailable, apply the conservative middle quota
-  tier.
-- Prefer Fable medium for row 14 when it clears the bar. Keep row 15 on high.
-  Fable max remains a tier-3 exception and never starts an artifact.
-
-When the Fable reserve refuses architectural-core work or rows 14/15, Astra high is the standing
-upper-tier substitute. When an Astra author is quota-blocked or refused, the
-lane falls to Fable 5.1 at the same effort only on rows 7/14/15 under the
-existing reserve, never rows 8/11/12. When a Sol author is quota-blocked or
-refused, the closed table selects Opus 5.5 at the same effort. These moves
-relaunch as `override-Todd` and continue the same partial (v4.15,
-Todd 2026-09-19, 4388/5743533387).
-Author lanes and watchdog relaunches keep the standing `override-Todd`
-literal; a strict controller-review dispatch or receipt tuple (a
-review-head-contract strict row) records a ruled reviewer substitution as
-`override-todd`, the only override grammar the strict reducer admits (#8064).
+Quota/session fallbacks use the row's policy fallback, not a closed
+Astra-to-Fable or Fable-to-Astra policy. Installed runtime compatibility tables
+are not routing authority; dispatch explicit models matching the policy until
+those runtime hard-codes are removed. Author dispatches keep their slot's
+placement; strict controller-review tuples use `override-todd` for an override.
 Never substitute a below-bar model merely to keep a lane occupied.
 
 ## Challenger quotas and rebalance
 
 The legacy trial/shadow process, per-trial budgets, and experiment ledger are
-retired (v4.12, Todd 2026-09-07). Quota and successor dispatches still require
+retired. Quota and successor dispatches still require
 the `provisional` evidence label. A challenger is a
 configuration, and a different effort on the incumbent's own model is a
 challenger like any other. A challenger enters a
@@ -624,9 +496,9 @@ consecutive mechanical failures. Review each successor default at n=20
 determinate exact-configuration outcomes per occupied row; missing same-row
 evidence means remain provisional, not promote. Report severe escapes,
 latency and artifact cost; small samples do not certify 95%/99% service bars.
-The September 23 rows explicitly admit Opus 5.5 low/medium under Todd's
-benchmark rebalance. Other configurations still need a written quota or an
-explicit ruling; this does not expand protected authorship or host authority.
+The benchmark rows explicitly admit Opus 5.5 low/medium. Other configurations
+still need a written quota or explicit authority, except Astra and Fable may
+route wherever best with a recorded off-slot reason; host authority is unchanged.
 
 The cost contract is the generated
 `measuredAt.byRowConfig[row, model, effort].usdPerRun`; `byRowModel` pools
@@ -651,8 +523,9 @@ choice is operator-controlled (row 9), never an automatic trial.
 Effort is chosen with the model, as one configuration, from the row table.
 There is no separate effort dial and no score that sets one: the row names the
 configuration, and a different effort is a different configuration that enters
-a row only through a challenger quota or Todd's explicit per-artifact override
-(`placement: override-Todd`).
+a row through a challenger quota or explicit per-artifact override
+(`placement: override-Todd`); Astra and Fable are ordinary candidates on any
+row, with the same off-slot reason rule as every model.
 
 Classify the task before routing it by asking which lever its likely failure
 needs. The old effort score summed these signals into one number; they point at
@@ -669,8 +542,7 @@ four different levers.
   model to solve prompt length; retrieve or compact.
 - Tooling (terminal-heavy, browser): a harness and row question.
 
-Use the row's effort: Opus low/medium/high have different roles; Fable remains
-medium for ordinary copy and high for its other admitted specialist work.
+Use the row's effort as the default and record the reason for an off-slot configuration.
 `max` is never a starting point. It requires a logged trigger: regulated or
 irreversible ruling, two premium attempts disagreeing without a deterministic
 verifier, or explicit promotion authority over money/infra/destruction.
@@ -712,10 +584,13 @@ Stop after two configuration changes; any further attempt is governed only by
 milestone-orchestrator's §7 recovery ladder, its fourth-attempt step-back
 review and the two-block rule, never by spend.
 
-Fable is not an escalation target outside rows 7/14/15. Use the qualified
-Opus/Sol path or return the artifact to planning instead.
+Astra and Fable may be chosen on any escalation when best for the failure
+mode. Record the off-slot reason as for every model. Higher-effort exceptions
+require executed reproductions and implementation-shaped blockers, never an
+automatic repair rung. Two consecutive external blocks force planning/replan.
+Log expected USD and marginal gain as telemetry, not a spend gate.
 
-Tier-3 configurations (Sol xhigh/max, Fable max) are bounded exceptions:
+Sol xhigh/max remain bounded exceptions:
 
 - Never use tier 3 as an automatic repair rung.
 - Require executed reproductions and implementation-shaped blockers.
@@ -748,9 +623,9 @@ Before comparing candidates, require:
   reserve; prefer retrieval above 60% fill.
 - Latency ceilings.
 - No categorical veto for the task.
-- Fable reserve eligibility when the candidate is Fable.
+- Live provider quota windows for every candidate.
 
-Correctness filters, availability reserves, cost chooses, and speed breaks ties.
+Correctness filters, availability gates, cost chooses, and speed breaks ties.
 A below-bar configuration is ineligible at any price. Unknown capability routes
 conservatively.
 

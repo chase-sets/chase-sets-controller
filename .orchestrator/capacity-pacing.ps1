@@ -50,7 +50,7 @@ $script:PacingConfig = [ordered]@{
   defaultBurnPerLaneHour = [ordered]@{ claude = 0.015; codex = 0.009 }
   minLaneHours = 24
   windowHours = 168
-  fableShare = 0.5
+  fableShare = $null # Compatibility field; provider window capacity is not a policy share.
   statusMaxAgeMinutes = 30
   statusTimeoutSeconds = 3
   defaultStatusUrl = 'http://127.0.0.1:8318/api/status'
@@ -469,7 +469,7 @@ function Invoke-CapacityPacing {
       }
       $fableRounded = [int][Math]::Floor($fableSum + 0.5)
       $entry.fableLaneBudgetUncapped = $fableRounded
-      $entry.fableLaneBudget = if ($overall -cne 'ok') { 0 } else { [int][Math]::Min($fableRounded, [Math]::Floor($laneBudget / 2)) }
+      $entry.fableLaneBudget = if ($overall -cne 'ok') { 0 } else { $fableRounded }
       $entry.fableAccounts = @($fableAccounts)
     }
     $providers[$provider] = $entry

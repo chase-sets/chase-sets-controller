@@ -16,6 +16,11 @@ artifact is being reviewed. Repeat them exactly in the completion report. They
 must differ even when the requested model names differ. Never infer either
 identity from a model family, process, worktree, or review prose.
 
+Use the row's policy slot even when the same model family authored or repaired
+the artifact. Independence means a fresh lane and session with no shared
+transcript or conversation state with the author lane, never a required third
+model. A lane never reviews its own output within the same session.
+
 For a strict controller review, repeat the complete immutable dispatch tuple:
 positive issue, exact controller head, distinct author/reviewer attempts,
 governing/shadow/advisory authority, lane, transcript, exact reviewer and author
@@ -84,7 +89,7 @@ bookkeeping, never as an extra field in the closed strict rows.
 
 A lane must not launch model CLIs or subprocess reviewers itself; any required
 independent review returns to the host for a canonical attributed dispatch after
-full artifact author/repair-history eligibility checks. Output from a bypass is
+full artifact history and row-slot admission checks. Output from a bypass is
 non-governing evidence, never review or admission authority. An
 `unsupported_encrypted_delegation` adapter failure followed by an
 attempted native-CLI fallback must be reported as `PENDING_HOST_REVIEW`,
@@ -100,7 +105,7 @@ For a nonterminal, outcome/decision/acceptance-preserving repair, the host may a
 FINAL `brief-sweep2-authority-decision-r1`'s standing proof route: bind the completed
 repair, current body/dependencies and full findings in a causal exception record;
 retain trusted readiness and ordinary admission; use a row-qualified author and a
-fresh code-history-independent reviewer for one complete exact-head implementation
+fresh-session reviewer on the row's policy slot for one complete exact-head implementation
 review that challenges the whole brief and all findings before ready/landing.
 This is not a brief semantic PASS. Terminal re-entry, changed semantics,
 missing authority or no eligible implementation reviewer remain outside this

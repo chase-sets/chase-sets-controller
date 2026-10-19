@@ -89,15 +89,15 @@ function New-RoutingMatrixFixture {
     4=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.primary'=@{family='opus';effort='medium';placement='override-Todd'} }
     5=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.primary'=@{family='opus';effort='high';placement='override-Todd'} }
     6=@{ 'claude.primary'=@{family='opus';effort='high';placement='provisional'};'codex.primary'=@{family='astra';effort='high';placement='provisional'};'codex.fallback'=@{family='sol';effort='high';placement='provisional'} }
-    7=@{ 'codex.primary'=@{family='astra';effort='high';placement='reserve'};'claude.primary'=@{family='fable';effort='high';placement='reserve'} }
+    7=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.primary'=@{family='opus';effort='xhigh';placement='provisional'} }
     8=@{ 'claude.primary'=@{family='opus';effort='high';placement='provisional'};'codex.fallback'=@{family='sol';effort='high';placement='provisional'} }
     9=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.primary'=@{family='opus';effort='high';placement='override-Todd'} }
     10=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.primary'=@{family='opus';effort='medium';placement='override-Todd'} }
     11=@{ 'codex.primary'=@{family='sol';effort='high';placement='provisional'};'claude.fallback'=@{family='opus';effort='high';placement='provisional'} }
     12=@{ 'claude.primary'=@{family='opus';effort='medium';placement='override-Todd'};'codex.fallback'=@{family='sol';effort='high';placement='provisional'} }
     13=@{ 'codex.primary'=@{family='sol';effort='medium';placement='provisional'};'claude.primary'=@{family='opus';effort='low';placement='override-Todd'} }
-    14=@{ 'claude.primary'=@{family='fable';effort='medium';placement='reserve'};'codex.fallback'=@{family='astra';effort='high';placement='reserve'} }
-    15=@{ 'claude.primary'=@{family='fable';effort='high';placement='reserve'};'codex.fallback'=@{family='astra';effort='high';placement='reserve'} }
+    14=@{ 'claude.primary'=@{family='opus';effort='high';placement='provisional'};'codex.fallback'=@{family='astra';effort='high';placement='reserve'} }
+    15=@{ 'claude.primary'=@{family='opus';effort='high';placement='provisional'};'codex.fallback'=@{family='astra';effort='high';placement='reserve'} }
   }
   $available=@($families | ForEach-Object { [string]$_.name })
   foreach($row in 1..15){

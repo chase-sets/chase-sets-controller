@@ -81,8 +81,7 @@ prices do not reprice Sonnet 5 history. The skill row table owns dispatch.
 Todd's September 23 request to implement the evidence-backed recommendations
 authorizes v4.17's changed rows as policy placements (`override-Todd`), recorded
 at https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5797093035.
-It does not manufacture local measurement, transfer old cells, relax protected
-authorship, or authorize a host rotation. The matrix's authored
+It does not manufacture local measurement, transfer old cells, authorize a host rotation. The matrix's authored
 `benchmarkRebalance20260923` holds the dated public snapshot, sources and
 provider-fallback limitations; it is not a generated or adjudicated cell.
 The row table remains dispatch authority.
@@ -96,7 +95,7 @@ constraint; dollar estimates stay telemetry, never a spend gate.
 Review each new configuration at the SKILL.md same-row checkpoint. Report
 quality, severe escapes, repairs, resource use and completion latency. Missing
 artifact joins or true elapsed time remain unknown. Benchmarks cannot certify
-local service bars or justify a protected authorship change.
+local service bars or justify a quality-bar change.
 
 ## Capability matrix (DRAFT — not yet authoritative)
 
@@ -127,7 +126,7 @@ rather than fifteen prose edits.
 
 **Vetoes are categorical, never scalar.** A large negative can be outweighed by
 cheapness; a veto cannot. Use it where running the config is worse than not doing
-the task — Terra on review, deprecated Opus 4.8 everywhere, Fable on debugging.
+the task — Terra on review, deprecated Opus 4.8 everywhere.
 
 **Pick the cheapest config clearing the dimension's bar — never the highest score.**
 Highest-score routing sends everything to Fable/Opus max and inverts the rubric.

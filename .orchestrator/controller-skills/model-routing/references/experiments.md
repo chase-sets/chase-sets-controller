@@ -15,8 +15,7 @@ it for dispatch, placement, or onboarding.
 
 **Status as of v4.11 (Todd, 2026-09-07).** P2 **failed**: Opus 5 row-7 author
 block rate 0.84 (n=19) exceeds its 0.80 kill threshold; provisional row-7
-authorship is withdrawn and row 7 defaults to Sol high with Fable 5.1 admitted
-under the reserve. P5 **resolved against Opus 5 on recall** (CodeRabbit 55.2%
+authorship is withdrawn and row 7 defaults to Sol high in that historical experiment. P5 **resolved against Opus 5 on recall** (CodeRabbit 55.2%
 vs Sol 69.7%); row 11 stays Sol high with Opus 5 fallback. P6 **resolved for
 Opus 5 on precision** (CodeRabbit 39.3% vs 35.2%; local reviewer block
 tendency 0.56 vs Sol 0.74); Opus 5 high is the row-12 incumbent. P3
@@ -76,8 +75,7 @@ material benchmark gain. Everything else stays put. **A benchmark that contradic
 vendor positioning wins** — that is why the map is pre-committed.
 
 **Expiry:** provisional rows expire at the next recompute. Un-adjudicated rows
-automatically revert only to an incumbent configuration permitted by every
-governing availability reserve; availability-reserve vetoes are authoritative,
+automatically revert only to an incumbent configuration admitted by live quota windows and the current row policy;
 and expiry never auto-promotes. Sol high is the current rows 7/8 incumbent and
 reversion target. Existing Fable row-7 and row-8 figures below are historical
 comparators only, not current incumbents or reversion targets.
@@ -136,8 +134,7 @@ number; read the incumbent's current figure from the matrix.
 small n) did not hold: Opus 5's row-7 author block rate reached 0.84 at n=19,
 above the pre-registered 0.80 ceiling with n past the kill test's n≥8. The cost
 arm was never adjudicated because the Fable row-7 cost sample stayed too thin;
-it is moot. Effect: row 7 defaults to Sol high, Fable 5.1 high is admitted for
-the named row-7 slices under the reserve, and Opus 5's provisional row-7
+it is moot. Effect: row 7 defaults to Sol high, Fable was the historical comparator, and Opus 5's provisional row-7
 authorship is withdrawn.
 | P4 | 6/7/8 | One effort level below the row default holds quality | any quality regression vs the row default | — |
 | P5 | 11 | **RESOLVED 2026-09-07, Sol retained.** Was: Opus 5 high produces repair-ready high-recall reviews at least as complete as Sol high | Decided on CodeRabbit's model-level recall (Opus 5 55.2% vs Sol 69.7%); no local shadow pair was run | $120 |

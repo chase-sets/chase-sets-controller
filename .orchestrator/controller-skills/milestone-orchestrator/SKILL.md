@@ -276,16 +276,16 @@ row/harness/model/effort/placement in the closed `-ToddRouteOverride` JSON;
 dispatch refuses incomplete or mismatched claims. Standing Todd placements are
 not this exemption. Pass the positive `-Issue` on every planning and review
 dispatch and `-ReviewArtifact brief|code` on every product review; independence
-is judged per artifact and per route (implementation: the complete branch
-history, the original and target models and the target route's continuation
-must leave an admitted reviewer; planning: the target never planned,
-implemented or repaired the issue; review: the target never authored or
-repaired the reviewed brief or code), otherwise the flip skips and grants
-nothing. Fable flips only on rows 7/14/15 under the `spend`/`normal` Fable
-window; the host applies the reserve tiers and keeps Fable at or below half of
-Claude's lanes. Protected authorship, reserve and challenger rules are
-unchanged. Dispatch v3 records all five capacity fields for every role;
-calibration separates active flips.
+means a fresh lane and session with no shared transcript or conversation state
+with the author lane. Reviews and decision lanes use their row's policy slot
+even when the same family authored or repaired the artifact. Authorship never
+forces a third model. Astra and Fable are ordinary candidates wherever best
+for the job; any off-slot lane records its reason in the dispatch row, the
+same for every model. Read Fable's weekly window live from AgentPools
+`/api/summary` `modelLimits`, scope `Fable`, window `limit:2`, and honor it like
+any other quota window, not as a share rule. Respect quota windows and
+`newLaneAllowance`. Dispatch v3 records all five capacity fields for every
+role; calibration separates active flips.
 
 A strict controller review is prepared, prelogged, then launched, in that
 order: run `dispatch-lane.ps1 -PrepareRoute` with the full review request,
@@ -480,8 +480,10 @@ and uses only the current routing row's closed qualified fallback table. Under
 Todd's vendor fallback ruling (4388/5743533387) that table sends a
 quota-blocked or refused `gpt-6-astra` author to `claude-fable-5-1` and a
 quota-blocked or refused `gpt-6.1-sol` author to `claude-opus-5-5`, each at the
-same effort and placed `override-Todd` in the closed table. Astra-to-Fable is
-only rows 7/14/15 under the existing reserve, never rows 8/11/12. A
+same effort and placed `override-Todd` in the closed table. The installed
+table carries Astra-to-Fable only on rows 7/14/15, never rows 8/11/12; that is
+runtime compatibility behavior pending its removal, not a Fable reserve or row
+restriction. A
 `watchdog-lane/v3` integration lane, whose author set stays closed to
 codex/`gpt-6-astra`/high/row 7/`override-Todd` pending a separate ruling,
 records `lane-blocked`/`NO_QUALIFIED_FALLBACK` instead of falling to
@@ -524,7 +526,7 @@ schema cutover, require the candidate reducer to report
 
 A lane must not launch model CLIs or subprocess reviewers itself. Required
 independent review returns to the host as `PENDING_HOST_REVIEW` for canonical
-attributed dispatch after full artifact author/repair-history eligibility checks;
+attributed dispatch after full artifact history and row-slot admission checks;
 bypass output is non-governing evidence, never review or admission authority.
 
 Count every in-body brief repair in that model's artifact repair history. If no
@@ -533,7 +535,7 @@ For a nonterminal, outcome/decision/acceptance-preserving repair, the host may a
 FINAL `brief-sweep2-authority-decision-r1`'s standing proof route: bind the completed
 repair, current body/dependencies and full findings in a causal exception record;
 retain trusted readiness and ordinary admission; use a row-qualified author and a
-fresh code-history-independent reviewer for one complete exact-head implementation
+fresh-session reviewer on the row's policy slot for one complete exact-head implementation
 review that challenges the whole brief and all findings before ready/landing.
 This is not a brief semantic PASS. Terminal re-entry, changed semantics,
 missing authority or no eligible implementation reviewer remain outside this
@@ -541,10 +543,11 @@ route and return to independent decision. No attempt, blocking-round or landing
 rule changes.
 
 Reviewer exhaustion never parks or stalls an artifact (4388/6022146271). When
-no fully independent admitted reviewer remains, the host dispatches the best
-available admitted reviewer that did not author or repair the exact artifact
-under review, and the receipt discloses that reviewer's earlier participation
-in the lineage. This is never self-review.
+choosing a reviewer, the host dispatches the row's policy slot regardless of
+which model authored or repaired the exact artifact. The reviewer is a fresh
+lane and session with no shared transcript or conversation state with the
+author lane, and the receipt discloses earlier participation in the lineage.
+This is never self-review. No lane reviews its own output in the same session.
 
 Every non-trivial PR receives independent review on its exact head. The injected
 `contracts/review-v2.md` is authoritative. Review cadence is bounded per
@@ -891,8 +894,7 @@ shape. Scale only when:
 - No ownership record is conflicting, unknown, or legacy-live.
 - The provider has pacing headroom (#9316). Before adding lanes each cycle,
   run `capacity-pacing.ps1` once with the cycle's `-NowUtc` and add no fresh
-  lane on a provider beyond its `newLaneAllowance`, Fable within
-  `fableLaneBudget`. The lane budget (`laneBudget`) is the provider's paced
+  lane on a provider beyond its `newLaneAllowance`; respect live quota windows for every model. The lane budget (`laneBudget`) is the provider's paced
   lane count from each available account's headroom less the 0.10 reserve,
   its hours to reset and the provider's measured burn per lane-hour; the
   pace target (`targetUnitsPerHour`) and pace budget (`paceBudget`) come from

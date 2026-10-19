@@ -1,10 +1,10 @@
 # capacity-pacing.ps1 (#9316): per-provider new-lane allowance from account
-# headroom, time to reset and measured burn. AC1 budgets and the Fable cap,
+# headroom, time to reset and measured burn. AC1 budgets and the Fable window,
 # AC2 allowance from a registry-mapped census, AC3 burn measurement with the
 # 168-hour clip, AC4 unknown handling and byte-identical replay, the F1/F2
 # status boundary (every consumed window field validated, account identity
 # required and unique per provider), plus the plain-floor, clip-ignored,
-# Fable-cap-omitted, exhausted-summed, unknown-authorizes mutants and one
+# Fable-share-cap-restored, exhausted-summed, unknown-authorizes mutants and one
 # deletion mutant per F1 field check and for the F2 identity/duplicate checks.
 param([string]$LegacyReducerPath)
 $ErrorActionPreference = 'Stop'
@@ -227,7 +227,7 @@ try {
           Assert-Pacing ($r.providers.codex.laneBudget -eq 2 -and $r.providers.codex.newLaneAllowance -eq 2) "9737 AC2 headroom 1 pace 3 live 0 capped at 2 (status=$($r.status) reason=$($r.providers.codex.reason) budget=$($r.providers.codex.laneBudget) allowance=$($r.providers.codex.newLaneAllowance))"
           $r = (Invoke-Pacing $paceTwo).data
           Assert-Pacing ($r.providers.codex.laneBudget -eq 3 -and $r.providers.codex.newLaneAllowance -eq 1) '9737 AC2 live 2 allows budget 3'
-          Assert-Pacing ($r.providers.claude.fableLaneBudget -eq 1) '9737 AC2 Fable capped at half raised Claude budget'
+          Assert-Pacing ($r.providers.claude.fableLaneBudget -eq $r.providers.claude.fableLaneBudgetUncapped) '9737 AC2 Fable reports only its own window capacity'
           $highHeadroom = New-Case '9737-headroom-preserved' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 0 1)))
           Assert-Pacing ((Invoke-Pacing $highHeadroom).data.providers.claude.laneBudget -eq 9) '9737 AC2 pace never lowers the headroom budget'
           $empty = New-Case '9737-no-account' (New-Status @())
@@ -339,7 +339,7 @@ try {
   Write-Json (Join-Path $fixture.stateRoot 'model-registry.json') $fixture.registry
   if ($paceFailures.Count -gt 0) { throw "9737 failing controls: $($paceFailures.Count)" }
 
-  # --- AC1: lane budget rounding, binding window, Fable cap ----------------------
+  # --- AC1: lane budget rounding, binding window, Fable capacity ----------------------
   Clear-Forecast
   $case87 = New-Case 'ac1-87h' $claude87
   $r = (Invoke-Pacing $case87).data
@@ -372,7 +372,7 @@ try {
   Assert-Pacing ($fable.windowId -ceq 'limit:2' -and $fable.used -eq 40) 'AC1 Fable window is the Fable-scoped window'
   Assert-Near $fable.hours 7 'AC1 Fable hours'
   Assert-Pacing ($claude.fableLaneBudgetUncapped -eq 5) 'AC1 Fable floor(0.50/0.105+0.5) = 5'
-  Assert-Pacing ($claude.fableLaneBudget -eq 4) 'AC1 Fable capped to floor(9/2) = 4'
+  Assert-Pacing ($claude.fableLaneBudget -eq 5) 'AC1 Fable window capacity 5 is not capped by Claude share'
   $caseLapsed = New-Case 'ac1-lapsed' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 -1 10 87 40 7)))
   $r = (Invoke-Pacing $caseLapsed).data
   $a = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-a')[0]
@@ -386,7 +386,7 @@ try {
   Assert-Near (@($codex.accounts | Where-Object account -ceq 'codex-x')[0].lanes) (0.88 / (0.009 * 160)) 'AC2 codex-x lanes'
   Assert-Near (@($codex.accounts | Where-Object account -ceq 'codex-y')[0].lanes) (0.80 / (0.009 * 150)) 'AC2 codex-y lanes'
   Assert-Pacing ($codex.laneBudget -eq 1 -and $codex.liveLanes -eq 1 -and $codex.newLaneAllowance -eq 0 -and $null -eq $codex.reason) 'AC2 codex allowance floors at 0 with 1-1'
-  Assert-Pacing ($r.providers.claude.fableLaneBudget -eq 4) 'AC2 Fable budget is independent of live lanes'
+  Assert-Pacing ($r.providers.claude.fableLaneBudget -eq 5) 'AC2 Fable budget is independent of live lanes'
   $caseOver = New-Case 'ac2-over' $mixed @(1..12 | ForEach-Object { New-Lane 'opus' })
   $r = (Invoke-Pacing $caseOver).data
   Assert-Pacing ($r.providers.claude.liveLanes -eq 12 -and $r.providers.claude.newLaneAllowance -eq 0 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC2 allowance floors at 0 over budget; idle codex gets 1'
@@ -524,7 +524,7 @@ try {
   # contribute may omit its windows; 0 and 100 are valid percentages.
   $a = New-Claude5; $a.quotaWindows[1].resetAt = $null
   $r = (Invoke-Pacing (New-Case 'ac4-f1-weekly-reset-null' (New-StatusWith @($a)))).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.fableLaneBudget -eq 4 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null reset on the nonbinding window is valid'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.fableLaneBudget -eq 5 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null reset on the nonbinding window is valid'
   $a = New-Claude5; $a.quotaWindows[0].resetAt = $null
   $r = (Invoke-Pacing (New-Case 'ac4-f1-binding-reset-null' (New-StatusWith @($a)))).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-a')[0]
@@ -566,7 +566,7 @@ try {
   # Positive controls: distinct accounts stay additive and are never deduplicated.
   $r = (Invoke-Pacing (New-Case 'ac4-f2-distinct' (New-StatusWith @((New-Claude5), (New-ClaudeAccount 'claude-a2' 'available' 22 5 10 87 40 7))))).data
   Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.availableAccounts -eq 2 -and $r.providers.claude.laneBudget -eq 18 -and $r.providers.claude.newLaneAllowance -eq 18 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F2 two distinct accounts are additive: 9+9 = 18'
-  Assert-Pacing ($r.providers.claude.fableLaneBudgetUncapped -eq 10 -and $r.providers.claude.fableLaneBudget -eq 9) 'AC4 F2 two distinct accounts: Fable floor(9.52+0.5) = 10 capped to floor(18/2) = 9'
+  Assert-Pacing ($r.providers.claude.fableLaneBudgetUncapped -eq 10 -and $r.providers.claude.fableLaneBudget -eq 10) 'AC4 F2 two distinct accounts: Fable floor(9.52+0.5) = 10 without a share cap'
   $r = (Invoke-Pacing (New-Case 'ac4-f2-distinct-names' (New-StatusWith @((New-Named 'claude-n1'), (New-Named 'claude-n2'))))).data
   Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 18 -and ((@($r.providers.claude.accounts | ForEach-Object account) -join ',') -ceq 'claude-n1,claude-n2')) 'AC4 F2 name is the identity only when no id is supplied'
   $r = (Invoke-Pacing (New-Case 'ac4-f2-cross-provider' (New-Status @((New-Claude5), (New-CodexAccount 'claude-a' 'available' 2 160))))).data
@@ -611,10 +611,11 @@ try {
     param($Mutant)
     Assert-Near (Invoke-Pacing $caseBurn @{} $Mutant).data.providers.claude.burnPerLaneHour (0.01 * 168 / 46) 'mutant clip ignored keeps AC3 burn'
   }
-  Assert-Mutant 'fable-cap-omitted' '[Math]::Min($fableRounded, [Math]::Floor($laneBudget / 2))' '$fableRounded' {
+  Assert-Mutant 'fable-share-cap-restored' 'else { $fableRounded }' 'else { [int][Math]::Min($fableRounded, [Math]::Floor($laneBudget / 2)) }' {
     param($Mutant)
-    Assert-Pacing ((Invoke-Pacing $case5 @{} $Mutant).data.providers.claude.fableLaneBudget -eq 4) 'mutant Fable cap omitted keeps AC1 cap 4'
+    Assert-Pacing ((Invoke-Pacing $case5 @{} $Mutant).data.providers.claude.fableLaneBudget -eq 5) 'mutant share cap must not reduce Fable window capacity'
   }
+
   Assert-Mutant 'exhausted-summed' "if (`$status -ceq 'exhausted') { `$entry.reason = 'ACCOUNT_EXHAUSTED'; return `$result }" "if (`$status -ceq 'exhausted') { `$status = 'available' }" {
     param($Mutant)
     Assert-Pacing ((Invoke-Pacing $casePartialExhausted @{} $Mutant).data.providers.claude.laneBudget -eq 9) 'mutant exhausted summed keeps AC2 budget 9'

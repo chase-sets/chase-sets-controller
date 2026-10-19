@@ -827,9 +827,9 @@ function Get-CapacityAuthorHistory {
 }
 
 function Get-CapacityFableWindowState($Forecast) {
-  # Only decision.modelWindowStates.claude.Fable admits a Fable reserve flip.
+  # Legacy forecast reader retained for compatibility; live provider windows govern capacity.
   # Missing, non-object or non-string input is $null, never inferred from the
-  # provider states. Quota tiers and the half share stay host duties.
+  # provider states. This is telemetry, not a model-specific share policy.
   $decision=if (Test-RoutingObject $Forecast) { $Forecast.PSObject.Properties['decision'] } else { $null }
   if ($null -eq $decision -or $decision.Value -is [array] -or -not (Test-RoutingObject $decision.Value)) { return $null }
   $windows=$decision.Value.PSObject.Properties['modelWindowStates']
@@ -909,13 +909,6 @@ function Resolve-CapacityRouting {
     $slots=$data.policy.rows.PSObject.Properties[[string]$Selection.row].Value.slots
     $ownSlot=if($slots.PSObject.Properties["$toward.primary"]){"$toward.primary"}else{"$toward.fallback"}
     if ($target.harness -cne $toward -or $target.slot -cne $ownSlot) { throw 'SLOT_NOT_ADMITTED' }
-    if ($target.family -ceq 'fable') {
-      # Fable is only its own reserve slot on rows 7/14/15, never a planning or
-      # review target, and only while decision.modelWindowStates.claude.Fable is
-      # spend or normal; conserve, unknown, missing or malformed windows refuse.
-      if ($LaneRole -cne 'implementation' -or $Selection.row -notin @(7,14,15) -or
-          (Get-CapacityFableWindowState $f) -cnotin @('spend','normal')) { throw 'SLOT_NOT_ADMITTED' } # CAPACITY_GUARD_FABLE_WINDOW
-    } elseif ($target.placement -ceq 'reserve') { throw 'SLOT_NOT_ADMITTED' }
     # Todd placed every Claude flip (4388/6098327249): family, effort and slot
     # stay the own slot's; v3 evidence and author records log override-Todd.
     if ($toward -ceq 'claude') { $target.placement='override-Todd' } # CAPACITY_GUARD_RULED_PLACEMENT
@@ -931,30 +924,10 @@ function Resolve-CapacityRouting {
   if (($LaneRole -cne 'implementation' -and $Issue -lt 1) -or -not $historyArguments.Artifact) { $result.capacityFlipSkip='REVIEWER_HISTORY_UNKNOWN';return $result } # CAPACITY_GUARD_ARTIFACT
   $history=Get-CapacityAuthorHistory -Path $HistoryPath @historyArguments -Registry $data.registry
   if (-not $history.complete) { $result.capacityFlipSkip='REVIEWER_HISTORY_UNKNOWN';return $result }
-  if ($target.family -ceq 'fable') {
-    foreach($model in @($history.models)) { # one Fable attempt per artifact; a second needs Todd's override
-      if ((Get-RoutingModelIdentity $data.registry $model).family -ceq 'fable') { $result.capacityFlipSkip='SLOT_NOT_ADMITTED';return $result } # CAPACITY_GUARD_FABLE_ONCE
-    }
-  }
-  if ($LaneRole -ceq 'implementation') {
-    # One admitted future reviewer must remain outside the complete branch
-    # history, the original and target models and the target route's real
-    # quota/session continuation (Fable to Astra); recorded unused ladders are
-    # already in the history. No blanket Sol/Opus exclusion.
-    $excluded=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach($model in @($history.models)+@($Selection.model,$target.model)) { [void]$excluded.Add($model) }
-    $continuation=Get-CapacityRouteContinuation $data ([int]$Selection.row) ([string]$target.family) ([string]$target.effort)
-    if ($continuation) { [void]$excluded.Add($continuation) } # CAPACITY_GUARD_CONTINUATION
-    $reviewer=$false
-    foreach($config in @(@('sol','high'),@('opus','high'),@('opus','medium'),@('astra','high'))) {
-      $entry=$data.registry.families.PSObject.Properties[$config[0]]
-      if($null -eq $entry){continue};$model=[string]$entry.Value.current
-      if(-not $excluded.Contains($model) -and -not (Get-RoutingAdmissionReason $data.registry $model $config[1])){$reviewer=$true}
-    }
-    if (-not $reviewer) { $result.capacityFlipSkip='REVIEWER_INDEPENDENCE';return $result }
-  } elseif (@($history.models) -ccontains [string]$target.model) {
-    $result.capacityFlipSkip='REVIEWER_INDEPENDENCE';return $result # CAPACITY_GUARD_ARTIFACT_AUTHOR
-  }
+  # Authorship does not exclude a model family. Fresh lane/session independence
+  # and exact-head receipt gates are enforced by the review contract, not by
+  # reserving a third model during capacity selection.
+
   $flip=[pscustomobject]@{row=[int]$Selection.row;toward=$toward;steps=[int]$steps
     from=[pscustomobject]@{harness=$Selection.harness;family=$Selection.family;effort=$Selection.effort;slot=$Selection.slot}
     to=[pscustomobject]@{harness=$target.harness;family=$target.family;effort=$target.effort;slot=$target.slot;placement=$target.placement}}

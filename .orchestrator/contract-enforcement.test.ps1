@@ -419,7 +419,7 @@ foreach ($rule in $platformRules) {
 
 function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
   foreach($text in @($Milestone,$Routing)) {
-    Assert-Enforced ((Compact-Text $text).Contains('never rows 8/11/12')) 'capacity policy excludes Fable rows 8/11/12'
+    Assert-Enforced ((Compact-Text $text).Contains('fresh lane and session with no shared transcript or conversation state')) 'review independence is a fresh lane/session, not a family exclusion'
     Assert-Enforced ((Compact-Text $text).Contains('capacityShadowFlip')) 'capacity shadow policy is explicit'
     # #9282: planning and review lanes are capacity-eligible; the role exemption is removed from both skills.
     Assert-Enforced (-not (Compact-Text $text).Contains('Review/planning, row 0')) 'capacity role exemption removed (#9282)'
@@ -432,22 +432,33 @@ function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
   Assert-Enforced ((Compact-Text $Routing).Contains('Codex [3,13,10,4]')) 'capacity Codex ordered prefix retained'
   Assert-Enforced (-not (Compact-Text $Routing).Contains('Claude [13,10,4,5]')) 'capacity Claude prefix superseded (#9282)'
   Assert-Enforced ((Compact-Text $Routing).Contains('every lane a Claude model can admissibly take goes to Claude')) 'capacity toward-Claude rule'
-  Assert-Enforced ((Compact-Text $Routing).Contains('decision.modelWindowStates.claude.Fable')) 'capacity Fable window gate'
+  Assert-Enforced ((Compact-Text $Routing).Contains('`modelLimits`, scope `Fable`, window `limit:2`')) 'Fable quota window comes from live provider data'
   Assert-Enforced ((Compact-Text $Routing).Contains('No blanket Sol/Opus exclusion')) 'capacity route-derived continuation replaces blanket exclusion'
-  Assert-Enforced ((Compact-Text $Routing).Contains('Its only automatic routes are the closed Astra-to-Fable watchdog fallback and the ruled capacity reserve flip, both on rows 7/14/15 under the existing reserve')) 'capacity Fable reserve-scoped automatic routes'
+  Assert-Enforced ((Compact-Text $Routing).Contains('Any lane routed off its slot records the reason in its dispatch row, the same for every model.')) 'off-slot reasons apply equally to every model'
   Assert-Enforced (-not (Compact-Text $Routing).Contains('Never use it as an automatic fallback')) 'capacity removes contradictory blanket Fable fallback prohibition'
   Assert-Enforced ((Compact-Text $Milestone).Contains('-ReviewArtifact brief|code')) 'review dispatch names its artifact'
-  $watchdog=Read-Strict 'lane-stall-watchdog.ps1'
-  foreach($row in @(8,11,12)){Assert-Enforced ($watchdog -notmatch "'$row\|astra/high'\s*=\s*@\('claude','fable'") "watchdog Fable exclusion row $row"}
 }
 $routingSkill=Read-Strict 'controller-skills/model-routing/SKILL.md'
 Test-CapacityPolicy $milestoneText $routingSkill
 Assert-Mutant 'strict-prelog-hand-projection-restored' {Test-CapacityPolicy ($milestoneText.Replace('strictPrelogV1','strictTuple')) $routingSkill}
 Assert-Mutant 'strict-prelog-void-recovery-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('voids never-launched prelogs','refuses without recovery'))}
-Assert-Mutant 'capacity-fable-prohibition-omitted' {Test-CapacityPolicy ($milestoneText.Replace('never rows 8/11/12','any row')) $routingSkill}
+Assert-Mutant 'capacity-fresh-session-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'fresh\s+lane\s+and\s+session','same lane and session')) $routingSkill}
 Assert-Mutant 'capacity-role-exemption-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('lanes are eligible. Row 0, relaunches','lanes are eligible. Review/planning, row 0, relaunches'))}
 Assert-Mutant 'capacity-claude-prefix-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('Codex [3,13,10,4]','Claude [13,10,4,5] and Codex [3,13,10,4]'))}
-Assert-Mutant 'capacity-fable-window-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('decision.modelWindowStates.claude.Fable','the Fable window'))}
+Assert-Mutant 'capacity-fable-window-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('`modelLimits`, scope `Fable`, window `limit:2`','the Fable window'))}
+function Test-OrdinaryModelPolicy([string]$Text) {
+  $compact=Compact-Text $Text
+  Assert-Enforced ($compact.Contains('Astra and Fable are ordinary candidates')) 'ordinary model candidacy is explicit'
+  Assert-Enforced ($compact.Contains('The row''s policy slot is the measured default.')) 'policy slot is the measured default'
+  Assert-Enforced ($compact -notmatch '(?i)Fable (?:stays at or below|is capped at|must not exceed) half|Fable (?:is eligible only|flips only|only when Sol and Opus)|Fable availability reserve|HOST_FABLE_ROUTING_REASON_RECORDED|No new Opus primary authorship') 'no model-specific share cap, row restriction or reserve policy'
+  Assert-Enforced ($compact -notmatch '(?i)(?:authorship|authors?)[^.]*must use a third model|both Sol and Opus excluded|exclude every model on the artifact') 'authorship never requires a third model'
+  Assert-Enforced ($compact -notmatch '\(Todd,?\s*\d{4}-\d\d-\d\d|Todd''s \d{4}-\d\d-\d\d ruling') 'routing skill carries no dated rulings'
+}
+Test-OrdinaryModelPolicy $routingSkill
+Assert-Mutant 'fable-share-cap-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Fable stays at or below half of Claude usage.')}
+Assert-Mutant 'fable-row-restriction-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Fable is eligible only for rows 7/14/15.')}
+Assert-Mutant 'third-model-authorship-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Authorship must use a third model.')}
+Assert-Mutant 'off-slot-reason-omitted' {Test-CapacityPolicy $milestoneText ([regex]::Replace($routingSkill,'Any lane\s+routed off its slot','A lane follows its slot'))}
 Assert-Mutant 'capacity-prepare-order-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'prepared,\s+prelogged,\s+then\s+launched','launched, then prelogged')) $routingSkill}
 function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
   # #9316: section 10 states the pacing condition; capacity-pacing.ps1 is its runtime counterpart.
@@ -455,7 +466,7 @@ function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
   Assert-Enforced $section.Success 'skill section 10 present'
   $text=Compact-Text $section.Value
   foreach($rule in @(
-      'run `capacity-pacing.ps1` once with the cycle''s `-NowUtc` and add no fresh lane on a provider beyond its `newLaneAllowance`, Fable within `fableLaneBudget`.',
+      'run `capacity-pacing.ps1` once with the cycle''s `-NowUtc` and add no fresh lane on a provider beyond its `newLaneAllowance`; respect live quota windows for every model.',
       'Relaunches, resumes, review of in-flight work and landing are not counted against it.',
       'A zero allowance is a valid section 10 deferral reason, including in #9283''s spend mode.',
       '`status: unknown` (an unreachable, malformed or stale status, or an unknown census) is zero allowance on every provider: pacing never authorizes dispatch on missing evidence.',
@@ -465,9 +476,10 @@ function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
       'replaces the hand-read AgentPools dashboard routine of 4388/6101785942, which is superseded.')) {
     Assert-Enforced ($text.Contains($rule,[StringComparison]::Ordinal)) "section 10 lacks pacing rule: $rule"
   }
-  foreach($needle in @("'capacity-pacing/v1'",'reserve = 0.10','claude = 0.015; codex = 0.009','minLaneHours = 24','windowHours = 168','fableShare = 0.5')) {
+  foreach($needle in @("'capacity-pacing/v1'",'reserve = 0.10','claude = 0.015; codex = 0.009','minLaneHours = 24','windowHours = 168')) {
     Assert-Enforced ($Reducer.Contains($needle,[StringComparison]::Ordinal)) "capacity-pacing.ps1 lacks runtime counterpart: $needle"
   }
+  Assert-Enforced (-not $Reducer.Contains('[Math]::Floor($laneBudget / 2)',[StringComparison]::Ordinal)) 'Fable pacing reports only provider-window capacity'
 }
 $pacingReducer=Read-Strict 'capacity-pacing.ps1'
 Assert-Enforced ((Compact-Text (Read-Strict 'controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md')).Contains('supersedes 4388/6101785942',[StringComparison]::Ordinal)) 'release note names 4388/6101785942 as superseded for the rule-change row'

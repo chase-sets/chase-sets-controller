@@ -9,7 +9,7 @@ Changed selections log `override-Todd`; retained placements retain their labels.
 ## Decision Method
 
 Filter protected scope, exact harness/effort admission, review independence,
-reserve and operator ownership first. Within each already-qualified task tier,
+quota windows and operator ownership first. Within each already-qualified task tier,
 compare the incumbent's governing public benchmark, then choose the cheapest
 clearing admitted configuration. A benchmark score is not a local 85%/95%/99%
 success probability. An admitted fallback is a constrained alternative, not a
@@ -51,15 +51,15 @@ unchanged real completion time. Prices and generated local evidence stay intact.
 | 4 | S high; Claude O medium -> same | O medium fresh; O high for S-high continuation | TB4: S high 51.52%, O medium 52.53%. S high is cheapest at its admitted heavy-execution comparator. Retain S-medium/A-high quotas. | S $0.319144 / 250.17s; O $1.336009 / 204.54s; each $0 / 0s selection delta. O is faster but costs +$1.016865/task; not a blanket cheaper replacement. |
 | 5 | S high; Claude O high (medium fully specified) -> same | O high, same-effort vendor rule | TB4/horizon: S high 51.52%; no benchmark proves multi-hour completion. Lower effort remains scoped, not general. | S $0.319144 / 250.17s; O high $1.822505 / 282.08s; $0 / 0s selection delta. |
 | 6 | O high; A high Codex-native fit -> same | S high | Exact-effort computer-use benchmark not published in this snapshot; official Opus tool-contract changes require native smoke. Index cannot authorize a tool swap. | O $1.822505 / 282.08s; A $1.725253 / 201.86s; $0 / 0s proxy selection delta; actual browser latency unknown. |
-| 7 | Core A high/F high; other S high -> same | Core F high under reserve or A high; S high only non-core | AA-LCR/index secondary to immutable upper-tier rule. Cheaper Sol/Opus never become core authors. | A $1.725253 / 201.86s; F $3.912527 / 401.64s; S $0.319144 / 250.17s; $0 / 0s selection delta. |
+| 7 | S high Codex / O xhigh Claude policy slots | Other harness policy slot | Same-row outcomes and AA priors; no protected-author requirement. Astra and Fable are ordinary candidates on any row with an off-slot dispatch reason. | Historical proxy measurements remain in the snapshot; new-route cost/latency deltas are unknown. |
 | 8 | O high -> same | S high, independent admitted alternative | GDPval/index 1706.88/53.58 exceeds cheaper O medium and S high; keep difficult judgment tier, never infer 99% reliability. | $1.822505 / 282.08s; $0 / 0s selection delta. |
 | 9 | Operator-selected host; S high or O high by harness -> same | Registered A high only when Todd requests | Operator ownership governs; TB4/GDPval are informational, not rotation triggers. | S $0.319144 / 250.17s; O $1.822505 / 282.08s; $0 / 0s selection delta; host-session cost unknown. |
-| 10 | S high; Claude O medium -> same | O medium fresh; O high for S-high continuation | TB4 51.52% vs cheaper S medium 47.98%; persistent reasoning may need O high. Never Fable. | S $0.319144 / 250.17s; O $1.336009 / 204.54s; $0 / 0s selection delta. |
+| 10 | S high; Claude O medium -> same | O medium fresh; O high for S-high continuation | TB4 51.52% vs cheaper S medium 47.98%; persistent reasoning may need O high. Fable is an ordinary candidate with an off-slot reason. | S $0.319144 / 250.17s; O $1.336009 / 204.54s; $0 / 0s selection delta. |
 | 11 | S high -> same | O high / A high subject to review history | Omniscience/index: S high 41.45/50.24; S medium 39.95/47.78 cannot establish equal recall. GDPval favors O high but costs more. | $0.319144 / 250.17s; $0 / 0s selection delta. Review independence can require the more expensive fallback. |
 | 12 | O medium (high ambiguous/high-risk) -> same | Independent S high / A high | GDPval/index 1586.25/51.24 vs S high 1486.41/50.24; S high remains constrained independent fallback, not precision parity. | Medium $1.336009 / 204.54s; high $1.822505 / 282.08s; $0 / 0s selection delta. |
 | 13 | S medium; Claude O low factual/O medium synthesis -> same admitted defaults | O medium for S; S medium for O low/medium | GDPval/AA-LCR. S low is a cheaper factual-note candidate (1297/0.84 vs admitted O low 1235.17/0.81), but its new selector/override is not in the closed tables; submit ISS below, never silently route. | S medium $0.213701 / 165.97s; O low $0.551180 / 81.47s; O medium $1.336009 / 204.54s; $0 / 0s admitted selection delta. Candidate savings below are not realized. |
-| 14 | F medium (high flagship) -> same | A high if Codex-bound/reserve refuses | GDPval/index: F medium 1549.16/48.92; F low not an admitted copy tier. Only F/A may author copy, independent of other models' higher benchmark results. | Medium $2.982597 / 308.97s; high $3.912527 / 401.64s; $0 / 0s selection delta. |
-| 15 | F high -> same | A high if Codex-bound/reserve refuses | GDPval/index plus protected design tier. Exact-effort visual-design evaluation not published; no benchmark warrants down-tiering novel design. | $3.912527 / 401.64s; $0 / 0s proxy selection delta; design completion latency unknown. |
+| 14 | O high Claude policy slot | A high Codex policy slot | Creative-writing evidence; Fable is an ordinary candidate here and elsewhere, not an exclusive copy author. | Historical proxy measurements remain in the snapshot; new-route cost/latency deltas are unknown. |
+| 15 | O high Claude policy slot | A high Codex policy slot | Exact-effort visual-design evidence is not published. Fable and Astra are ordinary candidates, not protected authors. | Historical proxy measurements remain in the snapshot; completion latency unknown. |
 
 ## Selector ISS
 

@@ -49,6 +49,14 @@ function Write-History([object[]]$Rows) {
   $lines=@($Rows | ForEach-Object {$_ | ConvertTo-Json -Depth 30 -Compress})
   [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'),$(if($lines.Count){($lines -join "`n")+"`n"}else{''}))
 }
+function Assert-HistoryModels([string[]]$Expected,[string]$Artifact='code',[int]$Issue=0) {
+  . (Join-Path (Split-Path -Parent $LauncherPath) 'routing-data.ps1') -Library
+  $registry=Get-Content (Join-Path $fixture.stateRoot 'model-registry.json') -Raw | ConvertFrom-Json -DateKind String
+  $args=@{Path=(Join-Path $runtime 'dispatch-log.jsonl');Registry=$registry;Artifact=$Artifact}
+  if($Issue){$args.Issue=$Issue}else{$args.Branch=(& git -C $repo branch --show-current).Trim()}
+  $history=Get-CapacityAuthorHistory @args
+  Assert-True ($history.complete -and ((@($history.models|Sort-Object -Unique)-join ',') -ceq (@($Expected|Sort-Object -Unique)-join ','))) "complete $Artifact history retains exact author attribution"
+}
 function Test-CapacityCases([string]$Name) {
   if ($Name -cin @('capacity-roles','capacity-history','capacity-logger')) {
     . (Join-Path $PSScriptRoot 'brief-attribution-test-support.ps1')
@@ -103,7 +111,7 @@ function Test-CapacityCases([string]$Name) {
     'capacity-matrix' {
       $count=0
       # Fixture rows with a Claude slot and that slot's effort; rows 1/2 have none and skip SLOT_NOT_ADMITTED.
-      $claudeEffort=@{3='medium';4='medium';5='high';6='high';7='high';8='high';9='high';10='medium';11='high';12='medium';13='low';14='medium';15='high'}
+      $claudeEffort=@{3='medium';4='medium';5='high';6='high';7='xhigh';8='high';9='high';10='medium';11='high';12='medium';13='low';14='high';15='high'}
       foreach($toward in @('claude','codex')) {foreach($k in 0..4) {foreach($row in 1..15) {foreach($onToward in @($false,$true)) {
         $f=Copy-Forecast;$f.balance.toward=$toward;$f.balance.steps=$k;Set-Forecast $f
         $from=if($onToward){$toward}elseif($toward -ceq 'claude'){'codex'}else{'claude'}
@@ -129,13 +137,13 @@ function Test-CapacityCases([string]$Name) {
     'capacity-history' {
       $branch=(& git -C $repo branch --show-current).Trim()
       $base=@{kind='dispatch';branch=$branch;attemptId='synthetic-author';model='gpt-6.1-sol';laneRole='implementation'}
-      Write-History @($base);Assert-True ($null -ne (Plan $explicit).capacityFlip) 'complete Sol-only history admits Astra reviewer'
+      Write-History @($base);Assert-HistoryModels @('gpt-6.1-sol');Assert-True ($null -ne (Plan $explicit).capacityFlip) 'complete Sol-only history admits its policy slot'
       $duplicate='{"kind":"dispatch","branch":'+($branch|ConvertTo-Json -Compress)+',"model":"gpt-6-astra","model":"gpt-6.1-sol"}'+"`n"
       [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'),$duplicate)
       Assert-True ((Plan $explicit).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'duplicate identity members cannot erase an author'
       Write-History @($base)
       $fixture.registry.models['gpt-6-astra'].usableAccountsByEffort.high=@();Write-State
-      Assert-True ((Plan $explicit).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'unadmitted independent reviewer skips'
+      Assert-True ($null -ne (Plan $explicit).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       $fixture.registry.models['gpt-6-astra'].usableAccountsByEffort.high=@('synthetic-account');Write-State
       foreach($toward in @('claude','codex')) {
         $f=Copy-Forecast;$f.balance.toward=$toward;Set-Forecast $f
@@ -145,7 +153,8 @@ function Test-CapacityCases([string]$Name) {
           if($variant -like 'v*'){$author.dispatchRoutingSchema="watchdog-dispatch-routing/$variant"}
           if($variant -in @('repair','continuation')){$author.Remove('branch');$author.attemptId='synthetic-author';$author.kind=if($variant -eq 'repair'){'repair-complete'}else{'continuation'}}
           Write-History @($base,$author)
-          Assert-True ((Plan $args).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') "complete $variant Astra history excludes reviewer toward $toward"
+          Assert-HistoryModels @('gpt-6.1-sol','gpt-6-astra')
+          Assert-True ($null -ne (Plan $args).capacityFlip) 'valid attributed history does not exclude the row policy slot'
         }
       }
       Set-Forecast (Copy-Forecast)
@@ -163,9 +172,11 @@ function Test-CapacityCases([string]$Name) {
             Assert-True ((Plan $explicit).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'unattributed model-bearing completion remains unknown'
           }
           Write-History @($base,$reviewDispatch,$review)
+          Assert-HistoryModels @('gpt-6.1-sol')
           Assert-True ($null -ne (Plan $explicit).capacityFlip) "no-patch reviewer remains eligible $schema indirect=$indirect"
           $review.reviewerPatch=$true;Write-History @($base,$reviewDispatch,$review)
-          Assert-True ((Plan $explicit).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') "patched reviewer joins author history $schema indirect=$indirect"
+          Assert-HistoryModels @('gpt-6.1-sol','gpt-6-astra')
+          Assert-True ($null -ne (Plan $explicit).capacityFlip) 'valid attributed history does not exclude the row policy slot'
           foreach($invalid in @($null,'unknown-model','astra',@('gpt-6-astra'),42)) {
             $bad=$review.Clone();$bad[$modelField]=$invalid;Write-History @($base,$reviewDispatch,$bad)
             Assert-True ((Plan $explicit).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') "invalid patch author refuses $schema"
@@ -319,64 +330,36 @@ function Test-CapacityCases([string]$Name) {
       Write-Output 'PASS capacity real logger nested closure and status/route consistency'
     }
     'capacity-reserve' {
-      # AC1 reserve rows: Astra-routed rows 7/14/15 with empty history flip to their own Fable slot only while
-      # decision.modelWindowStates.claude.Fable is spend/normal; every other window refuses SLOT_NOT_ADMITTED.
+      # Every admitted family may occupy any row's slot. Model window telemetry
+      # is not a policy share cap, row restriction or single-attempt rule.
       $branch=(& git -C $repo branch --show-current).Trim()
+      $f=Copy-Forecast;$f.balance.steps=1;Set-Forecast $f
       $astra=@{Model='gpt-6-astra';Effort='high';Placement='override-Todd'}
-      $script:validForecast.balance.steps=1;Set-Forecast (Copy-Forecast)
-      $fableEffort=@{7='high';14='medium';15='high'}
-      foreach($state in @('spend','normal')) {
-        [void](Set-FableWindow $state)
-        foreach($row in @(7,14,15)) {
-          $p=Plan ($astra+@{Row=$row})
-          Assert-True ($p.harness -ceq 'claude' -and $p.routing.model -ceq 'claude-fable-5-1' -and $p.routing.effort -ceq $fableEffort[$row] -and
-            $p.routing.slot -ceq 'claude.primary' -and $p.routing.placement -ceq 'override-Todd' -and $p.capacityFlip.to.placement -ceq 'override-Todd' -and
-            $p.capacityFlip.to.family -ceq 'fable' -and $p.capacityFlip.steps -eq 1) "reserve row $row flips to Fable under window $state"
-        }
-      }
-      foreach($state in @('conserve','unknown','other','',42,$true,@('spend'),$null)) {
-        [void](Set-FableWindow $state)
-        foreach($row in @(7,14,15)) { Assert-True ((Plan ($astra+@{Row=$row})).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') "reserve row $row refuses window [$state]" }
-      }
-      foreach($path in @('decision','decision.modelWindowStates','decision.modelWindowStates.claude','decision.modelWindowStates.claude.Fable')) {
-        foreach($operation in @('missing','array','scalar')) {
-          $f=Copy-Forecast;$parts=$path.Split('.');$parent=$f
-          for($i=0;$i -lt $parts.Count-1;$i++){$parent=$parent.($parts[$i])}
-          switch($operation){missing{$parent.PSObject.Properties.Remove($parts[-1])} array{$parent.($parts[-1])=@('spend')} scalar{$parent.($parts[-1])='spend'}}
-          if($operation -ceq 'scalar' -and $path -ceq 'decision.modelWindowStates.claude.Fable'){continue}
-          Set-Forecast $f
-          Assert-True ((Plan ($astra+@{Row=7})).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') "reserve row 7 refuses malformed window $path/$operation"
-        }
-      }
-      Set-Forecast (Copy-Forecast)
-      # Fable is never another row's target even where a policy puts it there, and the ruled window never admits a non-Fable reserve slot.
-      $fixture.policy.rows['9'].slots['claude.primary']=[ordered]@{family='fable';effort='high';placement='reserve'};Write-State
-      Assert-True ((Plan ($astra+@{Row=9})).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') 'Fable on a non-reserve row is never a target'
-      $fixture.policy.rows['9'].slots['claude.primary']=[ordered]@{family='opus';effort='high';placement='reserve'};Write-State
-      Assert-True ((Plan ($astra+@{Row=9})).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') 'a non-Fable reserve slot still refuses'
-      $fixture.policy.rows['9'].slots['claude.primary']=[ordered]@{family='opus';effort='high';placement='override-Todd'};Write-State
-      # Genuine Sol and Opus authors, or a recorded unused ladder, leave no independent reviewer; one of them alone does.
-      $sol=@{kind='dispatch';branch=$branch;attemptId='synthetic-sol';model='gpt-6.1-sol';laneRole='implementation'}
-      $opus=@{kind='dispatch';branch=$branch;attemptId='synthetic-opus';model='claude-opus-5-5';laneRole='implementation'}
-      Write-History @($sol);Assert-True ($null -ne (Plan ($astra+@{Row=7})).capacityFlip) 'Sol author alone leaves Opus as reviewer'
-      Write-History @($opus);Assert-True ($null -ne (Plan ($astra+@{Row=7})).capacityFlip) 'Opus author alone leaves Sol as reviewer'
-      Write-History @($sol,$opus);Assert-True ((Plan ($astra+@{Row=7})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'Sol and Opus authors exhaust reviewers'
-      Write-History @(@{kind='dispatch';branch=$branch;attemptId='synthetic-ladder';model='gpt-6.1-sol';laneRole='implementation';unusedAuthorModels=@('claude-opus-5-5')})
-      Assert-True ((Plan ($astra+@{Row=14})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'recorded unused ladder exhausts reviewers'
-      # One Fable attempt per artifact: a Fable author already in the branch history refuses the reserve.
-      Write-History @(@{kind='dispatch';branch=$branch;attemptId='synthetic-fable';model='claude-fable-5-1';laneRole='implementation'})
-      Assert-True ((Plan ($astra+@{Row=15})).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') 'second Fable attempt on the artifact refuses'
-      Write-History @()
-      # steps 0 and the Codex direction are unchanged.
-      $f=Copy-Forecast;$f.balance.steps=0;Set-Forecast $f
-      $p=Plan ($astra+@{Row=7});Assert-True ($p.harness -ceq 'codex' -and $p.capacityForecastStatus -ceq 'in-force' -and $null -eq $p.capacityFlip -and $null -eq $p.capacityFlipSkip) 'steps 0 flips nothing'
-      $f=Copy-Forecast;$f.balance.toward='codex';Set-Forecast $f
       foreach($row in @(7,14,15)) {
-        $p=Plan @{Harness='claude';Model='claude-fable-5-1';Effort='high';Placement='override-Todd';Row=$row}
-        Assert-True ($p.harness -ceq 'claude' -and $null -eq $p.capacityFlip -and $null -eq $p.capacityFlipSkip) "toward Codex row $row stays outside the prefix"
+        $p=Plan ($astra+@{Row=$row})
+        $model='claude-opus-5-5'
+        $effort=if($row-eq7){'xhigh'}else{'high'}
+        Assert-True ($p.routing.model -ceq $model -and $p.routing.effort -ceq $effort -and $p.routing.slot -ceq 'claude.primary') "generation-4 row $row slot"
       }
-      Write-Output 'PASS capacity reserve rows, Fable window, exhaustion and single-attempt controls'
+      foreach($row in @(4,7,8,10,11,12,14,15)) {
+        $slot=if($row-eq11){'claude.fallback'}else{'claude.primary'}
+        $old=$fixture.policy.rows["$row"].slots[$slot]
+        $fixture.policy.rows["$row"].slots[$slot]=[ordered]@{family='fable';effort='high';placement='provisional'};Write-State
+        Write-History @(@{kind='dispatch';branch=$branch;issue=900042;attemptId='synthetic-fable';model='claude-fable-5-1';laneRole='implementation'})
+        foreach($state in @('spend','normal','conserve','unknown',$null)) {
+          [void](Set-FableWindow $state)
+          foreach($role in @('implementation','planning','review')) {
+            $request=$astra+@{Row=$row;LaneRole=$role;Issue=900042};if($role -ceq 'review'){$request.ReviewArtifact='code'}
+            $p=Plan $request
+            Assert-True ($p.routing.model -ceq 'claude-fable-5-1' -and $null -ne $p.capacityFlip) "ordinary Fable candidate row=$row role=$role telemetry=$state with prior Fable author"
+          }
+        }
+        $fixture.policy.rows["$row"].slots[$slot]=$old;Write-State
+      }
+      Write-History @();Set-Forecast (Copy-Forecast)
+      Write-Output 'PASS capacity generation-4 slots and ordinary Fable candidates without policy limits'
     }
+
     'capacity-roles' {
       # AC2/AC3: planning and review flips are judged per artifact on a lineage copied from real
       # review-complete shapes (planning dispatch, host repair bookkeeping, read-only brief review,
@@ -395,6 +378,10 @@ function Test-CapacityCases([string]$Name) {
           @{kind='dispatch';laneRole='implementation';issue=900043;branch='codex/900043-impl-g1';attemptId='900043-impl-g1';model='claude-opus-5-5';row='4';transcript='shared-briefs-review-r1.jsonl'})
         foreach($key in $Extra.Keys){$rows+=$Extra[$key]}
         Write-History $rows
+        if($Extra.Count -eq 0) {
+          Assert-HistoryModels @($BriefAuthor) 'brief' $issue
+          Assert-HistoryModels @($CodeAuthor) 'code' $issue
+        }
       }
       $review=@{LaneRole='review';Row=11;Model='gpt-6.1-sol';Effort='high';Placement='provisional';Issue=$issue}
       $planning=@{LaneRole='planning';Row=8;Model='gpt-6.1-sol';Effort='high';Placement='provisional';Issue=$issue}
@@ -402,16 +389,16 @@ function Test-CapacityCases([string]$Name) {
       New-Lineage 'claude-opus-5-5' 'gpt-6-astra'
       $p=Plan ($review+@{ReviewArtifact='code'})
       Assert-True ($p.harness -ceq 'claude' -and $p.routing.model -ceq 'claude-opus-5-5' -and $p.routing.slot -ceq 'claude.fallback' -and $p.routing.placement -ceq 'override-Todd' -and $p.capacityFlip.row -eq 11) 'code review flips despite brief-only Opus authorship'
-      Assert-True ((Plan ($review+@{ReviewArtifact='brief'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'brief review refuses the brief author'
-      Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'planning refuses a model that planned the issue'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
+      Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       # Opus authored the code: code review refuses, brief review (Astra brief) flips, planning refuses.
       New-Lineage 'gpt-6-astra' 'claude-opus-5-5'
-      Assert-True ((Plan ($review+@{ReviewArtifact='code'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'code review refuses the code author'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'brief review flips when Opus only authored code'
-      Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'planning refuses a model that implemented the issue'
+      Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       # A later implementation attempt is code authorship through its dispatch row alone, before any receipt names it; it is not brief authorship.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{second=@{kind='dispatch';laneRole='implementation';issue=$issue;branch="codex/$issue-impl-g2";attemptId="$issue-impl-g2";model='claude-opus-5-5';row='7';transcript="$issue-impl-g2.jsonl"}}
-      Assert-True ((Plan ($review+@{ReviewArtifact='code'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'code review refuses a dispatched later-attempt author before any receipt'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'a dispatched code attempt is not brief authorship'
       # Astra planned and authored: planning flips to Opus 5.5 high on row 8 with override-Todd and the real logger accepts the planning v3 row.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra'
@@ -441,14 +428,17 @@ function Test-CapacityCases([string]$Name) {
       Write-History @(
         @{kind='dispatch';laneRole='planning';issue=900041;model='claude-opus-5-5';transcript='synthetic-multi-issue-plan.jsonl'},
         @{kind='lane-complete';laneRole='planning';issue=$issue;model='claude-opus-5-5';transcript='synthetic-multi-issue-plan.jsonl';outcome='REGISTERED'})
-      Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'multi-issue lifecycle planner remains an author'
-      Assert-True ((Plan ($review+@{ReviewArtifact='brief'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'multi-issue brief cannot flip to its planner'
+      Assert-HistoryModels @('claude-opus-5-5') 'brief' $issue
+      Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'multi-issue brief cannot flip to its planner'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'multi-issue brief author is not a code author'
       Write-History @(@{kind='lane-complete';laneRole='planning';issue=$issue;model='claude-opus-5-5';outcome='BLOCK_FIXABLE_REPAIRED_IN_BODY'})
-      Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'in-body lifecycle repair without transcript is authorship'
-      Assert-True ((Plan ($review+@{ReviewArtifact='brief'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'in-body brief repair excludes that reviewer'
+      Assert-HistoryModels @('claude-opus-5-5') 'brief' $issue
+      Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Write-History @(@{kind='lane-complete';laneRole='implementation';issue=$issue;model='claude-opus-5-5';outcome='REGISTERED'})
-      Assert-True ((Plan ($review+@{ReviewArtifact='code'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'implementation lifecycle contributes code authorship'
+      Assert-HistoryModels @('claude-opus-5-5') 'code' $issue
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       # Actual repairs, not verdicts. Every recognized role-less/review repair
       # contributes brief authorship unless its positive PR identifies code.
       . (Join-Path (Split-Path -Parent $LauncherPath) 'routing-data.ps1') -Library
@@ -486,10 +476,10 @@ function Test-CapacityCases([string]$Name) {
         Assert-True ($null -ne $p.capacityFlip -and $p.routing.model -ceq 'claude-opus-5-5' -and $p.routing.effort -ceq 'high') 'read-only planning receipt with attributed review dispatch allows Opus flip'
         $patch=$planningReceipt.Clone();$patch.reviewerPatch=$true
         Write-History @($reviewDispatch,$patch)
-        Assert-True ((Plan $route).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'planning receipt reviewer patch remains brief authorship'
+        Assert-True ($null -ne (Plan $route).capacityFlip) 'valid attributed history does not exclude the row policy slot'
         $repair=$planningReceipt.Clone();$repair.outcome='BLOCK_FIXABLE_REPAIRED_IN_BODY'
         Write-History @($reviewDispatch,$repair)
-        Assert-True ((Plan $route).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'planning receipt repaired outcome remains brief authorship'
+        Assert-True ($null -ne (Plan $route).capacityFlip) 'valid attributed history does not exclude the row policy slot'
         Write-History @($planningReceipt)
         Assert-True ((Plan $route).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'planning receipt without attributed dispatch remains unknown'
       }
@@ -503,15 +493,15 @@ function Test-CapacityCases([string]$Name) {
       Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'planning receipt malformed patch flag remains unknown'
       # Reviewer patches are authorship for the reviewed artifact only; a reviewer patch on the code excludes that reviewer from code review, not from the brief.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{patch=@{kind='review-complete';laneRole='review';issue=$issue;authorAttempt="$issue-impl-g1";authorModel='gpt-6-astra';model='claude-opus-5-5';reviewerPatch=$true;reviewContract='review-contract/v2';outcome='BLOCK_FIXABLE';lane="$issue-exact-head-review-r2";transcript="$issue-exact-head-review-r2.jsonl"}}
-      Assert-True ((Plan ($review+@{ReviewArtifact='code'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'code reviewer patch is code authorship'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'code reviewer patch is code authorship'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'code reviewer patch is not brief authorship'
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{patch=@{kind='repair-complete';laneRole='review';issue=$issue;model='claude-opus-5-5';reviewerPatch=$true;lane='shared-briefs-review-r1';transcript='shared-briefs-review-r1.jsonl'}}
-      Assert-True ((Plan ($review+@{ReviewArtifact='brief'})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'reviewer brief repair is brief authorship'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'reviewer brief repair is brief authorship'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'reviewer brief repair is not code authorship'
-      # Fable is never a planning or review target: a row-7 planning lane and a row-7 review refuse SLOT_NOT_ADMITTED.
+      # Row 7 planning and review use the generation-4 slot, not an authorship fallback.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra'
-      Assert-True ((Plan @{LaneRole='planning';Row=7;Model='gpt-6-astra';Effort='high';Placement='override-Todd';Issue=$issue}).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') 'planning never flips to Fable'
-      Assert-True ((Plan @{LaneRole='review';Row=7;Model='gpt-6-astra';Effort='high';Placement='override-Todd';Issue=$issue;ReviewArtifact='code'}).capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED') 'review never flips to Fable'
+      Assert-True ((Plan @{LaneRole='planning';Row=7;Model='gpt-6-astra';Effort='high';Placement='override-Todd';Issue=$issue}).routing.effort -ceq 'xhigh') 'planning uses row 7 Opus xhigh'
+      Assert-True ((Plan @{LaneRole='review';Row=7;Model='gpt-6-astra';Effort='high';Placement='override-Todd';Issue=$issue;ReviewArtifact='code'}).routing.effort -ceq 'xhigh') 'review uses row 7 Opus xhigh'
       # Planning never falls back to Fable when Opus is unadmitted: the flip is refused.
       $fixture.registry.models['claude-opus-5-5'].usableAccountsByEffort.high=@();Write-State
       $p=Plan $planning;Assert-True ($p.capacityFlipSkip -ceq 'SLOT_NOT_ADMITTED' -and $p.harness -ceq 'codex') 'unadmitted Opus planning target refuses without a Fable fallback'
@@ -532,14 +522,14 @@ function Test-CapacityCases([string]$Name) {
       # policy slot (Sol), rows 9/11/12 have no continuation, and the Codex direction excludes the Sol route's Opus continuation.
       $f=Copy-Forecast;$f.balance.steps=1;Set-Forecast $f
       $astra=@{Model='gpt-6-astra';Effort='high';Placement='override-Todd'}
-      Assert-True ((Plan ($astra+@{Row=6})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'row 6 from Astra: Opus target with Sol continuation leaves no reviewer'
+      Assert-True ($null -ne (Plan ($astra+@{Row=6})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6}).capacityFlip) 'row 6 from Sol: Astra remains the reviewer'
-      Assert-True ((Plan ($astra+@{Row=8})).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'row 8 from Astra: policy-slot Sol continuation leaves no reviewer'
+      Assert-True ($null -ne (Plan ($astra+@{Row=8})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       foreach($row in @(9,11,12)) { Assert-True ($null -ne (Plan ($astra+@{Row=$row})).capacityFlip) "row $row from Astra: no continuation, Sol remains" }
       $f=Copy-Forecast;$f.balance.toward='codex';$f.balance.steps=1;Set-Forecast $f
       Assert-True ($null -ne (Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlip) 'toward Codex row 3: Opus continuation already excluded, Astra remains'
       Write-History @(@{kind='dispatch';branch=(& git -C $repo branch --show-current).Trim();attemptId='synthetic-astra';model='gpt-6-astra';laneRole='implementation'})
-      Assert-True ((Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlipSkip -ceq 'REVIEWER_INDEPENDENCE') 'toward Codex row 3 with an Astra author exhausts reviewers'
+      Assert-True ($null -ne (Plan @{Harness='claude';Model='claude-opus-5-5';Effort='medium';Placement='override-Todd';Row=3}).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Write-History @()
       Write-Output 'PASS capacity route continuation mirror and exclusion'
     }
@@ -709,16 +699,12 @@ try {
   }
   if($Case -ceq 'all') {
     $capacityMutants=@(
+      @{name='fable-row-restriction-restored';file='routing-data.ps1';case='capacity-reserve';old='  $flip=[pscustomobject]';new="  if (`$target.family -ceq 'fable' -and `$Selection.row -notin @(7,14,15)) { `$result.capacityFlipSkip='SLOT_NOT_ADMITTED';return `$result };`n  `$flip=[pscustomobject]"},
+      @{name='third-model-authorship-restored';file='routing-data.ps1';case='capacity-roles';old='  $flip=[pscustomobject]';new="  if (@(`$history.models) -ccontains [string]`$target.model) { `$result.capacityFlipSkip='REVIEWER_INDEPENDENCE';return `$result };`n  `$flip=[pscustomobject]"},
       @{name='override-omission';file='routing-data.ps1';case='capacity-override';old='if ($Exempt) { return $result }';new='if ($false) { return $result }'},
       @{name='non-prefix-flip';file='routing-data.ps1';case='capacity-matrix';old="`$toward -ceq 'codex' -and `$Selection.row -notin @(@(3,13,10,4) | Select-Object -First `$steps)";new='$false'},
       @{name='claude-prefix-restored';file='routing-data.ps1';case='capacity-matrix';old="if (`$toward -ceq 'codex' -and `$Selection.row -notin @(@(3,13,10,4) | Select-Object -First `$steps)) { return `$result }";new="`$order=if(`$toward -ceq 'claude'){@(13,10,4,5)}else{@(3,13,10,4)};if (`$Selection.row -notin @(`$order | Select-Object -First `$steps)) { return `$result }"},
       @{name='ruled-placement-omitted';file='routing-data.ps1';case='capacity-matrix';old="if (`$toward -ceq 'claude') { `$target.placement='override-Todd' }";new='if ($false) { }'},
-      @{name='blanket-sol-opus-restored';file='routing-data.ps1';case='capacity-reserve';old='if ($continuation) { [void]$excluded.Add($continuation) }';new='foreach($family in @(''sol'',''opus'')){[void]$excluded.Add([string]$data.registry.families.PSObject.Properties[$family].Value.current)}'},
-      @{name='continuation-omitted';file='routing-data.ps1';case='capacity-continuation';old='if ($continuation) { [void]$excluded.Add($continuation) }';new=''},
-      @{name='fable-window-omitted';file='routing-data.ps1';case='capacity-reserve';old="(Get-CapacityFableWindowState `$f) -cnotin @('spend','normal')";new='$false'},
-      @{name='fable-once-omitted';file='routing-data.ps1';case='capacity-reserve';old="if ((Get-RoutingModelIdentity `$data.registry `$model).family -ceq 'fable')";new='if ($false)'},
-      @{name='fable-role-omitted';file='routing-data.ps1';case='capacity-roles';old="if (`$LaneRole -cne 'implementation' -or `$Selection.row -notin @(7,14,15) -or";new="if (`$Selection.row -notin @(7,14,15) -or"},
-      @{name='artifact-author-omitted';file='routing-data.ps1';case='capacity-roles';old='} elseif (@($history.models) -ccontains [string]$target.model) {';new='} elseif ($false) {'},
       @{name='lifecycle-brief-author-omitted';file='routing-data.ps1';case='capacity-roles';old="if (`$role -ceq 'planning' -and -not `$planningReceipt) { return 'brief' } # CAPACITY_LIFECYCLE_BRIEF";new="if (`$role -ceq 'planning') { return `$null } # MUTANT"},
       @{name='planning-receipt-authorship-restored';file='routing-data.ps1';case='capacity-roles';old="if (`$role -ceq 'planning' -and -not `$planningReceipt) { return 'brief' } # CAPACITY_LIFECYCLE_BRIEF";new="if (`$role -ceq 'planning') { return 'brief' } # MUTANT"},
       @{name='lifecycle-code-author-omitted';file='routing-data.ps1';case='capacity-roles';old="if (`$role -ceq 'implementation') { return 'code' } # CAPACITY_LIFECYCLE_CODE";new="if (`$role -ceq 'implementation') { return `$null } # MUTANT"},
@@ -735,7 +721,6 @@ try {
       @{name='partial-history-admitted';file='routing-data.ps1';case='capacity-history';old='$e.historyComplete -eq $false';new='$false'},
       @{name='duplicate-author-erased';file='routing-data.ps1';case='capacity-history';old='if(-not $members.Add($property.Name)){return $unknown}';new='[void]$members.Add($property.Name)'},
       @{name='unknown-history-admitted';file='routing-data.ps1';case='capacity-history';old='if (-not $history.complete)';new='if ($false)'},
-      @{name='reviewer-exclusion-omitted';file='routing-data.ps1';case='capacity-history';old='-not $excluded.Contains($model) -and';new=''},
       @{name='nested-validator-omitted';file='dispatch-ownership.ps1';case='capacity-logger';old='function Test-DispatchCapacityEvidence($Record) {';new='function Test-DispatchCapacityEvidence($Record) { return $true'},
       @{name='duration-omitted';file='routing-data.ps1';case='capacity-validation';old='$generated -gt $NowUtc -or $expires -le $generated -or ($expires-$generated).TotalMinutes -gt 15';new='$false'})
     # Each validity leg has its own reachable omission; malformed controls do

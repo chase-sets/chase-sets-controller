@@ -79,16 +79,16 @@ function Get-8915Hash([string]$Text) {
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text))).ToLowerInvariant()
 }
 
-# Pins captured from installed baseline 7b897d16, not regenerated from the candidate.
+# Unrelated pins retain the installed baseline. Routing policy pins reflect the current slot and quota-window contract; generated evidence remains unchanged.
 # Normalize only checkout newline representation; every rule character is pinned.
 $normalized = $skill.Replace("`r`n", "`n")
 foreach ($pin in @(
-  @('upper-tier', '### Upper-tier authorship requirements', 'Keep row 1 on Luna 6', '28cebadca5e6d3a73ba4d87c3bcbae48222380c7f485a8356fa87b346a3515e5'),
-  @('review-history', 'Prefer a fully independent reviewer:', 'Review each new configuration at 20', 'd1383e333a888615c0d3cdbbc2c526049d8ebb0a12a88e96048a1d7245995db3'),
-  @('spend', '## Spend telemetry', '## Fable availability reserve', '342098efc94d8a9444b61be1c03948a098513de5e94832d5691a2e0852bcdd55'),
-  @('reserve and concurrency', '## Fable availability reserve', '## Challenger quotas and rebalance', '9d16e8350d7fe42fbe485db8ce624bdc33a9371df77c2382fb5ced8356c3b460'),
+  @('scope classification', '### Scope classification', 'Keep row 1 on Luna 6', '8e15d31e7350ccfeb6f76f6d7d989370467ccac4e3bd2c3c5459cebd5215fe7a'),
+  @('review-history', 'Reviews and decision lanes use their row''s policy slot', 'Review each new configuration at 20', '81f25afe0734d0eea3eec4fd57c55def1fad78eb40a24ee842024b2098556d83'),
+  @('spend', '## Spend telemetry', '## Provider quota windows', '51fab8e53f9a6ec4aa080a8421d95939279f1fbfdab3228710f97b192acbf992'),
+  @('quota windows and concurrency', '## Provider quota windows', '## Challenger quotas and rebalance', '7a2c1bb800ef5e382038ff105298da8dea7dc8a1e5027a92f82f5fb8f1d1d4ef'),
   @('closed watchdog', 'The watchdog stays closed-table', '### September 23 benchmark rebalance', 'ca1b74eae7e7ebd6988de3c30b75a604ec63b35b5460bdb698c186dfa3cd65d7'),
-  @('vendor recovery', 'An Opus low/medium placement requires admission', 'Prefer a fully independent reviewer:', 'ff6f36efa09a9f5a82ab75f6a5dbbb2a168efc15eba316117ca56ecf8c1a6755')
+  @('vendor recovery', 'An Opus low/medium placement requires admission', 'Reviews and decision lanes use their row''s policy slot', 'ff6f36efa09a9f5a82ab75f6a5dbbb2a168efc15eba316117ca56ecf8c1a6755')
 )) {
   $start = $normalized.IndexOf($pin[1], [StringComparison]::Ordinal)
   $end = $normalized.IndexOf($pin[2], $start, [StringComparison]::Ordinal)
@@ -99,8 +99,8 @@ foreach ($pin in @(
 }
 foreach ($pin in @(
   @('benchmarkRebalance20260929', '05462b33b072179d92d41d03c086849f25288f80fbf35d424aec2e70b385c25b'),
-  @('configs', 'f8e3dc5b9a0dc06f4084ae9f939ce52eec08c76911660badd5a1dc76612a074d'),
-  @('dimensions', 'c6e5280555c0e380bd36fbb0bf1465c0be78f919fdab62dff527e4e7fd8ef8fd'),
+  @('configs', 'ab3539d50f14098faf62566e157b7c7e24370ef3ce4d5bbbbb6402e055e5f39b'),
+  @('dimensions', '900f797d2b4b4e2ef11545f8d23a14db3831b9c212839a06aa50b9538720d168'),
   @('measuredAt', '2293049f7af9862019682772bf8f9908967c32a27a3f70d0dde36390fa58d511')
 )) {
   Assert-8915 ((Get-8915Hash ($matrix.($pin[0]) | ConvertTo-Json -Depth 100 -Compress)) -ceq $pin[1]) "historical/generated evidence changed: $($pin[0])"

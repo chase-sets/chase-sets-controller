@@ -47,17 +47,17 @@
     "preferMeasured": "When two cells clear the bar, prefer the one with M provenance over B over V.",
     "smallN": "With n < 8, use the lower confidence bound, not the point estimate. Fable's deep-repo baseline rests on n=8 — a ceiling, not a target.",
     "provisional": "Cells sourced from B or V on a config with no measured history are PROVISIONAL, never automatic promotion authority and never a tier-3 rung on an irreversible artifact. Host selection requires the operator under row 9; successor host arms retain provisional evidence labels without automatic rotation. At recompute, use only the current row's eligible configuration; a retired historical baseline is never a fallback. Successor continuity defaults remain provisional until their own evidence supports reviewed rebalance.",
-    "laneBinding": "Claude lanes run Claude configs, Codex lanes run GPT-6 configs. This filters the candidate set BEFORE scoring; it is a constraint, not a capability dimension. Historical GPT-5.6 configs never become selectable through lane binding. Work conservation never admits a below-bar or protected-scope-ineligible configuration.",
+    "laneBinding": "Claude lanes run Claude configs, Codex lanes run GPT-6 configs. This filters the candidate set BEFORE scoring; it is a constraint, not a capability dimension. Historical GPT-5.6 configs never become selectable through lane binding. Work conservation never admits a below-bar configuration.",
     "generatedVsAuthored": "GENERATED (never hand-edit): every config's `measured` block and the top-level `measuredAt` stamp. AUTHORED (human, citable-source rule): cell scores, vetoes, bars, provenance letters, notes, dimension definitions. Hand-copied numbers go stale within a day and hide sampling bugs. Exact-version enforcement now excludes aliases rather than guessing them into a version bucket.",
     "cellEditLog": "2026-07-24 recompute: agentic-coding sol/sonnet, routine-implementation terra/sol/sonnet, deep-repo fable — all set from dispatch-log joins (M) with row-stratified block rates. Source: matrix-refresh.ps1 measuredAt.blockRateByRow.",
-    "fableVersionReplacement": "Todd 2026-09-07: Fable 5.1 (claude-fable-5-1) replaces Fable 5 in place on every Fable row and in the Fable availability reserve; no trial, shadow, or independent measurement precedes eligibility, and dispatches log placement override-Todd (standing) until the matrix carries measured Fable 5.1 values. Fable 5 configs, cells, baselines, and generated facts remain historical comparators, never eligible dispatch targets.",
-    "v411Reseat": "Todd 2026-09-07 (v4.11): rows re-seated on September 2026 public evidence plus local telemetry: row 12 Opus 5 incumbent (P6 resolved), row 11 Sol with Opus 5 fallback (P5 resolved), row 7 Sol default with Fable 5.1 admitted under the reserve and Opus 5 withdrawn (P2 failed at 0.84), rows 4/5/10 Astra high challenger under the pre-registered P7 ten-dispatch trial (P3 retired), row 6 Opus 5 primary, row 2 Luna medium trial, row 15 Astra high substitute when the reserve refuses. B cells are authored from the cited public numbers with the dimension baseline named; matrix-refresh.ps1 regenerates only measured/measuredAt/adjudicated and never rewrites authored cells, which change only by human adjudication at a recompute.",
+    "fableVersionReplacement": "Fable 5.1 is the current exact selector and an ordinary candidate wherever best for the job. The row policy slot is the measured default; every off-slot lane records a reason in its dispatch row, the same for every model. Read its weekly provider window live from AgentPools /api/summary modelLimits, scope Fable, window limit:2; honor it like any quota window, not as a share rule. Predecessor evidence remains historical and never transfers.",
+    "v411Reseat": "Generation-4 slots: row 7 Codex gpt-6.1-sol/high, Claude claude-opus-5-5/xhigh; row 14 Claude claude-opus-5-5/high, Codex gpt-6-astra/high; row 15 Claude claude-opus-5-5/high, Codex gpt-6-astra/high. Astra and Fable are ordinary candidates on any row, not exclusive or reserved authors. Rows 8/11/12 reviews and decisions use their policy slots regardless of authorship; independence is a fresh lane/session with no shared transcript. Historical experiment results and benchmark cells are not successor vetoes.",
     "v412Rebalance": "Todd 2026-09-07 (v4.12): trials, shadow pairs, provisional placements, per-trial budgets, and the experiments ledger are retired. Challengers enter a row only through a quota rule in the routing skill's row table (share, n, threshold written first; each contested row carries the full quota inline). Rebalance runs every two weeks and on any model release: matrix-refresh regenerates measured/measuredAt, the host reads blockRateByRow by author model and row and byRowModel[row, model].usdPerRun, compares against the written thresholds and row bars, promotes or demotes, and records the decision on the #4388 registry. The cost contract is usdPerRun by row and model; a run is not an artifact and no threshold cites USD per artifact until the ledger groups runs into artifacts. Between rebalances the row table is the only routing authority. Host choice is the row-9 rotation rule, never a trial.",
     "v413EffortConfiguration": "Todd 2026-09-08 (v4.13): the routing unit is a configuration (exact model + exact effort). matrix-refresh.ps1 keys every measured block by both: a run's effort is its dispatch row joined on the transcript (effortUsed over effort), else the <issue>-<model>-<effort>- transcript-name token; a receipt's author effort is its authorEffort field (log-event.ps1 -AuthorEffort), else the author's own dispatch rows up to the receipt instant when they agree. Unresolved or ambiguous rows count for the model and the row but for no configuration, and are reported in measuredAt.effortIdentity. A config with no effort-resolved run carries no measured block; per-model pooled figures live only in measuredAt.byModel. Quota thresholds and rebalance comparisons read measuredAt.byRowConfig and measuredAt.blockRateByRowConfig; byRowModel and blockRateByRow answer per-model questions only. An effort step on the incumbent's model is a challenger like any other (row-4 Sol medium quota). Effort is ordinal within a model's authored ladder (effortLadders) and never comparable across models; price bands are reporting labels, never routing inputs.",
     "v413ConfigIdVersion": "Todd 2026-09-08 (v4.13): a configuration is two-dimensional (exact model selector + effort) and its id is DERIVED, never named: <exact selector>/<effort> (gpt-6-astra/high, gpt-5.6-sol/high, claude-fable-5-1/high). matrix-refresh.ps1 refuses a config whose id is not exactly its canonical model + '/' + effort, so an id can never drift from the configuration it keys and a successor version can never inherit a predecessor's key. Host-arm names in start-host-trial.ps1 (sonnet5-high, opus5-high, sol-high, astra-high) are arm names owned by milestone-orchestrator row 9, not configuration ids; transcript-name tokens (sol-high, astra6--high) are the cost-harvest naming convention, not ids.",
-    "successorMigration": "2026-09-22: retiredModels are historical only. Preserve all predecessor configs, baselines, cells, measured and adjudicated blocks. Successor configurations start with unknown cells and provisional row eligibility; no retired veto transfers. Upper-tier authorship policy remains unchanged.",
+    "successorMigration": "2026-09-22: retiredModels are historical only. Preserve all predecessor configs, baselines, cells, measured and adjudicated blocks. Successor configurations start with unknown cells and provisional row eligibility; no retired veto transfers. No protected-author requirement applies; choose the row slot or record the off-slot reason.",
     "registryCurrentLifecycle": "v2.87: routing-policy rows name family slots and efforts, while model-registry families.current supplies the exact selectable model. A current swap is a new configuration identity; matrix-refresh derives the current and historical configuration roster from registry admitted efforts, creates unknown successor cells, clears historical selectability, and removes measured evidence for a config with no exact model+effort run. Historical configs remain readable and are never new-work authority.",
-    "benchmarkRebalance": "2026-09-23: Todd requested implementation of benchmark-backed routing. SKILL.md v4.17 admits named Opus low/medium execution and precision-review configurations and narrows Sonnet to a conditional latency/capacity role. Changed placements are override-Todd policy, not measured promotions. Evidence and provider-fallback limitations are in references/capability-recalibration.md. No generated block, score, baseline or predecessor evidence is changed; protected authorship and host ownership remain intact.",
+    "benchmarkRebalance": "2026-09-23: Todd requested implementation of benchmark-backed routing. SKILL.md v4.17 admits named Opus low/medium execution and precision-review configurations and narrows Sonnet to a conditional latency/capacity role. Changed placements are override-Todd policy, not measured promotions. Evidence and provider-fallback limitations are in references/capability-recalibration.md. No generated block, score, baseline or predecessor evidence is changed; host ownership remains intact; authorship does not restrict task routing.",
     "sonnetVersionReplacement": "Todd 2026-09-28: Sonnet 5.5 replaces Sonnet 5 in place, with no predecessor score, veto, cost, benchmark, sample count or verdict transfer. Existing placements retain override-Todd; the same-day benchmarkRebalance20260928 adds rows 3/13 high challenger quotas as provisional. Medium stays conditional on a named latency/capacity constraint. No new rows, host default or reviewer eligibility; row-10 high fallback stays. Public snapshots are policy priors, not M or automatic B cells. Native Claude Code 2.1.284 admission passed all five efforts (exit 0, OK, modelUsage claude-sonnet-5-5 only), as reported by Todd. Sonnet 5 is historical only; pinned workers may finish without relabeling.",
     "solVersionReplacement": "Todd 2026-09-29: Sol 6.1 (gpt-6.1-sol) replaces Sol 6 (gpt-6-sol) in place on every Sol row, fallback, host arm (sol61-high keeps the default host seat) and allowlist. Ruling: new model versions are more intelligent at the same cost or equally intelligent at lower cost, so a clean swap goes first and benchmark recalibration follows. No predecessor score, veto, cost, benchmark, sample count or verdict transfers; placement stays provisional as Sol 6 was. Prices 2/10, long 4/15, cached input 0.10 per OpenAI changelog 2026-09-29. Live pool 2026-09-29: 3 of 4 Codex accounts list gpt-6.1-sol and the pool routes it only to those. benchmarkRebalance20260929 is a policy prior, not M or automatic B cells; row expansion beyond the in-place swap needs an explicit Todd ruling. Sol 6 is historical only; pinned workers may finish without relabeling."
   },
@@ -1440,7 +1440,7 @@
       "harness": "claude",
       "priceIn": 10.0,
       "priceOut": 50.0,
-      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Scarce specialist reserved for routing rows 14 and 15. A run is not a fixed unit of work; per-run and per-minute rankings may differ. Read current generated values and state the denominator instead of preserving a quantitative rank in authored prose.",
+      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Historical comparator only; no current routing restriction follows. A run is not a fixed unit of work; per-run and per-minute rankings may differ. Read current generated values and state the denominator instead of preserving a quantitative rank in authored prose.",
       "measured": {
         "usdPerRun": 16.67,
         "medianMin": 21.8,
@@ -1466,7 +1466,7 @@
       "priceIn": 10.0,
       "priceOut": 50.0,
       "tier3": true,
-      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Tier-3 exception for routing rows 14 and 15 only; never a starting configuration.",
+      "note": "Historical Fable 5 evidence only; replaced by Fable 5.1 for new dispatches. Historical comparator only; no current routing restriction follows. ",
       "adjudicated": {
         "usdPerRun": 9.01,
         "medianMin": 7.6,
@@ -1484,7 +1484,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Selectable option authorized by Todd 2026-09-04. No inherited evidence; defaults unchanged. Pricing: https://developers.openai.com/api/docs/pricing."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
     },
     {
       "id": "gpt-6-astra/medium",
@@ -1495,7 +1495,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Selectable option authorized by Todd 2026-09-04. No inherited evidence; defaults unchanged. Pricing: https://developers.openai.com/api/docs/pricing."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
     },
     {
       "id": "gpt-6-astra/high",
@@ -1506,7 +1506,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Selectable option authorized by Todd 2026-09-04. No inherited evidence; defaults unchanged. Pricing: https://developers.openai.com/api/docs/pricing.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
       "measured": {
         "usdPerRun": 45.32,
         "medianMin": null,
@@ -1526,7 +1526,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Selectable option authorized by Todd 2026-09-04. No inherited evidence; defaults unchanged. Pricing: https://developers.openai.com/api/docs/pricing.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
       "tier3": true
     },
     {
@@ -1538,7 +1538,7 @@
       "priceOut": 50.0,
       "priceLongIn": 20.0,
       "priceLongOut": 75.0,
-      "note": "Selectable option authorized by Todd 2026-09-04. No inherited evidence; defaults unchanged. Pricing: https://developers.openai.com/api/docs/pricing.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
       "tier3": true
     },
     {
@@ -1552,7 +1552,7 @@
       "priceEffective": "2026-09-01",
       "priceSource": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
       "placement": "override-Todd",
-      "note": "Todd 2026-09-07 replacement; rows 14/15 only. Capability evidence is unknown; no predecessor measurements, scores or provider constraints inherited."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
     },
     {
       "id": "claude-fable-5-1/high",
@@ -1565,7 +1565,7 @@
       "priceEffective": "2026-09-01",
       "priceSource": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
       "placement": "override-Todd",
-      "note": "Todd 2026-09-07 replacement, expanded 2026-09-12: row-7 architectural-core, money, contract, and event-invariant slices plus rows 14/15 per SKILL.md. Capability evidence is unknown; no predecessor measurements, scores or provider constraints inherited."
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer."
     },
     {
       "id": "claude-fable-5-1/max",
@@ -1578,7 +1578,7 @@
       "priceEffective": "2026-09-01",
       "priceSource": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
       "placement": "override-Todd",
-      "note": "Todd 2026-09-07 replacement; rows 14/15 only. Capability evidence is unknown; no predecessor measurements, scores or provider constraints inherited. Requires existing tier-3 authorization; never a starting configuration.",
+      "note": "Ordinary candidate wherever best for the job. Use the row policy slot as the measured default and record any off-slot reason in the dispatch row, just as for every model. Live provider quota windows apply. Exact-configuration evidence remains independent; no predecessor measurements, scores or constraints transfer.",
       "tier3": true
     },
     {
@@ -1959,24 +1959,6 @@
   ],
   "globalGates": [
     {
-      "config": "*",
-      "condition": "task authors or repairs user-facing copy, changes the design system, or designs/implements/repairs architectural core (including supporting tests and documentation), and requested model is neither claude-fable-5-1 nor gpt-6-astra",
-      "effect": "veto",
-      "reason": "Todd 2026-09-12: copywriting, design-system changes, and architectural-core changes require the upper tier, including routine and mechanical edits. Sol/Opus may independently review but must return edits to an eligible author. Applying existing components, wiring approved copy verbatim, and consuming established contracts remain ordinary implementation."
-    },
-    {
-      "config": "claude-fable-5/high",
-      "condition": "routing row is not 14 or 15 AND Todd has not explicitly overridden this exact artifact",
-      "effect": "veto",
-      "reason": "Todd 2026-07-31: preserve scarce Fable availability for flagship prose and important or novel UI/UX"
-    },
-    {
-      "config": "claude-fable-5/max",
-      "condition": "routing row is not 14 or 15 OR no tier-3 authorization exists",
-      "effect": "veto",
-      "reason": "Fable max is restricted to authorized row-14/15 exceptions and never starts an artifact"
-    },
-    {
       "config": "gpt-5.6-luna/low",
       "condition": "inputTokens > 60000 OR task requires recall-from-context",
       "effect": "veto",
@@ -2029,24 +2011,6 @@
       "condition": "requested or reported model identity is an alias, lacks a version, or differs from the requested exact version",
       "effect": "abort",
       "reason": "Model-family evidence does not transfer across versions. Require exact version equality at dispatch and startup liveness; exclude ambiguous history rather than guessing."
-    },
-    {
-      "config": "claude-fable-5-1/medium",
-      "condition": "routing row is not 14 or 15 AND Todd has not explicitly overridden this exact artifact",
-      "effect": "veto",
-      "reason": "Standing Fable availability reserve and tier limits, retained by the 2026-09-07 version replacement; policy, not predecessor capability evidence."
-    },
-    {
-      "config": "claude-fable-5-1/high",
-      "condition": "routing row is neither 14 nor 15 nor a row-7 architectural-core, money, contract, or event-invariant slice AND Todd has not explicitly overridden this exact artifact",
-      "effect": "veto",
-      "reason": "Standing Fable availability reserve and tier limits, retained by the 2026-09-07 version replacement; policy, not predecessor capability evidence."
-    },
-    {
-      "config": "claude-fable-5-1/max",
-      "condition": "routing row is not 14 or 15 OR no tier-3 authorization exists",
-      "effect": "veto",
-      "reason": "Standing Fable availability reserve and tier limits, retained by the 2026-09-07 version replacement; policy, not predecessor capability evidence."
     },
     {
       "config": "claude-fable-5/high",
@@ -2777,7 +2741,7 @@
         "claude-fable-5-1/high": {
           "score": 0,
           "src": "B",
-          "ref": "2026-09-07 public numbers: SWE-Bench Pro 81.2 vs Fable 5 80.3 (baseline); CursorBench 73.4 vs 70.5. Admitted on row 7 under the reserve (v4.11)."
+          "ref": "2026-09-07 public numbers: SWE-Bench Pro 81.2 vs Fable 5 80.3 (baseline); CursorBench 73.4 vs 70.5. Fable is an ordinary candidate; current policy slots govern routing."
         },
         "claude-fable-5-1/max": {
           "score": null,
@@ -4040,7 +4004,7 @@
       "baseline": "claude-fable-5/high",
       "governingEvidence": "EQ-Bench Creative, LMArena Text Elo",
       "noSubstitute": false,
-      "noSubstituteReason": "Todd 2026-09-12: Astra high is the standing upper-tier substitute for Fable on row 14. Queue when neither is available. Historical cells retain their original evidence scope; this policy does not transfer or invent measurements.",
+      "noSubstituteReason": "Row 14 Claude policy slot is claude-opus-5-5/high and Codex slot is gpt-6-astra/high. Fable is an ordinary candidate here and elsewhere, not an exclusive author. Historical cells retain their original evidence scope; policy does not invent measurements.",
       "cells": {
         "claude-fable-5/high": {
           "score": 0,
@@ -4235,7 +4199,7 @@
         "gpt-6-astra/high": {
           "score": null,
           "src": null,
-          "ref": "Only a max-effort WebDev arena score exists (gpt-6-astra-max 1797 vs baseline claude-fable-5 1629); no high-effort result, so the high cell stays null. Row-15 substitution when the reserve refuses rests on the ruling, not this cell."
+          "ref": "Only a max-effort WebDev arena score exists (gpt-6-astra-max 1797 vs baseline claude-fable-5 1629); no high-effort result, so the high cell stays null. Row-15 policy slots are defaults, not exclusive model roles; this cell supplies no routing restriction."
         },
         "gpt-6-astra/xhigh": {
           "score": null,

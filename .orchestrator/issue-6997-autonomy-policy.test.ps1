@@ -139,7 +139,8 @@ level: <ISSUE|SET|EPIC> - <named siblings or epic when not ISSUE>
     $compact.Contains("Billed USD is recorded telemetry and is never a ceiling", [StringComparison]::Ordinal) -and
     $compact.Contains("never files a cap-only Decision", [StringComparison]::Ordinal) -and
     $compact.Contains("Reviewer exhaustion never parks or stalls the artifact, and it is never self-review.", [StringComparison]::Ordinal) -and
-    $compact.Contains("did not author or repair this exact body revision", [StringComparison]::Ordinal) -and
+    $compact.Contains("The host dispatches semantic review on the row's policy slot regardless of which model authored or repaired this exact body revision.", [StringComparison]::Ordinal) -and
+    $compact.Contains("a fresh lane and session with no shared transcript or conversation state", [StringComparison]::Ordinal) -and
     -not $compact.Contains("nonPass=PARK", [StringComparison]::Ordinal) -and
     -not $compact.Contains("leaves the item parked", [StringComparison]::Ordinal)
   )
@@ -561,46 +562,28 @@ Assert-6997 (-not $routingCompact.Contains("spend authorization", [StringCompari
 Assert-6997 ($routingCompact.Contains('Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch', [StringComparison]::Ordinal)) "v4.10 lacks the Fable 5.1 in-place replacement"
 Assert-6997 ($routingCompact.Contains('`claude-fable-5` is never selectable', [StringComparison]::Ordinal)) "v4.10 does not retire claude-fable-5"
 Assert-6997 (-not $routingCompact.Contains("| Fable 5 |", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("Fable 5 medium", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("Fable 5 high", [StringComparison]::Ordinal)) "v4.10 still routes to Fable 5"
-Assert-6997 ($routingCompact.Contains('| 12 | Precision-facing review | `claude-opus-5-5/medium` override-Todd; `claude-opus-5-5/high` for ambiguous/high-risk review. Never Luna; use row 11 for high-recall risk | `gpt-6.1-sol/high` independent fallback; `gpt-6-astra/high` independent reviewer (override-Todd)', [StringComparison]::Ordinal)) "v4.23 lacks the Opus 5.5 row-12 precision placement or the independent Astra reviewer"
-Assert-6997 ($routingCompact.Contains('| 11 | High-recall money/contracts/infra review | `gpt-6.1-sol/high` provisional; never Fable | `claude-opus-5-5/high`; `gpt-6-astra/high` independent reviewer (override-Todd)', [StringComparison]::Ordinal)) "v4.23 lacks Sol 6.1 row-11 recall succession or the independent Astra reviewer"
-# v4.22 (Todd 4388/6022146271, #8903 F2): full-history exclusion is the
-# preferred ordinary route; an exhausted roster falls back to the best
-# row-qualified reviewer that is not the exact revision's author or repairer,
-# with disclosure, instead of returning to the host or independent decision.
-function Test-ReviewHistoryExclusion([string]$Text) {
-  foreach ($rule in @(
-    "Prefer a fully independent reviewer: exclude every model on the artifact's author and repair history",
-    'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer that did not author or repair the exact revision under review.',
-    'The host retains and inspects the complete history, and the receipt discloses that reviewer''s earlier participation in the lineage.',
-    'Never self-review the exact revision, and never restore Sonnet to reach a reviewer count.',
-    'Reviewer exhaustion never parks or stalls the artifact.',
-    'FINAL nonterminal proof route only when all its predicates hold',
-    'independently check code author/repair history and platform author ladders.',
-    'Effort/session changes never cleanse model history.',
-    'Protected authorship below still takes precedence over ordinary row fallbacks.'
-  )) {
-    if (-not $Text.Contains($rule, [StringComparison]::Ordinal)) { return $false }
-  }
-  foreach ($retired in @(
-    'If no admitted reviewer remains, return to the host',
-    'otherwise return to independent decision',
-    'Sonnet 5 medium fallback'
-  )) {
-    if ($Text.Contains($retired, [StringComparison]::Ordinal)) { return $false }
-  }
-  return $true
+Assert-6997 ($routingCompact.Contains('| 12 | Precision-facing review | `claude-opus-5-5/medium` policy slot regardless of authorship', [StringComparison]::Ordinal)) 'row 12 uses its precision policy slot regardless of authorship'
+Assert-6997 ($routingCompact.Contains('| 11 | High-recall money/contracts/infra review | `gpt-6.1-sol/high` policy slot regardless of authorship', [StringComparison]::Ordinal)) 'row 11 uses its recall policy slot regardless of authorship'
+function Test-ReviewSlotIndependence([string]$Text) {
+  foreach($rule in @(
+    "Reviews and decision lanes use their row's policy slot regardless of the artifact's author or repair models.",
+    'Inspect the complete history and disclose participation in the receipt.',
+    'Independence requires a fresh lane and session with no shared transcript or conversation state, not a different model family.',
+    'A lane never reviews its own output within the same session; no reviewer validates its own patch.',
+    'Strict governing PASS, exact-head receipts, batteries and the PREEXISTING rule are unchanged.'
+  )) { if(-not $Text.Contains($rule,[StringComparison]::Ordinal)){return $false} }
+  return $Text -notmatch '(?i)authorship must use a third model|exclude every model on the artifact'
 }
-Assert-6997 (Test-ReviewHistoryExclusion $routingCompact) 'v4.22 must keep full-history preference and the disclosed exhausted-roster fallback'
-foreach ($boundary in @('Never self-review the exact revision', 'only when all its predicates hold', 'code author/repair history', 'never cleanse model history',
-    'did not author or repair the exact revision under review', 'discloses that reviewer''s earlier participation', 'retains and inspects the complete history',
-    'Prefer a fully independent reviewer: exclude every model', 'Reviewer exhaustion never parks or stalls the artifact', 'Protected authorship below still takes precedence')) {
-  Add-MutantClaim "review-exclusion-$boundary" $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($boundary, 'MUTANT_REMOVED'))) 'exhausted roster falls back with disclosure and never weakens independent code review'
+Assert-6997 (Test-ReviewSlotIndependence $routingCompact) 'policy slots and fresh-session independence replace family exclusion'
+foreach($boundary in @("Reviews and decision lanes use their row's policy slot",'Inspect the complete history','disclose participation in the receipt',
+    'fresh lane and session','no shared transcript or conversation state','not a different model family',
+    'A lane never reviews its own output within the same session','no reviewer validates its own patch',
+    'Strict governing PASS','exact-head receipts','batteries','PREEXISTING')) {
+  Add-MutantClaim "review-slot-$boundary" $true (Test-ReviewSlotIndependence ($routingCompact.Replace($boundary,'MUTANT_REMOVED'))) 'slot routing preserves every review independence and receipt boundary'
 }
-$exhaustedFallback = 'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer that did not author or repair the exact revision under review.'
-Add-MutantClaim 'review-exclusion-unconditional-restored' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($exhaustedFallback, 'If no admitted reviewer remains, return to the host.'))) 'exhausted roster never returns to the host for lack of a fully independent reviewer'
-Add-MutantClaim 'review-exclusion-exact-author-admitted' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace($exhaustedFallback, 'When that exclusion leaves no admitted reviewer, the host dispatches the best row-qualified admitted reviewer, including the author or repairer of the exact revision under review.'))) 'exhausted roster never admits the exact revision author or repairer'
-Add-MutantClaim 'review-exclusion-exhausted-brief-returns-to-decision' $true (Test-ReviewHistoryExclusion ($routingCompact.Replace('FINAL nonterminal proof route only when all its predicates hold', 'FINAL nonterminal proof route only when all its predicates hold; otherwise return to independent decision'))) 'exhausted brief roster uses the disclosed fallback instead of returning to independent decision'
-Assert-6997 ($routingCompact.Contains('Core: `gpt-6-astra/high` / `claude-fable-5-1/high` under reserve, override-Todd', [StringComparison]::Ordinal) -and $routingCompact.Contains('Other work: `gpt-6.1-sol/high` provisional; Fable admitted for named money/contract/event slices. No new Opus primary authorship', [StringComparison]::Ordinal)) "v4.23 changes row-7 upper-tier authorship or grants Opus new primary authorship"
+Add-MutantClaim 'third-model-authorship-restored' $true (Test-ReviewSlotIndependence ($routingCompact+' Authorship must use a third model.')) 'authorship never forces a third model'
+Assert-6997 ($routingCompact.Contains('Codex: `gpt-6.1-sol/high`; Claude: `claude-opus-5-5/xhigh`, generation-4 policy slots',[StringComparison]::Ordinal)) 'row 7 uses generation-4 slots, with no protected authorship'
+
 Assert-6997 ($routingCompact.Contains("## Challenger quotas and rebalance", [StringComparison]::Ordinal) -and $routingCompact.Contains("Rebalance runs every two weeks and on any model release", [StringComparison]::Ordinal) -and $routingCompact.Contains("Between rebalances the row table is the only routing authority", [StringComparison]::Ordinal)) "v4.12 lacks the challenger-quota and rebalance rule"
 Assert-6997 (-not $routingCompact.Contains("## Astra trial", [StringComparison]::Ordinal) -and $routingCompact.Contains("The legacy trial/shadow process, per-trial budgets, and experiment ledger are retired", [StringComparison]::Ordinal) -and $routingCompact.Contains('Quota and successor dispatches still require the `provisional` evidence label', [StringComparison]::Ordinal)) "v4.16 restores trial ceremony or drops provisional evidence labels"
 Assert-6997 (-not $routingCompact.Contains("shadow trial", [StringComparison]::Ordinal) -and $routingCompact.Contains('The cost contract is the generated `measuredAt.byRowConfig[row, model, effort].usdPerRun`', [StringComparison]::Ordinal)) "v4.13 quota cost contract is not the generated per-configuration usdPerRun"

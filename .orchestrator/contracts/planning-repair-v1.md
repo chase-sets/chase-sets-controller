@@ -18,7 +18,7 @@ You never implement it.
 
 A lane must not launch model CLIs or subprocess reviewers itself; any required
 independent review returns to the host for a canonical attributed dispatch after
-full artifact author/repair-history eligibility checks. Output from a bypass is
+full artifact history and row-slot admission checks. Output from a bypass is
 non-governing evidence, never review or admission authority. An
 `unsupported_encrypted_delegation` adapter failure followed by an
 attempted native-CLI fallback must be reported as `PENDING_HOST_REVIEW`,
@@ -33,7 +33,7 @@ For a nonterminal, outcome/decision/acceptance-preserving repair, the host may a
 FINAL `brief-sweep2-authority-decision-r1`'s standing proof route: bind the completed
 repair, current body/dependencies and full findings in a causal exception record;
 retain trusted readiness and ordinary admission; use a row-qualified author and a
-fresh code-history-independent reviewer for one complete exact-head implementation
+fresh-session reviewer on the row's policy slot for one complete exact-head implementation
 review that challenges the whole brief and all findings before ready/landing.
 This is not a brief semantic PASS. Terminal re-entry, changed semantics,
 missing authority or no eligible implementation reviewer remain outside this
@@ -140,11 +140,12 @@ preparation, harness or lane-tooling stop consumed no attempt.
 Consumed counts are history and step-back triggers, never a stop. Billed USD is recorded telemetry and is never a
 ceiling. The controller never files a cap-only Decision.
 
-When no fully independent admitted semantic reviewer remains, the host
-dispatches the best available admitted reviewer that did not author or repair
-this exact body revision, and the receipt discloses that reviewer's earlier
-participation. Reviewer exhaustion never parks or stalls the artifact, and it
-is never self-review.
+The host dispatches semantic review on the row's policy slot regardless of
+which model authored or repaired this exact body revision. Independence means
+a fresh lane and session with no shared transcript or conversation state with
+the author lane; no lane reviews its own output within the same session. The
+receipt discloses earlier participation. Reviewer exhaustion never parks or
+stalls the artifact, and it is never self-review.
 
 ## Required completion report
 
