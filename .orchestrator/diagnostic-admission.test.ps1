@@ -144,7 +144,12 @@ process.exitCode = 7;
   $scriptRelative=$configDropRelative; $scriptPath=$configDropPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
   $configDrop=Invoke-Diagnostic @{} 'child-config-drop'
   Assert-True ($configDrop.Result.Code -ne 0 -and $configDrop.Result.Stderr -match [regex]::Escape('heavy-admission: diagnostic child process launch refused because the diagnostic admission configuration was not inherited') -and -not (Test-Path $configDrop.Marker)) 'child that keeps the preload but drops the admission configuration is refused'
-  Write-Output 'PASS diagnostic child callback-options=refused config-drop=refused marker=absent'
+  $smuggleRelative='.orchestrator/artifacts/child-node-options-smuggle.mjs'; $smugglePath=Join-Path $worktree ($smuggleRelative -replace '/','\')
+  Set-Content -LiteralPath $smugglePath -Value "import { spawnSync, execSync } from 'node:child_process'; import fs from 'node:fs'; const refused=[]; const tryLaunch=(name, launch)=>{ try { launch(); } catch (error) { if (String(error.message).includes('NODE_OPTIONS lacks the diagnostic preload')) refused.push(name); } }; tryLaunch('tab', () => spawnSync(process.execPath, ['-e', ''], { env: { ...process.env, NODE_OPTIONS: '--title=x\t' + process.env.NODE_OPTIONS.replace(' ', '\t') } })); tryLaunch('extra', () => spawnSync(process.execPath, ['-e', ''], { env: { ...process.env, NODE_OPTIONS: process.env.NODE_OPTIONS + ' --title=x' } })); const keep=process.env.NODE_OPTIONS; delete process.env.NODE_OPTIONS; tryLaunch('execSync-null', () => execSync('exit 0', null, { env: { ...process.env, NODE_OPTIONS: keep } })); process.env.NODE_OPTIONS=keep; if (refused.length === 3) fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, refused.join(','));"
+  $scriptRelative=$smuggleRelative; $scriptPath=$smugglePath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  $smuggle=Invoke-Diagnostic @{} 'child-node-options-smuggle'
+  Assert-True ((Test-Path $smuggle.Marker) -and ([IO.File]::ReadAllText($smuggle.Marker) -ceq 'tab,extra,execSync-null')) 'altered NODE_OPTIONS and execSync(cmd, null, opts) are refused'
+  Write-Output 'PASS diagnostic child callback-options=refused config-drop=refused node-options-smuggle=refused marker=absent'
 
   $manifestRemovalRelative='.orchestrator/artifacts/manifest-removal.mjs'; $manifestRemovalPath=Join-Path $worktree ($manifestRemovalRelative -replace '/','\')
   Set-Content -LiteralPath $manifestRemovalPath -Value @'

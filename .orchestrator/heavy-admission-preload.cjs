@@ -379,13 +379,16 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     }
     return false;
   };
-  // Every child_process API takes (command, [args], [options], [callback]); the
-  // options object is the first plain object after the command, never a trailing callback.
-  const launchOptions = (argumentsList) => {
-    for (const candidate of argumentsList.slice(1)) {
-      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) return candidate;
-    }
-    return null;
+  // The host sets a preload-only NODE_OPTIONS for diagnostics. Children must carry
+  // that exact string: parsing a caller-built string is never trusted.
+  const requiredNodeOptions = process.env.NODE_OPTIONS;
+  if (!hasDiagnosticPreload(requiredNodeOptions)) refuse("diagnostic NODE_OPTIONS did not carry the diagnostic preload");
+  const isPlainObject = (candidate) => candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
+  // exec/execSync take (command, [options], [callback]); the others take
+  // (command, [args], [options], [callback]). A trailing callback is never options.
+  const optionsIndex = (method, argumentsList) => {
+    if (method === "exec" || method === "execSync") return isPlainObject(argumentsList[1]) ? 1 : -1;
+    return argumentsList.findIndex((candidate, index) => index > 0 && isPlainObject(candidate));
   };
   const refuseChildLaunch = (reason) => {
     throw Object.assign(new Error(`heavy-admission: diagnostic child process launch refused because ${reason}`), {
@@ -396,9 +399,15 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   for (const method of guardedMethods) {
     const original = childProcess[method];
     childProcess[method] = function guardedDiagnosticLaunch(...argumentsList) {
-      const options = launchOptions(argumentsList);
-      const environment = options && Object.hasOwn(options, "env") ? options.env : process.env;
-      if (!hasDiagnosticPreload(environment?.NODE_OPTIONS)) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
+      const index = optionsIndex(method, argumentsList);
+      let environment = process.env;
+      if (index >= 0) {
+        // Snapshot once and hand Node the same data properties the guard checked.
+        const snapshot = { ...argumentsList[index] };
+        argumentsList[index] = snapshot;
+        if (Object.hasOwn(snapshot, "env")) environment = snapshot.env;
+      }
+      if (environment?.NODE_OPTIONS !== requiredNodeOptions) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
       // A child without the exact admission configuration would take the
       // unconfigured preload branch and load modules without the policy.
       if (environment?.CHASE_SETS_HEAVY_ADMISSION_CONFIG !== encodedConfiguration) {
