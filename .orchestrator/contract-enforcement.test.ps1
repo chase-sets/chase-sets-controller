@@ -526,6 +526,15 @@ function Test-ControllerSkillPlacement([string]$Skill, [object[]]$Inventory) {
   Assert-Enforced ($listed.Count -eq 0) 'product install inventory excludes controller-orchestrator'
 }
 $controllerSkill = Read-Strict 'controller-skills/controller-orchestrator/SKILL.md'
+# Skill text states rules plainly: no dated rulings or attributions that go stale.
+# The version header is the one dated line.
+function Test-ControllerSkillUndated([string]$Skill) {
+  $body = [regex]::Replace($Skill, '(?m)^# Controller Orchestrator \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)\r?$', '')
+  Assert-Enforced ($body -notmatch '\b\d{4}-\d{2}-\d{2}\b|\bTodd,\s+\d') 'controller-orchestrator body carries no dates or dated Todd attributions'
+}
+Test-ControllerSkillUndated $controllerSkill
+Assert-Mutant 'controller-skill-dated' { Test-ControllerSkillUndated ($controllerSkill.Replace('clear review and the scan.', 'clear review and the scan (Todd, 2026-10-19).')) }
+Assert-Mutant 'controller-skill-dated-plain' { Test-ControllerSkillUndated ($controllerSkill + "`r`nUpdated 2026-10-19.`r`n") }
 Test-ControllerSkillPlacement $controllerSkill $installInventory
 Assert-Mutant 'controller-skill-installed-by-product' { Test-ControllerSkillPlacement $controllerSkill ($installInventory + [pscustomobject]@{ source = 'controller-orchestrator/SKILL.md'; destination = 'controller-orchestrator/SKILL.md' }) }
 Assert-Mutant 'controller-backlog-planning-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Plan controller issues with the planning skill', 'Plan controller issues freely') $installInventory }
