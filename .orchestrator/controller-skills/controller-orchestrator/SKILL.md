@@ -3,13 +3,14 @@ name: controller-orchestrator
 description: Run the chase-sets controller loop - improve and release the orchestration controller (the .orchestrator runtime, the milestone-orchestrator and model-routing skills), own the orchestration-platform migration, and work routing, velocity and capacity, without taking capacity the product loop needs. Use in the controller dev container for controller code, controller releases, the controller issue backlog, or platform supervision.
 ---
 
-# Controller Orchestrator (v1.2, 2026-10-18)
+# Controller Orchestrator (v1.3, 2026-10-19)
 
 Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 
 This thread owns the controller. The product orchestrator ("Chase Sets
 orchestrator") owns Chase Sets product delivery and only applies released
-controller tags. Todd approves every release.
+controller tags. Releases ship without waiting for Todd's approval once they
+clear review and the scan (Todd, 2026-10-19).
 
 ## 1. Scope
 
@@ -68,9 +69,11 @@ controller battery runs only in a window with no product heavy work queued.
    `gitleaks dir <dir> --redact --no-banner --exit-code 0 --report-format json
    --report-path <dir>-report.json`. Require 0 findings; report rule IDs and
    paths only. Remove the scan directory afterwards.
-5. Ask Todd to approve the release: diff summary, tests run and results,
-   scan result, and any behavior change for the product orchestrator.
-6. On approval: fast-forward `main` (never force push), push an annotated tag
+5. Release without waiting for approval once steps 2-4 pass; a failed
+   review or any scan finding stops the release. Report to Todd afterwards:
+   diff summary, tests run and results, scan result, and any behavior change
+   for the product orchestrator.
+6. Release: fast-forward `main` (never force push), push an annotated tag
    `controller-vX.Y`, move the dev container's `release/` worktree to it
    (`git -C release checkout --detach <tag>`), and tell the product
    orchestrator thread the tag exists. The dev container's

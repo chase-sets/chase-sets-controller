@@ -34,7 +34,8 @@ runtime behavior goes to the controller loop the same way.
 
 A controller release is an annotated `controller-v*` tag on
 `chase-sets/chase-sets-controller`. The controller loop authors, verifies and
-tags it, and Todd approves it. The controller loop never waits for a product
+tags it once its independent review passes and the release scan is clean; it
+does not wait for Todd's approval. The controller loop never waits for a product
 install: it keeps building and releasing, and tags may accumulate. The product
 loop installs only the newest tag, at the start of the first cycle that can
 take an install, with

@@ -5,7 +5,8 @@ controller repository.
 
 .DESCRIPTION
 controller-release-install/v1. Release tags are the only install authority.
-Todd approves each release on the controller repository; this script never
+The controller loop releases on the controller repository after review and
+a clean scan; this script never
 reads review receipts. It fetches the tag into the container (fetch only,
 never a remote and never a push), checks the tagged commit out detached, then
 re-runs the installer from that commit so the release installs itself.
