@@ -539,7 +539,9 @@ function Test-ControllerOwnsDecisions([string]$Skill, [string]$Supervision) {
   Assert-Enforced $section.Success 'controller-orchestrator has a Defects and rulings section'
   $text = Compact-Text $section.Groups[1].Value
   Assert-Enforced ($text.Contains("Fixes, test repairs, reruns, sequencing and releases are this loop's decisions; make them and report, never ask Todd to approve them. Ask Todd only for a scope or ownership change.", [StringComparison]::Ordinal)) 'fixes and releases are decided by this loop'
-  Assert-Enforced ((Compact-Text $Skill) -notmatch '(?i)(?<!never )ask todd (to|for) (approv|permission|a ruling)|(?<!not |never |without )wait\w* (for|on) (a )?(todd|ruling|approval)') 'no step asks Todd to approve or waits on a ruling'
+  $approvalAsk = '(?i)(?<!never )ask todd (to|for) (approv|permission|a ruling)|(?<!not |not a |never |without )wait\w* (for|on) (a |the |any |todd''s )?(todd|ruling|approval|decision)'
+  Assert-Enforced ((Compact-Text $Skill) -notmatch $approvalAsk) 'no skill step asks Todd to approve or waits on a ruling'
+  Assert-Enforced ((Compact-Text $Supervision) -notmatch $approvalAsk) 'no supervision step asks Todd to approve or waits on a ruling'
   Assert-Enforced ((Compact-Text $Supervision).Contains('A stop cap or chain stop is not a wait for Todd: this loop picks the fix', [StringComparison]::Ordinal)) 'stop cap is recovered by this loop'
 }
 $supervisionText = Read-Strict 'controller-skills/controller-orchestrator/references/platform-supervision.md'
@@ -547,6 +549,8 @@ Test-ControllerOwnsDecisions $controllerSkill $supervisionText
 Assert-Mutant 'controller-decision-rule-deleted' { Test-ControllerOwnsDecisions ([regex]::Replace($controllerSkill, 'Fixes, test repairs, reruns, sequencing and releases are this loop''s\s+decisions;', 'Fixes are proposed;')) $supervisionText }
 Assert-Mutant 'controller-approval-ask-returns' { Test-ControllerOwnsDecisions ($controllerSkill.Replace('7. Read `check-controller-skill-freshness.ps1 -Json`', '7. Ask Todd to approve the fix, then read `check-controller-skill-freshness.ps1 -Json`')) $supervisionText }
 Assert-Mutant 'controller-waits-on-ruling' { Test-ControllerOwnsDecisions ($controllerSkill.Replace('7. Read `check-controller-skill-freshness.ps1 -Json`', '7. Wait for a ruling, then read `check-controller-skill-freshness.ps1 -Json`')) $supervisionText }
+Assert-Mutant 'controller-waits-on-the-ruling' { Test-ControllerOwnsDecisions ($controllerSkill + "`r`nWait for the ruling before rerunning tests.`r`n") $supervisionText }
+Assert-Mutant 'supervision-approval-ask-appended' { Test-ControllerOwnsDecisions $controllerSkill ($supervisionText + "`r`nAsk Todd to approve the rerun.`r`n") }
 Assert-Mutant 'supervision-stop-cap-waits' { Test-ControllerOwnsDecisions $controllerSkill ($supervisionText.Replace('A stop cap or chain stop is not a wait for Todd', 'A stop cap waits for Todd')) }
 Assert-Mutant 'controller-skill-dated' { Test-ControllerSkillUndated ($controllerSkill.Replace('clear review and the scan.', 'clear review and the scan (Todd, 2026-10-19).')) }
 Assert-Mutant 'controller-skill-dated-plain' { Test-ControllerSkillUndated ($controllerSkill + "`r`nUpdated 2026-10-19.`r`n") }
