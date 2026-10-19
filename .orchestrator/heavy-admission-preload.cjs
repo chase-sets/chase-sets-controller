@@ -453,9 +453,52 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
       return original.apply(this, argumentsList);
     };
   }
-  // The raw spawn bindings start processes without child_process, so the env check
-  // above would never run. Diagnostics have no use for them.
+  // Every child_process route, including new ChildProcess().spawn and a reused child
+  // handle, ends in one of these two native calls. Check the environment block the
+  // operating system will receive, copied once, and hand exactly that copy to Node.
   const originalBinding = process.binding;
+  const guardedVariables = new Map([
+    ["NODE_OPTIONS", ["NODE_OPTIONS lacks the diagnostic preload", requiredNodeOptions]],
+    ["CHASE_SETS_HEAVY_ADMISSION_CONFIG", ["the diagnostic admission configuration was not inherited", encodedConfiguration]],
+  ]);
+  const checkEnvironmentPairs = (pairs) => {
+    if (!Array.isArray(pairs)) refuseChildLaunch("the child environment block was not an array");
+    const length = pairs.length;
+    const copy = [];
+    for (let index = 0; index < length; index += 1) copy.push(String(pairs[index]));
+    const seen = new Map();
+    for (const pair of copy) {
+      // Windows keeps per-drive entries such as "=C:=C:\\"; a name never starts at "=".
+      const separator = pair.indexOf("=", 1);
+      const name = separator === -1 ? pair : pair.slice(0, separator);
+      const upper = name.toUpperCase();
+      if (!guardedVariables.has(upper)) continue;
+      if (seen.has(upper)) refuseChildLaunch(`the child environment block named ${upper} more than once`);
+      seen.set(upper, { name, value: separator === -1 ? undefined : pair.slice(separator + 1) });
+    }
+    for (const [name, [reason, required]] of guardedVariables) {
+      const entry = seen.get(name);
+      if (!entry || entry.name !== name || entry.value !== required) refuseChildLaunch(reason);
+    }
+    return copy;
+  };
+  const guardNativeSpawn = (owner, label) => {
+    const nativeSpawn = owner.spawn;
+    owner.spawn = function guardedNativeSpawn(options) {
+      if (options === null || typeof options !== "object") refuseChildLaunch(`${label} options were not an object`);
+      const snapshot = Object.assign(Object.create(null), options);
+      snapshot.envPairs = checkEnvironmentPairs(snapshot.envPairs);
+      return nativeSpawn.call(this, snapshot);
+    };
+  };
+  guardNativeSpawn(originalBinding.call(process, "process_wrap").Process.prototype, "process_wrap");
+  guardNativeSpawn(originalBinding.call(process, "spawn_sync"), "spawn_sync");
+  if (typeof process.execve === "function") {
+    process.execve = function refusedDiagnosticExecve() {
+      refuseChildLaunch("process.execve is not available to diagnostics");
+    };
+  }
+  // Diagnostics have no use for the raw spawn bindings themselves.
   process.binding = function guardedDiagnosticBinding(name) {
     const requestedBinding = String(name);
     if (requestedBinding === "spawn_sync" || requestedBinding === "process_wrap") {

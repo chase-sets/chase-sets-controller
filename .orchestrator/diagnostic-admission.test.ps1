@@ -152,7 +152,7 @@ process.exitCode = 7;
   Write-Output 'PASS diagnostic child callback-options=refused config-drop=refused node-options-smuggle=refused env-getter=pinned'
   $prototypeRelative='.orchestrator/artifacts/child-env-prototype.mjs'; $prototypePath=Join-Path $worktree ($prototypeRelative -replace '/','\')
   Set-Content -LiteralPath $prototypePath -Value @'
-import { spawnSync, execSync } from 'node:child_process';
+import { spawnSync, execSync, spawn, ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 const keep = process.env.NODE_OPTIONS;
 const probe = 'process.stdout.write(String(process.env.NODE_OPTIONS))';
@@ -184,6 +184,12 @@ delete process.env.NODE_OPTIONS;
 refused('ignored-slot', () => spawnSync(process.execPath, ['-e', probe], undefined, { env: { ...process.env, NODE_OPTIONS: keep } }).stdout);
 process.env.NODE_OPTIONS = keep;
 refused('process-binding', () => { process.binding('spawn_sync'); return ''; });
+refused('process-binding-wrap', () => { process.binding('process_wrap'); return ''; });
+// Below child_process: the exported class and a live child's handle reach the native spawn directly.
+const strippedPairs = Object.entries(process.env).filter(([key]) => key !== 'NODE_OPTIONS').map(([key, value]) => key + '=' + value);
+refused('childprocess-class', () => new ChildProcess().spawn({ file: process.execPath, args: [process.execPath, '-e', ''], envPairs: strippedPairs, stdio: 'ignore' }));
+const legitimate = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+refused('handle-reuse', () => { const handle = new legitimate._handle.constructor(); handle.onexit = () => {}; return handle.spawn({ file: process.execPath, args: [process.execPath, '-e', ''], envPairs: strippedPairs, stdio: [{ type: 'ignore' }, { type: 'ignore' }, { type: 'ignore' }] }); });
 delete base.NODE_OPTIONS;
 const ownProtoKey = { ...base };
 Object.defineProperty(ownProtoKey, '__proto__', { enumerable: true, configurable: true, writable: true, value: Object.defineProperty({}, 'NODE_OPTIONS', { enumerable: true, get: keepFor(1) }) });
@@ -202,10 +208,11 @@ check('inherited-options-env-exec', () => execSync(JSON.stringify(process.execPa
 delete Object.prototype.env;
 fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, held.join(','));
 '@
-  $scriptRelative=$prototypeRelative; $scriptPath=$prototypePath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
-  $prototypeCase=Invoke-Diagnostic @{} 'child-env-prototype'
+  # This case starts about a dozen Node children, so it gets more than the 2 s default budget.
+  $scriptRelative=$prototypeRelative; $scriptPath=$prototypePath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 30
+  $prototypeCase=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='30' } 'child-env-prototype'
   $prototypeHeld=if (Test-Path $prototypeCase.Marker) { [IO.File]::ReadAllText($prototypeCase.Marker) } else { '<no marker>' }
-  Assert-True ($prototypeHeld -ceq 'equals-key,equals-key-empty,case-duplicate,ignored-slot,process-binding,own-proto-key,inherited-setter,process-env-inherited,inherited-options-env,inherited-options-env-exec') "prototype tricks cannot change the child env after the check (held: $prototypeHeld)"
+  Assert-True ($prototypeHeld -ceq 'equals-key,equals-key-empty,case-duplicate,ignored-slot,process-binding,process-binding-wrap,childprocess-class,handle-reuse,own-proto-key,inherited-setter,process-env-inherited,inherited-options-env,inherited-options-env-exec') "prototype tricks cannot change the child env after the check (held: $prototypeHeld; exit: $($prototypeCase.Result.Code); stderr: $($prototypeCase.Result.Stderr))"
   Write-Output 'PASS diagnostic child-env-prototype=pinned-or-refused'
 
   $manifestRemovalRelative='.orchestrator/artifacts/manifest-removal.mjs'; $manifestRemovalPath=Join-Path $worktree ($manifestRemovalRelative -replace '/','\')
