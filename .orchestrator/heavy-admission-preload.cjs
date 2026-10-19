@@ -3,8 +3,11 @@
 // Derived admission mode keeps the preload on descendants; launcher mode
 // restores the environment supplied by the dispatch configuration.
 const childProcess = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const moduleApi = require("node:module");
 const path = require("node:path");
+const { fileURLToPath } = require("node:url");
 const acquireHeavySlot = require("./heavy-slot.cjs");
 
 const HEAVY_GATES = new Set([
@@ -262,6 +265,85 @@ function refuse(message) {
   process.exit(73);
 }
 
+function installDiagnosticModulePolicy(config) {
+  const diagnostic = config?.diagnostic;
+  if (!diagnostic) return;
+  if (diagnostic.kind !== "standalone-node") refuse("diagnostic declaration kind was not standalone-node");
+  if (typeof moduleApi.registerHooks !== "function") refuse("diagnostic module hooks are unavailable");
+  const worktree = path.resolve(diagnostic.worktree ?? config.worktree);
+  const entry = path.resolve(diagnostic.entry ?? "");
+  const manifestPath = path.resolve(diagnostic.moduleManifestPath ?? "");
+  const boundHead = String(diagnostic.boundHead ?? "");
+  const entrySha256 = String(diagnostic.entrySha256 ?? "").toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(boundHead) || !/^[a-f0-9]{64}$/.test(entrySha256) || !entry || !manifestPath) {
+    refuse("diagnostic module policy configuration was invalid");
+  }
+  let tracked;
+  try {
+    const output = childProcess.execFileSync("git", ["-C", worktree, "ls-tree", "-r", "--name-only", boundHead], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    tracked = new Set(output.split(/\r?\n/).filter(Boolean).map((value) => value.replaceAll("\\", "/")));
+  } catch {
+    refuse("diagnostic tracked-file inventory was unavailable");
+  }
+
+  const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+  const inside = (root, candidate) => {
+    const relative = path.relative(root, candidate);
+    return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  const isNodeModulesFile = (candidate) => {
+    if (!inside(worktree, candidate)) return false;
+    const relative = path.relative(worktree, candidate).split(path.sep);
+    return relative.includes("node_modules");
+  };
+  const digest = (candidate) => crypto.createHash("sha256").update(fs.readFileSync(candidate)).digest("hex");
+  const modules = new Map();
+  const writeManifest = () => {
+    fs.writeFileSync(manifestPath, JSON.stringify({ schema: "host-heavy-diagnostic-modules/v1", modules: [...modules.values()] }), {
+      encoding: "utf8",
+    });
+  };
+  const authorize = (url) => {
+    if (!url.startsWith("file:")) return null;
+    let requested;
+    let actual;
+    try {
+      requested = fileURLToPath(url);
+      actual = fs.realpathSync.native(requested);
+    } catch {
+      refuse(`diagnostic module could not be resolved: ${url}`);
+    }
+    if (samePath(actual, entry)) {
+      if (digest(actual) !== entrySha256) refuse("declared diagnostic entry changed before evaluation");
+    } else if (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/")))) {
+      refuse(`diagnostic module was not tracked at the bound head or under node_modules: ${actual}`);
+    }
+    return actual;
+  };
+  const record = (url) => {
+    const actual = authorize(url);
+    if (!actual || modules.has(actual)) return;
+    modules.set(actual, { module: actual, path: actual, sha256: digest(actual) });
+    writeManifest();
+  };
+  moduleApi.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      const result = nextResolve(specifier, context);
+      authorize(result.url);
+      return result;
+    },
+    load(url, context, nextLoad) {
+      const result = nextLoad(url, context);
+      record(url);
+      return result;
+    },
+  });
+}
+
 function runAdmission(kind, config) {
   acquireHeavySlot(kind, { configuration: config });
   restoreOriginalNodeEnvironment(config);
@@ -341,6 +423,7 @@ function main() {
     return;
   }
   const config = acquireHeavySlot.launcherConfiguration(encoded, { useForAcquisition: true });
+  installDiagnosticModulePolicy(config);
   if (
     process.env.CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL === "node-check-proxy" &&
     process.execArgv.some((argument) => argument === "-c" || argument === "--check")

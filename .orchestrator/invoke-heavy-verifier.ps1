@@ -31,7 +31,7 @@ param(
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$Diagnostic,
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
-  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
+  [Parameter(ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][ValidateSet("reconciliation-pg16/v1", IgnoreCase = $false)][string]$NativeDbProfile,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][string]$NativeRequestPath,
   [Parameter(Mandatory)][string]$Worktree,
@@ -106,6 +106,7 @@ $isControllerFixture = $PSCmdlet.ParameterSetName -ceq "ControllerFixtureEquival
 $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
+$diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
 $nativeRequest = $null
 $nativeReplyWritten = $false
 $nativeCleanupProof = $null
@@ -222,7 +223,7 @@ if ($isAttachedAdmission) {
 
 $container = [IO.Path]::GetFullPath($(if ($ContainerRoot) { $ContainerRoot } else { Split-Path -Parent $PSScriptRoot })).TrimEnd('\','/')
 $worktreeFull = [IO.Path]::GetFullPath($Worktree).TrimEnd('\','/')
-if ($CommandPath -or $CommandArgumentList) {
+if ($CommandPath -or $CommandArgumentList -or ($isDiagnostic -and $PSBoundParameters.ContainsKey('ContainerRoot'))) {
   $fixtureTemp = if ($IsWindows) {
     [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp')).TrimEnd('\','/')
   } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') }
@@ -363,6 +364,12 @@ function Assert-DiagnosticDeclaration {
       [string]$definition.sha256 -match '(?i)fill[_-]?me|placeholder') {
     throw "heavy-verifier: diagnostic declaration is not populated"
   }
+  if ([string]$definition.kind -cne 'standalone-node') {
+    throw "heavy-verifier: diagnostic declaration kind is not standalone-node"
+  }
+  if (-not $diagnosticBudgetSupplied) {
+    throw "heavy-verifier: diagnostic budget is required"
+  }
   if ([double]::IsNaN($DiagnosticBudgetSeconds) -or [double]::IsInfinity($DiagnosticBudgetSeconds) -or
       $DiagnosticBudgetSeconds -le 0 -or $DiagnosticBudgetSeconds -gt 86400) {
     throw "heavy-verifier: diagnostic budget must be finite and greater than zero"
@@ -413,7 +420,7 @@ function Assert-DiagnosticDeclaration {
   $script:diagnosticScriptFull = $candidate
 }
 Assert-DiagnosticDeclaration
-if ($IsWindows) {
+if ($IsWindows -and $isDiagnostic) {
   Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -428,7 +435,7 @@ public static class HeavyDiagnosticJob {
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint code);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, out BasicAccounting info, int length, IntPtr returnLength);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, int length, IntPtr returnLength);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
   public static IntPtr Create() {
     var job = CreateJobObjectW(IntPtr.Zero, null);
@@ -443,7 +450,10 @@ public static class HeavyDiagnosticJob {
     try { if (!AssignProcessToJobObject(job, opened)) throw new InvalidOperationException("AssignProcessToJobObject failed: " + Marshal.GetLastWin32Error()); } finally { CloseHandle(opened); }
   }
   public static void Terminate(IntPtr job, uint code) { if (job != IntPtr.Zero) TerminateJobObject(job, code); }
-  public static bool HasActiveProcesses(IntPtr job) { BasicAccounting info; if (!QueryInformationJobObject(job, 1, out info, Marshal.SizeOf<BasicAccounting>(), IntPtr.Zero)) throw new InvalidOperationException("QueryInformationJobObject failed: " + Marshal.GetLastWin32Error()); return info.ActiveProcesses > 0; }
+  public static bool HasActiveProcesses(IntPtr job) { BasicAccounting info = QueryAccounting(job); return info.ActiveProcesses > 0; }
+  static BasicAccounting QueryAccounting(IntPtr job) { var size = Marshal.SizeOf<BasicAccounting>(); var memory = Marshal.AllocHGlobal(size); try { if (!QueryInformationJobObject(job, 1, memory, size, IntPtr.Zero)) throw new InvalidOperationException("QueryInformationJobObject(accounting) failed: " + Marshal.GetLastWin32Error()); return Marshal.PtrToStructure<BasicAccounting>(memory); } finally { Marshal.FreeHGlobal(memory); } }
+  static ExtendedLimit QueryExtended(IntPtr job) { var size = Marshal.SizeOf<ExtendedLimit>(); var memory = Marshal.AllocHGlobal(size); try { if (!QueryInformationJobObject(job, 9, memory, size, IntPtr.Zero)) throw new InvalidOperationException("QueryInformationJobObject(extended-limit) failed: " + Marshal.GetLastWin32Error()); return Marshal.PtrToStructure<ExtendedLimit>(memory); } finally { Marshal.FreeHGlobal(memory); } }
+  public static object QueryResources(IntPtr job) { var accounting = QueryAccounting(job); var extended = QueryExtended(job); return new { peakJobMemoryBytes = extended.PeakJobMemoryUsed.ToUInt64(), totalUserTime100ns = accounting.TotalUserTime, totalKernelTime100ns = accounting.TotalKernelTime, totalProcesses = accounting.TotalProcesses }; }
   public static void Close(IntPtr job) { if (job != IntPtr.Zero) CloseHandle(job); }
 }
 '@
@@ -475,7 +485,7 @@ function Get-DiagnosticDescendantPids([int]$RootPid, [long]$RootStartTicks = 0) 
   } catch { return @() }
 }
 function Stop-DiagnosticTree([int]$RootPid, [long]$RootStartTicks = 0, [int[]]$KnownPids = @()) {
-  if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Terminate($diagnosticJobHandle, 124) }
+  if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Terminate($diagnosticJobHandle, 1) }
   try { if ($child -and -not $child.HasExited) { $child.Kill($true) } } catch { try { if ($child -and -not $child.HasExited) { $child.Kill() } } catch {} }
   foreach ($descendantPid in @($KnownPids)) { try { Stop-Process -Id $descendantPid -Force -ErrorAction SilentlyContinue } catch {} }
 }
@@ -2122,6 +2132,11 @@ $childEnded = $null
 $childElapsedMs = $null
 $childTimedOut = $false
 $childResources = $null
+$diagnosticJobResources = $null
+$diagnosticModuleManifestPath = $null
+$diagnosticModules = @()
+$diagnosticResultSha256 = $null
+$receiptPath = $null
 $diagnosticSourceStream = $null
 $diagnosticJobHandle = [IntPtr]::Zero
 try {
@@ -2188,7 +2203,7 @@ try {
         throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
       }
       $diagnosticSourceStream.Position = 0
-      if ($IsWindows -and $env:DIAGNOSTIC_SKIP_JOB -ne '1') { $diagnosticJobHandle = [HeavyDiagnosticJob]::Create() }
+      if ($IsWindows) { $diagnosticJobHandle = [HeavyDiagnosticJob]::Create() }
     }
     # ProcessStartInfo.ArgumentList preserves each argument verbatim; unlike
     # Start-Process -ArgumentList it does not re-join paths containing spaces.
@@ -2238,10 +2253,18 @@ try {
       $configuration = [ordered]@{
         schemaVersion = 1; guardPath = $PSCommandPath; powershellPath = $process.Path
         containerRoot = $container; worktree = $worktreeFull; lane = $Lane
-         retainAdmission = $true
+        retainAdmission = $true
         originalNodeOptionsPresent = $true; originalNodeOptions = $nodeOptions
         originalScriptShellPresent = $start.Environment.ContainsKey('npm_config_script_shell')
         originalScriptShell = $start.Environment['npm_config_script_shell']
+      }
+      if ($isDiagnostic) {
+        $diagnosticModuleManifestPath = Join-Path $container (".orchestrator\diagnostic-modules-$lockId.json")
+        $configuration.diagnostic = [ordered]@{
+          kind = $diagnosticDefinition.kind; entry = $diagnosticScriptFull
+          entrySha256 = $diagnosticDefinition.sha256; worktree = $worktreeFull
+          boundHead = $acquiredGitIdentity.Head; moduleManifestPath = $diagnosticModuleManifestPath
+        }
       }
       if ($identityMode -ceq "branch") { $configuration.branch = $acquiredGitIdentity.Branch; $configuration.head = $acquiredGitIdentity.Head }
       else { $configuration.immutableHead = $acquiredGitIdentity.Head }
@@ -2252,6 +2275,17 @@ try {
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+    if ($isDiagnostic -and $isHostVerifier -and -not $callerBinding.Record) {
+      $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
+      if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }
+      if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
+      if (-not (Test-SafeDirectory $receiptRoot)) { throw "heavy-verifier: receipt directory is unsafe" }
+      $receiptPath = Join-Path $receiptRoot "host-heavy-diagnostic-$lockId.json"
+      if (Test-Path -LiteralPath $receiptPath) { throw "heavy-verifier: diagnostic receipt path already exists" }
+    }
+    # The child is started normally, then assigned immediately. The assignment
+    # window is limited to the native Process.Start-to-AssignProcessToJobObject
+    # sequence; KillOnClose and descendant cleanup remain fail-closed.
     $child = [Diagnostics.Process]::Start($start)
     if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
     if ($TestDelayChildPublicationMilliseconds -gt 0) {
@@ -2284,9 +2318,10 @@ try {
         try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
         if ($IsWindows) { $diagnosticObservedDescendants += @(Get-DiagnosticDescendantPids $child.Id $child.StartTime.ToUniversalTime().Ticks) | Select-Object -Unique }
         if ($child.HasExited) {
+          [void]$child.WaitForExit()
           $jobActive = $false
-          if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { try { $jobActive = [HeavyDiagnosticJob]::HasActiveProcesses($diagnosticJobHandle) } catch {} }
-          $possibleDescendant = if ($IsWindows) { $jobActive -or $diagnosticObservedDescendants.Count -gt 0 } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
+          if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { $jobActive = [HeavyDiagnosticJob]::HasActiveProcesses($diagnosticJobHandle) }
+          $possibleDescendant = if ($IsWindows) { $jobActive } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
           if ($possibleDescendant -eq $false) { break }
         }
         $remaining = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
@@ -2310,6 +2345,25 @@ try {
     $childStopwatch.Stop()
     $childEnded = [DateTime]::UtcNow.ToString("o")
     $childElapsedMs = [long]$childStopwatch.ElapsedMilliseconds
+    if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) {
+      $diagnosticJobResources = [HeavyDiagnosticJob]::QueryResources($diagnosticJobHandle)
+    }
+    if ($isDiagnostic -and $diagnosticModuleManifestPath -and (Test-SafeFile $diagnosticModuleManifestPath)) {
+      try {
+        $manifest = [IO.File]::ReadAllText($diagnosticModuleManifestPath) | ConvertFrom-Json -ErrorAction Stop
+        $diagnosticModules = @($manifest.modules | ForEach-Object {
+          if ([string]$_.path -and [string]$_.sha256 -cmatch '^[a-f0-9]{64}$') {
+            [ordered]@{ module = if ([string]$_.module) { [string]$_.module } else { [string]$_.path }; path = [string]$_.path; sha256 = [string]$_.sha256 }
+          }
+        })
+      } catch { throw "heavy-verifier: diagnostic module manifest is unreadable" }
+    }
+    if ($isDiagnostic) {
+      $diagnosticResultPath = Join-Path $worktreeFull '.orchestrator\artifacts\worst13-no-fit.result.json'
+      if (Test-SafeFile $diagnosticResultPath) {
+        $diagnosticResultSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($diagnosticResultPath))).ToLowerInvariant()
+      }
+    }
     $childResources = [ordered]@{
       cpuTimeMs = [Math]::Round($child.TotalProcessorTime.TotalMilliseconds, 3)
       peakWorkingSetBytes = [long][Math]::Max($peakWorkingSet, $childInitialWorkingSet)
@@ -2338,7 +2392,7 @@ try {
       if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
         throw "heavy-verifier: receipt directory is unsafe"
       }
-      $receiptPath = if ($isDiagnostic) { Join-Path $receiptRoot "host-heavy-diagnostic-$lockId.json" } else { Join-Path $receiptRoot "host-heavy-verifier-$lockId.json" }
+      if (-not $receiptPath) { $receiptPath = Join-Path $receiptRoot "host-heavy-verifier-$lockId.json" }
       $receipt = if ($isDiagnostic) {
         [ordered]@{
           schema = "host-heavy-diagnostic/v1"; authority = "host-verifier"
@@ -2347,9 +2401,18 @@ try {
           holder = [ordered]@{ owner = $owner.owner; pid = $owner.pid; processStartUtc = $owner.processStartUtc }
           slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
           command = [ordered]@{ executable = $command; arguments = @($arguments) }
-           start = $childStarted; end = $childEnded; exit = $exitCode; nativeExit = $nativeExitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
-          resources = $childResources
+          start = $childStarted; end = $childEnded; exit = $exitCode; nativeExit = $nativeExitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
+          containerRoot = $container; declarationSha256 = $diagnosticDefinition.sha256; modules = @($diagnosticModules)
+          resources = [ordered]@{
+            cpuTimeMs = $childResources.cpuTimeMs; peakWorkingSetBytes = $childResources.peakWorkingSetBytes
+            workingSetBytes = $childResources.workingSetBytes
+            jobPeakMemoryBytes = if ($diagnosticJobResources) { [uint64]$diagnosticJobResources.peakJobMemoryBytes } else { $null }
+            jobTotalUserTime100ns = if ($diagnosticJobResources) { [long]$diagnosticJobResources.totalUserTime100ns } else { $null }
+            jobTotalKernelTime100ns = if ($diagnosticJobResources) { [long]$diagnosticJobResources.totalKernelTime100ns } else { $null }
+            jobTotalProcesses = if ($diagnosticJobResources) { [uint32]$diagnosticJobResources.totalProcesses } else { $null }
+          }
         }
+        if ($diagnosticResultSha256) { $receipt.resultSha256 = $diagnosticResultSha256 }
       } else {
         [ordered]@{
           schema = "host-heavy-verifier/v1"; authority = "host-verifier"
@@ -2378,6 +2441,9 @@ try {
   if ($diagnosticJobHandle -ne [IntPtr]::Zero) {
     [HeavyDiagnosticJob]::Close($diagnosticJobHandle)
     $diagnosticJobHandle = [IntPtr]::Zero
+  }
+  if ($diagnosticModuleManifestPath -and (Test-Path -LiteralPath $diagnosticModuleManifestPath -PathType Leaf)) {
+    Remove-Item -LiteralPath $diagnosticModuleManifestPath -Force -ErrorAction SilentlyContinue
   }
   if ($isDiagnostic -and $child -and -not $child.HasExited) {
     try { $child.Kill($true); [void]$child.WaitForExit(2000) } catch {}

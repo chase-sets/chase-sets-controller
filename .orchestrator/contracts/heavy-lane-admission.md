@@ -26,6 +26,25 @@ at attachment and all existing nested continuation checks remain unchanged.
 Explicit immutable-head review and direct host gates retain exact-SHA binding.
 This does not fix or bypass #7956's nested-continuation refusal.
 
+## Declared diagnostics
+
+The `-Diagnostic` route is a host-declared, case-sensitive standalone Node
+entry. Its repository-relative path and SHA-256 remain pinned by
+`diagnostic-declarations.json`; the declaration kind must be
+`standalone-node`, and `-DiagnosticBudgetSeconds` is required and must be in
+the closed interval `(0, 86400]` (and no greater than the declaration's
+maximum). Diagnostic module imports are admitted only when the resolved file
+is tracked at the bound clean Git head or is under that worktree's
+`node_modules`; the preload refuses other files before evaluation and records
+each loaded file's path and SHA-256 in the receipt.
+
+The diagnostic receipt schema is `host-heavy-diagnostic/v1`. A completed
+diagnostic reports its native exit code in `nativeExit`; a wall-clock timeout
+reports exit `124` while preserving the native termination code. Windows Job
+Object peak memory, total user/kernel time, and total process count are
+sampled before the Job Object is closed. Unsafe or pre-existing receipt paths
+are refusal failures and never produce a success result.
+
 ## Local E2E
 
 E2E is not hosted-only. The closed local invocation is:

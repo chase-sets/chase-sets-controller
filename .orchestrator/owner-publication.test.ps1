@@ -273,7 +273,8 @@ function Invoke-ReaderInventory {
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928)
     'heavy-admission-preload.test.ps1'=@(82,582,611,980,986,1076,1133,1280,1326,1845,1849)
     'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
-    'install-controller-skills.test.ps1'=@(191,208,213,233)
+    'install-controller-skills.ps1'=@(137)
+    'install-controller-skills.test.ps1'=@(206,223,228,248)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(304,307,429,499,903,947,959,973,1008,1012,1017,1029,1048,1078,1082,1093,1118,1129,1200,1475,1480,1499,1505,1636,1716,1726,1732,1739,1740,1751,1754,1764,1775,1797,1802,1814,1819,1836,1850,1951,1956,1975,1981,2208,2215,2227,2230,2240,2251,2273,2278,2290,2295,2312,2326)
@@ -322,8 +323,8 @@ function Invoke-ReaderInventory {
   # observational owner readers. Keep their classification tied to the
   # production operation rather than treating them as generic exceptions.
   $productionSites=@{
-    'invoke-heavy-verifier.ps1:1659'=@{site='invoke-heavy-verifier.ps1:1659';api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
-    'invoke-heavy-verifier.ps1:1710'=@{site='invoke-heavy-verifier.ps1:1710';api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
+    'invoke-heavy-verifier.ps1:1669'=@{site='invoke-heavy-verifier.ps1:1669';api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
+    'invoke-heavy-verifier.ps1:1720'=@{site='invoke-heavy-verifier.ps1:1720';api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
   }
   foreach($relative in @(& git -C $root ls-files '.orchestrator/*.ps1' '.orchestrator/*.psm1' '.orchestrator/*.cs' '.orchestrator/*.cjs' '.orchestrator/*.py' '.orchestrator/*.mjs' '.orchestrator/*.js')) {
     $name=[IO.Path]::GetFileName($relative); $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
@@ -331,10 +332,10 @@ function Invoke-ReaderInventory {
       $text=$lines[$index]
       if($text-match$readPattern -and $text-match$pathPattern) {
         $key="${name}:$($index+1)"
-        if($key-ceq'invoke-heavy-verifier.ps1:1659') {
+        if($key-ceq'invoke-heavy-verifier.ps1:1669') {
           $table.Add(@{site=$key;api='CreateNew / Write';shareBefore=0;shareAfter=0;decoder='none';callers='initial acquisition';owner='writer, not a snapshot reader'}); continue
         }
-        if($key-ceq'invoke-heavy-verifier.ps1:1710') {
+        if($key-ceq'invoke-heavy-verifier.ps1:1720') {
           $table.Add(@{site=$key;api='claim File.Open';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}); continue
         }
         if($productionSites.ContainsKey($key)) { $table.Add($productionSites[$key]); continue }
