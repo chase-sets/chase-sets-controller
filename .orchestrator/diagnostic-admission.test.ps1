@@ -163,14 +163,27 @@ const check = (name, launch) => {
     const output = String(launch());
     if (output === keep) held.push(name);
   } catch (error) {
-    if (String(error.message).includes('NODE_OPTIONS lacks the diagnostic preload')) held.push(name);
+    if (String(error.message).includes('diagnostic child process launch refused')) held.push(name);
   }
+};
+// These must be refused outright: which duplicate entry a child sees depends on how the
+// platform orders the environment block, so a launch that happens to deliver the value proves nothing.
+const refused = (name, launch) => {
+  try { launch(); } catch (error) { if (String(error.message).includes('diagnostic child process launch refused')) held.push(name); }
 };
 // keepFor(n) answers the checked value for n reads, then an empty string.
 const keepFor = (allowed) => { let reads = 0; return () => (reads++ < allowed ? keep : ''); };
 const run = (options) => spawnSync(process.execPath, ['-e', probe], { ...options, encoding: 'utf8' }).stdout;
 const withoutOptions = () => spawnSync(process.execPath, ['-e', probe]).stdout;
 const base = { ...process.env };
+refused('equals-key', () => run({ env: { ...process.env, 'NODE_OPTIONS=--title=evil x': '1' } }));
+refused('equals-key-empty', () => run({ env: { ...process.env, 'NODE_OPTIONS=': '' } }));
+refused('case-duplicate', () => run({ env: { ...process.env, node_options: '' } }));
+delete process.env.NODE_OPTIONS;
+// Node reads options only from index 1 or 2; an object at 3 must not stand in for them.
+refused('ignored-slot', () => spawnSync(process.execPath, ['-e', probe], undefined, { env: { ...process.env, NODE_OPTIONS: keep } }).stdout);
+process.env.NODE_OPTIONS = keep;
+refused('process-binding', () => { process.binding('spawn_sync'); return ''; });
 delete base.NODE_OPTIONS;
 const ownProtoKey = { ...base };
 Object.defineProperty(ownProtoKey, '__proto__', { enumerable: true, configurable: true, writable: true, value: Object.defineProperty({}, 'NODE_OPTIONS', { enumerable: true, get: keepFor(1) }) });
@@ -192,7 +205,7 @@ fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, held.join(','));
   $scriptRelative=$prototypeRelative; $scriptPath=$prototypePath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
   $prototypeCase=Invoke-Diagnostic @{} 'child-env-prototype'
   $prototypeHeld=if (Test-Path $prototypeCase.Marker) { [IO.File]::ReadAllText($prototypeCase.Marker) } else { '<no marker>' }
-  Assert-True ($prototypeHeld -ceq 'own-proto-key,inherited-setter,process-env-inherited,inherited-options-env,inherited-options-env-exec') "prototype tricks cannot change the child env after the check (held: $prototypeHeld)"
+  Assert-True ($prototypeHeld -ceq 'equals-key,equals-key-empty,case-duplicate,ignored-slot,process-binding,own-proto-key,inherited-setter,process-env-inherited,inherited-options-env,inherited-options-env-exec') "prototype tricks cannot change the child env after the check (held: $prototypeHeld)"
   Write-Output 'PASS diagnostic child-env-prototype=pinned-or-refused'
 
   $manifestRemovalRelative='.orchestrator/artifacts/manifest-removal.mjs'; $manifestRemovalPath=Join-Path $worktree ($manifestRemovalRelative -replace '/','\')

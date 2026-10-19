@@ -385,10 +385,14 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   if (!hasDiagnosticPreload(requiredNodeOptions)) refuse("diagnostic NODE_OPTIONS did not carry the diagnostic preload");
   const isPlainObject = (candidate) => candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
   // exec/execSync take (command, [options], [callback]); the others take
-  // (command, [args], [options], [callback]). A trailing callback is never options.
+  // (command, [args], [options], [callback]). Only the slot Node itself reads counts:
+  // an object anywhere else is ignored by Node, so checking it would prove nothing.
   const optionsIndex = (method, argumentsList) => {
     if (method === "exec" || method === "execSync") return isPlainObject(argumentsList[1]) ? 1 : -1;
-    return argumentsList.findIndex((candidate, index) => index > 0 && isPlainObject(candidate));
+    if (isPlainObject(argumentsList[1])) return 1;
+    const argsSlot = argumentsList[1];
+    if ((Array.isArray(argsSlot) || argsSlot === undefined || argsSlot === null) && isPlainObject(argumentsList[2])) return 2;
+    return -1;
   };
   const refuseChildLaunch = (reason) => {
     throw Object.assign(new Error(`heavy-admission: diagnostic child process launch refused because ${reason}`), {
@@ -431,6 +435,15 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
       const environment = snapshotEnvironment(requestedEnvironment || process.env);
       snapshot.env = environment;
       argumentsList[index] = snapshot;
+      // Node writes each entry as key=value, so a key such as "NODE_OPTIONS=x" or a
+      // differently cased duplicate would become a second guarded variable.
+      for (const key of Object.keys(environment)) {
+        const upper = key.toUpperCase();
+        if (key.indexOf("=", 1) !== -1) refuseChildLaunch("a child environment key contained '='");
+        if ((upper === "NODE_OPTIONS" || upper === "CHASE_SETS_HEAVY_ADMISSION_CONFIG") && key !== upper) {
+          refuseChildLaunch("a child environment key duplicated a guarded variable in another case");
+        }
+      }
       if (environment.NODE_OPTIONS !== requiredNodeOptions) refuseChildLaunch("NODE_OPTIONS lacks the diagnostic preload");
       // A child without the exact admission configuration would take the
       // unconfigured preload branch and load modules without the policy.
@@ -440,6 +453,16 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
       return original.apply(this, argumentsList);
     };
   }
+  // The raw spawn bindings start processes without child_process, so the env check
+  // above would never run. Diagnostics have no use for them.
+  const originalBinding = process.binding;
+  process.binding = function guardedDiagnosticBinding(name) {
+    const requestedBinding = String(name);
+    if (requestedBinding === "spawn_sync" || requestedBinding === "process_wrap") {
+      refuseChildLaunch(`process.binding('${requestedBinding}') is not available to diagnostics`);
+    }
+    return originalBinding.call(this, requestedBinding);
+  };
   const workerThreads = require("node:worker_threads");
   const RefusedWorker = function RefusedWorker() {
     throw Object.assign(new Error("heavy-admission: diagnostic Worker launch refused"), {
