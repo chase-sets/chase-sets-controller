@@ -53,15 +53,21 @@ total user/kernel time, and total process count are sampled before the Job
 Object is closed. Unsafe or pre-existing receipt paths are refusal failures
 and never produce a success result.
 
-In diagnostic mode, `new Worker` is refused. Node child-process launches are
-refused unless the supplied environment carries exactly the host-set,
+In diagnostic mode, `new Worker`, `process.execve`, and
+`process.binding('spawn_sync' | 'process_wrap')` are refused. Node child-process
+launches are refused unless the child environment carries exactly the host-set,
 preload-only `NODE_OPTIONS` string and the exact
-`CHASE_SETS_HEAVY_ADMISSION_CONFIG` value; this applies to `spawn`, `exec`, `fork`, `execFile`, and their
-synchronous variants. This protects only launches observed through these Node
-APIs: native launches, already-running external processes, and code that
-bypasses the patched module objects remain outside the diagnostic boundary.
-The check reads only the environment handed to the API: a permitted shell or
-non-Node child that clears `NODE_OPTIONS` before starting Node is not seen.
+`CHASE_SETS_HEAVY_ADMISSION_CONFIG` value. The check runs twice. `spawn`, `exec`,
+`fork`, `execFile`, and their synchronous variants read options only from the
+slot Node reads, and refuse environment keys that contain `=` or name a guarded
+variable in another case. Every route, including `new ChildProcess().spawn` and a
+reused child handle, then reaches the native `spawn_sync` or `process_wrap` spawn.
+There the environment block is copied once, each guarded variable must appear
+exactly once with its exact name and value, and Node receives that copy. Native
+addons (`process.dlopen`) and already-running external processes remain outside
+the diagnostic boundary. The check reads only the environment of the direct child:
+a permitted shell or non-Node child that clears `NODE_OPTIONS` before starting
+Node is not seen.
 Manifests from different processes that disagree on a module's digest refuse
 the run.
 The Job Object still supplies descendant cleanup on Windows.
