@@ -308,7 +308,8 @@ function installDiagnosticModulePolicy(config) {
     });
   };
   const authorize = (url) => {
-    if (!url.startsWith("file:")) return null;
+    if (url.startsWith("node:")) return null;
+    if (!url.startsWith("file:")) refuse(`diagnostic module URL was not a file: ${url}`);
     let requested;
     let actual;
     try {
