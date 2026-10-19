@@ -396,6 +396,8 @@ function installDiagnosticModulePolicy(config) {
     });
   };
   Object.defineProperty(workerThreads, "Worker", { configurable: true, writable: true, value: RefusedWorker });
+  // ESM named imports of builtins read a synced snapshot; publish the guards to them.
+  moduleApi.syncBuiltinESMExports();
 }
 
 function runAdmission(kind, config) {
