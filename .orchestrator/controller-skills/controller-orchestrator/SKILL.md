@@ -3,7 +3,7 @@ name: controller-orchestrator
 description: Run the chase-sets controller loop - improve and release the orchestration controller (the .orchestrator runtime, the milestone-orchestrator and model-routing skills), own the orchestration-platform migration, and work routing, velocity and capacity, without taking capacity the product loop needs. Use in the controller dev container for controller code, controller releases, the controller issue backlog, or platform supervision.
 ---
 
-# Controller Orchestrator (v1.1, 2026-10-18)
+# Controller Orchestrator (v1.2, 2026-10-18)
 
 Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 
@@ -71,16 +71,17 @@ controller battery runs only in a window with no product heavy work queued.
 5. Ask Todd to approve the release: diff summary, tests run and results,
    scan result, and any behavior change for the product orchestrator.
 6. On approval: fast-forward `main` (never force push), push an annotated tag
-   `controller-vX.Y`, and tell the product orchestrator thread the tag exists.
-   It applies the tag at its next cycle start with
-   `.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>`.
-7. Verify after its install: `check-controller-skill-freshness.ps1 -Json`
-   reports the tag as installed and `current`. Then move the dev container's
-   `release/` worktree to the new tag (`git -C release checkout --detach <tag>`).
-   The dev container's `.agents/skills/controller-orchestrator` and
+   `controller-vX.Y`, move the dev container's `release/` worktree to it
+   (`git -C release checkout --detach <tag>`), and tell the product
+   orchestrator thread the tag exists. The dev container's
+   `.agents/skills/controller-orchestrator` and
    `.claude/skills/controller-orchestrator` are junctions to
    `release/.orchestrator/controller-skills/controller-orchestrator`, so the
-   thread runs the released skill, never a working branch.
+   thread runs the released skill, never a working branch. Then start the next
+   change.
+7. Read `check-controller-skill-freshness.ps1 -Json` in the product container
+   as evidence only. A tag not yet installed is not a blocker; an install the
+   product loop reports as refused or failed is a controller defect.
 
 Tags older than `controller-v2.116` cannot be installed by tag. Hosted CI
 (`controller-battery.yml`) is informational until its LOCAL_ONLY items are

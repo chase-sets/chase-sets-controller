@@ -84,7 +84,8 @@ function Test-SharedReleaseOwnership([string]$Shared) {
   $text = Compact-Text $section.Groups[1].Value
   foreach ($rule in @(
       'The controller loop authors, verifies and tags it, and Todd approves it.',
-      'The product loop applies a new tag at the start of its next cycle with `.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>` and does nothing else with releases.',
+      'The controller loop never waits for a product install: it keeps building and releasing, and tags may accumulate.',
+      'The product loop installs only the newest tag, at the start of the first cycle that can take an install, with `.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>`; it skips older tags it never applied and does nothing else with releases.',
       'Release tags are the only install authority: never install an untagged commit or by any other path, never edit the product container checkout (it changes only through tag installs), and never copy a live edit over a mismatch.',
       'Rollback is the product loop reinstalling the previous tag with the same command.')) {
     Assert-Enforced ($text.Contains($rule, [StringComparison]::Ordinal)) "orchestrator-shared Releases lacks: $rule"
@@ -92,6 +93,7 @@ function Test-SharedReleaseOwnership([string]$Shared) {
 }
 Test-SharedReleaseOwnership $sharedText
 Assert-Mutant 'shared-release-ownership-deleted' { Test-SharedReleaseOwnership ($sharedText -replace 'The controller loop authors, verifies and\s+tags it, and Todd approves it\.\s*', '') }
+Assert-Mutant 'shared-install-newest-only-deleted' { Test-SharedReleaseOwnership ($sharedText -replace 'installs only the newest tag', 'installs each tag in order') }
 Assert-Mutant 'shared-install-authority-deleted' { Test-SharedReleaseOwnership ($sharedText -replace 'Release tags are the only install authority', 'Release tags are one install path') }
 Assert-Enforced (($milestoneText.ToCharArray() | Where-Object { [int]$_ -gt 127 }).Count -gt 0) "mutant needs a non-ASCII character in the milestone skill"
 Assert-Mutant "cp1252-encoded-skill" { Test-ByteHygiene ([Text.Encoding]::GetEncoding(1252).GetBytes($milestoneText)) "mutant" }
@@ -527,6 +529,26 @@ Test-ControllerSkillPlacement $controllerSkill $installInventory
 Assert-Mutant 'controller-skill-installed-by-product' { Test-ControllerSkillPlacement $controllerSkill ($installInventory + [pscustomobject]@{ source = 'controller-orchestrator/SKILL.md'; destination = 'controller-orchestrator/SKILL.md' }) }
 Assert-Mutant 'controller-backlog-planning-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Plan controller issues with the planning skill', 'Plan controller issues freely') $installInventory }
 Assert-Mutant 'controller-backlog-routing-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Check each issue against Repository routing', 'Check each issue') $installInventory }
+
+# --- the controller loop never waits for a product install -----------------------
+# The release step ends at the tag: release/ moves then and the next change starts.
+# The product install is evidence to read, never a gate on the next release.
+function Test-ControllerReleaseCadence([string]$Skill) {
+  $release = [regex]::Match($Skill, '(?ms)^## \d+\. Change and release\r?\n(.*?)(?=^## |\z)')
+  Assert-Enforced $release.Success 'controller-orchestrator has a Change and release section'
+  $text = Compact-Text $release.Groups[1].Value
+  $tagStep = [regex]::Match($text, '6\. On approval: (.*?) 7\. ')
+  Assert-Enforced $tagStep.Success 'release step 6 present'
+  Assert-Enforced ($tagStep.Groups[1].Value.Contains('move the dev container''s `release/` worktree to it (`git -C release checkout --detach <tag>`)', [StringComparison]::Ordinal)) 'release/ moves at tagging'
+  Assert-Enforced ($tagStep.Groups[1].Value.EndsWith('Then start the next change.', [StringComparison]::Ordinal)) 'tag step ends by starting the next change'
+  Assert-Enforced ($text.Contains('A tag not yet installed is not a blocker', [StringComparison]::Ordinal)) 'uninstalled tag is not a blocker'
+  Assert-Enforced ($text -notmatch '(?i)(after|until|wait\w*( for)?) (its|the|a) (product )?install') 'no release step waits on the product install'
+}
+Test-ControllerReleaseCadence $controllerSkill
+Assert-Mutant 'controller-release-waits-for-install' { Test-ControllerReleaseCadence ($controllerSkill.Replace('7. Read `check-controller-skill-freshness.ps1 -Json`', '7. Verify after its install: `check-controller-skill-freshness.ps1 -Json`')) }
+Assert-Mutant 'controller-release-move-deferred' { Test-ControllerReleaseCadence ([regex]::Replace($controllerSkill, 'move the dev container''s\s+`release/` worktree to it\s+\(`git -C release checkout --detach <tag>`\),\s+', '')) }
+Assert-Mutant 'controller-release-not-blocker-deleted' { Test-ControllerReleaseCadence ($controllerSkill.Replace('A tag not yet installed is not a blocker; ', '')) }
+Assert-Mutant 'controller-release-next-change-deleted' { Test-ControllerReleaseCadence ([regex]::Replace($controllerSkill, '\s+Then start the next\s+change\.', '')) }
 
 # --- both loop skills point to the shared contract -------------------------------
 $sharedPointer = 'Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.'

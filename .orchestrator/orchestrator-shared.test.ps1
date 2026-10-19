@@ -14,16 +14,18 @@ function Assert-Shared([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
 
-$anchors = [ordered]@{
-  'Two loops' = 'It never cuts batches, runs controller batteries or precursors, dispatches controller reviews, or holds product lanes for controller work.'
-  'Repository routing' = 'Follow Repository routing in `main/docs/contributing/backlog-model.md`; work for the other loop is filed on the other loop''s repository.'
-  'Releases' = 'Release tags are the only install authority: never install an untagged commit or by any other path'
-  'Defects' = 'The product loop files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.'
-}
+# Name, section heading, anchor sentence. A section may carry several anchors.
+$anchors = @(
+  [pscustomobject]@{ Key = 'Two loops'; Section = 'Two loops'; Value = 'It never cuts batches, runs controller batteries or precursors, dispatches controller reviews, or holds product lanes for controller work.' }
+  [pscustomobject]@{ Key = 'Repository routing'; Section = 'Repository routing'; Value = 'Follow Repository routing in `main/docs/contributing/backlog-model.md`; work for the other loop is filed on the other loop''s repository.' }
+  [pscustomobject]@{ Key = 'Releases'; Section = 'Releases'; Value = 'Release tags are the only install authority: never install an untagged commit or by any other path' }
+  [pscustomobject]@{ Key = 'Releases-no-wait'; Section = 'Releases'; Value = 'The controller loop never waits for a product install: it keeps building and releasing, and tags may accumulate. The product loop installs only the newest tag' }
+  [pscustomobject]@{ Key = 'Defects'; Section = 'Defects'; Value = 'The product loop files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.' }
+)
 
 function Test-StatedOnce([string]$Shared, [string]$Milestone, [string]$Controller) {
-  foreach ($entry in $anchors.GetEnumerator()) {
-    $section = [regex]::Match($Shared, "(?ms)^## $([regex]::Escape($entry.Key))\r?\n(.*?)(?=^## |\z)")
+  foreach ($entry in $anchors) {
+    $section = [regex]::Match($Shared, "(?ms)^## $([regex]::Escape($entry.Section))\r?\n(.*?)(?=^## |\z)")
     Assert-Shared $section.Success "orchestrator-shared has section $($entry.Key)"
     Assert-Shared ((Compact-Text $section.Groups[1].Value).Contains($entry.Value, [StringComparison]::Ordinal)) "orchestrator-shared $($entry.Key) states its anchor"
     foreach ($loop in @(@('milestone-orchestrator', $Milestone), @('controller-orchestrator', $Controller))) {
@@ -47,11 +49,11 @@ $shared = Read-Skill 'orchestrator-shared'
 $milestone = Read-Skill 'milestone-orchestrator'
 $controller = Read-Skill 'controller-orchestrator'
 Test-StatedOnce $shared $milestone $controller
-foreach ($entry in $anchors.GetEnumerator()) {
+foreach ($entry in $anchors) {
   $anchor = $entry.Value
   Assert-SharedMutant "copy-back-milestone-$($entry.Key)" { Test-StatedOnce $shared ($milestone + "`r`n" + $anchor + "`r`n") $controller }
   Assert-SharedMutant "copy-back-controller-$($entry.Key)" { Test-StatedOnce $shared $milestone ($controller + "`r`n" + $anchor + "`r`n") }
   Assert-SharedMutant "shared-drops-$($entry.Key)" { Test-StatedOnce ([regex]::Replace($shared, ((@($anchor -split ' ') | ForEach-Object { [regex]::Escape($_) }) -join '\s+'), 'removed text.')) $milestone $controller }
 }
 Assert-SharedMutant 'shared-dated' { Test-StatedOnce ($shared + "`r`nUpdated 2026-10-18.`r`n") $milestone $controller }
-Write-Output "PASS orchestrator-shared stated-once sections=$($anchors.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
+Write-Output "PASS orchestrator-shared stated-once anchors=$($anchors.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"

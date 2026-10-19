@@ -34,10 +34,12 @@ runtime behavior goes to the controller loop the same way.
 
 A controller release is an annotated `controller-v*` tag on
 `chase-sets/chase-sets-controller`. The controller loop authors, verifies and
-tags it, and Todd approves it. The product loop applies a new tag at the start
-of its next cycle with
-`.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>` and does
-nothing else with releases. Release tags are the only install authority: never
+tags it, and Todd approves it. The controller loop never waits for a product
+install: it keeps building and releasing, and tags may accumulate. The product
+loop installs only the newest tag, at the start of the first cycle that can
+take an install, with
+`.orchestrator/install-controller-skills.ps1 -ReleaseTag <tag>`; it skips
+older tags it never applied and does nothing else with releases. Release tags are the only install authority: never
 install an untagged commit or by any other path, never edit the product
 container checkout (it changes only through tag installs), and never copy a
 live edit over a mismatch. Rollback is the product loop reinstalling the
