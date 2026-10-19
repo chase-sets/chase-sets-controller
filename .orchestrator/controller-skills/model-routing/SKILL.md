@@ -164,7 +164,8 @@ never rewrite the curated catalog or transfer orchestration in this release.
 | Opus 5.5 | 4 / 20 | - | Low bounded work, medium execution/precision review, high difficult execution/judgment; exact harness admission required |
 | Fable 5.1 | 10 / 50 | - | Ordinary candidate wherever best for the job; live provider quota windows apply |
 
-Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch. No trial,
+Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch. Todd
+retired Fable 5 on 2026-09-07 with an in-place replacement; no trial,
 shadow, or independent measurement precedes eligibility. Use the row slot's
 placement and record the reason for an off-slot choice just as for any model.
 `claude-fable-5` is never selectable; its
@@ -474,8 +475,9 @@ Read Fable's separate weekly window live from AgentPools `/api/summary`
 `modelLimits`, scope `Fable`, window `limit:2`. This is provider capacity and
 can change at any time. Honor it like any other quota window, not as a share
 rule. Respect live quota windows and `newLaneAllowance`; no model-specific
-lane-budget policy applies. Concurrent lanes remain bounded by ordinary lane
-capacity, heavy-verifier admission and single-writer-per-branch.
+lane-budget policy applies. The same model may work on several tasks at once
+(v4.15, Todd 2026-09-19, 4388/5743836385); concurrent lanes remain bounded by
+ordinary lane capacity, heavy-verifier admission and single-writer-per-branch.
 
 Quota/session fallbacks use the row's policy fallback, not a closed
 Astra-to-Fable or Fable-to-Astra policy. Installed runtime compatibility tables
@@ -506,7 +508,8 @@ consecutive mechanical failures. Review each successor default at n=20
 determinate exact-configuration outcomes per occupied row; missing same-row
 evidence means remain provisional, not promote. Report severe escapes,
 latency and artifact cost; small samples do not certify 95%/99% service bars.
-The benchmark rows explicitly admit Opus 5.5 low/medium. Other configurations
+The September 23 rows explicitly admit Opus 5.5 low/medium under Todd's
+benchmark rebalance. Other configurations
 still need a written quota or explicit authority, except Astra and Fable may
 route wherever best with a recorded off-slot reason; host authority is unchanged.
 
@@ -600,7 +603,9 @@ require executed reproductions and implementation-shaped blockers, never an
 automatic repair rung. Two consecutive external blocks force planning/replan.
 Log expected USD and marginal gain as telemetry, not a spend gate.
 
-Sol xhigh/max remain bounded exceptions:
+Tier-3 configurations (every model's configurations marked `tier3` in the
+matrix, such as Sol xhigh/max, Astra xhigh/max and Fable max) are bounded
+exceptions, the same for every model:
 
 - Never use tier 3 as an automatic repair rung.
 - Require executed reproductions and implementation-shaped blockers.

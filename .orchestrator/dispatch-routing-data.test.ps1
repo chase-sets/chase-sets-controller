@@ -385,13 +385,13 @@ function Test-CapacityCases([string]$Name) {
       }
       $review=@{LaneRole='review';Row=11;Model='gpt-6.1-sol';Effort='high';Placement='provisional';Issue=$issue}
       $planning=@{LaneRole='planning';Row=8;Model='gpt-6.1-sol';Effort='high';Placement='provisional';Issue=$issue}
-      # Code review of a Codex-authored branch flips to the row's Opus slot although Opus authored the brief; the brief review of that brief refuses Opus.
+      # Code review of a Codex-authored branch flips to the row's Opus slot although Opus authored the brief; the brief review of that brief also flips to Opus: authorship never excludes the policy slot.
       New-Lineage 'claude-opus-5-5' 'gpt-6-astra'
       $p=Plan ($review+@{ReviewArtifact='code'})
       Assert-True ($p.harness -ceq 'claude' -and $p.routing.model -ceq 'claude-opus-5-5' -and $p.routing.slot -ceq 'claude.fallback' -and $p.routing.placement -ceq 'override-Todd' -and $p.capacityFlip.row -eq 11) 'code review flips despite brief-only Opus authorship'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
-      # Opus authored the code: code review refuses, brief review (Astra brief) flips, planning refuses.
+      # Opus authored the code: code review, brief review and planning all flip to the policy slot.
       New-Lineage 'gpt-6-astra' 'claude-opus-5-5'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'brief review flips when Opus only authored code'
@@ -431,7 +431,7 @@ function Test-CapacityCases([string]$Name) {
         @{kind='lane-complete';laneRole='planning';issue=$issue;model='claude-opus-5-5';transcript='synthetic-multi-issue-plan.jsonl';outcome='REGISTERED'})
       Assert-HistoryModels @('claude-opus-5-5') 'brief' $issue
       Assert-True ($null -ne (Plan $planning).capacityFlip) 'valid attributed history does not exclude the row policy slot'
-      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'multi-issue brief cannot flip to its planner'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'multi-issue brief review flips to its planner model on the policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'multi-issue brief author is not a code author'
       Write-History @(@{kind='lane-complete';laneRole='planning';issue=$issue;model='claude-opus-5-5';outcome='BLOCK_FIXABLE_REPAIRED_IN_BODY'})
       Assert-HistoryModels @('claude-opus-5-5') 'brief' $issue
@@ -497,10 +497,10 @@ function Test-CapacityCases([string]$Name) {
       Assert-True ((Plan $planning).capacityFlipSkip -ceq 'REVIEWER_HISTORY_UNKNOWN') 'planning receipt malformed patch flag remains unknown'
       # Reviewer patches are authorship for the reviewed artifact only; a reviewer patch on the code excludes that reviewer from code review, not from the brief.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{patch=@{kind='review-complete';laneRole='review';issue=$issue;authorAttempt="$issue-impl-g1";authorModel='gpt-6-astra';model='claude-opus-5-5';reviewerPatch=$true;reviewContract='review-contract/v2';outcome='BLOCK_FIXABLE';lane="$issue-exact-head-review-r2";transcript="$issue-exact-head-review-r2.jsonl"}}
-      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'code reviewer patch is code authorship'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'code reviewer patch author still flips to the policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'code reviewer patch is not brief authorship'
       New-Lineage 'gpt-6-astra' 'gpt-6-astra' @{patch=@{kind='repair-complete';laneRole='review';issue=$issue;model='claude-opus-5-5';reviewerPatch=$true;lane='shared-briefs-review-r1';transcript='shared-briefs-review-r1.jsonl'}}
-      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'reviewer brief repair is brief authorship'
+      Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='brief'})).capacityFlip) 'reviewer brief repair author still flips to the policy slot'
       Assert-True ($null -ne (Plan ($review+@{ReviewArtifact='code'})).capacityFlip) 'reviewer brief repair is not code authorship'
       # Row 7 planning and review use the generation-4 slot, not an authorship fallback.
       New-Lineage 'gpt-6-astra' 'gpt-6-astra'

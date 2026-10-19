@@ -86,7 +86,7 @@ foreach ($pin in @(
   @('scope classification', '### Scope classification', 'Keep row 1 on Luna 6', '8e15d31e7350ccfeb6f76f6d7d989370467ccac4e3bd2c3c5459cebd5215fe7a'),
   @('review-history', 'Reviews and decision lanes use their row''s policy slot', 'Review each new configuration at 20', '742b3457390a4758bb5f7dc7867dcffcfd3ba4f16bd16fc64a7f059523e22099'),
   @('spend', '## Spend telemetry', '## Provider quota windows', '342098efc94d8a9444b61be1c03948a098513de5e94832d5691a2e0852bcdd55'),
-  @('quota windows and concurrency', '## Provider quota windows', '## Challenger quotas and rebalance', '7a2c1bb800ef5e382038ff105298da8dea7dc8a1e5027a92f82f5fb8f1d1d4ef'),
+  @('quota windows and concurrency', '## Provider quota windows', '## Challenger quotas and rebalance', 'f266719ffa54bb49bf05100c30a3b26a190b473ac05a9412a01878e8adb9a249'),
   @('closed watchdog', 'The watchdog stays closed-table', '### September 23 benchmark rebalance', 'ca1b74eae7e7ebd6988de3c30b75a604ec63b35b5460bdb698c186dfa3cd65d7'),
   @('vendor recovery', 'An Opus low/medium placement requires admission', 'Reviews and decision lanes use their row''s policy slot', 'ff6f36efa09a9f5a82ab75f6a5dbbb2a168efc15eba316117ca56ecf8c1a6755')
 )) {
@@ -99,7 +99,7 @@ foreach ($pin in @(
 }
 foreach ($pin in @(
   @('benchmarkRebalance20260929', '05462b33b072179d92d41d03c086849f25288f80fbf35d424aec2e70b385c25b'),
-  @('configs', '742dae9a35cc96be5e73cb1cf117549dd4e17266252db2e3abcfa9a254736d73'),
+  @('configs', '8cd61b29786f187ce6b66380c9a394ffdc81545dccd7ca9017ddc28d1854aca8'),
   @('dimensions', '900f797d2b4b4e2ef11545f8d23a14db3831b9c212839a06aa50b9538720d168'),
   @('measuredAt', '2293049f7af9862019682772bf8f9908967c32a27a3f70d0dde36390fa58d511')
 )) {
