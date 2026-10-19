@@ -17,6 +17,12 @@ function Write-Register([int]$Platform=7002){
 ## 2. Route
 "@
 }
+function New-ReclamationLabels([string[]]$Names=@()){
+  [pscustomobject]@{totalCount=$Names.Count;pageInfo=[pscustomobject]@{hasNextPage=$false};nodes=@($Names|ForEach-Object{[pscustomobject]@{name=$_}})}
+}
+function Get-ReclamationMilestoneBatch([int[]]$Numbers){
+  $result=@{};foreach($number in $Numbers){$result["m$number"]=@{value=@{number=$number;state=$script:legacyMilestoneState}}};$result
+}
 function Write-Dispatch([string]$Path,[string]$Branch,[string]$Attempt='900001-synthetic'){
   Write-Fixture (Join-Path $root 'dispatch-log.jsonl') ((@{ts='2026-10-04T10:00:00Z';kind='dispatch';worktree=$Path;branch=$Branch;head=('a'*40);attemptId=$Attempt}|ConvertTo-Json -Compress)+"`n")
 }
@@ -26,7 +32,8 @@ function Reset-Synthetic {
   $script:worktrees=@($script:wt);$script:dirty=$false;$script:reachable=$true;$script:merged=$false
   $script:idle=[pscustomobject]@{complete=$true;newestWriteUtc='2026-10-04T00:00:00Z';idleHours=12}
   $script:ownership=[pscustomobject]@{health=@{status='ok'};activeLanes=@()}
-  $script:issue=[pscustomobject]@{number=900001;milestone=[pscustomobject]@{number=7001}}
+  $script:issue=[pscustomobject]@{number=900001;milestone=[pscustomobject]@{number=7001};labels=(New-ReclamationLabels)}
+  $script:legacyMilestoneState='CLOSED'
   $script:open=[pscustomobject]@{complete=$true;totalCount=0;nodes=@()}
   $script:children=[pscustomobject]@{complete=$true;openCount=0;children=@()}
   $script:mutations=[Collections.Generic.List[string]]::new();$script:openCalls=0;$script:idleCalls=0
@@ -54,6 +61,11 @@ function Assert-IdleEarlyExit {
   $script:visited=0
   $r=Get-ReclamationIdle $script:earlyRoot ([datetime]::UtcNow.AddHours(-6)) {param($Entry)$script:visited++}
   Assert-Cleanup ($r.state-ceq'recent'-and$script:visited-eq1-and$null-eq$r.newestWriteUtc) "reclamation-idle-early-exit visited=$script:visited"
+}
+function Assert-PlatformLabelRace {
+  Reset-Synthetic
+  $r=Invoke-Synthetic -Observer {$script:issue.labels=New-ReclamationLabels @('dispatch:platform')}
+  Assert-Cleanup ($script:mutations.Count-eq0-and$r.applyResults[0].result-ceq'changed-before-apply') 'platform label rechecked before removal'
 }
 function Assert-NoReinventory {
   Reset-Synthetic
@@ -89,10 +101,10 @@ function Assert-BatchedAuthority {
     $script:ghCalls.Add($query);$global:LASTEXITCODE=0
     $repository=[ordered]@{};$payload=@{data=@{repository=$repository}}
     if($query.Contains('issueOrPullRequest')){
-      Assert-Cleanup ($query.Contains('... on Issue{number milestone{number}}')-and$query.Contains('... on PullRequest{number milestone{number}}')) 'Issue and PR identity fragments'
+      Assert-Cleanup ($query.Contains('... on Issue{number labels(first:100)')-and$query.Contains('... on PullRequest{number labels(first:100)')-and$query.Contains('totalCount pageInfo{hasNextPage} nodes{name}')) 'Issue and PR complete label fragments'
       $aliases=[regex]::Matches($query,'(?<alias>i[0-9]+):issueOrPullRequest\(number:(?<number>[0-9]+)\)')
       Assert-Cleanup ($aliases.Count-ge1-and$aliases.Count-le100) 'identity request alias bound'
-      foreach($alias in $aliases){$repository[$alias.Groups['alias'].Value]=@{number=[int]$alias.Groups['number'].Value;milestone=$null}}
+      foreach($alias in $aliases){$repository[$alias.Groups['alias'].Value]=@{number=[int]$alias.Groups['number'].Value;labels=(New-ReclamationLabels)}}
       $kind='issue'
     }elseif($query.Contains('states:MERGED')){
       $aliases=[regex]::Matches($query,'(?<alias>[mc][0-9]+):pullRequests\(states:(?<state>MERGED|OPEN),(?:headRefName|baseRefName):(?<branch>"(?:[^"\\]|\\.)*"),first:(?<first>[12])\)')
@@ -174,7 +186,7 @@ function Assert-BatchedAuthority {
     Assert-Cleanup (@($r.rows|Where-Object{$_.reasonCode-ceq$reason-and-not$_.removable}).Count-eq2) "whole-batch $kind $failure"
     Write-Output "PASS reclamation-authority-batch-failure whole=$kind/$failure gh=$($script:ghCalls.Count)"
   }}
-  foreach($failure in @('missing','null','wrong-number','missing-milestone','error')){
+  foreach($failure in @('missing','null','wrong-number','missing-labels','incomplete-labels','error')){
     New-BatchRows 2
     $script:batchFailure=$failure
     $script:batchFault={param($Kind,$Repository,$Response)
@@ -183,8 +195,9 @@ function Assert-BatchedAuthority {
         'missing' {$Repository.Remove('i900001')}
         'null' {$Repository.i900001=$null}
         'wrong-number' {$Repository.i900001.number=900002}
-        'missing-milestone' {$Repository.i900001.Remove('milestone')}
-        'error' {$Response.payload.errors=@(@{path=@('repository','i900001','milestone')});$Response.code=1}
+        'missing-labels' {$Repository.i900001.Remove('labels')}
+        'incomplete-labels' {$Repository.i900001.labels.totalCount=1}
+        'error' {$Response.payload.errors=@(@{path=@('repository','i900001','labels')});$Response.code=1}
       }
     }
     $r=Invoke-BatchRows
@@ -303,8 +316,8 @@ try {
     'ownership-unknown'={$script:ownership.health.status='unknown'}
     'identity-unrecognized'={Write-Fixture (Join-Path $root 'dispatch-log.jsonl') ''}
     'identity-conflicting'={Write-Dispatch $wt.path $wt.branch '900002-synthetic'}
-    'platform-owned-milestone'={$script:issue.milestone.number=7002}
-    'register-unreadable'={Write-Fixture (Join-Path $root 'platform-handoff.md') 'malformed synthetic register'}
+    'platform-held-issue'={$script:issue.labels=New-ReclamationLabels @('dispatch:platform')}
+    'LEGACY_PLATFORM_REGISTER_ACTIVE'={Write-Fixture (Join-Path $root 'platform-handoff.md') 'malformed synthetic register'}
     'issue-unreadable'={$script:issue=$null}
     'detached-unbound'={$script:wt.detached=$true;$script:wt.branch='';Write-Dispatch $wt.path ''}
   }
@@ -320,15 +333,35 @@ try {
   Assert-IdleEarlyExit;Write-Output 'PASS reclamation-idle-early-exit'
   $script:visited=0;$full=Get-ReclamationIdle $script:earlyRoot $null {param($Entry)$script:visited++}
   Assert-Cleanup ($full.complete-and$full.newestWriteUtc-and$script:visited-eq101) 'exact-merged full newest observation, even recent'
-  foreach($reason in @('identity-unrecognized','identity-conflicting','platform-owned-milestone','register-unreadable','issue-unreadable')){Reset-Synthetic;$script:merged=$true;&$cases[$reason];Assert-Retained $reason 'exact-merged-retained'}
+  foreach($reason in @('identity-unrecognized','identity-conflicting','platform-held-issue','LEGACY_PLATFORM_REGISTER_ACTIVE','issue-unreadable')){Reset-Synthetic;$script:merged=$true;&$cases[$reason];Assert-Retained $reason 'exact-merged-retained'}
   foreach($reason in @('open-head-pr-branch','open-head-pr-sha','open-pr-authority-unknown','open-child-pr','open-child-pr-authority-unknown')){Reset-Synthetic;$script:merged=$true;&$cases[$reason];Assert-Retained $reason 'exact-merged-retained'}
   Reset-Synthetic;Write-Dispatch $wt.path 'codex/900001-different';Assert-Retained 'identity-conflicting'
   Reset-Synthetic;Write-Fixture (Join-Path $root 'dispatch-log.jsonl') '{';Assert-Retained 'identity-unreadable'
   Reset-Synthetic;Add-Content (Join-Path $root 'dispatch-log.jsonl') (@{worktree=$wt.path;branch=$wt.branch;attemptId='900002-newest'}|ConvertTo-Json -Compress);Assert-Retained 'identity-conflicting' 'newest-dispatch-retained'
-  Reset-Synthetic;Write-Register 7001;Assert-Retained 'platform-owned-milestone' 'dynamic-register-retained'
-  Reset-Synthetic;Write-Register 7001;$registerPath=Join-Path $root 'platform-handoff.md'
+  Reset-Synthetic;$script:issue.labels=New-ReclamationLabels @('dispatch:platform-return');Assert-Retained 'platform-held-issue' 'platform-return-pending'
+  Reset-Synthetic;$script:issue.milestone.number=7002;$r=Invoke-Synthetic
+  Assert-Cleanup ($script:mutations.Count-eq2) 'platform-label-removed reclaims unlabeled issue on same milestone'
+  Write-Output 'PASS platform-label-removed same milestone reclaimed'
+  Reset-Synthetic;Write-Register 7001;$script:legacyMilestoneState='OPEN';Assert-Retained 'LEGACY_PLATFORM_REGISTER_ACTIVE' 'legacy-register-open'
+  Reset-Synthetic;Write-Register 7001;$registerPath=Join-Path $root 'platform-handoff.md';$script:legacyMilestoneState='OPEN'
   Write-Fixture $registerPath ([IO.File]::ReadAllText($registerPath).Replace('| platform |','| platform (assigned 2026-10-04T00:00:00Z; NOT LAUNCHED) |'))
-  Assert-Retained 'platform-owned-milestone' 'annotated-register-retained'
+  Assert-Retained 'LEGACY_PLATFORM_REGISTER_ACTIVE' 'annotated-register-retained'
+  foreach($legacyState in @('CLOSED','UNKNOWN','')){
+    Reset-Synthetic;$script:legacyMilestoneState=$legacyState
+    if($legacyState-ceq'CLOSED'){$r=Invoke-Synthetic;Assert-Cleanup ($script:mutations.Count-eq2) 'legacy-register-closed';Write-Output 'PASS legacy-register-closed'}
+    else{Assert-Retained 'LEGACY_PLATFORM_REGISTER_ACTIVE' 'legacy-register-unreadable-state'}
+  }
+  Reset-Synthetic;Remove-Item -LiteralPath $registerPath;$r=Invoke-Synthetic
+  Assert-Cleanup ($script:mutations.Count-eq2) 'legacy-register-absent';Write-Output 'PASS legacy-register-absent'
+  foreach($label in @('Dispatch:platform','dispatch:Platform','dispatch:platform-returned')){
+    Reset-Synthetic;$script:issue.labels=New-ReclamationLabels @($label);$r=Invoke-Synthetic
+    Assert-Cleanup ($script:mutations.Count-eq2) "exact-label-negative $label"
+  }
+  foreach($fault in @('missing','total','next-page','malformed')){
+    Reset-Synthetic
+    switch($fault){missing {$script:issue.PSObject.Properties.Remove('labels')};total {$script:issue.labels.totalCount=1};next-page {$script:issue.labels.pageInfo.hasNextPage=$true};malformed {$script:issue.labels.nodes=@(@{name=3});$script:issue.labels.totalCount=1}}
+    Assert-Retained 'issue-unreadable' "labels-$fault"
+  }
   foreach($annotation in @('returned','rolled back')){
     Reset-Synthetic;Write-Register 7001
     Write-Fixture $registerPath ([IO.File]::ReadAllText($registerPath).Replace('| platform |',"| incumbent ($annotation 2026-10-04T00:00:00Z) |"))
@@ -347,7 +380,7 @@ try {
     Reset-Synthetic;$script:worktrees=@();$script:reachable=$via-ceq'base';$script:merged=$via-ceq'merged';$r=Invoke-Synthetic
     Assert-Cleanup ($r.rows[0].kind-ceq'orphan-branch'-and$script:mutations.Count-eq1-and$script:mutations[0]-like'update-ref --no-deref -d *') "orphan-branch-reclaimed-$via";Write-Output "PASS orphan-branch-reclaimed-$via"
   }
-  foreach($reason in @('open-child-pr','open-child-pr-authority-unknown','open-pr-authority-unknown','identity-unrecognized','platform-owned-milestone')){Reset-Synthetic;$script:worktrees=@();&$cases[$reason];Assert-Retained $reason 'orphan-branch-retained'}
+  foreach($reason in @('open-child-pr','open-child-pr-authority-unknown','open-pr-authority-unknown','identity-unrecognized','platform-held-issue')){Reset-Synthetic;$script:worktrees=@();&$cases[$reason];Assert-Retained $reason 'orphan-branch-retained'}
   Reset-Synthetic;$script:worktrees=@();$script:open.totalCount=1;Assert-Retained 'open-pr-authority-unknown' 'orphan-branch-retained-truncated'
   $changes=[ordered]@{
     'head-only'={$script:wt.head='b'*40}
@@ -359,6 +392,9 @@ try {
     'branch-only'={$script:wt.branch='codex/900001-changed'}
     'open-pr-only'={$script:open.complete=$false}
     'child-only'={$script:children.openCount=1}
+    'platform-label-added'={$script:issue.labels=New-ReclamationLabels @('dispatch:platform')}
+    'platform-return-added'={$script:issue.labels=New-ReclamationLabels @('dispatch:platform-return')}
+    'labels-unreadable'={$script:issue.labels=$null}
   }
   foreach($change in $changes.GetEnumerator()){
     Reset-Synthetic;$r=Invoke-Synthetic -Observer $change.Value
@@ -371,7 +407,7 @@ try {
     $r=Invoke-Synthetic -Observer {$script:idle=[pscustomobject]@{complete=$true;newestWriteUtc='2026-10-03T23:00:00Z';idleHours=13}}
     Assert-Cleanup ($script:mutations.Count-eq0-and$r.applyResults[0].result-ceq'changed-before-apply') "newest-write-changed-before-apply merged=$mergedCase"
   }
-  foreach($change in @({$script:wt.locked=$true},{Write-Register 7001},{$script:reachable=$false},{$script:worktrees=@()})){
+  foreach($change in @({$script:wt.locked=$true},{Write-Register 7001;$script:legacyMilestoneState='OPEN'},{$script:reachable=$false},{$script:worktrees=@()})){
     Reset-Synthetic;$r=Invoke-Synthetic -Observer $change
     Assert-Cleanup ($script:mutations.Count-eq0-and$r.applyResults[0].result-ceq'changed-before-apply') 'fresh lock/register/base/worktree refusal'
   }
@@ -441,6 +477,11 @@ try {
     }finally{Set-Item "Function:$($mutant.function)" $original}
   }
   foreach($mutant in @(
+    @{name='platform-label-ignored';function='Get-ReclamationIdentity';from="@(`$issue.labels.nodes.name)-ccontains'dispatch:platform'";to='$false';probe={Reset-Synthetic;$script:issue.labels=New-ReclamationLabels @('dispatch:platform');Assert-Retained 'platform-held-issue'}},
+    @{name='platform-return-ignored';function='Get-ReclamationIdentity';from="@(`$issue.labels.nodes.name)-ccontains'dispatch:platform-return'";to='$false';probe={Reset-Synthetic;$script:issue.labels=New-ReclamationLabels @('dispatch:platform-return');Assert-Retained 'platform-held-issue'}},
+    @{name='legacy-guard-ignored';function='Get-ReclamationRegister';from='active=$true';to='active=$false';probe={Reset-Synthetic;$script:legacyMilestoneState='OPEN';Assert-Retained 'LEGACY_PLATFORM_REGISTER_ACTIVE'}},
+    @{name='label-completeness-ignored';function='Test-ReclamationIssueLabels';from='$Issue.labels.totalCount-ne$Issue.labels.nodes.Count';to='$false';probe={Reset-Synthetic;$script:issue.labels.totalCount=1;Assert-Retained 'issue-unreadable'}},
+    @{name='issue-label-recheck-omitted';function='Get-ReclamationTarget';from='$row=Get-ReclamationRows $context @($entry) $PrResolver $ChildPrResolver $IssueResolver $IdleResolver $PhaseTimings';to='$row=$Target';probe={Assert-PlatformLabelRace}},
     @{name='remove-early-exit';function='Get-ReclamationIdle';from='if($null-ne$RecentCutoff-and$newest-gt$RecentCutoff)';to='if($false)';probe={Assert-IdleEarlyExit}},
     @{name='walk-before-cheap-predicates';function='Get-ReclamationRow';from='$open=$Context.open;$pr=$null;$child=$null;$idle=$null;$reachable=$null';to='$open=$Context.open;$pr=$null;$child=$null;$idle=$null;$reachable=$null; if(-not$orphan){$null=&$IdleResolver $path ([datetime]::UtcNow.AddHours(-6))}';probe={Assert-IdleCallCount}},
     @{name='per-target-full-reinventory';function='Invoke-WorktreeReclamation';from='$fresh=Get-ReclamationTarget -Target $target -ObservedAt $initial.observedAt @inventoryArgs';to='$current=Get-ReclamationInventory @inventoryArgs; $fresh=@($current.rows|Where-Object{$_.repository-ceq$target.repository-and$_.kind-ceq$target.kind-and$_.branch-ceq$target.branch-and(Test-ReclamationSamePath $_.canonicalPath $target.canonicalPath)})[0]';probe={Assert-NoReinventory}}

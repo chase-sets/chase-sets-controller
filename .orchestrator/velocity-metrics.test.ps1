@@ -68,7 +68,7 @@ function ReviewReduction($Pr) {
 }
 function Facts([hashtable]$Override = @{}) {
   $base = [ordered]@{
-    schema = "velocity-facts/v1"; complete = $true; gaps = @(); platformMilestones = @(155)
+    schema = "velocity-facts/v1"; complete = $true; gaps = @()
     merges = @(
       [pscustomobject]@{ pr = 1; mergedAt = (T 10); issues = @((MergeIssue 11 -LabeledAt (T 200))) },
       [pscustomobject]@{ pr = 2; mergedAt = (T 20); issues = @((MergeIssue 12 @('kind:ops') 'incumbent-ops')) },
@@ -140,9 +140,9 @@ foreach($history in @(@(),@((Obs 0.5 'UNMET')),@((Obs 4 'UNMET'),(Obs 2 'UNMET')
 }
 $r=Get-VelocityReport (Facts @{activeLanes=$oneLane;lastProductMergeAt=(T 53)}) $now @()
 Assert-Velocity ($r.metrics.floorState -ceq 'UNMET' -and $r.status -ceq 'ALARM' -and ($r.alarms.id -join ',') -ceq 'DROUGHT') 'UNMET with drought raises only DROUGHT'
-$noReady = @((Issue 100), (Issue 101 @("kind:product", "status:needs-replan")), (Issue 102 @("kind:product") 155), (Issue 103 @("kind:product") 148 $false), (Issue 104 @("kind:product") 148 $true 1), (Issue 105 @("kind:product", "decision")))
+$noReady = @((Issue 100), (Issue 101 @("kind:product", "status:needs-replan")), (Issue 102 @("kind:product", "dispatch:platform") 155), (Issue 103 @("kind:product") 148 $false), (Issue 104 @("kind:product") 148 $true 1), (Issue 105 @("kind:product", "decision")))
 $r = Get-VelocityReport (Facts @{ activeLanes = $oneLane; productIssues = $noReady }) $now @((Obs 3 "UNMET"))
-Assert-Velocity ($r.metrics.floorState -ceq "MET" -and @($r.metrics.readyNotInFlight).Count -eq 0) "status labels, platform milestone, candidate outcome, open blocker and decision issues are not ready"
+Assert-Velocity ($r.metrics.floorState -ceq "MET" -and @($r.metrics.readyNotInFlight).Count -eq 0) "status labels, platform-held issue, candidate outcome, open blocker and decision issues are not ready"
 
 # Flowing: merge queue and running hosted CI count; finished CI without a lane does not.
 $prs = @(
@@ -191,6 +191,65 @@ Assert-Velocity (-not (Get-VelocityOutcomeCommitted 'no marker')) "missing marke
 
 $syntheticFailures=[Collections.Generic.List[string]]::new()
 function Case([string]$Name,[scriptblock]$Body) {try{&$Body;Write-Output "PASS $Name (synthetic)"}catch{$syntheticFailures.Add("${Name}: $($_.Exception.Message)");Write-Output "FAIL ${Name}: $($_.Exception.Message)";Write-Output $_.ScriptStackTrace}}
+Case 'platform-held-labels-only' {
+  $held=Issue 919301 @('dispatch:platform')
+  $returning=Issue 919302 @('dispatch:platform-return')
+  $released=Issue 919303 @('Dispatch:platform','dispatch:Platform-return')
+  foreach($issue in @($held,$returning,$released)){$issue|Add-Member kinds @('kind:product');$issue|Add-Member productLabeledAt $null}
+  $f=Facts @{productIssues=@($held,$returning,$released);activeLanes=@();dispatchRows=@(
+    [pscustomobject]@{ts=(T 4);kind='dispatch';issue=919301;lane='synthetic-held'},[pscustomobject]@{ts=(T 2);kind='lane-complete';lane='synthetic-held'},
+    [pscustomobject]@{ts=(T 4);kind='dispatch';issue=919303;lane='synthetic-released'},[pscustomobject]@{ts=(T 2);kind='lane-complete';lane='synthetic-released'}
+  );merges=@([pscustomobject]@{pr=919311;mergedAt=(T 1);issues=@($held)},[pscustomobject]@{pr=919312;mergedAt=(T 1);issues=@($returning)},[pscustomobject]@{pr=919313;mergedAt=(T 1);issues=@($released)})}
+  $r=Get-VelocityReport $f $now @()
+  Assert-Velocity (($r.metrics.unblockedCommittedBacklog -join ',') -ceq '919303' -and $r.metrics.productMerges7d -eq 1) 'held and returning issues excluded, unlabeled sibling on same milestone counted'
+  Assert-Velocity ($r.diagnostics.laneHours48h.productHours -eq 2 -and $r.diagnostics.laneHours48h.otherHours -eq 2) 'lane hours use issue labels'
+  Assert-Velocity ((Test-VelocityBacklogIssue $released) -and -not(Test-VelocityBacklogIssue $held) -and -not(Test-VelocityBacklogIssue $returning)) 'backlog shares exact label rule'
+  $source=(Get-Item Function:Test-VelocityProductIssue).ScriptBlock.ToString()
+  foreach($label in @('dispatch:platform','dispatch:platform-return')){
+    $anchor="'"+$label+"'";$mutant=[scriptblock]::Create($source.Replace($anchor,"'synthetic:omitted'"))
+    $issue=if($label-ceq'dispatch:platform'){$held}else{$returning}
+    Assert-Velocity (&$mutant $issue) "mutant dropping $label reproduces forbidden product inclusion"
+    Write-Output "KILLED platform-label-omitted $label"
+  }
+}
+Case 'legacy-platform-register-guard' {
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('synthetic-193-velocity-'+[guid]::NewGuid().ToString('N'))
+  $runtime=Join-Path $root '.orchestrator';[void][IO.Directory]::CreateDirectory($runtime)
+  $path=Join-Path $runtime 'platform-handoff.md'
+  [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'),'')
+  $register=@'
+## 1. Ownership register
+| Scope | Owner | Notes |
+| --- | --- | --- |
+| chase-sets milestone 919300 (Synthetic legacy) | platform | synthetic |
+| every other chase-sets milestone, issue, PR, worktree, and the merge queue | incumbent | synthetic |
+## 2. Partition
+'@
+  function Invoke-VelocityOpenIssues {@()}
+  function Invoke-VelocitySearch($SearchQuery,$Fields){@()}
+  function Invoke-VelocityGraphQL($Query,$Variables){
+    Assert-Velocity ($Query.Contains('milestone(number:919300){number state}') -and $Variables.Count -eq 0) 'guard queries GitHub legacy milestone state'
+    [pscustomobject]@{repository=[pscustomobject]@{milestone=[pscustomobject]@{number=919300;state=$legacyState}}}
+  }
+  foreach($state in @('open','closed','malformed','absent','unknown')){
+    $legacyState=if($state-ceq'closed'){'CLOSED'}elseif($state-ceq'unknown'){'UNKNOWN'}else{'OPEN'}
+    if($state-ceq'absent'){Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue}
+    else{[IO.File]::WriteAllText($path,$(if($state-ceq'malformed'){'malformed synthetic register'}else{$register}))}
+    $selection=Get-VelocityLandingCandidates $root $now
+    $active=$state-cin@('open','malformed','unknown')
+    Assert-Velocity (($selection.gaps -ccontains 'LEGACY_PLATFORM_REGISTER_ACTIVE') -eq $active -and $selection.complete -eq (-not$active)) "legacy register $state fails closed exactly when active"
+    Write-Output "PASS velocity-legacy-register-$state"
+  }
+  [IO.File]::WriteAllText($path,$register);$legacyState='OPEN'
+  $original=(Get-Item Function:Assert-VelocityLegacyPlatformRegisterInactive).ScriptBlock
+  $source=$original.ToString();$anchor="$"+'data.repository.milestone.state-cne'+"'CLOSED'"
+  Assert-Velocity ($source.Contains($anchor)) 'legacy guard mutant anchor'
+  try {
+    Set-Item Function:Assert-VelocityLegacyPlatformRegisterInactive ([scriptblock]::Create($source.Replace($anchor,'$false')))
+    Assert-Velocity ((Get-VelocityLandingCandidates $root $now).complete) 'legacy guard bypass mutant reproduces unsafe complete facts'
+    Write-Output 'KILLED velocity-legacy-guard-bypass'
+  } finally {Set-Item Function:Assert-VelocityLegacyPlatformRegisterInactive $original}
+}
 Case 'FLOOR-F1-malformed-dequeue-and-controller-ownership' {
   foreach($kind in @('dequeue','controller')){
     foreach($malformed in @($false,$true)){
@@ -272,7 +331,7 @@ Case 'FLOOR-per-issue-label-gaps' {
 }
 Case 'FLOOR-closed-gap-classification-and-complete-compatibility' {
   $closed=@('dispatch-log: synthetic','open-prs: synthetic','product-issues: synthetic','merged-prs: synthetic',
-    'ownership: synthetic','ownership-not-complete','platform-register-unreadable','dispatch-pid-lanes: synthetic','issue-kinds: synthetic',
+    'ownership: synthetic','ownership-not-complete','LEGACY_PLATFORM_REGISTER_ACTIVE','dispatch-pid-lanes: synthetic','issue-kinds: synthetic',
     'pr-connections-incomplete:990102','merged-pr-connections-incomplete:990102','pr-body-incomplete:990102','merged-pr-body-incomplete:990102',
     'issue-connections-incomplete:101','synthetic-unclassified:101','REVIEW-REDUCTION-UNKNOWN:990102',
     'review-reduction-unknown','review-reduction-unknown:77:extra','launch-issue-unresolved:',
@@ -413,7 +472,7 @@ Case 'F10-controller-seat-reuse-is-not-product-ownership' {
   Write-Output 'KILLED F10 foreign-issue-emission mutant'
 }
 Case 'product-definition-milestone-park-and-window-boundaries' {
-  foreach ($control in @('parked','body-parked','candidate','incumbent-ops','delivery','platform-pilot','platform-owned','advisory','closed-milestone','no-milestone','missing-track')) {
+  foreach ($control in @('parked','body-parked','candidate','incumbent-ops','delivery','platform-pilot','platform-held','platform-return-pending','advisory','closed-milestone','no-milestone','missing-track')) {
     $issue=MergeIssue 900101
     switch ($control) {
       parked {$issue.labels+=@('status:parked')}
@@ -422,7 +481,8 @@ Case 'product-definition-milestone-park-and-window-boundaries' {
       'incumbent-ops' {$issue.milestone.track='incumbent-ops'}
       delivery {$issue.milestone.track='delivery'}
       'platform-pilot' {$issue.milestone.track='platform-pilot'}
-      'platform-owned' {$issue.milestone.number=155}
+      'platform-held' {$issue.labels+=@('dispatch:platform')}
+      'platform-return-pending' {$issue.labels+=@('dispatch:platform-return')}
       advisory {$issue.milestone.number=150}
       'closed-milestone' {$issue.milestone.state='CLOSED'}
       'no-milestone' {$issue.milestone=$null}
@@ -829,7 +889,9 @@ Case 'held-dedup-flow-precedence/mixed-floor-causes/held-authority-boundaries' {
     Assert-Velocity ($null -ne $old) "immutable intake helper exists: $name"
     . ([scriptblock]::Create($old.Extent.Text))
   }
-  $red=Get-VelocityReport $f $now @()
+  # Only the frozen intake consumer needs its retired facts field.
+  $intakeFacts=$f.PSObject.Copy();$intakeFacts|Add-Member platformMilestones @()
+  $red=Get-VelocityReport $intakeFacts $now @()
   Assert-Velocity (@($red.metrics.flowingProductIssues) -contains 100 -and $null -eq $red.metrics.PSObject.Properties['heldCount']) 'intake baseline counts held queue as flowing'
   Write-Output 'RED immutable intake held queue: flowing=100, held metric absent (synthetic replay)'
 }
@@ -897,7 +959,6 @@ Case '9056-shared-product-census-next-page' {
   $savedGraph=(Get-Item Function:Invoke-VelocityGraphQL).ScriptBlock
   $at=[datetime]::UtcNow
   try {
-    [IO.File]::WriteAllText((Join-Path $runtime 'platform-handoff.md'),'| chase-sets milestone 155 | platform |')
     [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-ownership.ps1'),@'
 function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{health=[pscustomobject]@{status='ok'};activeLanes=@()}}
 '@)
@@ -907,7 +968,7 @@ function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{
       [pscustomobject]@{number=$Number;title='Synthetic ordinary issue';body='';labels=[pscustomobject]@{totalCount=1;nodes=@([pscustomobject]@{name=$Kind})};blockedBy=[pscustomobject]@{totalCount=0;nodes=@()};milestone=[pscustomobject]@{number=$Milestone;state='OPEN';description="<!-- outcome: {`"version`":1,`"track`":`"commerce`",`"status`":`"$Status`"} -->"}}
     }
     $script:censusIssues=@((Census-Issue 905601),(Census-Issue 905602 'kind:ops'),(Census-Issue 905603 'kind:test-infra'),(Census-Issue 905604 'area:catalog'),
-      (Census-Issue 905605),(Census-Issue 905606 -Milestone 155),(Census-Issue 905607 -Status candidate),
+      (Census-Issue 905605),(Census-Issue 905606 'dispatch:platform' -Milestone 155),(Census-Issue 905607 -Status candidate),
       (Census-Issue 905608 'status:parked'),(Census-Issue 905609 'status:needs-replan'),(Census-Issue 905610),(Census-Issue 905611 -Milestone 150))
     $script:censusIssues[4].title='[controller] Synthetic title exclusion'
     function Census-Pr([int]$Number,[int[]]$References,[string]$Body=''){
@@ -990,7 +1051,6 @@ Case 'ledger-review-production-chain/held-collector-wiring' {
   $savedGraph=(Get-Item Function:Invoke-VelocityGraphQL).ScriptBlock
   $clock=[datetime]::UtcNow
   try {
-    [IO.File]::WriteAllText((Join-Path $runtime 'platform-handoff.md'),'| chase-sets milestone 155 | platform |')
     [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'),'')
     [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-ownership.ps1'),@'
 function Get-LiveDispatchOwnership($Runtime,$Temp,$Container) {
@@ -1308,7 +1368,7 @@ Case 'ready-idle-controls-and-cycle-joins' {
       terminal {$control.productIssues[0]|Add-Member terminalState parked}
       candidate {$control.productIssues[0].milestone.committed=$false}
       controller {$control.productIssues[0].title='[controller] Synthetic control'}
-      platform {$control.platformMilestones=@(148)}
+      platform {$control.productIssues[0].labels+=@('dispatch:platform');$control.productIssues[1].labels+=@('dispatch:platform-return')}
       unresolved {$control.activeLanes=@([pscustomobject]@{lane='synthetic-unresolved';laneRole='planning';startedAt=(T 1)})}
     }
     Assert-Velocity (@((Get-VelocityReport $control $now @()).metrics.readyNotInFlight).Count -eq 0) "$kind never actionable"
@@ -1449,7 +1509,6 @@ Case 'ready-idle-summary-lazy' {
   $clock=$now;$savedGraph=(Get-Item Function:Invoke-VelocityGraphQL).ScriptBlock
   $savedRepo=$script:VelocityRepo;$script:VelocityRepo='synthetic/velocity';$script:workflowSentinel=0
   try {
-    [IO.File]::WriteAllText((Join-Path $runtime 'platform-handoff.md'),'')
     [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'),'')
     [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-ownership.ps1'),"function Get-LiveDispatchOwnership { [pscustomobject]@{health=[pscustomobject]@{status='ok'};activeLanes=@()} }")
     $null=Update-MergeHoldState -Path (Join-Path $runtime 'merge-hold-state.json') -Action Initialize -ExpectedRevision 0 -Reconciled -Now $clock.AddMinutes(-10)

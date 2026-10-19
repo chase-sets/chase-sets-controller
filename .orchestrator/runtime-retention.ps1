@@ -258,7 +258,7 @@ function Get-RetentionSnapshot([string]$Runtime,[string]$Relative,[switch]$Metad
 function Get-RetentionReason($Item,$Context,$Authority,$Harvest,[datetime]$Now) {
     $paths=@($Item.path)+@($Item.snapshot.files | ForEach-Object source)+@($Item.snapshot.directories)
     if($Context.trackedItems.Contains($Item.path)){return 'tracked'}
-    $protected='^(logs|artifacts|salvage|platform-runs|contracts|controller-skills|fixtures|lease\.json|.*\.d|.*ledger.*|dispatch-log\.jsonl|flow-log\.jsonl|main-sync\.log|platform-handoff\.md|.*\.schema\.json|.*lkg.*|.*\.toml|.*config.*|.*\.fixture\.json|controller-review-.*\.json|breaker-.*\.json|host-.*guardrails\.md|.*ownership.*|.*owner.*\.json|README.*|\.gitignore)$'
+    $protected='^(logs|artifacts|salvage|platform-runs|contracts|controller-skills|fixtures|lease\.json|.*\.d|.*ledger.*|dispatch-log\.jsonl|flow-log\.jsonl|main-sync\.log|platform-handoff\.md|platform-handoff\.json|.*\.schema\.json|.*lkg.*|.*\.toml|.*config.*|.*\.fixture\.json|controller-review-.*\.json|breaker-.*\.json|host-.*guardrails\.md|.*ownership.*|.*owner.*\.json|README.*|\.gitignore)$'
     foreach($p in $paths){if([IO.Path]::GetFileName($p) -match $protected){return 'protected-name'}}
     if(-not $Context.complete){return 'protection-authority-unknown'}
     foreach($p in $paths) {

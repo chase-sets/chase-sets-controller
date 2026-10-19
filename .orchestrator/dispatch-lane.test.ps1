@@ -70,7 +70,7 @@ try {
       if($LaneRole -cne 'implementation' -and ($null -ne $rows[-1].placement -or $rows[-1].placementSource -cne 'row-0-explicit' -or $rows[-1].branch -cne '' -or $rows[-1].head -cne $admissionHead)){throw 'launch-label-issue-resolution: absent placement or detached head was fabricated'}
       . (Join-Path $routingScriptRoot 'velocity-metrics.ps1')
       $instant=[datetime]::UtcNow;$stamp=$instant.ToString('o')
-      $facts=[pscustomobject]@{complete=$true;gaps=@();platformMilestones=@();merges=@();lastProductMergeAt=$stamp;productPrs=@();issueKinds=[pscustomobject]@{};ownershipStatus='ok';dispatchRows=$rows
+      $facts=[pscustomobject]@{complete=$true;gaps=@();merges=@();lastProductMergeAt=$stamp;productPrs=@();issueKinds=[pscustomobject]@{};ownershipStatus='ok';dispatchRows=$rows
         productIssues=@([pscustomobject]@{number=908526;labels=@('kind:product');milestone=[pscustomobject]@{number=148;committed=$true;state='OPEN';track='commerce'};openBlockers=0})
         activeLanes=@([pscustomobject]@{lane='synthetic-seat';label=$Label;laneRole=$LaneRole;launchHead=$admissionHead;worktree=$worktreeResolved;launcherStartedAt=$launcherStartedAt;startedAt=$recordedAt})
         holdState=[pscustomobject]@{schema='merge-hold-state/v1';revision=1;initializedAt=$stamp;records=@()}

@@ -77,6 +77,11 @@ Test-Case 'runtime-retention-report-only' {
     Assert ((Row $v).action -eq 'archive') 'eligible report'; Assert ((Tree $r) -ceq $before) 'report changed tree'
     Assert ($script:harvestCalls -eq 0) 'report harvested'
 }
+Test-Case 'runtime-retention-platform-handoff-json' {
+    $r=New-Fixture; $p=Put $r 'platform-handoff.json' '{"synthetic":true}'
+    $v=Run $r -Apply
+    Assert ((Row $v 'platform-handoff.json').reason -eq 'protected-name' -and (Test-Path -LiteralPath $p)) 'handoff state was archived or removed'
+}
 function Assert-ReportCount($Item,$Entries,$Oversized,[string]$Label) {
     Assert ($Item.ContainsKey('entries') -and $Item.ContainsKey('oversized')) "$Label missing report fields"
     Assert ($Item.entries -ceq $Entries -and $Item.oversized -ceq $Oversized) "$Label count/oversized mismatch"
@@ -591,6 +596,7 @@ if($RunReportMutants){
 if($RunMutants){
     $source=[IO.File]::ReadAllText($SourcePath)
     $mutants=@(
+        @{name='handoff-json-unprotected';old='|platform-handoff\.json';new='';case='runtime-retention-platform-handoff-json'},
         @{name='same-count-only-zip';old='if($hash -cne $f.sha256){return $false}';new='if($false){return $false}';case='runtime-retention-verify-mismatch-deletes-nothing-wrong-content'},
         @{name='metadata-only-delete';old='if(size!=length || !String.Equals(actual,hash,StringComparison.OrdinalIgnoreCase))';new='if(size!=length)';case='runtime-retention-changed-during-apply-restamped'},
         @{name='missing-transcript-coverage';old="return 'transcript-not-covered'";new="return 'eligible'";case='runtime-retention-retained-transcript-not-covered'},

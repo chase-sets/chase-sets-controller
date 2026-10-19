@@ -624,12 +624,12 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
         $next=if($page-lt$pages-1){"synthetic-owners-$(($page+1)*100)"}else{$null}
         $pull=[ordered]@{number=$node.number;state='OPEN';headRefOid=$node.headRefOid;headRefName=$node.headRefName;milestone=$node.milestone;
           closingIssuesReferences=((New-Connection @($links|Select-Object -Skip ($page*100) -First 100) $links.Count ($null-ne$next) $next)|ConvertTo-Json -Depth 8|ConvertFrom-Json -AsHashtable)}
-        Add-GraphStep $Queue "ownership-$($node.number)-$Phase-$page" 'closingIssuesReferences(first:100' @{owner=$owner;name=$name;pr=$node.number;cursor=$cursor} @{data=@{repository=@{pullRequest=$pull}}}
+        Add-GraphStep $Queue "ownership-$($node.number)-$Phase-$page" 'labels(first:100){totalCount pageInfo{hasNextPage} nodes{name}}' @{owner=$owner;name=$name;pr=$node.number;cursor=$cursor} @{data=@{repository=@{pullRequest=$pull}}}
       }
     }
   }
   function Invoke-GraphControl([string]$Name,$Queue,[bool]$ExpectPass,[string]$ExpectedAction='LAUNCHED',[string]$ExpectedFailure='',[int]$ExpectedTargets=1,[switch]$TerminalStop,
-      [hashtable]$Owners=@{},[hashtable]$ExpectedActions=@{},[scriptblock]$MutateOwnership,[scriptblock]$BeforeApply,[string]$Subject=$script,[switch]$Repeat,[switch]$RequirePlan){
+      [hashtable]$Owners=@{},[hashtable]$ExpectedActions=@{},[scriptblock]$MutateOwnership,[scriptblock]$BeforeApply,[string]$Subject=$script,[switch]$Repeat,[switch]$RequirePlan,[string]$LegacyState=''){
     $controlRuntime=Join-Path $productionRoot "runtime-$Name";New-Item -ItemType Directory -Path $controlRuntime|Out-Null
     $graphPath=Join-Path $controlRuntime 'graph.json'
     $controlCalls=Join-Path $controlRuntime 'calls.txt';$env:SYNTHETIC_DISPATCH_CALLS=$controlCalls;$failure=$null;$value=$null
@@ -638,7 +638,10 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
       $n=$_.number
       $_.mergeable-ceq'CONFLICTING'-or$_.mergeStateStatus-ceq'DIRTY'-or@($Queue|Where-Object{$_.payload.data.repository.pullRequest.number-eq$n-and@($_.payload.data.repository.pullRequest.files.nodes|Where-Object path -CEQ 'catalog/pin.json').Count}).Count
     })
-    $expanded=[Collections.Generic.List[object]]::new();foreach($step in $Queue){$expanded.Add($step)}
+    function Add-LegacyRead($Steps){Add-GraphStep $Steps 'legacy-milestone' 'milestone(number:$milestone){number state}' @{milestone=9908018} @{data=@{repository=@{milestone=@{number=9908018L;state=$LegacyState}}}}}
+    $expanded=[Collections.Generic.List[object]]::new()
+    if($LegacyState){Add-LegacyRead $expanded}
+    foreach($step in $Queue){$expanded.Add($step)}
     foreach($node in @($reasonNodes|Sort-Object number)){
       Add-OwnershipReads $expanded @($node) $Owners 'before'
       Add-OwnershipReads $expanded @($node) $Owners 'after'
@@ -648,7 +651,11 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
       $controller=@($Queue|Where-Object{$_.payload.data.repository.pullRequest.number-eq$n-and@($_.payload.data.repository.pullRequest.files.nodes|Where-Object path -Like '.orchestrator/*').Count}).Count-gt0
       -not$controller-and$(if($ExpectedActions.Count){$ExpectedActions[[int]$n]-ceq'LAUNCHED'}else{$ExpectedAction-ceq'LAUNCHED'})
     })
-    Add-OwnershipReads $expanded $applyNodes $Owners 'apply'
+    foreach($node in $applyNodes){
+      if($LegacyState){Add-LegacyRead $expanded;Add-LegacyRead $expanded}
+      Add-OwnershipReads $expanded @($node) $Owners 'apply'
+      if($LegacyState){Add-LegacyRead $expanded}
+    }
     if($MutateOwnership){& $MutateOwnership $expanded}
     [IO.File]::WriteAllText($graphPath,(ConvertTo-Json -InputObject @($expanded) -Depth 20),[Text.UTF8Encoding]::new($false))
     $controlHistory=Join-Path $controlRuntime 'history.jsonl'
@@ -670,14 +677,14 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
     $historyCount=if(Test-Path $controlHistory){@(Get-Content $controlHistory).Count-$authorityInputCount}else{0}
     $expectedCalls=if($ExpectedActions.Count){@($ExpectedActions.Values|Where-Object{$_-ceq'LAUNCHED'}).Count}elseif($ExpectedAction-ceq'LAUNCHED'){1}else{0}
     if($ExpectPass){Assert-True ($null-eq$failure-and$value.targetCount-eq$ExpectedTargets-and@($value.targets|Where-Object{$_.action-ceq$ExpectedAction}).Count-eq1-and$callCount-eq$expectedCalls-and$historyCount-eq$expectedCalls) "$Name did not traverse the wired paginated collector with the exact disposition (failure=$failure targetCount=$($value.targetCount) calls=$callCount history=$historyCount)"}
-    else{Assert-True ($null-ne$failure-and$failure-match'CENSUS_UNKNOWN|^INTEGRATION_TARGET_RECONCILIATION_REQUIRED:'-and$callCount-eq0-and$historyCount-eq0) "$Name did not fail UNKNOWN before dispatch (failure=$failure calls=$callCount history=$historyCount)"}
+    else{Assert-True ($null-ne$failure-and$failure-match'CENSUS_UNKNOWN|LEGACY_PLATFORM_REGISTER_ACTIVE|^INTEGRATION_TARGET_RECONCILIATION_REQUIRED:'-and$callCount-eq0-and$historyCount-eq0) "$Name did not fail UNKNOWN before dispatch (failure=$failure calls=$callCount history=$historyCount)"}
     if($ExpectedFailure){
       $matchesFailure=if($ExpectedFailure-ceq'INTEGRATION_TARGET_RECONCILIATION_REQUIRED:'){$failure.StartsWith($ExpectedFailure,[StringComparison]::Ordinal)}else{$failure-ceq$ExpectedFailure}
       Assert-True $matchesFailure "$Name returned the wrong refusal: $failure"
     }
     foreach($pr in $ExpectedActions.Keys){Assert-True (@($value.targets|Where-Object{$_.pr-eq$pr-and$_.action-ceq$ExpectedActions[$pr]}).Count-eq1) "$Name wrong result for $pr"}
     $plans=@(Get-ChildItem $controlRuntime -Filter 'integration-plan-*.json')
-    if($ExpectedFailure-ceq'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'){Assert-True ($plans.Count-eq0) "$Name global unreadability claimed a plan"}
+    if($ExpectedFailure-ceq'LEGACY_PLATFORM_REGISTER_ACTIVE'-and-not$BeforeApply){Assert-True ($plans.Count-eq0) "$Name global unreadability claimed a plan"}
     if($ExpectPass-or$RequirePlan){
       Assert-True ($plans.Count-eq1) "$Name complete plan missing"
       $planned=Get-Content $plans[0].FullName -Raw|ConvertFrom-Json
@@ -716,7 +723,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
 ## 1. Ownership register
 | Scope | Owner | Notes |
 | --- | --- | --- |
-| chase-sets milestone 9908018 (Synthetic Platform) | platform | synthetic |
+| chase-sets milestone 9908018 (Synthetic Former Platform) | incumbent | synthetic |
 | every other chase-sets milestone, issue, PR, worktree, and the merge queue | incumbent | synthetic |
 | `synthetic-8133/platform` (all issues) | platform self loop (`m1`) | synthetic repository scope |
 | WSL executor `/root/orchestration-m1/repo` | platform | not a repository scope |
@@ -766,7 +773,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
     if($step.name-ceq'open-page-1'){$step.payload.data.repository.pullRequests.nodes[0].milestone=[ordered]@{number=[long]9908018}}
     if($step.name-like'target-*-before'-or$step.name-like'target-*-after'){$step.payload.data.repository.pullRequest.milestone=[ordered]@{number=[long]9908018}}
   }
-  Invoke-GraphControl 'registered-platform-target' $platformQueue $true 'PLATFORM_HANDOFF_REQUIRED'
+  Invoke-GraphControl 'milestone-alone-is-not-platform-held' $platformQueue $true 'LAUNCHED'
   $platformMoved=New-GraphQueue -TargetFileCount 1
   @($platformMoved|Where-Object{$_.name-like'target-*-after'})[0].payload.data.repository.pullRequest.milestone=[ordered]@{number=[long]9908018}
   Invoke-GraphControl 'platform-ownership-moved' $platformMoved $false
@@ -796,12 +803,12 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
   $partialOpen.payload.data.repository.pullRequests.nodes=@($partialOpen.payload.data.repository.pullRequests.nodes|Select-Object -First 1)
   Invoke-GraphControl 'outer-partial' $partialQueue $false
   }
-  function New-Owner([long]$Number=9900001,[string]$Repository=$SyntheticIntegrationRepository,$Milestone=9908018,[string]$State='CLOSED'){
-    [ordered]@{number=$Number;state=$State;repository=[ordered]@{nameWithOwner=$Repository};milestone=$(if($null-ne$Milestone){[ordered]@{number=$Milestone}}else{$null})}
+  function New-Owner([long]$Number=9900001,[string]$Repository='chase-sets/chase-sets',$Milestone=9908018,[string]$State='CLOSED',[string[]]$Labels=@('dispatch:platform')){
+    [ordered]@{number=$Number;state=$State;repository=[ordered]@{nameWithOwner=$Repository};milestone=$(if($null-ne$Milestone){[ordered]@{number=$Milestone}}else{$null});labels=[ordered]@{totalCount=$Labels.Count;pageInfo=@{hasNextPage=$false};nodes=@($Labels|ForEach-Object{@{name=$_}})}}
   }
   function Test-OwnershipControl([string]$Name,[string]$Mode,[string]$Subject=$script){
     $q=New-GraphQueue -TargetFileCount 1;$owners=@{};$actions=@{};$mutate=$null;$beforeApply=$null;$failure='';$pass=$true;$expected='PLATFORM_HANDOFF_REQUIRED';$targets=1;$repeat=$false;$requirePlan=$false
-    $registerBefore=[IO.File]::ReadAllText($syntheticRegister)
+    $registerBefore=[IO.File]::ReadAllText($syntheticRegister);$legacyState=''
     $owners[910001]=@((New-Owner))
     if($Mode-in@('closed','mixed-first','mixed-last')){
       if($Mode-like'mixed-*'){
@@ -814,16 +821,17 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
           if($null-ne$node-and$node.number-eq$platformPr-and$node.Contains('headRefName')){$node.headRefName='synthetic/8133-no-holder';if($node.Contains('mergeable')){$node.mergeable='CONFLICTING';$node.mergeStateStatus='DRAFT'}}
         }
       }
-    }elseif($Mode-in@('negative','null-owner','nonplatform','unrelated','incumbent-pr','incumbent-owner')){
+    }elseif($Mode-ceq'returning'){$owners[910001]=@((New-Owner -State OPEN -Labels @('dispatch:platform-return')))
+    }elseif($Mode-in@('negative','null-owner','nonplatform','unrelated','incumbent-pr','incumbent-owner','case-sensitive')){
       $expected='LAUNCHED';$owners[910001]=switch($Mode){
-        'negative' {@()};'null-owner' {@((New-Owner -Milestone $null))};'nonplatform' {@((New-Owner -Milestone 9908000),(New-Owner -Number 9900002 -Milestone 9908001))}
-        'unrelated' {@((New-Owner -Repository 'synthetic-8133/unrelated'))};'incumbent-pr' {@()};'incumbent-owner' {@((New-Owner -Milestone 9908000))}
+        'negative' {@()};'null-owner' {@((New-Owner -Milestone $null -Labels @()))};'nonplatform' {@((New-Owner -Milestone 9908000 -Labels @()),(New-Owner -Number 9900002 -Milestone 9908001 -Labels @()))}
+        'unrelated' {@((New-Owner -Repository 'synthetic-8133/unrelated'))};'incumbent-pr' {@()};'incumbent-owner' {@((New-Owner -Labels @()))};'case-sensitive' {@((New-Owner -Labels @('Dispatch:platform','dispatch:Platform-return')))}
       }
-    }elseif($Mode-ceq'pr-positive'){$owners[910001]=@((New-Owner -Milestone 9908000))
-    }elseif($Mode-ceq'repo-positive'){$owners[910001]=@((New-Owner -Repository 'synthetic-8133/platform' -Milestone $null))
+    }elseif($Mode-ceq'pr-positive'){$expected='LAUNCHED';$owners[910001]=@((New-Owner -Milestone 9908000 -Labels @()))
+    }elseif($Mode-ceq'repo-positive'){$owners[910001]=@((New-Owner -Repository 'todd-skelton/orchestration-platform' -Milestone $null -Labels @()))
     }elseif($Mode-in@('two-positive','many-positive','many-negative','page-two','page-two-negative','total-moves','cap','cursor','truncated','duplicate')){
       $count=if($Mode-ceq'two-positive'){2}else{101}
-      $links=@(1..$count|ForEach-Object{New-Owner -Number (9900000+$_) -Repository $(if($Mode-in@('two-positive','many-positive','many-negative')){$SyntheticIntegrationRepository}else{'synthetic-8133/unrelated'}) -Milestone 9908000})
+      $links=@(1..$count|ForEach-Object{New-Owner -Number (9900000+$_) -Repository $(if($Mode-in@('two-positive','many-positive','many-negative')){'chase-sets/chase-sets'}else{'synthetic-8133/unrelated'}) -Milestone 9908000 -Labels @()})
       if($Mode-in@('two-positive','many-positive','page-two')){$links[-1]=New-Owner -Number 9999999}
       $owners[910001]=$links
       if($Mode-in@('page-two-negative','many-negative')){$expected='LAUNCHED'}
@@ -841,15 +849,39 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
         }
       }
     }elseif($Mode-ceq'day-after'){$repeat=$true
-    }elseif($Mode-ceq'bad-register'){
-      [IO.File]::WriteAllText($syntheticRegister,$registerBefore.Replace('platform self loop (`m1`)','incumbent'));$pass=$false;$failure='CENSUS_UNKNOWN_OWNERSHIP_REGISTER'
+    }elseif($Mode-like'legacy-*'){
+      $owners[910001]=@();$expected='LAUNCHED'
+      if($Mode-ceq'legacy-absent'){Remove-Item -LiteralPath $syntheticRegister}
+      elseif($Mode-ceq'legacy-malformed'){[IO.File]::WriteAllText($syntheticRegister,'malformed synthetic register');$pass=$false;$failure='LEGACY_PLATFORM_REGISTER_ACTIVE'}
+      else{
+        [IO.File]::WriteAllText($syntheticRegister,$registerBefore.Replace('| chase-sets milestone 9908018 (Synthetic Former Platform) | incumbent |','| chase-sets milestone 9908018 (Synthetic Former Platform) | platform |'))
+        $legacyState=if($Mode-ceq'legacy-closed'){'CLOSED'}elseif($Mode-ceq'legacy-open'){'OPEN'}else{'UNKNOWN'}
+        if($Mode-cne'legacy-closed'){$pass=$false;$failure='LEGACY_PLATFORM_REGISTER_ACTIVE'}
+      }
     }elseif($Mode-like'drift-*'){
       $owners[910001]=@();$expected='LAUNCHED';$pass=$false;$failure='CENSUS_UNKNOWN_OWNERSHIP_910001';$requirePlan=$false
-      if($Mode-ceq'drift-register'){$beforeApply={[IO.File]::AppendAllText($syntheticRegister,"`nsynthetic changed register bytes`n")}}
+      if($Mode-ceq'drift-register'){$failure='LEGACY_PLATFORM_REGISTER_ACTIVE';$beforeApply={[IO.File]::WriteAllText($syntheticRegister,'malformed synthetic register')}}
+      elseif($Mode-ceq'drift-label'){
+        $owners[910001]=@((New-Owner -Labels @()))
+        $mutate={param($steps)$p=@($steps|Where-Object name -EQ 'ownership-910001-apply-0')[0].payload.data.repository.pullRequest;$p.closingIssuesReferences.nodes[0].labels=(New-Owner).labels}
+      }
       else{$mutate={param($steps)
         $p=@($steps|Where-Object name -EQ 'ownership-910001-apply-0')[0].payload.data.repository.pullRequest
         switch($Mode){'drift-head' {$p.headRefOid='e'*40};'drift-branch' {$p.headRefName='synthetic/drift'};'drift-milestone' {$p.milestone=@{number=9908018L}};'drift-link' {$p.closingIssuesReferences=New-Connection @((New-Owner)) 1 $false $null}}
       }}
+    }elseif($Mode-like'incomplete-labels-*'){
+      $pass=$false;$failure='CENSUS_UNKNOWN_OWNERSHIP_910001';$requirePlan=$true
+      $mutate={param($steps)
+        foreach($step in @($steps|Where-Object name -Like 'ownership-910001-*-0')){
+          $o=$step.payload.data.repository.pullRequest.closingIssuesReferences.nodes[0]
+          switch($Mode){
+            'incomplete-labels-total' {$o.labels.totalCount=2L}
+            'incomplete-labels-next' {$o.labels.pageInfo.hasNextPage=$true}
+            'incomplete-labels-missing' {$o.Remove('labels')}
+            'incomplete-labels-shape' {$o.labels.nodes[0].name=3L}
+          }
+        }
+      }
     }elseif($Mode-like'invalid-*'){
       $q=New-GraphQueue -OuterCount 2 -TargetPosition 2 -TargetFileCount 1
       foreach($step in $q){foreach($node in @($step.payload.data.repository.pullRequests.nodes)+@($step.payload.data.repository.pullRequest)){if($null-ne$node-and$node.number-eq910001-and$node.Contains('mergeable')){$node.mergeStateStatus='DIRTY'}}}
@@ -866,18 +898,20 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
     if($Mode-in@('pr-positive','incumbent-pr','owner-positive','invalid-positive-pr')){
       foreach($step in $q){foreach($node in @($step.payload.data.repository.pullRequests.nodes)+@($step.payload.data.repository.pullRequest)){if($null-ne$node-and$node.number-eq910001-and$node.Contains('milestone')){$node.milestone=@{number=$(if($Mode-in@('pr-positive','invalid-positive-pr')){9908018L}else{9908000L})}}}}
     }
-    try{Invoke-GraphControl $Name $q $pass $expected -ExpectedFailure $failure -ExpectedTargets $targets -Owners $owners -ExpectedActions $actions -MutateOwnership $mutate -BeforeApply $beforeApply -Subject $Subject -Repeat:$repeat -RequirePlan:$requirePlan}
+    try{Invoke-GraphControl $Name $q $pass $expected -ExpectedFailure $failure -ExpectedTargets $targets -Owners $owners -ExpectedActions $actions -MutateOwnership $mutate -BeforeApply $beforeApply -Subject $Subject -Repeat:$repeat -RequirePlan:$requirePlan -LegacyState $legacyState}
     finally{[IO.File]::WriteAllText($syntheticRegister,$registerBefore)}
   }
   $ownershipCases=[ordered]@{
     'null-pr-milestone-closed-platform-owner'='closed';'platform-and-incumbent-mixed-census-platform-first'='mixed-first';'platform-and-incumbent-mixed-census-platform-last'='mixed-last'
     'ownership-complete-negative-retains-incumbent'='negative';'ownership-null-owner-milestone'='null-owner';'ownership-multiple-nonplatform-owners'='nonplatform';'ownership-unrelated-cross-repo-milestone'='unrelated'
-    'platform-pr-milestone-disagreeing-owner-defers'='pr-positive';'platform-owner-disagreeing-pr-defers'='owner-positive';'ownership-decisive-owner-beyond-100'='page-two';'ownership-page-two-negative-twin'='page-two-negative'
-    'ownership-cross-repo-platform-repository-defers'='repo-positive';'ownership-invalid-repository-owner-cell'='bad-register';'ownership-multiple-owner-platform-defers'='two-positive';'ownership-101-same-repo-platform-defers'='many-positive'
+    'platform-pr-milestone-alone-does-not-defer'='pr-positive';'platform-owner-disagreeing-pr-defers'='owner-positive';'ownership-decisive-owner-beyond-100'='page-two';'ownership-page-two-negative-twin'='page-two-negative'
+    'ownership-cross-repo-platform-repository-defers'='repo-positive';'ownership-multiple-owner-platform-defers'='two-positive';'ownership-101-same-repo-platform-defers'='many-positive'
     'ownership-101-same-repo-negative-twin'='many-negative'
     'ownership-total-moves-between-pages'='total-moves';'ownership-cap'='cap';'ownership-cursor'='cursor';'ownership-truncated'='truncated';'ownership-duplicate'='duplicate'
     'ownership-fallback-and-day-after'='day-after';'ownership-incumbent-pr-empty-links'='incumbent-pr';'ownership-incumbent-owner'='incumbent-owner'
+    'platform-return-pending'='returning';'ownership-label-case-sensitive'='case-sensitive';'label-changed-before-apply'='drift-label'
   }
+  foreach($mode in @('legacy-open','legacy-closed','legacy-malformed','legacy-absent','legacy-unreadable','incomplete-labels-total','incomplete-labels-next','incomplete-labels-missing','incomplete-labels-shape')){$ownershipCases[$mode]=$mode}
   foreach($mode in @('invalid-state','invalid-positive-pr','invalid-repository','invalid-number','invalid-milestone','invalid-nested-field','invalid-missing','invalid-transport','invalid-link-moves','drift-head','drift-branch','drift-milestone','drift-link','drift-register')){$ownershipCases["ownership-unknown-refuses-before-apply-$mode"]=$mode}
   $ownershipFailures=[Collections.Generic.List[string]]::new()
   foreach($case in $ownershipCases.GetEnumerator()){
@@ -892,13 +926,17 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
       @{name='closed-owner-filter';mode='closed';old='foreach($link in $Snapshot.owners){';new="foreach(`$link in @(`$Snapshot.owners|Where-Object state -CEQ 'OPEN')){"},
       @{name='exactly-one-owner';mode='many-positive';old='foreach($link in $Snapshot.owners){';new='foreach($link in @($Snapshot.owners|Select-Object -First 1)){'},
       @{name='first-page-only';mode='page-two';old='foreach($link in $Snapshot.owners){';new='foreach($link in @($Snapshot.owners|Select-Object -First 100)){'},
-      @{name='repository-scope-discard';mode='repo-positive';old='if($link.repository.nameWithOwner-in$Register.repositories)';new='if($false)'},
-      @{name='cross-repo-milestone-match';mode='unrelated';old='$link.repository.nameWithOwner-ieq$Repository-and';new=''},
+      @{name='repository-scope-discard';mode='repo-positive';old='if($link.repository.nameWithOwner-ieq$platformRepository)';new='if($false)'},
+      @{name='cross-repo-label-match';mode='unrelated';old="`$link.repository.nameWithOwner-ieq'chase-sets/chase-sets'-and";new=''},
       @{name='complete-negative-unknown';mode='negative';old='return $false';new="throw 'complete negative refused'"},
       @{name='total-stability-bypass';mode='total-moves';old="elseif(`$expected-ne[int64]`$connection.totalCount){throw 'CENSUS_UNKNOWN_TOTAL_MOVED'}";new=''},
       @{name='owner-stability-bypass';mode='invalid-link-moves';old='if((Get-RebaseRecordIdentity $snapshot)-cne(Get-RebaseRecordIdentity $reobserved))';new='if($false)'},
       @{name='apply-ownership-bypass';mode='drift-link';old='if(-not$FixturePath){Assert-CurrentOwnership $pr}';new=''},
-      @{name='apply-register-bypass';mode='drift-register';old='.identity-cne$platformRegister.identity';new='.identity-cne$currentRegister.identity'}
+      @{name='apply-label-bypass';mode='drift-label';old='if(-not$FixturePath){Assert-CurrentOwnership $pr}';new=''},
+      @{name='return-label-dropped';mode='returning';old="-or@(`$link.labels.nodes.name)-ccontains'dispatch:platform-return'";new=''},
+      @{name='partial-labels-trusted';mode='incomplete-labels-total';old='$link.labels.totalCount-ne$link.labels.nodes.Count';new='$false'},
+      @{name='label-next-page-trusted';mode='incomplete-labels-next';old='-or$link.labels.pageInfo.hasNextPage)';new=')'},
+      @{name='legacy-guard-bypass';mode='legacy-open';old="`$state.state-cne'CLOSED'";new='$false'}
     )
     foreach($mutation in $mutations){
       $mutantRoot=Join-Path $root "ownership-mutant-$($mutation.name)";New-Item -ItemType Directory $mutantRoot|Out-Null

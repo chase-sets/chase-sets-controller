@@ -26,7 +26,6 @@ $runtime = Join-Path $root '.orchestrator'
 $null = [IO.Directory]::CreateDirectory($runtime)
 $now = [datetime]::UtcNow
 try {
-  [IO.File]::WriteAllText((Join-Path $runtime 'platform-handoff.md'), '')
   [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-ownership.ps1'), @'
 function Get-LiveDispatchOwnership($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$MaxRecords=64, [int]$DeadlineMs=5000) {
   $count = @([IO.Directory]::EnumerateFiles($RuntimeRoot, 'dispatch-launch-*.json')).Count

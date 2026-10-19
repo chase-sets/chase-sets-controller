@@ -39,6 +39,7 @@ $graphFixture=$null
 $graphFixtureIndex=0
 $ownershipInvalid=@{}
 $ownershipSnapshots=@{}
+$platformRepository='todd-skelton/orchestration-platform'
 if($GraphFixturePath){
   $graphFixture=@(Get-Content -LiteralPath $GraphFixturePath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop)
   if($graphFixture.Count-lt1){throw 'CENSUS_UNKNOWN_GRAPH_FIXTURE'}
@@ -160,7 +161,7 @@ function Assert-OwnershipMilestone($Milestone){
 }
 function Get-PrOwnership($Pr){
   $owner,$name=$Repository.Split('/')
-  $query='query($owner:String!,$name:String!,$pr:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){number state headRefOid headRefName milestone{number} closingIssuesReferences(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{number state repository{nameWithOwner} milestone{number}}}}}}'
+  $query='query($owner:String!,$name:String!,$pr:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){number state headRefOid headRefName milestone{number} closingIssuesReferences(first:100,after:$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{number state repository{nameWithOwner} milestone{number} labels(first:100){totalCount pageInfo{hasNextPage} nodes{name}}}}}}}'
   Assert-OwnershipMilestone $Pr.milestone
   $links=Get-Connection $query @{owner=$owner;name=$name;pr=[int]$Pr.number} {
     param($payload)
@@ -176,9 +177,20 @@ function Get-PrOwnership($Pr){
   }
   $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach($link in $links.nodes){
-    Assert-CensusKeys $link @('number','state','repository','milestone')
+    Assert-CensusKeys $link @('number','state','repository','milestone','labels')
     Assert-CensusKeys $link.repository @('nameWithOwner')
     Assert-OwnershipMilestone $link.milestone
+    Assert-CensusKeys $link.labels @('totalCount','pageInfo','nodes')
+    Assert-CensusKeys $link.labels.pageInfo @('hasNextPage')
+    if(-not(Test-DispatchJsonInteger $link.labels.totalCount 0)-or$link.labels.nodes-isnot[array]-or
+      $link.labels.nodes.Count-gt100-or$link.labels.totalCount-ne$link.labels.nodes.Count-or
+      $link.labels.pageInfo.hasNextPage-isnot[bool]-or$link.labels.pageInfo.hasNextPage){throw 'CENSUS_UNKNOWN_OWNERSHIP'}
+    $labelNames=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($label in $link.labels.nodes){
+      Assert-CensusKeys $label @('name')
+      if($label.name-isnot[string]-or[string]::IsNullOrWhiteSpace($label.name)-or-not$labelNames.Add($label.name)){throw 'CENSUS_UNKNOWN_OWNERSHIP'}
+    }
+    $link.labels.nodes=@($link.labels.nodes|Sort-Object name -CaseSensitive)
     if(-not(Test-DispatchJsonInteger $link.number 1)-or
         $link.state-isnot[string]-or$link.state-cnotin@('OPEN','CLOSED')-or$link.repository.nameWithOwner-isnot[string]-or
         $link.repository.nameWithOwner-cnotmatch'^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$'-or
@@ -187,22 +199,21 @@ function Get-PrOwnership($Pr){
   # Owner ordering is not authority; every complete native identity and field is.
   return [pscustomobject]@{milestone=$Pr.milestone;owners=@($links.nodes|Sort-Object {$_.repository.nameWithOwner},number)}
 }
-function Test-PlatformOwnership($Snapshot,$Register){
-  if($null-ne$Snapshot.milestone-and$Snapshot.milestone.number-in$Register.milestones){return $true}
+function Test-PlatformOwnership($Snapshot){
   foreach($link in $Snapshot.owners){
-    if($link.repository.nameWithOwner-in$Register.repositories){return $true}
-    if($link.repository.nameWithOwner-ieq$Repository-and$null-ne$link.milestone-and$link.milestone.number-in$Register.milestones){return $true}
+    if($link.repository.nameWithOwner-ieq$platformRepository){return $true}
+    if($link.repository.nameWithOwner-ieq'chase-sets/chase-sets'-and
+      (@($link.labels.nodes.name)-ccontains'dispatch:platform'-or@($link.labels.nodes.name)-ccontains'dispatch:platform-return')){return $true}
   }
   return $false
 }
 function Assert-CurrentOwnership($Pr){
+  Assert-LegacyPlatformRegisterInactive
   try{
-    $currentRegister=Get-PlatformMilestones
-    if($currentRegister.identity-cne$platformRegister.identity){throw 'register changed'}
     $current=Get-PrOwnership $Pr
     if((Get-RebaseRecordIdentity $current)-cne(Get-RebaseRecordIdentity $ownershipSnapshots[[int]$Pr.number])){throw 'owners changed'}
-    if((Get-PlatformMilestones).identity-cne$platformRegister.identity){throw 'register changed during read'}
   }catch{throw "CENSUS_UNKNOWN_OWNERSHIP_$($Pr.number)"}
+  Assert-LegacyPlatformRegisterInactive
 }
 function Resolve-Worktree([string]$Branch){
   $productRepositoryRoot=Join-Path $ContainerRoot 'main'
@@ -462,32 +473,39 @@ function Assert-CensusKeys($Value,[string[]]$Required,[string[]]$Optional=@()){
   $names=@($Value.PSObject.Properties.Name)
   if($Value-isnot[pscustomobject]-or@($Required|Where-Object{$_-cnotin$names}).Count-or@($names|Where-Object{$_-cnotin$Required-and$_-cnotin$Optional}).Count){throw 'CENSUS_UNKNOWN_FIELDS'}
 }
-function Get-PlatformMilestones{
+function Assert-LegacyPlatformRegisterInactive{
   $path=Join-Path $ContainerRoot '.orchestrator/platform-handoff.md'
-  if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
   try{
+    if(-not(Test-Path -LiteralPath $path)){return}
     $bytes=[IO.File]::ReadAllBytes($path)
     $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
-  }catch{throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
+  }catch{throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
   $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
-  if(-not$table.Success){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
+  if(-not$table.Success){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
   $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
   $repositories=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach($line in ($table.Groups['table'].Value -split '\r?\n')){
     if($line-notmatch'^\|'){continue}
     $cells=@($line.Trim().Trim('|').Split('|')|ForEach-Object{$_.Trim()})
-    if($cells.Count-ne3){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
+    if($cells.Count-ne3){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
     if($cells[0]-cmatch'^chase-sets milestone (?<number>[1-9][0-9]*) \([^|]+\)$'){
-      $number=0;if(-not[int]::TryParse($Matches.number,[ref]$number)-or-not$seen.Add($number)){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
-      if($cells[1]-ceq'platform'){$platform.Add($number)}elseif($cells[1]-cnotmatch'^incumbent(?: \(rolled back [^|]+\))?$'){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
+      $number=0;if(-not[int]::TryParse($Matches.number,[ref]$number)-or-not$seen.Add($number)){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+      if($cells[1]-cmatch'^platform(?: \(assigned [^|]+\))?$'){$platform.Add($number)}elseif($cells[1]-cnotmatch'^incumbent(?: \((?:rolled back|returned) [^|]+\))?$'){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
     }elseif($cells[0]-ceq'every other chase-sets milestone, issue, PR, worktree, and the merge queue'){
-      if($default-or$cells[1]-cne'incumbent'){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'};$default=$true
+      if($default-or$cells[1]-cne'incumbent'){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'};$default=$true
     }elseif($cells[0]-cmatch'^`(?<repository>[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)` \(all issues\)$'){
-      if($cells[1]-cne'platform self loop (`m1`)'-or-not$repositories.Add($Matches.repository)){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
-    }elseif($cells[0]-cnotin@('Scope','---','WSL executor `/root/orchestration-m1/repo`')){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
+      if($cells[1]-cne'platform self loop (`m1`)'-or-not$repositories.Add($Matches.repository)){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+    }elseif($cells[0]-cnotin@('Scope','---','WSL executor `/root/orchestration-m1/repo`')){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
   }
-  if(-not$default){throw 'CENSUS_UNKNOWN_OWNERSHIP_REGISTER'}
-  return [pscustomobject]@{milestones=@($platform);repositories=@($repositories);identity=(Get-RebaseHash $bytes)}
+  if(-not$default){throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+  foreach($number in $platform){
+    try{
+      $payload=Invoke-Graph 'query($milestone:Int!){repository(owner:"chase-sets",name:"chase-sets"){milestone(number:$milestone){number state}}}' @{milestone=$number}
+      $state=$payload.data.repository.milestone
+      Assert-CensusKeys $state @('number','state')
+      if($payload.errors-or-not(Test-DispatchJsonInteger $state.number 1)-or$state.number-ne$number-or$state.state-cne'CLOSED'){throw 'legacy milestone active or unreadable'}
+    }catch{throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+  }
 }
 function Assert-CensusConnection($Value){
   Assert-CensusKeys $Value @('complete','totalCount','nodes')
@@ -527,12 +545,12 @@ function Assert-IntegrationTerminal($Value){
   foreach($key in @('landedHead','targetHead')){if($Value.$key-isnot[string]-or$Value.$key-cnotmatch'^[a-f0-9]{40}$'){throw 'CENSUS_UNKNOWN_TERMINAL'}}
 }
 
+Assert-LegacyPlatformRegisterInactive
 $census=if($FixturePath){Read-RebaseJson $FixturePath}else{Get-ProductionCensus}
 $integrationAuthor=if($FixturePath-and-not$PoolStatusFixturePath){
   Get-LandedIntegrationAuthor -DefaultAstra
 }else{Get-LandedIntegrationAuthor $PoolStatusFixturePath}
 $script:worktreeCensus=$null
-$platformRegister=if($FixturePath){$null}else{Get-PlatformMilestones}
 Assert-CensusKeys $census @('schemaVersion','complete','newBase','landed','openPullRequests') @('activeBranches')
 Assert-CensusKeys $census.landed @('pr','head','files')
 Assert-CensusFiles $census.landed.files
@@ -600,7 +618,7 @@ foreach($pr in $orderedPullRequests){
     }catch{
       $disposition.action='OWNERSHIP_UNKNOWN';$refusals.Add("CENSUS_UNKNOWN_OWNERSHIP_$($pr.number)");continue
     }
-    if(Test-PlatformOwnership $snapshot $platformRegister){$disposition.action='PLATFORM_HANDOFF_REQUIRED';continue}
+    if(Test-PlatformOwnership $snapshot){$disposition.action='PLATFORM_HANDOFF_REQUIRED';continue}
   }
   $authority=Reduce-LandedIntegrationAuthority $history $pr.number $pr.headRefName $pr.headRefOid
   if($authority.globalUnknown){throw 'CENSUS_UNKNOWN_AUTHORITY_ROW'}
@@ -714,6 +732,7 @@ foreach($deferred in @($dispositions|Where-Object{$_.action-cin@('TERMINAL_AUTHO
 if($BeforeApply){& $BeforeApply | Out-Null}
 foreach($item in $plan){
   $pr=$item.pr;$worktree=$item.worktree;$reason=$item.reason;$lane=$item.lane
+  Assert-LegacyPlatformRegisterInactive
   if(-not$FixturePath){Assert-CurrentOwnership $pr}
   $identityReason=$null
   try{

@@ -94,7 +94,8 @@ function Get-ReclamationIssueBatch([int[]]$Numbers) {
   for($start=0;$start-lt$numbers.Count;$start+=100){
     $aliases=[ordered]@{}
     foreach($number in $numbers[$start..([Math]::Min($start+99,$numbers.Count-1))]){
-      $aliases["i$number"]="issueOrPullRequest(number:$number){... on Issue{number milestone{number}} ... on PullRequest{number milestone{number}}}"
+      $fields='number labels(first:100){totalCount pageInfo{hasNextPage} nodes{name}}'
+      $aliases["i$number"]="issueOrPullRequest(number:$number){... on Issue{$fields} ... on PullRequest{$fields}}"
     }
     $batch=Invoke-ReclamationAliasBatch 'chase-sets/chase-sets' $aliases
     foreach($number in $numbers[$start..([Math]::Min($start+99,$numbers.Count-1))]){$result[$number]=$batch["i$number"].value}
@@ -182,9 +183,17 @@ function Test-ReclamationInside([string]$Path,[string]$Container) {
   }catch{return $false}
 }
 
+function Get-ReclamationMilestoneBatch([int[]]$Numbers) {
+  $aliases=[ordered]@{}
+  foreach($number in $Numbers){$aliases["m$number"]="milestone(number:$number){number state}"}
+  if($aliases.Count){Invoke-ReclamationAliasBatch 'chase-sets/chase-sets' $aliases}else{@{}}
+}
+
 function Get-ReclamationRegister([string]$RuntimeRoot) {
   try {
-    $text=[IO.File]::ReadAllText((Join-Path $RuntimeRoot 'platform-handoff.md'),[Text.UTF8Encoding]::new($false,$true))
+    $path=Join-Path $RuntimeRoot 'platform-handoff.md'
+    if(-not(Test-Path -LiteralPath $path)){return [pscustomobject]@{active=$false}}
+    $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
     $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
     if(-not$table.Success){throw 'missing ownership register'}
     $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
@@ -204,8 +213,14 @@ function Get-ReclamationRegister([string]$RuntimeRoot) {
       }elseif($cells[0]-cnotin@('Scope','---','WSL executor `/root/orchestration-m1/repo`')){throw 'unknown register scope'}
     }
     if(-not$default){throw 'missing incumbent default'}
-    [pscustomobject]@{complete=$true;milestones=@($platform);fingerprint=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text)))}
-  }catch{[pscustomobject]@{complete=$false;milestones=@();fingerprint=''}}
+    $states=Get-ReclamationMilestoneBatch @($platform)
+    foreach($number in $platform){
+      $state=$states["m$number"].value
+      if($null-eq$state-or$state.number-ne$number-or$state.state-cnotin@('OPEN','CLOSED')){throw 'legacy milestone unreadable'}
+      if($state.state-ceq'OPEN'){return [pscustomobject]@{active=$true}}
+    }
+    [pscustomobject]@{active=$false}
+  }catch{[pscustomobject]@{active=$true}}
 }
 
 function Get-ReclamationDispatch([string]$RuntimeRoot) {
@@ -233,8 +248,21 @@ function Get-ReclamationIssue([int]$Number) {
   (Get-ReclamationIssueBatch @($Number))[$Number]
 }
 
+function Test-ReclamationIssueLabels($Issue,[int]$Number) {
+  try {
+    if($null-eq$Issue-or$Issue.number-ne$Number-or$null-eq$Issue.labels-or
+      $Issue.labels.nodes-isnot[array]-or$Issue.labels.nodes.Count-gt100-or
+      $Issue.labels.pageInfo.hasNextPage-isnot[bool]-or$Issue.labels.pageInfo.hasNextPage-or
+      ($Issue.labels.totalCount-isnot[int]-and$Issue.labels.totalCount-isnot[long])-or
+      $Issue.labels.totalCount-ne$Issue.labels.nodes.Count){return $false}
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($label in $Issue.labels.nodes){if($label.name-isnot[string]-or[string]::IsNullOrWhiteSpace($label.name)-or-not$seen.Add($label.name)){return $false}}
+    $true
+  }catch{$false}
+}
+
 function Get-ReclamationIdentity($Candidate,$Dispatch,$Register,[scriptblock]$IssueResolver,[switch]$DispatchOnly) {
-  $reason='recognized-incumbent';$row=$null;$number=0;$milestone=$null
+  $reason='recognized-incumbent';$row=$null;$number=0
   if(-not$Dispatch.complete){$reason='identity-unreadable'}
   elseif($Candidate.kind-ceq'orphan-branch'){
     if($Dispatch.branches.ContainsKey($Candidate.branch)){$row=$Dispatch.branches[$Candidate.branch]}
@@ -253,18 +281,16 @@ function Get-ReclamationIdentity($Candidate,$Dispatch,$Register,[scriptblock]$Is
     }
   }
   if($reason-ceq'recognized-incumbent'-and-not$DispatchOnly){
-    if(-not$Register.complete){$reason='register-unreadable'}
+    if($Register.active){$reason='LEGACY_PLATFORM_REGISTER_ACTIVE'}
     else {
       try{$issue=&$IssueResolver $number}catch{$issue=$null}
-      if($null-eq$issue-or$issue.number-ne$number-or'milestone'-cnotin@($issue.PSObject.Properties.Name)){$reason='issue-unreadable'}
-      elseif($null-ne$issue.milestone){
-        $milestone=0
-        if(-not[int]::TryParse([string]$issue.milestone.number,[ref]$milestone)-or$milestone-lt1){$reason='issue-unreadable'}
-        elseif($milestone-in$Register.milestones){$reason='platform-owned-milestone'}
+      if(-not(Test-ReclamationIssueLabels $issue $number)){$reason='issue-unreadable'}
+      elseif(@($issue.labels.nodes.name)-ccontains'dispatch:platform'-or@($issue.labels.nodes.name)-ccontains'dispatch:platform-return'){
+        $reason='platform-held-issue'
       }
     }
   }
-  [pscustomobject]@{recognized=$reason-ceq'recognized-incumbent';reasonCode=$reason;issue=$number;milestone=$milestone;dispatchPath=$row.path;branch=$row.branch;dispatchFingerprint=$row.fingerprint;registerFingerprint=$Register.fingerprint}
+  [pscustomobject]@{recognized=$reason-ceq'recognized-incumbent';reasonCode=$reason;issue=$number;dispatchPath=$row.path;branch=$row.branch;dispatchFingerprint=$row.fingerprint}
 }
 
 function Test-ReclamationOpenPrRows($Authority) {
@@ -377,7 +403,8 @@ function Get-ReclamationRowPreparation {
   $tip=@($branches|Where-Object{$_.branch-ceq$branch})
   $branchTip=if($tip.Count-eq1){[string]$tip[0].head}else{''}
   $open=$Context.open
-  $reason=if($orphan-and(Test-ReclamationProtectedBranch $branch)){'protected-branch'}
+  $reason=if($register.active){'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+    elseif($orphan-and(Test-ReclamationProtectedBranch $branch)){'protected-branch'}
     elseif(-not$Context.ownershipHealthy){'ownership-unknown'}
     elseif($Context.live.Contains($path)-or$Context.liveBranches.Contains($branch)){'live-owner'}
     elseif($candidate.locked){'locked'}

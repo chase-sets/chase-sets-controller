@@ -41,13 +41,13 @@ function Format-VelocityUtc([datetime]$Value) {
   return $Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
 }
 
-function Test-VelocityProductIssue($Issue, [int[]]$PlatformMilestones, [int[]]$ControllerIssues = @()) {
+function Test-VelocityProductIssue($Issue, [int[]]$ControllerIssues = @()) {
   if ($null -eq $Issue) { return $false }
+  if (@($Issue.labels) -ccontains 'dispatch:platform' -or @($Issue.labels) -ccontains 'dispatch:platform-return') { return $false }
   $milestone = Get-VelocityValue $Issue 'milestone'
   if ($null -eq $milestone -or -not (Get-VelocityValue $milestone 'committed' $false) -or
     [string](Get-VelocityValue $milestone 'state') -cne 'OPEN' -or
     [string](Get-VelocityValue $milestone 'track') -cnotin $script:VelocityPolicy.ProductTracks -or
-    $PlatformMilestones -contains [int]$milestone.number -or
     $script:VelocityPolicy.ControllerEvidenceMilestones -contains [int]$milestone.number) { return $false }
   if ($ControllerIssues -contains [int]$Issue.number -or [string](Get-VelocityValue $Issue 'title') -match '^\[controller\]') { return $false }
   return @($Issue.labels) -cnotcontains 'status:parked' -and
@@ -87,14 +87,13 @@ function Get-VelocityControllerIssues([object[]]$Rows, [datetime]$Now) {
   } | Sort-Object -Unique)
 }
 
-function Test-VelocityBacklogIssue($Issue, [int[]]$PlatformMilestones, [int[]]$ControllerIssues = @(), [switch]$AllowReentry) {
+function Test-VelocityBacklogIssue($Issue, [int[]]$ControllerIssues = @(), [switch]$AllowReentry) {
   $labels = @($Issue.labels | ForEach-Object { [string]$_ })
   $candidate = $Issue
   if ($AllowReentry) { $candidate=$Issue.PSObject.Copy();$candidate.terminalState='reentered' }
-  if (-not (Test-VelocityProductIssue $candidate $PlatformMilestones $ControllerIssues)) { return $false }
+  if (-not (Test-VelocityProductIssue $candidate $ControllerIssues)) { return $false }
   if (@($labels | Where-Object { $_.StartsWith("status:", [StringComparison]::Ordinal) -or $_ -ceq "decision" }).Count -gt 0) { return $false }
   if ($null -eq $Issue.milestone -or -not [bool]$Issue.milestone.committed) { return $false }
-  if ($PlatformMilestones -contains [int]$Issue.milestone.number) { return $false }
   return ([int]$Issue.openBlockers -eq 0)
 }
 
@@ -336,7 +335,7 @@ function Get-VelocityProductMerges($Facts, [datetime]$Now, [int[]]$ControllerIss
     (ConvertTo-VelocityUtc $_.mergedAt) -le $Now -and @($_.issues | Where-Object {
       $issue = Get-VelocityIssue $Facts ([int]$_.number)
       if ($null -eq $issue) { $issue = $_ }
-      Test-VelocityProductIssue $issue @($Facts.platformMilestones) $ControllerIssues
+      Test-VelocityProductIssue $issue $ControllerIssues
     }).Count -gt 0
   } | Sort-Object { ConvertTo-VelocityUtc $_.mergedAt })
 }
@@ -380,7 +379,7 @@ function Get-VelocityLaneHours($Facts, [datetime]$Now, [hashtable]$LaneMap, [str
     $clipStart = if ($start -lt $windowStart) { $windowStart } else { $start }
     if ($end -le $clipStart) { continue }
     $hours = ($end - $clipStart).TotalHours
-    if (Test-VelocityProductIssue (Get-VelocityIssue $Facts ([int]$row.issue)) @($Facts.platformMilestones) $controllerIssues) { $totals.product += $hours } else { $totals.other += $hours }
+    if (Test-VelocityProductIssue (Get-VelocityIssue $Facts ([int]$row.issue)) $controllerIssues) { $totals.product += $hours } else { $totals.other += $hours }
   }
   $sum = $totals.product + $totals.other
   return [pscustomobject][ordered]@{
@@ -414,9 +413,8 @@ function Get-VelocityReport($Facts, [datetime]$Now, [object[]]$Observations) {
   $holdKnown=Test-MergeHoldState $holdState $now
   if(-not $holdKnown){$complete=$false;$gaps+=@('merge-hold-state-unverified')}
   $activeHolds=@(if($holdKnown){$holdState.records|Where-Object{$null -eq $_.releasedAt -and $now -lt (ConvertTo-HoldUtc $_.expiresAt)}})
-  $platform = @($Facts.platformMilestones | ForEach-Object { [int]$_ })
   $controllerIssues = @(Get-VelocityControllerIssues $Facts.dispatchRows $now)
-  $openProductIssues = @($Facts.productIssues | Where-Object { Test-VelocityProductIssue $_ $platform $controllerIssues } | ForEach-Object { [int]$_.number })
+  $openProductIssues = @($Facts.productIssues | Where-Object { Test-VelocityProductIssue $_ $controllerIssues } | ForEach-Object { [int]$_.number })
 
   $productMerges = @(Get-VelocityProductMerges $Facts $now $controllerIssues)
   $lastMerge = if ($productMerges.Count) { ConvertTo-VelocityUtc $productMerges[-1].mergedAt } else { $null }
@@ -503,7 +501,7 @@ function Get-VelocityReport($Facts, [datetime]$Now, [object[]]$Observations) {
       $complete=$false;$gaps+=@("review-reduction-unknown:$($pr.pr)")
     }
     $applicable=@($activeHolds|Where-Object{$_.scope -ceq 'queue' -or $_.prs -contains [int]$pr.pr})
-    $readyLinked=@($Facts.productIssues|Where-Object{@($pr.issues) -contains [int]$_.number -and $terminalIssues -notcontains [int]$_.number -and (Test-VelocityBacklogIssue $_ $platform $controllerIssues)})
+    $readyLinked=@($Facts.productIssues|Where-Object{@($pr.issues) -contains [int]$_.number -and $terminalIssues -notcontains [int]$_.number -and (Test-VelocityBacklogIssue $_ $controllerIssues)})
     $isHeld=$holdKnown -and $reductionValid -and
       $reduction.state -ceq 'authorized' -and -not $pr.isDraft -and $readyLinked.Count -gt 0 -and $applicable.Count -gt 0
     if($isHeld){
@@ -547,7 +545,7 @@ function Get-VelocityReport($Facts, [datetime]$Now, [object[]]$Observations) {
       }
     }
   }
-  $backlog = @($Facts.productIssues | Where-Object { $terminalIssues -notcontains [int]$_.number -and (Test-VelocityBacklogIssue $_ $platform $controllerIssues) } | ForEach-Object { [int]$_.number } | Sort-Object)
+  $backlog = @($Facts.productIssues | Where-Object { $terminalIssues -notcontains [int]$_.number -and (Test-VelocityBacklogIssue $_ $controllerIssues) } | ForEach-Object { [int]$_.number } | Sort-Object)
   $qualification = @(Get-VelocityDispatchQualification $Facts $now)
   $sourceQualification = @($qualification | Where-Object { $null -eq $_.issue })
   $ready = @($qualification | Where-Object { $_.state -ceq 'ready' -and $backlog -contains $_.issue } | ForEach-Object { [int]$_.issue } | Sort-Object -Unique)
@@ -832,17 +830,45 @@ function ConvertTo-VelocityActiveLane($Lane,$Record) {
   }
 }
 
+function Assert-VelocityLegacyPlatformRegisterInactive([string]$Container) {
+  $path=Join-Path $Container '.orchestrator/platform-handoff.md'
+  try {
+    if(-not(Test-Path -LiteralPath $path)){return}
+    $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
+    $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
+    if(-not$table.Success){throw 'missing ownership register'}
+    $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
+    foreach($line in ($table.Groups['table'].Value -split '\r?\n')){
+      if($line-notmatch'^\|'){continue}
+      $cells=@($line.Trim().Trim('|').Split('|')|ForEach-Object{$_.Trim()})
+      if($cells.Count-ne3){throw 'malformed register row'}
+      if($cells[0]-cmatch'^chase-sets milestone (?<number>[1-9][0-9]*) \([^|]+\)$'){
+        $number=0
+        if(-not[int]::TryParse($Matches.number,[ref]$number)-or-not$seen.Add($number)){throw 'conflicting register row'}
+        if($cells[1]-cmatch'^platform(?: \(assigned [^|]+\))?$'){$platform.Add($number)}
+        elseif($cells[1]-cnotmatch'^incumbent(?: \((?:rolled back|returned) [^|]+\))?$'){throw 'unknown register owner'}
+      }elseif($cells[0]-ceq'every other chase-sets milestone, issue, PR, worktree, and the merge queue'){
+        if($default-or$cells[1]-cne'incumbent'){throw 'conflicting default owner'};$default=$true
+      }elseif($cells[0]-cmatch'^`[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+` \(all issues\)$'){
+        if($cells[1]-cne'platform self loop (`m1`)'){throw 'unknown repository owner'}
+      }elseif($cells[0]-cnotin@('Scope','---','WSL executor `/root/orchestration-m1/repo`')){throw 'unknown register scope'}
+    }
+    if(-not$default){throw 'missing incumbent default'}
+    foreach($number in $platform){
+      $data=Invoke-VelocityGraphQL ('query{repository(owner:"chase-sets",name:"chase-sets"){milestone(number:'+ $number +'){number state}}}') @{}
+      if($null-eq$data.repository.milestone-or$data.repository.milestone.number-ne$number-or$data.repository.milestone.state-cne'CLOSED'){throw 'legacy milestone active or unreadable'}
+    }
+  }catch{throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
+}
+
 function Get-VelocityLandingCandidates([string]$Container,[datetime]$Now=[datetime]::UtcNow) {
   # Shared committed-product-milestone/v1 census. No Reports, lane discovery,
   # merge history or mutation belongs in this pre-Report selector.
-  $gaps=@();$platform=@();$issues=@();$rows=@();$prs=@();$history=$null
+  $gaps=@();$issues=@();$rows=@();$prs=@();$history=$null
   $legacy=@();$nonPositive=@()
   try {
-    $platform=@(Get-Content -LiteralPath (Join-Path $Container '.orchestrator/platform-handoff.md') -ErrorAction Stop | ForEach-Object {
-      $m=[regex]::Match($_,'^\|\s*chase-sets milestone (\d+)[^|]*\|\s*platform\s*\|')
-      if($m.Success){[int]$m.Groups[1].Value}
-    })
-  } catch {$gaps+=@('platform-register-unreadable')}
+    Assert-VelocityLegacyPlatformRegisterInactive $Container
+  } catch {$gaps+=@('LEGACY_PLATFORM_REGISTER_ACTIVE')}
   try {
     $nodes=@(Invoke-VelocityOpenIssues)
     foreach($node in $nodes){Complete-VelocityIssueConnections $node @('labels','blockedBy')}
@@ -879,7 +905,7 @@ function Get-VelocityLandingCandidates([string]$Container,[datetime]$Now=[dateti
         @($pr.closingIssuesReferences.nodes|Where-Object{$_.labels.totalCount -ne @($_.labels.nodes).Count}).Count -or
         @($pr.commits.nodes).Count -ne 1 -or $pr.commits.nodes[0].commit.oid -cne $pr.headRefOid){$gaps+=@("pr-connections-incomplete:$($pr.number)")}
       $references=@(Get-VelocityPrIssueReferences $pr $rows $Now)
-      $linked=@($issues|Where-Object{$references -contains [int]$_.number -and (Test-VelocityProductIssue $_ $platform $controllers)}|ForEach-Object{[int]$_.number}|Sort-Object -Unique)
+      $linked=@($issues|Where-Object{$references -contains [int]$_.number -and (Test-VelocityProductIssue $_ $controllers)}|ForEach-Object{[int]$_.number}|Sort-Object -Unique)
       if($linked.Count -eq 0){continue}
       $commit=@($pr.commits.nodes)[0].commit
       $prs+=@([pscustomobject][ordered]@{
@@ -918,7 +944,7 @@ function Get-VelocityLandingCandidates([string]$Container,[datetime]$Now=[dateti
       # A canonical admitted implementation dispatch after the stop is re-entry
       # evidence, not a liveness claim. The facts collector still checks live flow.
       $admitted=@($admittedByIssue[$key]|Where-Object{$null -ne $_ -and (Get-ObservedLaneTime $_) -gt (Get-ObservedLaneTime $stops[-1])})
-      if($admitted.Count -gt 0 -and (Test-VelocityBacklogIssue $issue $platform $controllers -AllowReentry)){$issue.terminalState='reentered'}
+      if($admitted.Count -gt 0 -and (Test-VelocityBacklogIssue $issue $controllers -AllowReentry)){$issue.terminalState='reentered'}
     }
     $authorityRows=@($authorityByIssue[$key]|Where-Object{$null -ne $_})
     foreach($target in @($authorityRows|Group-Object{"$(Get-VelocityValue $_ 'pr')/$(Get-VelocityValue $_ 'targetBranch')"})){
@@ -935,25 +961,24 @@ function Get-VelocityLandingCandidates([string]$Container,[datetime]$Now=[dateti
   }
   $prs=@($prs|ForEach-Object{
     $pr=$_
-    $pr.issues=@($issues|Where-Object{$pr.issues -contains $_.number -and (Test-VelocityProductIssue $_ $platform $controllers)}|ForEach-Object{[int]$_.number})
+    $pr.issues=@($issues|Where-Object{$pr.issues -contains $_.number -and (Test-VelocityProductIssue $_ $controllers)}|ForEach-Object{[int]$_.number})
     if($pr.issues.Count){$pr}
   })
   return [pscustomobject]@{complete=($gaps.Count -eq 0);gaps=@($gaps);candidates=@($prs);productIssues=@($issues)
-    platformMilestones=$platform;dispatchRows=$rows;legacyDispatchRows=$legacy;nonPositiveIssueDispatchRows=$nonPositive;authorityHistory=$history}
+    dispatchRows=$rows;legacyDispatchRows=$legacy;nonPositiveIssueDispatchRows=$nonPositive;authorityHistory=$history}
 }
 
 function Get-VelocityFacts([string]$Container, [datetime]$Now, [string]$QualificationPath = '') {
   $gaps = @()
   $facts = [ordered]@{
     schema = "velocity-facts/v1"; collectedAt = (Format-VelocityUtc $Now); complete = $false; gaps = @()
-    platformMilestones = @(); merges = @(); lastProductMergeAt = $null; productIssues = @(); productPrs = @()
+    merges = @(); lastProductMergeAt = $null; productIssues = @(); productPrs = @()
     activeLanes = @(); ownershipStatus = "unknown"; dispatchRows = @(); issueKinds = [ordered]@{}; issueDetails = [ordered]@{}; holdState=$null
   }
   $hold=Read-MergeHoldState (Join-Path $Container '.orchestrator/merge-hold-state.json') $Now
   if($hold.status -ceq 'KNOWN'){$facts.holdState=$hold.state}else{$gaps+=@('merge-hold-state-unverified')}
 
   $selection=Get-VelocityLandingCandidates $Container $Now
-  $facts.platformMilestones=$selection.platformMilestones
   $facts.productIssues=$selection.productIssues
   $facts.dispatchQualificationSource=$null
   if ($QualificationPath) {
@@ -1091,7 +1116,7 @@ function Get-VelocityFacts([string]$Container, [datetime]$Now, [string]$Qualific
         $null -ne $entry -and $entry.issue -eq $issue.number -and $_.laneRole -ceq 'implementation' -and
           (ConvertTo-VelocityUtc (Get-VelocityValue $_ 'startedAt')) -gt (Get-ObservedLaneTime $stops[-1])
       })
-      if($reentry.Count -eq 1 -and (Test-VelocityBacklogIssue $issue @($facts.platformMilestones) $controllerIssues -AllowReentry)){$issue.terminalState='reentered'}
+      if($reentry.Count -eq 1 -and (Test-VelocityBacklogIssue $issue $controllerIssues -AllowReentry)){$issue.terminalState='reentered'}
     }
     $authorityRows=@($authorityByIssue[[string]$issue.number]|Where-Object{$null -ne $_})
     foreach($target in @($authorityRows|Group-Object{ "$(Get-VelocityValue $_ 'pr')/$(Get-VelocityValue $_ 'targetBranch')" })){

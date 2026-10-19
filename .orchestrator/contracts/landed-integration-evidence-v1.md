@@ -20,16 +20,15 @@ MISSING_WORKTREE retains that complete plan, then returns the named
 `CENSUS_UNKNOWN_WORKTREE_<pr>` refusal with no mutation rows or launches.
 Controller-file targets never enter the product launcher or no-owner claim;
 the host retains one-controller-author admission. Platform ownership is derived
-from the canonical register and complete native PR/closing-issue observations,
-not a remembered milestone list. After LANDED_PR and NOT_REQUIRED precedence,
-any registered platform PR milestone, same-repository owner milestone, or owner
-in a registered platform repository yields PLATFORM_HANDOFF_REQUIRED before
-holder lookup, terminal admission, retained recovery, or any apply effect.
-CLOSED owners count, multiple owners are allowed, and disagreement cannot
-revoke a positive deferral. Cross-repository milestone numbers do not match
-local milestone scopes; executor register scopes are not repository scopes.
-Only a complete negative resolves to the register's mandatory incumbent default,
-which supplies no admission authority and bypasses none of the later gates.
+from complete native closing-issue observations. After LANDED_PR and
+NOT_REQUIRED precedence, any linked Chase Sets issue carrying the exact,
+case-sensitive label `dispatch:platform` or `dispatch:platform-return`, or any
+linked issue in `todd-skelton/orchestration-platform`, yields
+PLATFORM_HANDOFF_REQUIRED before holder lookup, terminal admission, retained
+recovery, or any apply effect. OPEN and CLOSED issues count, multiple owners
+are allowed, and disagreement cannot revoke a positive deferral. Milestones
+do not determine ownership. A complete negative supplies no admission authority
+and bypasses none of the later gates.
 
 Ownership collection exhausts 100-node pages, validates nested domains and
 unique repository/issue identities, and reconciles totals, cursors and two
@@ -37,17 +36,27 @@ complete observations of the owner set. Missing, partial, capped, moving,
 unreadable or malformed ownership (even a partial positive) is OWNERSHIP_UNKNOWN.
 An initially scoped unknown retains the full six-field-target plan, then refuses
 the whole run with `CENSUS_UNKNOWN_OWNERSHIP_<pr>` before any apply effects.
-Globally unreadable census/register input refuses without claiming a full plan.
-Before each apply action, the dispatcher rereads native head, branch, PR milestone,
-the full owner set, and exact register bytes; drift or unreadability returns the
-same per-PR refusal before that action's effects. Earlier valid effects cannot
-be undone by later drift. Direct `-FixturePath` retains its register/owner bypass;
-production ownership controls use `-GraphFixturePath`.
+Every closing issue includes `labels(first:100)` with `totalCount`,
+`pageInfo.hasNextPage` and `nodes.name`. A missing or incomplete labels connection
+(including more pages or a total above the returned count) refuses as unknown;
+absence of a label is authoritative only from a complete connection. Closing
+references continue to exhaust their own pages. Before each apply action, the
+dispatcher rereads native head, branch, PR milestone and the full owner set,
+including labels; drift or unreadability returns the same per-PR refusal before
+that action's effects. Earlier valid effects cannot be undone by later drift.
+Direct `-FixturePath` supplies synthetic census data; production ownership
+controls use `-GraphFixturePath`.
 
-Platform targets remain owed to the existing host handoff in skill section 8:
-`todd-skelton/orchestration-platform#367` while ISS-110 is open, then #368. The
-host supplies target/landed identities and native/register evidence. The result
-remains only `{pr, action}`; no destination field, owed/ack record, completion
+The legacy `platform-handoff.md` register is only a temporary fail-closed guard,
+never ownership authority. Before collection and each apply action, any platform
+row for a milestone GitHub does not confirm CLOSED, or an existing unreadable or
+unparsable register, refuses with `LEGACY_PLATFORM_REGISTER_ACTIVE`. An absent
+register or exclusively closed platform rows is inactive. This guard also applies
+to `-FixturePath` and refuses before publishing a plan on initial failure.
+
+Platform-held targets are recorded and never rebased by the product loop;
+the platform loop refreshes its own branch. The result remains only
+`{pr, action}`; no destination field, owed/ack record, completion
 or terminal skip is created by deferral, including on repeated observations.
 Neither controller nor platform deferral is a terminal skip. Once authoritative state
 changes, a fresh plan may process still-owed targets. A valid terminal without

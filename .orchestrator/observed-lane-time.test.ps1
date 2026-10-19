@@ -116,7 +116,7 @@ try {
   $dispatch = [pscustomobject]@{ts='2026-10-04T10:00:00Z';kind='dispatch';lane='synthetic-8615';issue=908615}
   $terminal = [pscustomobject]@{ts='2026-10-04T17:00:00Z';kind='lane-complete';lane='synthetic-8615';observedEndAt='2026-10-04T12:00:00Z';observedEvidence='report-mtime:synthetic-report.md'}
   function Hours($Rows) {
-    Get-VelocityLaneHours ([pscustomobject]@{dispatchRows=@($Rows);issueDetails=[pscustomobject]@{'908615'=$issue};productIssues=@($issue);platformMilestones=@()}) $now @{} @()
+    Get-VelocityLaneHours ([pscustomobject]@{dispatchRows=@($Rows);issueDetails=[pscustomobject]@{'908615'=$issue};productIssues=@($issue)}) $now @{} @()
   }
   if ($Scenario -cin @('all','end')) {
     Check 'late-end-exact-hours' { Assert-Observed ((Hours @($dispatch,$terminal)).productHours -eq 2) 'dispatch..observedEnd must be exactly 2h, not 7h' }
