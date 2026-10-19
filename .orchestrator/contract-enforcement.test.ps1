@@ -542,12 +542,14 @@ function Test-ControllerReleaseCadence([string]$Skill) {
   Assert-Enforced ($tagStep.Groups[1].Value.Contains('move the dev container''s `release/` worktree to it (`git -C release checkout --detach <tag>`)', [StringComparison]::Ordinal)) 'release/ moves at tagging'
   Assert-Enforced ($tagStep.Groups[1].Value.EndsWith('Then start the next change.', [StringComparison]::Ordinal)) 'tag step ends by starting the next change'
   Assert-Enforced ($text.Contains('A tag not yet installed is not a blocker', [StringComparison]::Ordinal)) 'uninstalled tag is not a blocker'
+  Assert-Enforced ($text.Contains('Any other refused or failed install the product loop reports is a controller defect.', [StringComparison]::Ordinal)) 'unexpected install failure is a controller defect'
   Assert-Enforced ($text -notmatch '(?i)(after|until|wait\w*( for)?) (its|the|a) (product )?install') 'no release step waits on the product install'
 }
 Test-ControllerReleaseCadence $controllerSkill
 Assert-Mutant 'controller-release-waits-for-install' { Test-ControllerReleaseCadence ($controllerSkill.Replace('7. Read `check-controller-skill-freshness.ps1 -Json`', '7. Verify after its install: `check-controller-skill-freshness.ps1 -Json`')) }
 Assert-Mutant 'controller-release-move-deferred' { Test-ControllerReleaseCadence ([regex]::Replace($controllerSkill, 'move the dev container''s\s+`release/` worktree to it\s+\(`git -C release checkout --detach <tag>`\),\s+', '')) }
-Assert-Mutant 'controller-release-not-blocker-deleted' { Test-ControllerReleaseCadence ($controllerSkill.Replace('A tag not yet installed is not a blocker; ', '')) }
+Assert-Mutant 'controller-release-not-blocker-deleted' { Test-ControllerReleaseCadence ($controllerSkill.Replace('A tag not yet installed is not a blocker', 'An uninstalled tag is noted')) }
+Assert-Mutant 'controller-release-install-failure-ignored' { Test-ControllerReleaseCadence ([regex]::Replace($controllerSkill, 'Any other refused or failed install the product loop\s+reports is a controller defect\.', 'Install failures are the product loop''s concern.')) }
 Assert-Mutant 'controller-release-next-change-deleted' { Test-ControllerReleaseCadence ([regex]::Replace($controllerSkill, '\s+Then start the next\s+change\.', '')) }
 
 # --- both loop skills point to the shared contract -------------------------------

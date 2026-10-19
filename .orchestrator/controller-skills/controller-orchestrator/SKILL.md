@@ -80,8 +80,10 @@ controller battery runs only in a window with no product heavy work queued.
    thread runs the released skill, never a working branch. Then start the next
    change.
 7. Read `check-controller-skill-freshness.ps1 -Json` in the product container
-   as evidence only. A tag not yet installed is not a blocker; an install the
-   product loop reports as refused or failed is a controller defect.
+   as evidence only. A tag not yet installed is not a blocker, nor is an
+   install refused because a heavy verifier owns the host (the product loop
+   retries next cycle). Any other refused or failed install the product loop
+   reports is a controller defect.
 
 Tags older than `controller-v2.116` cannot be installed by tag. Hosted CI
 (`controller-battery.yml`) is informational until its LOCAL_ONLY items are
