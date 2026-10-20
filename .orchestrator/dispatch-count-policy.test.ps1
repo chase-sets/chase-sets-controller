@@ -130,9 +130,9 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   Copy-Item -LiteralPath $query -Destination (Join-Path $scripts 'query-ledgers.ps1')
   Copy-Item -LiteralPath $logger -Destination (Join-Path $isolated 'log-event.ps1')
   Copy-Item -LiteralPath (Join-Path $runtime 'routing-data.ps1') -Destination $isolated
-  $mutexName='Global\ChaseSetsOrchLog-SYNTHETIC-8527-'+[guid]::NewGuid().ToString('N')
-  $lockSource=[IO.File]::ReadAllText((Join-Path $runtime 'orchestration-log-lock.psm1')).Replace('Global\ChaseSetsOrchLog',$mutexName)
-  [IO.File]::WriteAllText((Join-Path $isolated 'orchestration-log-lock.psm1'),$lockSource)
+  Copy-Item -LiteralPath (Join-Path $runtime 'orchestration-log-lock.psm1') -Destination $isolated
+  Import-Module (Join-Path $isolated 'orchestration-log-lock.psm1') -Force -DisableNameChecking
+  $mutexName=Get-OrchestrationLogMutexName -Root (Split-Path -Parent $historyPath)
   $started=Join-Path $isolated 'parse-started'
   $release=Join-Path $isolated 'parse-release'
   $trace=Join-Path $isolated 'parse-bytes'

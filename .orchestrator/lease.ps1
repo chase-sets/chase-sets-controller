@@ -31,7 +31,8 @@ if ($Action -eq "HandoffCutoverRecovery") {
   if (-not $CurrentRecordPath -or -not $RecoveryCapabilityPath -or -not $HandoffReceiptPath -or -not $TransactionId) {
     throw "orchestration recovery handoff refused: required inputs missing"
   }
-  $handoff = Invoke-WithOrchestrationLogLock -Body {
+  $leaseRoot = Split-Path -Parent ([IO.Path]::GetFullPath($Lease))
+  $handoff = Invoke-WithOrchestrationLogLock -Root $leaseRoot -Body {
     Handoff-CutoverRecoveryLease -Path $Lease -CurrentRecordPath $CurrentRecordPath `
       -RecoveryCapabilityPath $RecoveryCapabilityPath -HandoffReceiptPath $HandoffReceiptPath `
       -TransactionId $TransactionId -Holder $Holder -Harness $Harness -Model $Model -Effort $Effort -NowUtc $NowUtc

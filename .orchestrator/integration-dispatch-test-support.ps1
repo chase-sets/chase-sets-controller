@@ -56,6 +56,25 @@ function Publish-SyntheticIntegrationRemote([string]$Repository, [string]$Remote
   if ($LASTEXITCODE -ne 0) { throw 'synthetic main binding failed' }
 }
 
+# #122 AC6: an archived runtime's lock module hard-codes the machine-wide log
+# writer name. Both archive carriers call this right after Expand-Archive so
+# the extracted module keys its writer lock to its own extracted root, as the
+# candidate rule would; the commit and the zip are never touched.
+function Set-ArchivedOrchestrationLogMutexName([string]$Runtime) {
+  $module = Join-Path $Runtime 'orchestration-log-lock.psm1'
+  $text = [IO.File]::ReadAllText($module)
+  # A pre-change module names exactly one log lock: the machine-wide name. A
+  # root-keyed name (already rewritten or post-change) is never rewritten.
+  $names = [regex]::Matches($text, 'Global\\ChaseSetsOrchLog[-\w]*')
+  if ($names.Count -ne 1 -or $names[0].Value -cne 'Global\ChaseSetsOrchLog') {
+    throw "ARCHIVED_LOG_LOCK_REWRITE: $module names $($names.Count) log locks ($(@($names | ForEach-Object Value) -join ', ')), not exactly the one machine-wide name"
+  }
+  Import-Module (Join-Path $PSScriptRoot 'orchestration-log-lock.psm1') -Force -DisableNameChecking
+  $name = Get-OrchestrationLogMutexName -Root $Runtime
+  [IO.File]::WriteAllText($module, $text.Remove($names[0].Index, $names[0].Length).Insert($names[0].Index, $name), [Text.UTF8Encoding]::new($false))
+  return $name
+}
+
 # Executed by the existing R3 carrier, focused or inside the canonical battery.
 function Test-7962NativeControls {
   $caseRoot=Join-Path $fixtureRoot 'synthetic-7962';New-Item -ItemType Directory $caseRoot|Out-Null
@@ -65,7 +84,7 @@ function Test-7962NativeControls {
   & git -C $candidateRoot cat-file -e "$baseline^{commit}";if($LASTEXITCODE-ne0){throw 'baseline missing'}
   $zip=Join-Path $caseRoot 'baseline.zip'; & git -C $candidateRoot archive --format=zip "--output=$zip" $baseline .orchestrator
   if($LASTEXITCODE-ne0){throw 'baseline archive failed'}
-  Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $caseRoot 'baseline');$baselineRuntime=Join-Path $caseRoot 'baseline/.orchestrator'
+  Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $caseRoot 'baseline');$baselineRuntime=Join-Path $caseRoot 'baseline/.orchestrator';[void](Set-ArchivedOrchestrationLogMutexName $baselineRuntime)
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1')
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking

@@ -1,14 +1,29 @@
 Set-StrictMode -Version Latest
 
+# The installed product container keeps the machine-wide name, so its writers
+# installed before and after the root-keyed rule never hold different names.
+$script:OrchestrationLogContainerRoot = 'D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator'.ToLowerInvariant()
+
 function Get-OrchestrationLogMutexName {
   [CmdletBinding()]
-  param()
-  "Global\ChaseSetsOrchLog"
+  param([Parameter(Mandatory)][string]$Root)
+
+  # Lexical, never a filesystem read: one name per canonical root, so a copied,
+  # archived or temp runtime never shares a name with another root.
+  $full = [IO.Path]::GetFullPath($Root)
+  $pathRoot = [IO.Path]::GetPathRoot($full)
+  $canonical = $full.TrimEnd('\', '/')
+  if ($canonical.Length -lt $pathRoot.Length) { $canonical = $pathRoot }
+  $canonical = $canonical.ToLowerInvariant()
+  if ($canonical -ceq $script:OrchestrationLogContainerRoot) { return "Global\ChaseSetsOrchLog" }
+  $digest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical))
+  "Global\ChaseSetsOrchLog-" + [Convert]::ToHexString($digest).ToLowerInvariant()
 }
 
 function Invoke-WithOrchestrationLogLock {
   [CmdletBinding()]
   param(
+    [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][scriptblock]$Body,
     [timespan]$Timeout = ([timespan]::FromSeconds(30))
   )
@@ -16,7 +31,7 @@ function Invoke-WithOrchestrationLogLock {
   if ($Timeout -le [timespan]::Zero -or $Timeout -gt [timespan]::FromMinutes(5)) {
     throw "orchestration log lock refused: timeout is outside the closed bound"
   }
-  $mutex = [Threading.Mutex]::new($false, (Get-OrchestrationLogMutexName))
+  $mutex = [Threading.Mutex]::new($false, (Get-OrchestrationLogMutexName -Root $Root))
   $owned = $false
   try {
     try { $owned = $mutex.WaitOne($Timeout) }

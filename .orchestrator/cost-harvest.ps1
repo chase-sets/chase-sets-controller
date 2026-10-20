@@ -535,7 +535,10 @@ foreach ($t in $transcripts) {
 }
 
 if ($harvested.Count -gt 0) {
-  Invoke-WithOrchestrationLogLock -Body {
+  # Key the writer lock to the directory of the ledger Add-Content appends to,
+  # resolved through the same provider path as its -LiteralPath.
+  $ledgerRoot = Split-Path -Parent ($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Ledger))
+  Invoke-WithOrchestrationLogLock -Root $ledgerRoot -Body {
     foreach ($row in $harvested) {
       Add-Content -LiteralPath $Ledger -Encoding utf8 -Value ($row | ConvertTo-Json -Compress -Depth 4)
     }
