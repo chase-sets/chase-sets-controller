@@ -421,6 +421,9 @@ function Test-WatchdogPolicyMoveConsumed([string]$Root,$Spec){
   foreach($file in @(Get-ChildItem -LiteralPath $Root -Filter 'watchdog-policy-move-*.json' -File|Where-Object{$_.Name-cmatch'^watchdog-policy-move-.+\.json$'})){
     try{$record=Read-WatchdogPolicyMove $file.FullName}catch{return $true}
     if($file.Name-cne"watchdog-policy-move-$($record.sourceLaunchId).json"){return $true}
+    # The current source's own reservation is not a consumed move: the reservation
+    # reader below reuses it for the exact request or refuses a conflicting one.
+    if([string]$record.sourceLaunchId-ceq[string]$Spec.launchId){continue}
     if($labels.Contains([string]$record.targetLabel)){return $true}
     if($launches.Contains([string]$record.sourceLaunchId)){return $true}
   }

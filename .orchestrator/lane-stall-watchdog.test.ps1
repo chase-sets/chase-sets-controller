@@ -489,6 +489,24 @@ function Test-PolicyFallback {
       $opus=New-Continuation $astra $second 'claude-opus-5-5' xhigh provisional;Set-Content $opus.error $envelope
       Assert-Blocked $opus 'a legacy lineage takes only one move to today''s slot'
     }
+    # A legacy move at relaunch count 1 whose launch fails before receipt keeps its
+    # reservation and retries the exact reserved target; its own record is not consumption.
+    Invoke-PolicyCase "pos-legacy-retry/$tag" $gen3Row7 {
+      $origin=New-Spec "pf-pos-legacy-retry-$tag" 'claude-fable-5-1' high 0 7 'override-Todd';Set-Content $origin.error $envelope
+      $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
+      Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
+      Remove-Item -LiteralPath (Join-Path $runtime "watchdog-policy-move-$($origin.spec.launchId).json")
+      Set-PolicySlots @{}
+      $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
+      $recordPath=Join-Path $runtime "watchdog-policy-move-$($astra.spec.launchId).json"
+      $env:SYNTHETIC_WATCHDOG_FAIL_LABEL=$astra.spec.label
+      try{$before=Get-CallCount;$failed=Invoke-Watchdog $astra $astra.spec.label}finally{Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL}
+      Assert-True ($failed.status-ceq'LAUNCH_FAILED'-and-not$failed.relaunch-and(Get-CallCount)-eq$before+1-and(Test-Path $recordPath)) 'a failed legacy policy launch did not keep its reservation'
+      $target=(Get-Content $recordPath -Raw|ConvertFrom-Json -DateKind String).targetLabel
+      $before=Get-CallCount;$second=Invoke-Watchdog $astra $astra.spec.label
+      Assert-Recovery $astra $second 'claude-opus-5-5' xhigh provisional $before
+      Assert-True ($second.label-ceq$target) 'the legacy retry did not reuse the exact reserved target'
+    }
     # The same lineage whose earlier cross was itself a policy move has consumed it.
     Invoke-PolicyCase "legacy-move-consumed/$tag" $gen3Row7 {
       $origin=New-Spec "pf-legacy-consumed-$tag" 'claude-fable-5-1' high 0 7 'override-Todd';Set-Content $origin.error $envelope
@@ -1259,6 +1277,11 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       try{& $watchdog -Label $label -RuntimeRoot $runtime -HistoryPath $history -ObservationFixture (New-Observation $label) -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_(INVALID|OWNER_PATH)'}
       Assert-True ($refused-and(Get-CallCount)-eq$before) "route mutation $route/$($mutation.name) launched"
     }
+  }
+  # #82: the other Claude capacity-flip targets (row-7 Opus/xhigh, row-13 Haiku/max) are admitted.
+  foreach($flip in @(@(7,'claude-opus-5-5','xhigh'),@(13,'claude-haiku-5-5','max'))){
+    $item=New-Spec "flip-claude-slot-$($flip[0])" $flip[1] $flip[2] 0 $flip[0] 'override-Todd';$before=Get-CallCount
+    Assert-Recovery $item (Invoke-Watchdog $item $item.spec.label) $flip[1] $flip[2] 'override-Todd' $before
   }
   foreach($model in @('gpt-6.1-sol','gpt-6.1-sol','gpt-6-luna','claude-sonnet-5-5','claude-opus-5-5')){
     foreach($route in @(7,14,15)){
