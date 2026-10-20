@@ -1217,6 +1217,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   $modes = @{
     Gate=@{Gate='verify:static'}
     WorkspaceTest=@{WorkspaceTest='@chase-sets/ordering'}
+    WorkspaceDbTest=@{WorkspaceDbTest='@chase-sets/payments';WorkspaceDbBudgetSeconds=1}
     Diagnostic=@{Diagnostic='worst13-no-fit';DiagnosticScriptPath='.orchestrator/artifacts/diagnostic.mjs';DiagnosticSha256=('a'*64);DiagnosticBudgetSeconds=1}
     NativeDb=@{NativeDbProfile='reconciliation-pg16/v1';NativeRequestPath=(Join-Path $root 'absent-request.json')}
     ControllerBattery=@{ControllerBattery=$true}
@@ -1280,7 +1281,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
           [IO.File]::WriteAllText($ownerFile,$ownerRaw); $foreign[$ownerFile]=$ownerRaw
         }
       }
-      foreach($mode in @('GateFixture','Gate','WorkspaceTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence')) {
+      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence')) {
         $parameters=$base + $(if($mode -eq 'GateFixture'){$modes.Gate}else{$modes[$mode]})
         if($mode -eq 'GateFixture') {
           $parameters.CommandPath=Join-Path $PSHOME 'pwsh.exe'

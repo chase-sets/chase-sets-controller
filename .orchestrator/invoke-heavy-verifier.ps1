@@ -25,6 +25,9 @@ param(
   [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite")][string]$Gate,
   [Parameter(ParameterSetName = "Gate")][ValidatePattern('^[a-z][a-z0-9_]*$')][string]$E2eSuite,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][ValidateSet("@chase-sets/ordering")][string]$WorkspaceTest,
+  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][ValidateSet("@chase-sets/payments", IgnoreCase = $false)][string]$WorkspaceDbTest,
+  [Parameter(ParameterSetName = "WorkspaceDbTest")][string]$WorkspaceDbTestFile,
+  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][double]$WorkspaceDbBudgetSeconds,
   # Host-declared standalone Node diagnostics are a closed, case-sensitive
   # name set. The declaration file supplies the repository-relative script,
   # source digest and maximum wall-clock budget.
@@ -104,8 +107,11 @@ $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
 $isControllerFixture = $PSCmdlet.ParameterSetName -ceq "ControllerFixtureEquivalence"
 $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
+$isWorkspaceDbTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceDbTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
+$isBudgetedWorkspaceDb = $isWorkspaceDbTest
+$isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
 $nativeRequest = $null
 $nativeReplyWritten = $false
@@ -113,7 +119,7 @@ $nativeCleanupProof = $null
 if ($isWorkspaceTest) { $WorkspaceTest = "@chase-sets/ordering" }
 # This closed command shape selects production command resolution. Caller
 # authority is determined independently by the native census below.
-$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest", "Diagnostic")) -and -not $CommandPath
+$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest", "WorkspaceDbTest", "Diagnostic")) -and -not $CommandPath
 $admissionResultFull = $null
 $script:admissionPendingSequence = 0
 $admissionRoot = $null
@@ -420,7 +426,45 @@ function Assert-DiagnosticDeclaration {
   $script:diagnosticScriptFull = $candidate
 }
 Assert-DiagnosticDeclaration
-if ($IsWindows -and $isDiagnostic) {
+
+$workspaceDbFile = $null
+$workspaceDbBudgetMaximumSeconds = 900.0
+function Assert-WorkspaceDbRoute {
+  if (-not $isWorkspaceDbTest) { return }
+  if ([double]::IsNaN($WorkspaceDbBudgetSeconds) -or [double]::IsInfinity($WorkspaceDbBudgetSeconds) -or
+      $WorkspaceDbBudgetSeconds -le 0 -or $WorkspaceDbBudgetSeconds -gt $workspaceDbBudgetMaximumSeconds) {
+    throw "heavy-verifier: workspace DB budget must be finite, greater than zero, and no more than $workspaceDbBudgetMaximumSeconds seconds"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($WorkspaceDbTestFile)) {
+    $normalized = $WorkspaceDbTestFile.Replace('\', '/')
+    if ([IO.Path]::IsPathFullyQualified($WorkspaceDbTestFile) -or
+        $normalized.StartsWith('/') -or $normalized -cmatch '^[A-Za-z]:/' -or
+        $normalized -cnotmatch '^bounded-contexts/payments/.+\.db\.test\.ts$' -or
+        @($normalized.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+      throw 'heavy-verifier: workspace DB test file must be a normalized repository-relative payments .db.test.ts path'
+    }
+    $relative = $normalized.Replace('/', '\')
+    $candidate = [IO.Path]::GetFullPath((Join-Path $worktreeFull $relative)).TrimEnd('\', '/')
+    if (-not $candidate.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'heavy-verifier: workspace DB test file escaped the supplied worktree'
+    }
+    Assert-DiagnosticPathNoReparse $candidate 'workspace DB test file'
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      throw 'heavy-verifier: workspace DB test file was not found'
+    }
+    $tracked = @(& git -C $worktreeFull ls-files --error-unmatch -- $normalized 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $tracked.Count -ne 1 -or $tracked[0] -cne $normalized) {
+      throw 'heavy-verifier: workspace DB test file is not tracked at the supplied worktree HEAD'
+    }
+    $treeType = ((& git -C $worktreeFull cat-file -t "HEAD:$normalized" 2>$null) -join '').Trim()
+    if ($LASTEXITCODE -ne 0 -or $treeType -cne 'blob') {
+      throw 'heavy-verifier: workspace DB test file is not a tracked file at the supplied worktree HEAD'
+    }
+    $script:workspaceDbFile = $normalized
+  }
+}
+Assert-WorkspaceDbRoute
+if ($IsWindows -and $isTimedRoute) {
   Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -1281,12 +1325,21 @@ $arguments = if ($isAttachedAdmission) {
   @($CommandArgumentList)
 } elseif ($isDiagnostic) {
   @($diagnosticScriptFull)
+} elseif ($isWorkspaceDbTest) {
+  $workspaceDbRunnerPath = Join-Path $PSScriptRoot 'workspace-db-test.mjs'
+  if (-not (Test-Path -LiteralPath $workspaceDbRunnerPath -PathType Leaf) -or
+      ((Get-Item -LiteralPath $workspaceDbRunnerPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::None) {
+    throw 'heavy-verifier: canonical workspace DB runner is absent or unsafe'
+  }
+  $workspaceDbArguments = @($workspaceDbRunnerPath, '--pnpm-script', $pnpmScript)
+  if ($workspaceDbFile) { $workspaceDbArguments += @('--file', $workspaceDbFile) }
+  $workspaceDbArguments
 } else {
   if ($isWorkspaceTest) { @($pnpmScript, "--filter", $WorkspaceTest, "run", "test", "--maxWorkers=1", "--no-file-parallelism") }
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
   else { @($pnpmScript, "run", $Gate) }
 }
-$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
+$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
 $identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"
 $commandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityInput))).ToLowerInvariant()
 $lockId = [guid]::NewGuid().ToString("N")
@@ -2218,6 +2271,8 @@ try {
       }
       $diagnosticSourceStream.Position = 0
       if ($IsWindows) { $diagnosticJobHandle = [HeavyDiagnosticJob]::Create() }
+    } elseif ($isWorkspaceDbTest -and $IsWindows) {
+      $diagnosticJobHandle = [HeavyDiagnosticJob]::Create()
     }
     # ProcessStartInfo.ArgumentList preserves each argument verbatim; unlike
     # Start-Process -ArgumentList it does not re-join paths containing spaces.
@@ -2291,19 +2346,19 @@ try {
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
-    if ($isDiagnostic -and $isHostVerifier -and -not $callerBinding.Record) {
+     if ($isTimedRoute -and $isHostVerifier -and -not $callerBinding.Record) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
       if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }
       if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
       if (-not (Test-SafeDirectory $receiptRoot)) { throw "heavy-verifier: receipt directory is unsafe" }
-      $receiptPath = Join-Path $receiptRoot "host-heavy-diagnostic-$lockId.json"
+       $receiptPath = Join-Path $receiptRoot $(if ($isDiagnostic) { "host-heavy-diagnostic-$lockId.json" } else { "host-heavy-verifier-$lockId.json" })
       if (Test-Path -LiteralPath $receiptPath) { throw "heavy-verifier: diagnostic receipt path already exists" }
     }
     # The child is started normally, then assigned immediately. The assignment
     # window is limited to the native Process.Start-to-AssignProcessToJobObject
     # sequence; KillOnClose and descendant cleanup remain fail-closed.
     $child = [Diagnostics.Process]::Start($start)
-    if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
+    if ($isTimedRoute -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
     if ($TestDelayChildPublicationMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $TestDelayChildPublicationMilliseconds
     }
@@ -2324,8 +2379,8 @@ try {
     if ($nestedOwnerEligible) {
       Start-NestedOwner $ownedRaw $child.Id $childStarted "started" $nestedBinding
     }
-    if ($isDiagnostic) {
-      $budgetMilliseconds = [int][Math]::Ceiling($DiagnosticBudgetSeconds * 1000)
+    if ($isTimedRoute) {
+      $budgetMilliseconds = [int][Math]::Ceiling($(if ($isDiagnostic) { $DiagnosticBudgetSeconds } else { $WorkspaceDbBudgetSeconds }) * 1000)
       $deadline = [DateTime]::UtcNow.AddMilliseconds($budgetMilliseconds)
       $peakWorkingSet = [long]$child.WorkingSet64
       $workingSet = $peakWorkingSet
@@ -2370,7 +2425,7 @@ try {
     $childStopwatch.Stop()
     $childEnded = [DateTime]::UtcNow.ToString("o")
     $childElapsedMs = [long]$childStopwatch.ElapsedMilliseconds
-    if ($isDiagnostic -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) {
+    if ($isTimedRoute -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) {
       $diagnosticJobResources = [HeavyDiagnosticJob]::QueryResources($diagnosticJobHandle)
     }
     if ($isDiagnostic -and $diagnosticModuleManifestPath) {
@@ -2417,7 +2472,7 @@ try {
       workingSetBytes = [long][Math]::Max($workingSet, $childInitialWorkingSet)
     }
     if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {
-      if ($isDiagnostic -and $childTimedOut) {
+      if ($isTimedRoute -and $childTimedOut) {
         Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
       } else {
         while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) { Start-Sleep -Milliseconds 100 }
@@ -2460,6 +2515,17 @@ try {
           }
         }
         if ($diagnosticResultSha256) { $receipt.Add('resultSha256', $diagnosticResultSha256) }
+      } elseif ($isWorkspaceDbTest) {
+        $receipt = [ordered]@{
+          schema = "host-heavy-verifier/v1"; authority = "host-verifier"
+          worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
+          identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
+          workspace = $WorkspaceDbTest; file = $workspaceDbFile
+          budgetSeconds = $WorkspaceDbBudgetSeconds; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
+          commandIdentity = $commandIdentity; executable = $command; arguments = @($arguments)
+          lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
+          root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
+        }
       } else {
         $receipt = [ordered]@{
           schema = "host-heavy-verifier/v1"; authority = "host-verifier"
@@ -2497,7 +2563,7 @@ try {
         Remove-Item -Force -ErrorAction SilentlyContinue
     }
   }
-  if ($isDiagnostic -and $child -and -not $child.HasExited) {
+  if ($isTimedRoute -and $child -and -not $child.HasExited) {
     try { $child.Kill($true); [void]$child.WaitForExit(2000) } catch {}
   }
   if ($isNativeDb -and $child -and -not $child.HasExited) {
