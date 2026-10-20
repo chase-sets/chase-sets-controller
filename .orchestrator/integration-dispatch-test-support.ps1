@@ -123,7 +123,8 @@ function Test-7962NativeControls {
     $r=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);repository=$c.repository;pr=[long]907962;landedPr=[long]907960;landedHead=('a'*40);head=$c.head;newBase=$c.base;branch=$c.branch;worktree=$c.repo;label=$Label;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$c.runtime;historyPath=$c.history}
     J (Join-Path $c.runtime "integration-request-$Label.json") $r;[IO.File]::WriteAllText((Join-Path $c.runtime "$Label.prompt.txt"),'Synthetic integration request');return $r
   }
-  function Launcher-Runner($c,$r,[string]$Launcher,$Tuple=@('codex','gpt-6-astra','high',7,'override-Todd'),[string[]]$Extra=@()){
+  # A fresh integration launch admits only today's row-7 Codex policy slot.
+  function Launcher-Runner($c,$r,[string]$Launcher,$Tuple=@('codex','gpt-6.1-sol','high',7,'provisional'),[string[]]$Extra=@()){
     $cfg=Join-Path $c.root ('run-'+[guid]::NewGuid().ToString('N')+'.json');$child=Join-Path $c.root 'body.ps1'
     [IO.File]::WriteAllText($child,'param($Marker);[IO.File]::WriteAllText($Marker,''entered'');Write-Output ''{"type":"turn.completed"}''')
     $p=@{Harness=$Tuple[0];Model=$Tuple[1];Effort=$Tuple[2];Row=$Tuple[3];Placement=$Tuple[4];LaneRole='implementation';PromptFile=(Join-Path $c.runtime "$($r.label).prompt.txt");Worktree=$c.repo;Label=$r.label;StartRequestIdentity=$r.requestIdentity;StartAcknowledgementPath=(Join-Path $c.runtime "dispatch-start-$($r.requestIdentity).json");IntegrationTargetPath=(Join-Path $c.runtime "integration-request-$($r.label).json");IntegrationAuthorityFixturePath=$c.api;ExecutablePath=$pwsh;TestRuntimeRoot=$c.runtime;TestTempRoot=$c.temp;TestArgumentList=@('-NoProfile','-NonInteractive','-File',$child,(Join-Path $c.root 'body.txt'))}
@@ -174,7 +175,7 @@ exit $LASTEXITCODE
     $r=Run-Native (Join-Path $PSScriptRoot 'landed-integration-dispatch.ps1') (Producer-Args $c $wrapper) (Join-Path $c.root 'candidate');Check ($r.exit-eq0) "producer native exit $($r.stderr)"
     $ack=@(Get-ChildItem $c.runtime -Filter 'dispatch-start-*.json'|ForEach-Object{Read-RebaseJson $_.FullName})[0];$spec=Read-RebaseJson (Join-Path $c.runtime "watchdog-lane-$($ack.label).json")
     $rows=@(Get-Content $c.history|ForEach-Object{$_|ConvertFrom-Json -DateKind String})
-    foreach($v in @($ack,$spec)+@($rows|Where-Object{-not$_.integrationAuthoritySchema})){Check ($v.harness-ceq'codex'-and$v.model-ceq'gpt-6-astra'-and$v.effort-ceq'high'-and[int]$v.row-eq7-and$v.placement-ceq'override-Todd') 'actual emitted tuple'}
+    foreach($v in @($ack,$spec)+@($rows|Where-Object{-not$_.integrationAuthoritySchema})){Check ($v.harness-ceq'codex'-and$v.model-ceq'gpt-6.1-sol'-and$v.effort-ceq'high'-and[int]$v.row-eq7-and$v.placement-ceq'provisional') 'actual emitted tuple'}
     Check (@($rows|Where-Object{$_.integrationAuthoritySchema-and-not$_.model-and$_.kind-ceq'rule-change'}).Count-eq1) 'synthetic eligibility acquired execution attribution'
     $a=Read-RebaseJson (Join-Path $c.root 'arguments.json');foreach($name in @('-Pr','-ReviewedHead','-NewBase','-SourcePassReceiptIdentity','-IntegrationLane','-Worktree','-RuntimeRoot','-HistoryPath','-NonInteractive')){Check ($name-cin$a) "actual helper missing $name"}
     Check ($a-cnotcontains'-SourcePassReviewedHead') 'absent PASS source head'
@@ -235,8 +236,10 @@ exit $LASTEXITCODE
     J (Join-Path $c.root 'source-head-oracle.json') @{mode=$mode;sourceIdentity=$sourceIdentity;sourceHead=$sourceHead;reviewedHead=$c.head;newHead=$newHead;arguments=$a;continuationHops=$reduction.latest.continuationHops;remote=$remote}
   }}
   foreach($field in @('harness','model','effort','row','placement')){Control "route-$field-candidate-and-bypass" {
-    $c=New-Case "route-$field";$req=Request $c;$tuple=@('codex','gpt-6-astra','high',7,'override-Todd')
-    switch($field){harness{$tuple[0]='claude'}model{$tuple[1]='gpt-6.1-sol'}effort{$tuple[2]='medium'}row{$tuple[3]=2}placement{$tuple[4]='measured'}}
+    $c=New-Case "route-$field";$req=Request $c;$tuple=@('codex','gpt-6.1-sol','high',7,'provisional')
+    # The retained Astra author and Todd placement are the nearest refused model
+    # and placement; a measured Sol placement meets its own explicit guard first.
+    switch($field){harness{$tuple[0]='claude'}model{$tuple[1]='gpt-6-astra'}effort{$tuple[2]='medium'}row{$tuple[3]=2}placement{$tuple[4]='override-Todd'}}
     $r=Run-Native (Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') $tuple) @() (Join-Path $c.root 'candidate')
     Check ($r.exit-ne0-and$r.stderr.Contains('INTEGRATION_AUTHOR_UNAVAILABLE')-and(Zero-Effects $c)) 'wrong tuple admitted'
     $mutant=New-Subject "route-$field" 'dispatch-lane.ps1' '  Assert-IntegrationAuthor $Harness $Model $Effort $Row $Placement # INTEGRATION_GUARD_ROUTE' '  # independently omitted route guard'
@@ -263,7 +266,7 @@ exit $LASTEXITCODE
   Control 'stale-preflight-candidate-and-publication-bypass' {
     $c=New-Case 'stale-preflight';$req=Request $c;$entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue'
     $extra=@('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
-    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6-astra','high',7,'override-Todd') $extra
+    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') $extra
     $h=Begin-Native $runner @() (Join-Path $c.root 'candidate');$deadline=[datetime]::UtcNow.AddSeconds(15)
     while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'stale barrier not reached'};[Threading.Thread]::Sleep(25)}
     $api=Read-RebaseJson $c.api;$api[0].data.repository.pullRequest.headRefOid=$c.base;J $c.api $api;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
@@ -271,7 +274,7 @@ exit $LASTEXITCODE
     $api[0].data.repository.pullRequest.headRefOid=$c.head;J $c.api $api;Remove-Item -LiteralPath $entered,$continue
     $old='    [void](Assert-IntegrationTarget $worktreeResolved $integrationTarget.branch $integrationTarget.head $integrationTarget.newBase $integrationTarget.repository $integrationTarget.pr $IntegrationAuthorityFixturePath) # INTEGRATION_GUARD_PUBLICATION'
     $mutant=New-Subject 'publication' 'dispatch-lane.ps1' $old '    # independently omitted publication guard'
-    $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6-astra','high',7,'override-Todd') $extra
+    $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6.1-sol','high',7,'provisional') $extra
     $h=Begin-Native $runner @() (Join-Path $c.root 'bypass');$deadline=[datetime]::UtcNow.AddSeconds(15)
     while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'bypass barrier not reached'};[Threading.Thread]::Sleep(25)}
     $api[0].data.repository.pullRequest.headRefOid=$c.base;J $c.api $api;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
@@ -385,7 +388,7 @@ exit 0
   }
   Control 'fresh-v3-request-reader-and-unavailable-executable' {
     $c=New-Case 'fresh-v3-reader';$req=Request $c
-    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6-astra','high',7,'override-Todd') @('ExecutablePath',(Join-Path $c.root 'unavailable-author.exe'))
+    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('ExecutablePath',(Join-Path $c.root 'unavailable-author.exe'))
     $r=Run-Native $runner @() (Join-Path $c.root 'unavailable');Check ($r.exit-ne0-and(Zero-Effects $c)) 'unavailable eligible executable launched'
     $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1');$r=Run-Native $runner @() (Join-Path $c.root 'fresh');Check ($r.exit-eq0) "fresh v3 native $($r.stderr)"
     $ackPath=Join-Path $c.runtime "dispatch-start-$($req.requestIdentity).json"
@@ -414,7 +417,7 @@ exit 0
     if($state-ceq'extra'){$req.extra=$true;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req}
     if($state-ceq'path'){$req.runtimeRoot=$c.root;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req}
     if($state-ceq'moved-request'){
-      $entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue';$runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6-astra','high',7,'override-Todd') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
+      $entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue';$runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
       $h=Begin-Native $runner @() (Join-Path $c.root 'candidate');$deadline=[datetime]::UtcNow.AddSeconds(15)
       while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'request barrier not reached'};[Threading.Thread]::Sleep(25)}
       $req.newBase=$c.head;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
@@ -424,7 +427,7 @@ exit 0
       $req.newBase=$c.base;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req;Remove-Item -LiteralPath $entered,$continue
       $old="    if ((Get-RebaseRecordIdentity (Read-RebaseJson `$IntegrationTargetPath)) -cne (Get-RebaseRecordIdentity `$integrationTarget)) { throw 'INTEGRATION_REQUEST_MOVED' }"
       $mutant=New-Subject 'request-moved' 'dispatch-lane.ps1' $old '    # independently omitted request immutability guard'
-      $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6-astra','high',7,'override-Todd') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
+      $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
       $h=Begin-Native $runner @() (Join-Path $c.root 'bypass');$deadline=[datetime]::UtcNow.AddSeconds(15)
       while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'request bypass barrier not reached'};[Threading.Thread]::Sleep(25)}
       $req.newBase=$c.head;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
@@ -440,7 +443,7 @@ exit 0
     Check ($r.exit-eq0-and$r.stdout.Contains('RELAUNCHED')) "watchdog native relaunch $($r.stdout) $($r.stderr)"
     $specs=@(Get-ChildItem $c.runtime -Filter 'watchdog-lane-*.json'|ForEach-Object{Read-RebaseJson $_.FullName})
     $resumed=@($specs|Where-Object{$_.relaunchCount-eq1})
-    Check ($resumed.Count-eq1-and$resumed[0].schemaVersion-ceq'watchdog-lane/v3'-and$resumed[0].integrationRequest.label-ceq$resumed[0].label-and$resumed[0].model-ceq'gpt-6-astra'-and$resumed[0].row-eq7-and$resumed[0].placement-ceq'override-Todd') 'watchdog lost fixed request/configuration'
+    Check ($resumed.Count-eq1-and$resumed[0].schemaVersion-ceq'watchdog-lane/v3'-and$resumed[0].integrationRequest.label-ceq$resumed[0].label-and$resumed[0].model-ceq'gpt-6.1-sol'-and$resumed[0].row-eq7-and$resumed[0].placement-ceq'provisional') 'watchdog lost fixed request/configuration'
     $prompt=[IO.File]::ReadAllText($resumed[0].originalPromptPath);Check ($prompt.Contains($resumed[0].label)-and$prompt.Contains("'-IntegrationLane'")) 'watchdog omitted new label helper arguments'
     $c2=New-Case 'watchdog-unavailable';$req2=Request $c2;$runner=Launcher-Runner $c2 $req2 (Join-Path $PSScriptRoot 'dispatch-lane.ps1')
     [IO.File]::WriteAllText((Join-Path $c2.root 'body.ps1'),'param($Marker);Write-Output ''{"type":"item.completed"}'';[Console]::Error.WriteLine(''provider quota exhausted'');exit 17')
@@ -450,7 +453,7 @@ exit 0
   }
   Control 'live-owner-publication-candidate-and-bypass' {
     $c=New-Case 'live-owner';$req=Request $c;$entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue';$release=Join-Path $c.root 'owner-release'
-    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6-astra','high',7,'override-Todd') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
+    $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
     $target=Begin-Native $runner @() (Join-Path $c.root 'target');$deadline=[datetime]::UtcNow.AddSeconds(15)
     while(-not(Test-Path $entered)){if($target.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'owner-race target barrier missing'};[Threading.Thread]::Sleep(25)}
     $ownerReq=Request $c 'synthetic-owner';$ownerReq.requestIdentity='d'*64;J (Join-Path $c.runtime 'integration-request-synthetic-owner.json') $ownerReq
