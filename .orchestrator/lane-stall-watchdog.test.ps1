@@ -122,6 +122,8 @@ function Test-PolicyFallback {
   # Protected rows given lower-tier policy slots that have no closed entry.
   $protected=@{}
   foreach($row in @(7,14,15)){$protected["$row|claude.primary"]=[ordered]@{family='opus';effort='medium';placement='provisional'};$protected["$row|codex.fallback"]=[ordered]@{family='sol';effort='medium';placement='provisional'}}
+  # A generation-3-shaped row 7 (Astra/Fable reserve slots) gives a legacy lineage its pre-cutover cross.
+  $gen3Row7=@{'7|codex.primary'=[ordered]@{family='astra';effort='high';placement='reserve'};'7|claude.primary'=[ordered]@{family='fable';effort='high';placement='reserve'}}
   function Set-PolicySlots([hashtable]$Slots){
     [IO.File]::WriteAllBytes($policyPath,$policyBytes)
     if($Slots.Count-eq0){return}
@@ -469,6 +471,33 @@ function Test-PolicyFallback {
       $before=Get-CallCount;$result=Invoke-Watchdog $fable $fable.spec.label
       Assert-Recovery $fable $result 'gpt-6.1-sol' high provisional $before
     }
+    # A retained legacy lineage gets one policy move to today's slot. Its
+    # pre-cutover fable->astra cross was a closed-table move, which leaves no
+    # policy-move record: emulated here by a generation-3-shaped move whose
+    # record is removed. That earlier cross does not consume today's move, so
+    # this lineage crosses twice in total; the second move is its only policy move.
+    Invoke-PolicyCase "pos-legacy-one-move/$tag" $gen3Row7 {
+      $origin=New-Spec "pf-pos-legacy-move-$tag" 'claude-fable-5-1' high 0 7 'override-Todd';Set-Content $origin.error $envelope
+      $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
+      Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
+      Remove-Item -LiteralPath (Join-Path $runtime "watchdog-policy-move-$($origin.spec.launchId).json")
+      Set-PolicySlots @{}
+      $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
+      $before=Get-CallCount;$second=Invoke-Watchdog $astra $astra.spec.label
+      Assert-Recovery $astra $second 'claude-opus-5-5' xhigh provisional $before
+      Assert-True (Test-Path (Join-Path $runtime "watchdog-policy-move-$($astra.spec.launchId).json")) 'the legacy move to today''s slot reserved no policy move'
+      $opus=New-Continuation $astra $second 'claude-opus-5-5' xhigh provisional;Set-Content $opus.error $envelope
+      Assert-Blocked $opus 'a legacy lineage takes only one move to today''s slot'
+    }
+    # The same lineage whose earlier cross was itself a policy move has consumed it.
+    Invoke-PolicyCase "legacy-move-consumed/$tag" $gen3Row7 {
+      $origin=New-Spec "pf-legacy-consumed-$tag" 'claude-fable-5-1' high 0 7 'override-Todd';Set-Content $origin.error $envelope
+      $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
+      Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
+      Set-PolicySlots @{}
+      $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
+      Assert-Blocked $astra 'a legacy lineage whose policy move is already consumed'
+    }
     Invoke-PolicyCase "pos-provenance/$tag" @{} {
       . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
       $selection=Resolve-RoutingSelection -Row 3 -Harness codex -Model gpt-6.1-sol -Effort medium -ReadOnly
@@ -523,7 +552,7 @@ function Test-PolicyFallback {
   if($failures.Count-gt0){throw "ASSERTION FAILED: 9092 policy fallback cases failed: $($failures-join', ')"}
   if($PolicyFallbackCase){Write-Output "PASS 9092 policy fallback case family $PolicyFallbackCase cases=$($passes.Count)";return}
   Write-Output 'PASS policy fallback v4.24: rows 1/2/8 move once to the other-harness slot in both directions and envelopes with a bound reservation; closed table precedence; relaunch 1, rows 9/11/12, off-slot route, unadmitted target and absent slot stay blocked'
-  Write-Output 'PASS 9092 policy rows 7/14/15 and one policy move per lineage: policy-derived slots, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
+  Write-Output 'PASS 9092 policy rows 7/14/15 and one policy move per lineage: policy-derived slots, a legacy lineage moving once to today''s slot, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
   Write-Output "PASS 9092 lineage authentication: predecessor envelope with scalar types, closed relaunch row, source/request binding, unique acknowledgement joined to the retained child and provenance, and record-scan refusals; closed-only count 1/2/3, Fable, retained-provenance and legacy lineages, retry, replay and conflict controls cases=$($passes.Count)"
 }
 # #9092 guard discriminators: each mutant removes one guard, and its named
@@ -538,13 +567,16 @@ function Test-PolicyFallbackMutants {
   $mutants=@(
     # AC11's six guards.
     @{name='no-policy-fallback';case='ac1-row2';old='    if($null-ne$policyFallback){';new='    if($false){'},
-    @{name='second-move-allowed';case='ac5-count1';old='  if([long]$Spec.relaunchCount-ne0){return $null}';new=''},
-    @{name='excluded-rows-allowed';case='ac6-row9';old='-or$row-in@(7,9,11,12,14,15)';new=''},
-    @{name='policy-overrides-closed-table';case='ac4-precedence';old='  if(-not$consumed-and-not$fallback.ContainsKey($routeKey)){';new='  if(-not$consumed){'},
+    @{name='second-move-allowed';case='ac5-count1';old='  if([long]$Spec.relaunchCount-ne0-and-not$legacy){return $null}';new=''},
+    @{name='excluded-rows-allowed';case='ac6-row9';old='-or$row-in@(9,11,12)';new=''},
+    @{name='policy-overrides-closed-table';case='ac4-precedence';old='  if(-not$fallback.ContainsKey($routeKey)){';new='  if($true){'},
     @{name='admission-ignored';case='ac8-unadmitted';old='    if($null-eq$model-or(Get-RoutingAdmissionReason $Data.registry $model ([string]$slot[0].Value.effort))){continue}';new='    if($null-eq$model){continue}'},
-    @{name='own-slot-ignored';case='ac7-off-slot';old='  if($own.Count-eq0){return $null}';new=''},
+    @{name='own-slot-ignored';case='ac7-off-slot';old='  if($own.Count-eq0-and-not$legacy){return $null}';new=''},
     # r1/r2 lineage guards.
-    @{name='protected-rows-14-15-allowed';case='f1-protected-14';old='@(7,9,11,12,14,15)';new='@(7,9,11,12)'},
+    # Rows 14/15 are ordinary policy rows now; re-excluding them must turn the row-14 move red.
+    @{name='policy-rows-14-15-excluded';case='f1-protected-14';old='$row-in@(9,11,12)';new='$row-in@(9,11,12,14,15)'},
+    # A retained legacy Astra/Fable source moves at any relaunch count; the count-0 rule alone blocks it.
+    @{name='legacy-relaunch-blocked';case='pos-fable';old='  if([long]$Spec.relaunchCount-ne0-and-not$legacy){return $null}';new='  if([long]$Spec.relaunchCount-ne0){return $null}'},
     @{name='consumed-policy-move-ignored';case='r1f2-policy-to-closed';old='-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)';new='-and$false'},
     @{name='missing-lineage-allowed';case='r2f2-unlinked-1';old='    if($hop-ge3-or$link-cnotmatch''^[a-f0-9-]{36}$''-or$launches.Contains($link)){return $true}';new='    if($link-cnotmatch''^[a-f0-9-]{36}$''){break};if($hop-ge3-or$launches.Contains($link)){return $true}'},
     @{name='missing-predecessor-allowed';case='r2f2-missing-origin';old='    if($null-eq$predecessor){return $true}';new='    if($null-eq$predecessor){break}'},
@@ -1109,7 +1141,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   # The retained v1 grammar still refuses Todd's exact case (review note N1).
   if(-not$BeforeFixControl){
     $placements=@(
-      @('v2',15,'measured','WATCHDOG_UNKNOWN_SPEC_INVALID'),@('v1',15,'measured','WATCHDOG_UNKNOWN_SPEC_INVALID'),
+      @('v2',15,'measured','LIVE_SLOW'),@('v1',15,'measured','LIVE_SLOW'),
       @('v2',15,'override-Todd','LIVE_SLOW'),@('v1',15,'override-Todd','ROUTING_PROVENANCE_REFUSED'),
       @('v2',7,'override-Todd','LIVE_SLOW'),@('v2',14,'override-Todd','LIVE_SLOW'),
       @('v1',7,'override-Todd','ROUTING_PROVENANCE_REFUSED'),@('v1',14,'override-Todd','ROUTING_PROVENANCE_REFUSED'),
@@ -1246,11 +1278,15 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     Assert-True ($refused-and(Get-CallCount)-eq($before+1)-and@(Get-Content $history).Count-eq$beforeRows) "mismatched ack $field recorded recovery"
   }
   Write-Output 'CONTROL 7955 GUARDS routeMutations=36 routeRefusals=32 restoredRow15Acceptances=4 lowerTierMutations=15 acknowledgementMutations=6 unauthorizedLaunches=0 acknowledgementSuccessRows=0'
+  # A retained Fable lane crosses once to its row's current Codex policy slot:
+  # row 7 codex.primary Sol/high/provisional, rows 14/15 codex.fallback
+  # Astra/high/reserve, logged as override-Todd.
   foreach($entry in @(@(7,'high'),@(14,'medium'),@(14,'high'),@(15,'high'))){
+    $selected=if($entry[0]-eq7){@('gpt-6.1-sol','high','provisional')}else{@('gpt-6-astra','high','override-Todd')}
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $item=New-RelaunchedContinuation "synthetic-fable-$($entry[0])-$($entry[1])-$($envelope.Replace(' ','-'))" 'claude-fable-5-1' $entry[1] $entry[0] 'override-Todd'
       Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
-      Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
+      Assert-Recovery $item $result $selected[0] $selected[1] $selected[2] $before
       Write-Output "CONTROL 7955 FALLBACK row=$($entry[0]) from=claude-fable-5-1/$($entry[1]) envelope=$envelope selected=$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
     }
   }
@@ -1277,7 +1313,9 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
       Assert-Recovery $item $result $target 'high' 'override-Todd' $before
       Assert-True ($result.harness-ceq'claude') "ruled fallback $tag did not select the claude harness"
-      Write-Output "CONTROL 8063 FALLBACK row=$route from=$primary/high/$primaryPlacement envelope=$envelope selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
+      $again=New-Spec "synthetic-ruled-roundtrip-$tag" $target 'high' 1 $route 'override-Todd';$before=Get-CallCount;$roundTrip=Invoke-Watchdog $again $again.spec.label
+      Assert-Recovery $again $roundTrip $target 'high' 'override-Todd' $before
+      Write-Output "CONTROL 8063 FALLBACK row=$route from=$primary/high/$primaryPlacement envelope=$envelope selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) roundTrip=$($roundTrip.status) launches=2"
     }
   }
   # 8063: the pre-existing entries keep their Codex fallback and row-derived placement.
@@ -1304,11 +1342,10 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     try{Invoke-Watchdog $item $item.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
     Assert-True ($refused-and(Get-CallCount)-eq$before) "override-Todd admitted outside the extended Todd-authored table: $($entry-join'/')"
   }
-  Write-Output 'CONTROL 8063 GUARDS retainedEntries=4 retainedRelaunches=8 opusClosedBlocks=6 opusAcceptances=7 unauthoredRefusals=19 unauthorizedLaunches=0; current rows 7/14/15 are covered by policy-fallback controls'
+  Write-Output 'CONTROL 8063 GUARDS retainedEntries=4 retainedRelaunches=8 roundTrips=8 opusClosedBlocks=6 opusAcceptances=7 unauthoredRefusals=19 unauthorizedLaunches=0; current rows 7/14/15 are covered by policy-fallback controls'
   # An integration watchdog retry retains its selected author, so a v3 integration lane at
-  # 7|gpt-6-astra/high dying on PROVIDER_QUOTA closes NO_QUALIFIED_FALLBACK for
-  # an integration lane, while the same retained legacy spec without an integration
-  # target takes row 7's current Claude policy slot.
+  # 7|gpt-6.1-sol/high dying on PROVIDER_QUOTA closes NO_QUALIFIED_FALLBACK, while the
+  # same spec without an integration target takes row 7's current Claude policy slot.
   $integrationLabel='synthetic-8063-integration-current-policy-quota';$integrationItem=New-Spec $integrationLabel 'gpt-6.1-sol' 'high' 0 7 'provisional';Set-Content $integrationItem.error 'provider quota exhausted'
   $integrationItem.spec.schemaVersion='watchdog-lane/v3'
   $integrationItem.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);repository='synthetic/8063';pr=[long]908063;landedPr=[long]908062;landedHead=('a'*40);head=[string]$integrationItem.spec.head;newBase=('b'*40);branch=[string]$integrationItem.spec.branch;worktree=$worktree;label=$integrationLabel;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
@@ -1336,6 +1373,25 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $fablePrompt=Get-Content -LiteralPath (Join-Path $runtime "$($fableRetry.label).prompt.txt") -Raw
   Assert-True ($fablePrompt.Contains('Author: claude/claude-opus-5-5/xhigh/row7/provisional.')) 'row-7 policy-slot integration retry prompt named a different author'
   Write-Output 'CONTROL 8119 watchdog row-7 policy-slot same-author prompt PASS'
+  # #82: a retained v3 integration lane on the pre-cutover Astra author stays readable
+  # through historical read (a live owner is LIVE_SLOW). Today's row-7 slot no longer
+  # admits it as a retry author, so its death closes NO_QUALIFIED_FALLBACK with exit 0
+  # before any prompt, policy-move reservation, integration request or launch exists.
+  $astraLabel='synthetic-82-integration-legacy-astra';$astraItem=New-Spec $astraLabel 'gpt-6-astra' 'high' 0 7 'override-Todd'
+  $astraItem.spec.head=$nativeHead;$astraItem.spec.schemaVersion='watchdog-lane/v3'
+  $astraItem.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('e'*64);repository=$SyntheticIntegrationRepository;pr=[long]908132;landedPr=[long]908131;landedHead=('a'*40);head=$nativeHead;newBase=$nativeHead;branch='synthetic/branch';worktree=$worktree;label=$astraLabel;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
+  Save-Spec $astraItem
+  $before=Get-CallCount
+  $astraLive=& $watchdog -Label $astraLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $astraItem.partial -ObservationFixture (New-Observation "$astraLabel-live" 'live' 'none') -IntegrationAuthorityFixturePath $api -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
+  Assert-True ($astraLive.status-ceq'LIVE_SLOW'-and(Get-CallCount)-eq$before) "retained v3 Astra integration lane was not readable while live: $($astraLive.status)"
+  $astraObservation=New-Observation "$astraLabel-dead";$runtimeBefore=@(Get-ChildItem $runtime -File|ForEach-Object Name);$beforeRows=@(Get-Content $history).Count
+  $astraOutput=@(& pwsh -NoProfile -NonInteractive -File $watchdog -Label $astraLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $astraItem.partial -ObservationFixture $astraObservation -IntegrationAuthorityFixturePath $api -DispatchScript $stub -SynchronousDispatch)-join"`n";$astraExit=$LASTEXITCODE
+  $astraDead=$astraOutput|ConvertFrom-Json -DateKind String;$astraRow=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+  $astraWritten=@(Get-ChildItem $runtime -File|ForEach-Object Name|Where-Object{$_-notin$runtimeBefore})
+  Assert-True ($astraExit-eq0-and$astraDead.status-ceq'NO_QUALIFIED_FALLBACK'-and$astraDead.relaunch-eq$false-and$astraDead.model-ceq'gpt-6-astra'-and(Get-CallCount)-eq$before) "retained v3 Astra integration retry was not closed NO_QUALIFIED_FALLBACK: exit=$astraExit output=$astraOutput"
+  Assert-True (@(Get-Content $history).Count-eq($beforeRows+1)-and$astraRow.kind-ceq'lane-blocked'-and$astraRow.outcome-ceq'NO_QUALIFIED_FALLBACK'-and$astraRow.deathSignature-ceq'OWNER_DEAD'-and$astraRow.model-ceq'gpt-6-astra'-and$astraRow.placement-ceq'override-Todd') 'retained v3 Astra integration block lost its lane-blocked row'
+  Assert-True ($astraWritten.Count-eq0) "retained v3 Astra integration block wrote a prompt, reservation or request: $($astraWritten-join',')"
+  Write-Output "CONTROL 82 INTEGRATION_LEGACY_AUTHOR v3Astra live=$($astraLive.status) dead=$($astraDead.status) exit=$astraExit launches=0 written=0"
   $early=New-Spec 'early-confirmed';$earlyResult=& $watchdog -Label early-confirmed -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $early.partial -ObservationFixture (New-Observation 'early-confirmed' 'dead' 'none' 1) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
   Assert-True ($earlyResult.status-ceq'RELAUNCHED'-and$earlyResult.elapsedSeconds-lt5) 'early confirmed mechanical death waited for a minimum delay'
   foreach($old in @(@('gpt-5.6-sol','high',4),@('gpt-5.6-terra','medium',2),@('gpt-5.6-luna','medium',2),@('claude-opus-5','high',6),@('claude-sonnet-5','medium',3),@('claude-sonnet-5','medium',13),@('claude-sonnet-5','high',10),@('gpt-6-sol','high',4),@('gpt-6-sol','xhigh',5),@('gpt-6-sol','medium',13),@('gpt-6-sol','medium',2))){
@@ -1395,7 +1451,10 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   )
   foreach($entry in $accepted){$name="accepted-$($entry-join'-')";$item=New-Spec $name $entry[1] $entry[2] 0 $entry[0] $entry[3];$value=& $watchdog -Label $name -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $item.partial -ObservationFixture (New-Observation $name 'live' 'none') -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String;Assert-True ($value.status-ceq'LIVE_SLOW') "accepted route rejected: $($entry-join'/')"}
   $constantSource=Get-Content -LiteralPath $watchdog -Raw
-  $constantNeedle="'7|sol/high',"
+  # Generation 4 makes 7|sol/high a live policy slot, so its frozen entry no longer
+  # decides anything; the retained row-7 Astra/Fable routes are supported only by
+  # the frozen compatibility list, so deleting them must refuse a retained lane.
+  $constantNeedle="'7|fable/high','7|astra/high',"
   Assert-True (([regex]::Matches($constantSource,[regex]::Escape($constantNeedle))).Count-eq1) 'watchdog compatibility constant route anchor is not unique'
   $constantMutantRoot=Join-Path $root 'mutant-watchdog-constant';New-Item -ItemType Directory -Path $constantMutantRoot|Out-Null
   Get-ChildItem $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $constantMutantRoot
@@ -1403,11 +1462,14 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   Copy-Item (Join-Path $PSScriptRoot 'controller-skills/model-routing/capability-matrix.json') (Join-Path $constantMutantRoot 'controller-skills/model-routing/capability-matrix.json')
   $constantMutant=Join-Path $constantMutantRoot 'lane-stall-watchdog.ps1'
   [IO.File]::WriteAllText($constantMutant,$constantSource.Replace($constantNeedle,''),[Text.UTF8Encoding]::new($false))
-  $constantCase=New-Spec 'constant-route-deletion' 'gpt-6.1-sol' 'high' 0 7 'provisional'
+  $constantCase=New-Spec 'constant-route-deletion' 'claude-fable-5-1' 'high' 0 7 'override-Todd'
+  $constantControlCase=New-Spec 'constant-route-control' 'claude-fable-5-1' 'high' 0 7 'override-Todd'
+  $constantControl=& $watchdog -Label $constantControlCase.spec.label -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $constantControlCase.partial -ObservationFixture (New-Observation 'constant-route-control' 'live' 'none') -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
+  Assert-True ($constantControl.status-ceq'LIVE_SLOW') "retained 7|fable/high lane was not readable before the frozen-route deletion: $($constantControl.status)"
   $constantFailed=$false
   try { & $constantMutant -Label $constantCase.spec.label -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $constantCase.partial -ObservationFixture (New-Observation 'constant-route-deletion' 'live' 'none') -DispatchScript $stub -SynchronousDispatch|Out-Null } catch { $constantFailed=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID' }
   Assert-True $constantFailed 'deleting a frozen watchdog compatibility route survived'
-  Write-Output 'MUTANT watchdog-constant-route RED (7|sol/high deletion rejected)'
+  Write-Output 'MUTANT watchdog-constant-route RED (frozen 7|fable/high and 7|astra/high deletion rejected)'
   $ordinary=New-Spec 'synthetic-row7-ordinary' 'gpt-6.1-sol' 'high' 0 7 'provisional';$before=Get-CallCount;$ordinaryResult=Invoke-Watchdog $ordinary 'ordinary';Assert-Recovery $ordinary $ordinaryResult 'gpt-6.1-sol' 'high' 'provisional' $before
   $invalid=New-Spec 'unqualified-cross-row' 'gpt-6.1-sol' 'medium' 0 7;$invalidFailed=$false;try{& $watchdog -Label unqualified-cross-row -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $invalid.partial -ObservationFixture (New-Observation 'unqualified' 'live' 'none') -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$invalidFailed=$_.Exception.Message-match'UNKNOWN_SPEC_INVALID'};Assert-True $invalidFailed 'unqualified cross-row config accepted'
   Write-Output 'PASS watchdog v2 closure, uniquely bound v2.61 routing adapter, provider-envelope-only classification, exhaustive row/config admission, qualified fallback or closed block, acknowledged exact-once relaunch, retryable launch failure, ceiling, live-slow, reused-PID, descendant, partial, and deadline controls'

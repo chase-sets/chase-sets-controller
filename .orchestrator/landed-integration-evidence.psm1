@@ -1569,7 +1569,8 @@ function Get-OrdinaryLiveChild([string]$Runtime,$Request) {
   if ($w.schemaVersion -cne 'watchdog-lane/v2' -or $w.launchId -cne $record.launchId -or $w.laneRole -cne 'implementation' -or $w.state -cne 'running' -or $w.branch -cne $Request.branch -or $w.head -cne $Request.targetHead -or
       $w.childPid -ne $owner.childPid -or $w.childStartIdentity -cne $owner.childStartIdentity -or $w.launcherPid -ne $owner.launcherPid -or $w.launcherStartIdentity -cne $owner.launcherStartIdentity -or
       $w.attemptId -isnot [string] -or $w.attemptId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$') { throw 'INTEGRATION_RESUME_CHILD: ordinary launch record mismatch' }
-  if (-not (Test-IntegrationAuthorRoute $w.harness $w.model $w.effort $w.row $w.placement)) { throw 'INTEGRATION_RESUME_CHILD: eligible ordinary author required' }
+  # The live author continues its own conflict; no new author is selected here.
+  if (-not (Test-IntegrationAuthorRoute $w.harness $w.model $w.effort $w.row $w.placement -HistoricalRead)) { throw 'INTEGRATION_RESUME_CHILD: eligible ordinary author required' }
   $capture = Read-OrdinaryConflictCapture $Runtime $record.launchId $record.label $Request $w
   if ($null -eq $capture) { throw 'INTEGRATION_RESUME_CHILD: helper conflict capture required' }
   [pscustomobject]@{record=$record;binding=$capture.capture;obligation=$capture.capture.obligation;owner=$owner;bindingIdentity=$capture.identity;origin='live';ordinary=$true;attemptId=[string]$w.attemptId;watchdog=$w;capturePath=$capture.path}

@@ -171,7 +171,10 @@ exit 0
   Assert-True (@($dispatches|Where-Object{$_.pr-eq5}).Count-eq0) 'nonintersecting clean PR was admitted'
   $second=& $script -LandedPr 1 -LandedHead $landedHead -HistoryPath $history -RuntimeRoot $runtime -ContainerRoot $root -Repository $SyntheticIntegrationRepository -FixturePath $fixturePath -IntegrationAuthorityFixturePath $authority -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
   Assert-True (@(Get-Content -LiteralPath $calls).Count-eq3-and@($second.targets|Where-Object{$_.action-ceq'DUPLICATE_SKIPPED'}).Count-eq3) 'repeated landed observation duplicated integration dispatch'
-  function Test-AuthorDispatch([string]$Name,[string]$Status,[string]$ExpectedModel,[string]$ForeignAck='',[string]$DispatchStub=$stub,[switch]$DefaultPoolStatus,[switch]$RoutingAck){
+  # Row-7 author tuples: the current policy slots, plus the retained pre-cutover
+  # Astra/Fable authors that only a generation-3-shaped row 7 selects.
+  $authorTuples=@{'gpt-6.1-sol'=@('codex','high','provisional');'claude-opus-5-5'=@('claude','xhigh','provisional');'gpt-6-astra'=@('codex','high','override-Todd');'claude-fable-5-1'=@('claude','high','override-Todd')}
+  function Test-AuthorDispatch([string]$Name,[string]$Status,[string]$ExpectedModel,[string]$ForeignAck='',[string]$DispatchStub=$stub,[switch]$DefaultPoolStatus,[switch]$RoutingAck,[switch]$LegacyAck,[switch]$ExpectRetained){
     $r=Join-Path $root "author-$Name";New-Item -ItemType Directory $r|Out-Null
     $h=Join-Path $r 'history.jsonl';$call=Join-Path $r 'calls.txt';$env:SYNTHETIC_DISPATCH_CALLS=$call
     $c=$fixture|ConvertTo-Json -Depth 12|ConvertFrom-Json -DateKind String
@@ -182,59 +185,80 @@ exit 0
     $wt=[IO.Path]::GetFullPath($worktrees[2]);$lane="integration-1-2-$($landedHead.Substring(0,8))"
     $legacy="landed-integration-start/v1`n1`n$landedHead`n2`n$($nativeHeads[2])`n$($branches[2])`n$wt`n$lane"
     $legacyId=([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($legacy)))).ToLowerInvariant()
-    $harness=if($ExpectedModel-ceq'gpt-6-astra'){'codex'}else{'claude'}
-    $request="landed-integration-start/v2`n$legacyId`n$base`n$harness/$ExpectedModel/high/7/override-Todd"
+    $harness=$authorTuples[$ExpectedModel][0];$effort=$authorTuples[$ExpectedModel][1];$placement=$authorTuples[$ExpectedModel][2]
+    $request="landed-integration-start/v2`n$legacyId`n$base`n$harness/$ExpectedModel/$effort/7/$placement"
     $identity=([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($request)))).ToLowerInvariant()
     $ack=Join-Path $r "dispatch-start-$identity.json"
     if($ForeignAck){Copy-Item -LiteralPath $ForeignAck -Destination (Join-Path $r (Split-Path -Leaf $ForeignAck))}
+    # A retained start acknowledgement named by the author-free v1 identity.
+    $legacyAckFile=Join-Path $r "dispatch-start-$legacyId.json";$legacyBytes=$null
+    if($LegacyAck){
+      [IO.File]::WriteAllText($legacyAckFile,([ordered]@{schemaVersion='dispatch-start-ack/v1';requestIdentity=$legacyId;label=$lane;harness='codex';model='gpt-6-astra';effort='high';row=[long]7;placement='override-Todd';state='started'}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+      $legacyBytes=[IO.File]::ReadAllBytes($legacyAckFile)
+    }
     $failure=$null;$result=$null
     $poolArgs=if($DefaultPoolStatus){@{}}else{@{PoolStatusFixturePath=$pool}}
     try{$result=& $script -LandedPr 1 -LandedHead $landedHead -HistoryPath $h -RuntimeRoot $r -ContainerRoot $root -Repository $SyntheticIntegrationRepository -FixturePath $p -IntegrationAuthorityFixturePath $authority @poolArgs -DispatchScript $DispatchStub -SynchronousDispatch|ConvertFrom-Json -DateKind String}catch{$failure=$_.Exception.Message}
-    if($DispatchStub-ceq$stub -or $RoutingAck){
+    if($ExpectRetained){
+      Assert-True ($null-eq$failure-and$result.targets[0].action-ceq'RETAINED_START_PENDING'-and$result.targets[0].requestIdentity-ceq$legacyId-and-not(Test-Path $call)-and-not(Test-Path $ack)) "$Name did not adopt the legacy start acknowledgement: $failure"
+    }elseif($DispatchStub-ceq$stub -or $RoutingAck){
       Assert-True ($null-eq$failure-and$result.targets[0].action-ceq'LAUNCHED'-and(Test-Path $ack)-and@(Get-Content $call).Count-eq1) "$Name identity/launch: $failure"
       $record=Get-Content $ack -Raw|ConvertFrom-Json -DateKind String
-      Assert-True ($record.requestIdentity-ceq$identity-and$record.harness-ceq$harness-and$record.model-ceq$ExpectedModel) "$Name wrong acknowledgement tuple"
+      Assert-True ($record.requestIdentity-ceq$identity-and$record.harness-ceq$harness-and$record.model-ceq$ExpectedModel-and$record.effort-ceq$effort-and$record.placement-ceq$placement) "$Name wrong acknowledgement tuple"
       $row=@(Get-Content $h|ForEach-Object{$_|ConvertFrom-Json -DateKind String}|Where-Object integrationDispatchSchema -eq 'landed-integration-dispatch/v1')
       Assert-True ($row.Count-eq1-and$row[0].harness-ceq$harness-and$row[0].model-ceq$ExpectedModel) "$Name wrong terminal tuple"
     }else{Assert-True ($failure-like'*INTEGRATION_DISPATCH_START_ACK_UNKNOWN*'-and@(Get-Content $h|Where-Object{$_ -like '*landed-integration-dispatch/v1*'}).Count-eq0) "$Name alien acknowledgement admitted: $failure"}
+    if($LegacyAck){Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($legacyAckFile))-ceq[Convert]::ToBase64String($legacyBytes)) "$Name rewrote the legacy start acknowledgement"}
     return [pscustomobject]@{ack=$ack;identity=$identity;result=$result;runtime=$r}
   }
   $future=[datetimeoffset]::UtcNow.AddDays(1).ToString('o')
-  $blockedPool=@{error=$null;accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after=$future}}},@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after=$future}}})}|ConvertTo-Json -Depth 8
-  $readyPool=@{error=$null;accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='ready';next_retry_after='0001-01-01T00:00:00Z'}}},@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after=$future}}})}|ConvertTo-Json -Depth 8
+  $blockedPool=@{error=$null;accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$future}}},@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$future}}})}|ConvertTo-Json -Depth 8
+  $readyPool=@{error=$null;accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='ready';next_retry_after='0001-01-01T00:00:00Z'}}},@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$future}}})}|ConvertTo-Json -Depth 8
   $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$listener.Start()
   try{
     $env:CODEX_POOL_STATUS_URL="http://127.0.0.1:$(($listener.LocalEndpoint).Port)/api/status"
-    [void](Test-AuthorDispatch 'fixture-default-no-http' $blockedPool 'gpt-6-astra' -DefaultPoolStatus)
+    [void](Test-AuthorDispatch 'fixture-default-no-http' $blockedPool 'gpt-6.1-sol' -DefaultPoolStatus)
     Assert-True (-not$listener.Pending()) 'fixture-mode producer contacted pool without an explicit status fixture'
   }finally{$listener.Stop();$env:CODEX_POOL_STATUS_URL='http://127.0.0.1:1/status'}
-  $astraControl=Test-AuthorDispatch 'ready' $readyPool 'gpt-6-astra'
-  $fableControl=Test-AuthorDispatch 'blocked-with-astra-ack' $blockedPool 'claude-fable-5-1' $astraControl.ack
-  Assert-True ($astraControl.identity-cne$fableControl.identity-and-not(Test-Path (Join-Path $astraControl.runtime (Split-Path -Leaf $fableControl.ack)))) 'Astra and Fable identities collided'
-  [void](Test-AuthorDispatch 'ready-with-fable-ack' $readyPool 'gpt-6-astra' $fableControl.ack)
-  foreach($case in @(@('malformed','{invalid'),@('unparsable','{"accounts":"blocked"}'),@('no-reset',(@{accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after='unknown'}}})}|ConvertTo-Json -Depth 6)))){
-    [void](Test-AuthorDispatch $case[0] $case[1] 'gpt-6-astra')
+  $solControl=Test-AuthorDispatch 'ready' $readyPool 'gpt-6.1-sol'
+  $opusControl=Test-AuthorDispatch 'blocked-with-sol-ack' $blockedPool 'claude-opus-5-5' $solControl.ack
+  Assert-True ($solControl.identity-cne$opusControl.identity-and-not(Test-Path (Join-Path $solControl.runtime (Split-Path -Leaf $opusControl.ack)))) 'Sol and Opus identities collided'
+  [void](Test-AuthorDispatch 'ready-with-opus-ack' $readyPool 'gpt-6.1-sol' $opusControl.ack)
+  foreach($case in @(@('malformed','{invalid'),@('unparsable','{"accounts":"blocked"}'),@('no-reset',(@{accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after='unknown'}}})}|ConvertTo-Json -Depth 6)))){
+    [void](Test-AuthorDispatch $case[0] $case[1] 'gpt-6.1-sol')
   }
   $alienStub=Join-Path $root 'alien-dispatch-lane.ps1'
-  $stubText=[IO.File]::ReadAllText($stub).Replace('[IO.File]::WriteAllText($StartAcknowledgementPath',"`$ack.model='claude-opus-5-5'`n[IO.File]::WriteAllText(`$StartAcknowledgementPath")
+  $stubText=[IO.File]::ReadAllText($stub).Replace('[IO.File]::WriteAllText($StartAcknowledgementPath',"`$ack.model='claude-fable-5-1'`n[IO.File]::WriteAllText(`$StartAcknowledgementPath")
   [IO.File]::WriteAllText($alienStub,$stubText,[Text.UTF8Encoding]::new($false))
-  [void](Test-AuthorDispatch 'alien-fable-ack' $blockedPool 'claude-fable-5-1' '' $alienStub)
+  [void](Test-AuthorDispatch 'alien-opus-ack' $blockedPool 'claude-opus-5-5' '' $alienStub)
   $routingStub=Join-Path $root 'routing-ack-dispatch.ps1'
-  $routingAssignment="`$ack.policyGeneration=[long]1;`$ack.registryAuthorityDigest='synthetic-consumer-authority';`$ack.family='astra';`$ack.slot='explicit';`$ack.usedLastKnownGood=`$false`n"
+  $routingAssignment="`$ack.policyGeneration=[long]1;`$ack.registryAuthorityDigest='synthetic-consumer-authority';`$ack.family='sol';`$ack.slot='explicit';`$ack.usedLastKnownGood=`$false`n"
   $routingStubText=[IO.File]::ReadAllText($stub).Replace('[IO.File]::WriteAllText($StartAcknowledgementPath',$routingAssignment+'[IO.File]::WriteAllText($StartAcknowledgementPath')
   [IO.File]::WriteAllText($routingStub,$routingStubText,[Text.UTF8Encoding]::new($false))
-  [void](Test-AuthorDispatch 'routing-ack-complete' $readyPool 'gpt-6-astra' -DispatchStub $routingStub -RoutingAck)
+  [void](Test-AuthorDispatch 'routing-ack-complete' $readyPool 'gpt-6.1-sol' -DispatchStub $routingStub -RoutingAck)
   foreach($field in @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')){
     $partialStub=Join-Path $root "routing-ack-missing-$field.ps1"
     $partialText=$routingStubText.Replace('[IO.File]::WriteAllText($StartAcknowledgementPath',"`$ack.Remove('$field')`n[IO.File]::WriteAllText(`$StartAcknowledgementPath")
     [IO.File]::WriteAllText($partialStub,$partialText,[Text.UTF8Encoding]::new($false))
-    [void](Test-AuthorDispatch "routing-ack-missing-$field" $readyPool 'gpt-6-astra' -DispatchStub $partialStub)
+    [void](Test-AuthorDispatch "routing-ack-missing-$field" $readyPool 'gpt-6.1-sol' -DispatchStub $partialStub)
   }
   $crossedSlotStub=Join-Path $root 'routing-ack-crossed-slot.ps1'
   [IO.File]::WriteAllText($crossedSlotStub,$routingStubText.Replace("`$ack.slot='explicit'","`$ack.slot='codex.primary'"),[Text.UTF8Encoding]::new($false))
-  [void](Test-AuthorDispatch 'routing-ack-crossed-slot' $readyPool 'gpt-6-astra' -DispatchStub $crossedSlotStub)
+  [void](Test-AuthorDispatch 'routing-ack-crossed-slot' $readyPool 'gpt-6.1-sol' -DispatchStub $crossedSlotStub)
   Write-Output 'PASS F1 integration launch routing acknowledgement complete; five partial fields and crossed slot refused'
-  Write-Output 'CONTROL 8119 Astra filename, Fable isolation, crossed retained acknowledgements, status fail-closed, and alien acknowledgement rejection PASS'
+  # A retained author-free v1 acknowledgement is adopted only by the exact
+  # pre-cutover Astra author, which only a generation-3-shaped row 7 selects.
+  # The Fable fallback and today's Sol author keep their own v2 identities.
+  $routingPolicyPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json';$routingPolicyBytes=[IO.File]::ReadAllBytes($routingPolicyPath)
+  try{
+    $gen3Policy=[Text.Encoding]::UTF8.GetString($routingPolicyBytes)|ConvertFrom-Json -AsHashtable
+    $gen3Policy.rows['7'].slots=[ordered]@{'codex.primary'=[ordered]@{family='astra';effort='high';placement='reserve'};'claude.primary'=[ordered]@{family='fable';effort='high';placement='reserve'}}
+    [IO.File]::WriteAllText($routingPolicyPath,($gen3Policy|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
+    [void](Test-AuthorDispatch 'legacy-ack-astra-adopted' $readyPool.Replace('gpt-6.1-sol','gpt-6-astra') 'gpt-6-astra' -LegacyAck -ExpectRetained)
+    [void](Test-AuthorDispatch 'legacy-ack-fable-isolated' $blockedPool.Replace('gpt-6.1-sol','gpt-6-astra') 'claude-fable-5-1' -LegacyAck)
+  }finally{[IO.File]::WriteAllBytes($routingPolicyPath,$routingPolicyBytes)}
+  [void](Test-AuthorDispatch 'legacy-ack-sol-isolated' $readyPool 'gpt-6.1-sol' -LegacyAck)
+  Write-Output 'CONTROL 8119 Sol filename, Opus isolation, legacy v1 acknowledgement adopted only by the exact Astra author, crossed retained acknowledgements, status fail-closed, and alien acknowledgement rejection PASS'
   $env:SYNTHETIC_DISPATCH_CALLS=$calls
   $bad=$fixture.PSObject.Copy();$bad.openPullRequests=[ordered]@{complete=$true;totalCount=[long]5;nodes=$nodes}
   $badPath=Join-Path $root 'incomplete.json';[IO.File]::WriteAllText($badPath,($bad|ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false))
@@ -302,10 +326,15 @@ exit 0
     } 'CENSUS_UNKNOWN')
   }
   $terminalVariants=@{}
-  foreach($version in @('legacy','astra','fable','owed-null','owed-executor')){
+  Assert-True ($dispatches[0].harness-ceq'codex'-and$dispatches[0].model-ceq'gpt-6.1-sol'-and$dispatches[0].effort-ceq'high'-and$dispatches[0].placement-ceq'provisional') 'fixture-mode author is not the row-7 Sol policy slot'
+  foreach($version in @('legacy','astra','fable','sol','opus','owed-null','owed-executor')){
     $terminal=$dispatches[0]|ConvertTo-Json -Compress|ConvertFrom-Json -DateKind String
     if($version-ceq'legacy'){$terminal.model='gpt-5.6-terra';$terminal.effort='medium';$terminal.row='2';$terminal.placement='measured'}
-    if($version-ceq'fable'){$terminal.harness='claude';$terminal.model='claude-fable-5-1'}
+    # Retained pre-cutover authors stay readable at their Todd-ruled tuple;
+    # sol is the unmodified current author and opus the other row-7 slot.
+    if($version-ceq'astra'){$terminal.model='gpt-6-astra';$terminal.placement='override-Todd'}
+    if($version-ceq'fable'){$terminal.harness='claude';$terminal.model='claude-fable-5-1';$terminal.placement='override-Todd'}
+    if($version-ceq'opus'){$terminal.harness='claude';$terminal.model='claude-opus-5-5';$terminal.effort='xhigh'}
     if($version-like'owed-*'){
       $terminal.integrationDispatchSchema='landed-integration-dispatch/v2';$terminal.disposition='OWED_ACTIVE_WRITER'
       foreach($key in @('harness','model','effort','row','placement')){$terminal.PSObject.Properties.Remove($key)}
@@ -324,15 +353,17 @@ exit 0
     $terminalReplay=& $script -LandedPr 1 -LandedHead $landedHead -HistoryPath $terminalHistory -RuntimeRoot $terminalRuntime -ContainerRoot $root -Repository $SyntheticIntegrationRepository -FixturePath $terminalPath -IntegrationAuthorityFixturePath $authority -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
     Assert-True ($terminalReplay.targets[0].action-ceq'DUPLICATE_SKIPPED'-and-not(Test-Path $env:SYNTHETIC_DISPATCH_CALLS)-and[Convert]::ToBase64String($terminalBefore)-ceq[Convert]::ToBase64String([IO.File]::ReadAllBytes($terminalHistory))) "terminal $version compatibility or byte preservation"
   }
-  foreach($case in @('crossed-tuple','fable-crossed-harness','fable-crossed-model','numeric-v1-row','v2-launch','v2-extra','v2-missing','v2-row','duplicate-terminal','crossed-terminal')){
+  foreach($case in @('crossed-tuple','fable-crossed-harness','fable-crossed-model','sol-crossed-placement','opus-crossed-effort','numeric-v1-row','v2-launch','v2-extra','v2-missing','v2-row','duplicate-terminal','crossed-terminal')){
     [void](Invoke-PreflightControl $case {
       param($c,$r)
-      $variant=if($case-like'v2-*'){'owed-executor'}elseif($case-like'fable-*'){'fable'}else{'astra'}
+      $variant=if($case-like'v2-*'){'owed-executor'}elseif($case-like'fable-*'){'fable'}elseif($case-like'sol-*'){'sol'}elseif($case-like'opus-*'){'opus'}else{'astra'}
       $terminal=$terminalVariants[$variant]|ConvertTo-Json -Depth 5|ConvertFrom-Json -DateKind String
       switch($case){
         'crossed-tuple' {$terminal.effort='medium'}
         'fable-crossed-harness' {$terminal.harness='codex'}
         'fable-crossed-model' {$terminal.model='claude-opus-5-5'}
+        'sol-crossed-placement' {$terminal.placement='override-Todd'}
+        'opus-crossed-effort' {$terminal.effort='high'}
         'numeric-v1-row' {$terminal.row=[long]7}
         'v2-launch' {$terminal.disposition='LAUNCHED'}
         'v2-extra' {$terminal.executionAttribution|Add-Member unexpected $true}
@@ -345,7 +376,7 @@ exit 0
       Set-Content (Join-Path $r 'history.jsonl') $line
     } 'CENSUS_UNKNOWN')
   }
-  Write-Output 'CONTROL 7962/8018/8119 terminal corpus legacy/Astra/Fable/v2-null/v2-executor=byte-stable replay; crossed/duplicate/malformed=zero-effects refusal'
+  Write-Output 'CONTROL 7962/8018/8119 terminal corpus legacy/Astra/Fable/Sol/Opus/v2-null/v2-executor=byte-stable replay; crossed/duplicate/malformed=zero-effects refusal'
   $replayRuntime=Join-Path $root 'synthetic-partial-replay';New-Item -ItemType Directory $replayRuntime|Out-Null
   $replayHistory=Join-Path $replayRuntime 'history.jsonl';$replayCalls=Join-Path $replayRuntime 'calls.txt';$env:SYNTHETIC_DISPATCH_CALLS=$replayCalls
   $dispatches[0]|ConvertTo-Json -Compress|Set-Content $replayHistory

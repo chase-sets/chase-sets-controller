@@ -241,7 +241,7 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
     $freshRequest=$null
     if ($spec.schemaVersion -ceq 'watchdog-lane/v3') {
       $freshRequest=$spec.integrationRequest; Assert-IntegrationRequest $freshRequest
-      Assert-IntegrationAuthor $spec.harness $spec.model $spec.effort $spec.row $spec.placement
+      Assert-IntegrationAuthor $spec.harness $spec.model $spec.effort $spec.row $spec.placement -HistoricalRead
       if ($freshRequest.requestIdentity -cne $Identity -or $freshRequest.label -cne $ack.label -or $freshRequest.head -cne $Pr.headRefOid -or $freshRequest.branch -cne $ack.branch -or -not (Test-DispatchSamePath $freshRequest.runtimeRoot $RuntimeRoot) -or -not (Test-DispatchSamePath $freshRequest.historyPath $HistoryPath) -or -not (Test-DispatchSamePath $freshRequest.worktree $Worktree)) { throw 'crossed bound request' }
       $spec.PSObject.Properties.Remove('integrationRequest');$spec.schemaVersion='watchdog-lane/v2'
     }

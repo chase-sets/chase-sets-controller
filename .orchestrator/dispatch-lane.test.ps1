@@ -1755,11 +1755,13 @@ exit $LASTEXITCODE
   Assert-True (@($exactFable51.arguments) -contains "claude-fable-5-1") "Fable 5.1 is passed to the harness with its exact version"
   $automaticRow7 = & $launcher -Harness codex -Row 7 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "automatic-row7-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
   $automaticRow14 = & $launcher -Harness claude -Row 14 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "automatic-row14-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
+  $automaticRow14Codex = & $launcher -Harness codex -Row 14 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "automatic-row14-codex-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
   Assert-True ($automaticRow7.routing.model-ceq'gpt-6.1-sol'-and$automaticRow7.routing.placement-ceq'provisional') 'automatic row-7 Codex route follows the policy slot'
   Assert-True ($automaticRow14.routing.model-ceq'claude-opus-5-5'-and$automaticRow14.routing.placement-ceq'provisional') 'automatic row-14 Claude route follows the policy slot'
+  Assert-True ($automaticRow14Codex.routing.model-ceq'gpt-6-astra'-and$automaticRow14Codex.routing.slot-ceq'codex.fallback'-and$automaticRow14Codex.routing.placement-ceq'override-Todd') 'automatic row-14 Codex reserve slot was not logged as override-Todd'
   $lifecycleRuntime=Join-Path $testRoot 'automatic-watchdog-lifecycle';New-Item -ItemType Directory -Path $lifecycleRuntime|Out-Null
-  foreach($plan in @($automaticRow7,$automaticRow14)){
-    $label="automatic-watchdog-row$($plan.routing.row)";$launchId=[guid]::NewGuid().ToString();$now=[datetimeoffset]::UtcNow
+  foreach($plan in @($automaticRow7,$automaticRow14,$automaticRow14Codex)){
+    $label="automatic-watchdog-row$($plan.routing.row)-$($plan.harness)";$launchId=[guid]::NewGuid().ToString();$now=[datetimeoffset]::UtcNow
     $partial=Join-Path $lifecycleRuntime "$label.jsonl";$lifecycleError=Join-Path $lifecycleRuntime "$label.err.log";$observation=Join-Path $lifecycleRuntime "$label.obs.json"
     Set-Content $partial 'synthetic partial';Set-Content $lifecycleError 'synthetic owner';$selection=$plan.routing
     $spec=[ordered]@{schemaVersion='watchdog-lane/v2';label=$label;attemptId='synthetic-automatic-placement';relaunchCount=[long]0;resumeOfLaunchId=$null;harness=$plan.harness;model=$selection.model;effort=$selection.effort;row=[long]$selection.row;placement=$selection.placement;laneRole='implementation';originalPromptPath=$prompt;partialReportPath=$partial;errorPath=$lifecycleError;worktree=$worktree;branch='synthetic/branch';head=('a'*40);launchId=$launchId;ownershipRecordPath=(Join-Path $lifecycleRuntime "dispatch-launch-$launchId.json");launcherPid=[long]999991;launcherStartIdentity='2000-01-01T00:00:00.0000000Z';childPid=[long]999992;childStartIdentity='2000-01-01T00:00:01.0000000Z';state='running';exitCode=$null;updatedAt=$now.AddMinutes(-1).ToString('o');policyGeneration=[long]$selection.policyGeneration;registryAuthorityDigest=$selection.registryAuthorityDigest;family=$selection.family;slot=$selection.slot;usedLastKnownGood=$selection.usedLastKnownGood}
@@ -1772,9 +1774,10 @@ exit $LASTEXITCODE
   $placementMutantRoot=Join-Path $testRoot 'dispatch-placement-mutant';New-Item -ItemType Directory -Force -Path $placementMutantRoot|Out-Null
   Get-ChildItem $PSScriptRoot -File|Copy-Item -Destination $placementMutantRoot
   $placementMutant=Join-Path $placementMutantRoot 'dispatch-lane.ps1';$placementSource=Get-Content -LiteralPath $launcher -Raw
-  $placementNeedle="`$Placement = if ([string]`$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]`$dispatchRouting.placement }";Assert-True (([regex]::Matches($placementSource,[regex]::Escape($placementNeedle))).Count-eq1) 'F3 reserve mapping mutation anchor is not unique'
-  [IO.File]::WriteAllText($placementMutant,$placementSource.Replace($placementNeedle,"`$Placement = [string]`$dispatchRouting.placement"),[Text.UTF8Encoding]::new($false))
-  Assert-Throws { & $placementMutant -Harness codex -Row 7 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "keep-reserve-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe } 'ROUTING_PLACEMENT_UNSUPERVISED' 'keep-reserve mutant must refuse before launch'
+  $placementNeedle="`$automaticPolicyPlacement = if ([string]`$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]`$dispatchRouting.placement }";Assert-True (([regex]::Matches($placementSource,[regex]::Escape($placementNeedle))).Count-eq1) 'F3 reserve mapping mutation anchor is not unique'
+  [IO.File]::WriteAllText($placementMutant,$placementSource.Replace($placementNeedle,"`$automaticPolicyPlacement = [string]`$dispatchRouting.placement"),[Text.UTF8Encoding]::new($false))
+  # Row 14's Codex slot is the policy reserve; the unmapped value must not reach a launch.
+  Assert-Throws { & $placementMutant -Harness codex -Row 14 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "keep-reserve-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe } 'ROUTING_PLACEMENT_UNSUPERVISED' 'keep-reserve mutant must refuse before launch'
   Write-Output 'MUTANT F3 keep-reserve RED (ROUTING_PLACEMENT_UNSUPERVISED)'
   Assert-Throws { & $launcher -Harness claude -Model claude-fable-5 -Effort high -PromptFile $prompt -Worktree $worktree -Label "historical-fable5" -DryRun -ExecutablePath $fakeExe } "EXPLICIT_HISTORICAL_OR_RETIRED_MODEL" "historical Fable 5 is no longer dispatchable"
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile (Join-Path $testRoot "missing.txt") -Worktree $worktree -Label "t1" -DryRun -ExecutablePath $fakeExe } "not found" "missing prompt file must refuse"

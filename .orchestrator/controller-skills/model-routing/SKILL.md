@@ -264,8 +264,12 @@ closed table always takes precedence. Rows 9, 11 and 12,
 integration lanes, non-implementation lanes, lanes that have already relaunched
 (except retained legacy Astra/Fable sources), and routes that are not their
 row's policy slot keep NO_QUALIFIED_FALLBACK for host diagnosis. Retained
-legacy Astra/Fable keys are read-only compatibility sources and move once to
-the current other-harness policy slot under the same lineage reservation.
+legacy Astra/Fable keys are read-only compatibility sources. A legacy lane gets
+exactly one policy move, at any relaunch count, to today's other-harness slot
+under the same lineage reservation. A pre-cutover closed-table cross in its
+lineage (for example Fable to Astra) left no policy-move record and does not
+consume that move, so such a lineage crosses harnesses twice in total; its
+continuation on today's slot is then blocked.
 Placement comes from the policy slot, with reserve logged as override-Todd,
 never from capability evidence.
 

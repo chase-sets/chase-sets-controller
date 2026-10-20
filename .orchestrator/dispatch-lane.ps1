@@ -421,9 +421,11 @@ if (-not $routingExplicit) {
   # Policy files use `reserve` for a slot that is still Todd-authorized. The
   # runtime envelope deliberately has no `reserve` placement, so translate it
   # once at the automatic route boundary and log the admitted placement.
-  $Placement = if ([string]$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]$dispatchRouting.placement }
+  $Placement = $automaticPolicyPlacement
   $automaticPlacementInvalid = if ($LaneRole -eq 'implementation') {
-    ($Placement -cnotmatch '^(measured|provisional|override-[a-z0-9._-]+)$') -or
+    # override-Todd here is only ever the selected slot's own (or mapped
+    # reserve) placement, which the watchdog admits for that same slot.
+    ($Placement -cnotmatch '^(measured|provisional|override-Todd|override-[a-z0-9._-]+)$') -or
     ($dispatchRouting.family -ceq 'sonnet' -and $Placement -cne $(if ($dispatchRouting.row -in @(3,13) -and $dispatchRouting.effort -ceq 'high') { 'provisional' } else { 'override-Todd' }))
   } else { $Placement -notmatch '^(measured|provisional|override-[a-z0-9._-]+)$' }
   if ($automaticPlacementInvalid) {
@@ -654,14 +656,15 @@ if ($InterruptedIntegrationResumePath) {
   foreach ($name in @('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')) {
     if ([Environment]::GetEnvironmentVariable($name)) { throw "INTEGRATION_RESUME_GIT_UNKNOWN: redirected $name" }
   }
-  # Exactly two closed resume routes share one identical downstream binding:
-  # the standing codex/gpt-6-astra/high/7/override-Todd author, and the
-  # Todd-ruled vendor fallback claude/claude-fable-5-1/high/7/override-Todd
-  # that replaces a quota-blocked or refused Astra author (4388/5743533387,
-  # #8063). Any other harness, model, effort, row, role, or placement refuses.
-  $astraResumeRoute = $Harness -ceq 'codex' -and $dispatchRouting.family -ceq 'astra'
-  $fableResumeRoute = $Harness -ceq 'claude' -and $dispatchRouting.family -ceq 'fable'
-  if ($LaneRole -cne 'implementation' -or -not ($astraResumeRoute -or $fableResumeRoute) -or $Effort -cne 'high' -or $Row -ne 7 -or $Placement -cne 'override-Todd') {
+  # The current row-7 policy tuple is admitted for new/default resumes. A
+  # retained Astra/Fable tuple remains admissible only as a historical bound
+  # author; the binding and downstream resume guards authenticate its identity.
+  $currentResumeRoute = Test-IntegrationAuthorRoute $Harness $Model $Effort $Row $Placement
+  # PowerShell -and/-or share one precedence; keep each alternative grouped.
+  $historicalResumeRoute = (($Harness -ceq 'codex' -and $dispatchRouting.family -ceq 'astra') -or
+    ($Harness -ceq 'claude' -and $dispatchRouting.family -ceq 'fable')) -and
+    $Effort -ceq 'high' -and $Row -eq 7 -and $Placement -ceq 'override-Todd'
+  if ($LaneRole -cne 'implementation' -or -not ($currentResumeRoute -or $historicalResumeRoute)) {
     throw 'INTEGRATION_RESUME_ROUTE: exact eligible implementation route required'
   }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking

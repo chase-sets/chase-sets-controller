@@ -176,7 +176,11 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   # as fresh policy routes.
   $policySlot=$false
   $rowEntry=$routingAuthority.policy.rows.PSObject.Properties[[string]$Value.row]
-  if($rowEntry){foreach($slot in @($rowEntry.Value.slots.PSObject.Properties)){if([string]$slot.Value.family-ceq[string]$identity.family-and[string]$slot.Value.effort-ceq[string]$Value.effort){$policySlot=$true;break}}}
+  if($rowEntry -and $identity){foreach($slot in @($rowEntry.Value.slots.PSObject.Properties)){
+    $slotHarness=([string]$slot.Name).Split('.')[0]
+    $slotPlacement=if([string]$slot.Value.placement-ceq'reserve'){'override-Todd'}else{[string]$slot.Value.placement}
+    if($slotHarness-ceq[string]$Value.harness-and[string]$slot.Value.family-ceq[string]$identity.family-and[string]$slot.Value.effort-ceq[string]$Value.effort-and$slotPlacement-ceq'override-Todd'){$policySlot=$true;break}
+  }}
   $legacyPolicyRoute=$key-cin@('7|astra/high','7|fable/high','14|fable/medium','14|fable/high','14|astra/high','15|fable/high','15|astra/high')
   $toddAuthor=$policySlot-or$legacyPolicyRoute-or$key-cin@('4|opus/high','5|opus/high','6|opus/high','7|opus/high','10|opus/high')
   $toddAuthor=$toddAuthor-or$key-cin$benchmarkAuthorRoutes
@@ -188,7 +192,7 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   $routeEnvelopeInvalid=if($Implementation -and $historical){$false}elseif($Implementation){
     (-not$supported.ContainsKey($key))-or
     ($Value.placement-cnotmatch'^(measured|provisional|override-[a-z0-9._-]+)$'-and-not($toddAuthor-and$Value.placement-ceq'override-Todd'))-or
-    ($legacyPolicyRoute-and$Value.placement-cne'override-Todd')
+    (($key-cin@('7|astra/high','14|astra/high'))-and$Value.placement-cne'override-Todd')
   }else{
     $Value.row-lt0-or$Value.row-gt15-or$Value.placement-isnot[string]-or$Value.placement-notmatch'^$|^(measured|provisional|override-[a-z0-9._-]+)$'
   }
@@ -212,8 +216,8 @@ function Test-WatchdogEnvelopeFields($Value,[string[]]$Keys,[string]$ExpectedLab
 # closed table has no entry: an implementation lane at relaunch 0 that runs its
 # row's own policy slot (same harness, family and effort) moves once to the same
 # row's other-harness slot, primary before fallback, at that slot's effort and
-# placement, if the registry admits that effort with usable accounts. Protected
-# Review rows 9/11/12, integration lanes and off-slot routes keep
+# placement, if the registry admits that effort with usable accounts. Rows 9
+# (host) and 11/12 (review), integration lanes and off-slot routes keep
 # NO_QUALIFIED_FALLBACK. Policy slots on rows 7/14/15 are ordinary current
 # author slots; their reserve placement is mapped to override-Todd at runtime.
 function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext){
@@ -287,7 +291,7 @@ function Test-WatchdogLineageEnvelope([string]$Root,[string]$Path,$Value,$Spec,[
       }
       'watchdog-lane/v3'{
         if(-not(Test-ExactKeys $view ($expected+@('integrationRequest')))){return $false}
-        $request=$view.integrationRequest;Assert-IntegrationRequest $request;Assert-IntegrationAuthor $view.harness $view.model $view.effort $view.row $view.placement
+        $request=$view.integrationRequest;Assert-IntegrationRequest $request;Assert-IntegrationAuthor $view.harness $view.model $view.effort $view.row $view.placement -HistoricalRead
         if($request.label-cne$view.label-or$request.head-cne$view.head-or$request.branch-cne$view.branch-or-not(Test-DispatchSamePath $request.worktree $view.worktree)){return $false}
         $view.PSObject.Properties.Remove('integrationRequest');$view.schemaVersion='watchdog-lane/v2'
       }
@@ -442,7 +446,7 @@ if($spec.schemaVersion-ceq'watchdog-lane/v3'){
   if(-not$implementation-or-not(Test-ExactKeys $spec ($keys+@('integrationRequest')))){throw 'WATCHDOG_UNKNOWN_INTEGRATION_SPEC'}
   $integrationTarget=$spec.integrationRequest
   Assert-IntegrationRequest $integrationTarget
-  Assert-IntegrationAuthor $spec.harness $spec.model $spec.effort $spec.row $spec.placement
+  Assert-IntegrationAuthor $spec.harness $spec.model $spec.effort $spec.row $spec.placement -HistoricalRead
   if($integrationTarget.label-cne$Label-or$integrationTarget.head-cne$spec.head-or$integrationTarget.branch-cne$spec.branch-or-not(Test-DispatchSamePath $integrationTarget.worktree $spec.worktree)){throw 'WATCHDOG_UNKNOWN_INTEGRATION_REQUEST'}
   # Normalize only this in-memory reader view. Retained native bytes stay v3.
   $spec.PSObject.Properties.Remove('integrationRequest');$spec.schemaVersion='watchdog-lane/v2'
@@ -628,7 +632,10 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
     $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null})
     if($null-ne$policyFallback){$fallback[$routeKey]=$policyFallback;$policySelected=$true}
   }
-  $policyMoveConsumed=[long]$spec.relaunchCount-gt0-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)
+  $policyMoveConsumed=$false
+  if($policySelected-or($fallback.ContainsKey($routeKey)-and[string]$fallback[$routeKey][0]-cne[string]$spec.harness)){
+    $policyMoveConsumed=[long]$spec.relaunchCount-gt0-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)
+  }
   $consumed=$policyMoveConsumed-and($policySelected-or($fallback.ContainsKey($routeKey)-and[string]$fallback[$routeKey][0]-cne[string]$spec.harness))
   $qualified=-not$consumed-and$fallback.ContainsKey($routeKey)
   if($qualified){
@@ -637,7 +644,7 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
     if($null -eq $nextModel){$qualified=$false}
     # Successor targets have no inherited measured placement. A Todd-ruled
     # four-element entry retains its policy placement, not capability evidence.
-    $nextPlacement=if($null-ne$ruledPlacement){[string]$ruledPlacement}elseif($spec.row-in@(7,14,15)){'override-Todd'}elseif($nextFamily-in@('sol','luna','opus')){'provisional'}else{'measured'}
+    $nextPlacement=if($null-ne$ruledPlacement){[string]$ruledPlacement}elseif($nextFamily-in@('sol','luna','opus')){'provisional'}else{'measured'}
     # Integration watchdog retries retain their selected author. Cross-vendor
     # fallback is admitted only by the pool-gated landed producer, not here.
     if($integrationTarget){
@@ -647,6 +654,12 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
   }
   if(-not$qualified){& $refuseNoFallback;return}
 
+}
+# An integration retry selects its retained author again, so it needs today's
+# row-7 slot. A historical author that slot no longer admits stays readable but
+# closes NO_QUALIFIED_FALLBACK before any prompt, reservation or request exists.
+if($integrationTarget){
+  try{Assert-IntegrationAuthor $nextHarness $nextModel $nextEffort $spec.row $nextPlacement}catch{if($_.Exception.Message-cnotmatch'^INTEGRATION_AUTHOR_UNAVAILABLE'){throw};& $refuseNoFallback;return}
 }
 $nextRouting=$null
 if(-not $freshResume){
@@ -678,7 +691,6 @@ if($prior-and@($prior.rows|Where-Object{$null-ne$_.value.PSObject.Properties['wa
 if($policySelected-and-not(Write-WatchdogPolicyMove $policyMovePath ([ordered]@{schemaVersion='watchdog-policy-move/v1';attemptId=[string]$spec.attemptId;sourceLaunchId=[string]$spec.launchId;sourceLabel=$Label;startRequest=$startRequest;targetLabel=$resumeLabel;harness=$nextHarness;model=$nextModel;effort=$nextEffort;row=[string]$spec.row;placement=$nextPlacement}))){& $refuseNoFallback;return}
 $args=@('-NoProfile','-NonInteractive','-File',$DispatchScript,'-Harness',$nextHarness,'-Model',$nextModel,'-Effort',$nextEffort,'-Row',[string]$spec.row,'-Placement',$nextPlacement,'-LaneRole','implementation','-PromptFile',$resumePrompt,'-Worktree',[string]$spec.worktree,'-Label',$resumeLabel,'-SemanticAttemptId',[string]$spec.attemptId,'-WatchdogRelaunchCount',"$nextCount",'-ResumeOfLaunchId',[string]$spec.launchId,'-StartRequestIdentity',$startRequest,'-StartAcknowledgementPath',$ackPath)
 if($integrationTarget){
-  Assert-IntegrationAuthor $nextHarness $nextModel $nextEffort $spec.row $nextPlacement
   [void](Assert-IntegrationTarget $spec.worktree $integrationTarget.branch $integrationTarget.head $integrationTarget.newBase $integrationTarget.repository $integrationTarget.pr $IntegrationAuthorityFixturePath)
   $integrationTarget.label=$resumeLabel;$integrationTarget.requestIdentity=$observationIdentity
   $targetPath=Join-Path $RuntimeRoot "integration-request-$resumeLabel.json"

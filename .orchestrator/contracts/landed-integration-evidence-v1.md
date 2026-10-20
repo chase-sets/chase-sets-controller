@@ -219,7 +219,8 @@ Neither version changes completion or review authority. A missing attribution
 is not evidence against an otherwise independently validated completion.
 
 Both terminal versions pass the complete-census preflight's closed validator.
-Legacy v1 Terra and current v1 Astra tuples remain distinct exact tuples; v2
+Legacy v1 Terra, retained v1 astra/codex and fable/claude high/row 7/override-Todd,
+and current row-7 policy-slot tuples remain distinct exact tuples; v2
 permits only OWED_ACTIVE_WRITER with closed actual execution attribution or
 explicit null. Duplicate, crossed and malformed terminals remain unknown.
 Fresh target binding is part of planning and is repeated before publication.
@@ -338,8 +339,11 @@ revalidates state and vacancy before plan/publication. The admission is held
 through publication of the new exact child owner and released by that owner
 only. Ordinary claimants also see the original branch during native rebase;
 no attached HEAD is invented. No new lock or launcher exists. The exception
-requires the exact author tuple recorded by the bound prior launch and
-accepted by historical-read validation. Ordinary
+requires an implementation lane on row 7's current policy slot for its harness
+(the slot's current model and effort, with reserve placement as override-Todd)
+or on the retained astra/codex or fable/claude tuple at high, row 7,
+override-Todd; an attached v3 successor also needs exactly the tuple its bound
+prior launch recorded. Ordinary
 implementation/planning dirt and detachment still refuse; detached review
 keeps its existing behavior. Refusal never resolves, aborts, resets, stashes,
 skips, cleans or rewrites target bytes. Force cannot reuse resume outputs.

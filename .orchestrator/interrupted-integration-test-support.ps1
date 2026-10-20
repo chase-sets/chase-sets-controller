@@ -750,12 +750,12 @@ exit 0
         Refusal $f "$incident immutable baseline refuses" 'detached worktrees'
         $f.cfg.dispatch=$candidate;$f.cfg.resumePath=$input
         foreach($role in @('review','planning')){Refusal $f "$incident wrong role $role" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Role',$role)}
-        Refusal $f "$incident wrong route" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol')
-        # 8063: the Todd-ruled Fable 5.1 vendor fallback (4388/5743533387) is the only
-        # second admitted resume route; every other harness/model/effort/row/role/placement refuses.
+        Refusal $f "$incident Sol off its row-7 slot placement" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol');ValidPlan $f "$incident current row-7 codex slot codex/gpt-6.1-sol/high/7/provisional admitted" @('-Dry','-Model','gpt-6.1-sol','-Placement','provisional');ValidPlan $f "$incident current row-7 claude slot claude/claude-opus-5-5/xhigh/7/provisional admitted" @('-Dry','-Harness','claude','-Model','claude-opus-5-5','-Effort','xhigh','-Placement','provisional')
+        # 8063: beside today's row-7 slots, only the retained Astra tuple and the Todd-ruled Fable 5.1
+        # fallback tuple (4388/5743533387) are admitted; every other harness/model/effort/row/role/placement refuses.
         $fable=@('-Dry','-Harness','claude','-Model','claude-fable-5-1')
         ValidPlan $f "$incident 8063 claude/claude-fable-5-1/high/7/override-Todd fallback route admitted" $fable
-        foreach($sibling in @('claude-sonnet-5-5','claude-opus-5-5')){Refusal $f "$incident 8063 claude sibling $sibling refused" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Harness','claude','-Model',$sibling)}
+        foreach($sibling in @('claude-sonnet-5-5','claude-opus-5-5')){Refusal $f "$incident 8063 claude sibling $sibling at the Fable high/override-Todd tuple refused" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Harness','claude','-Model',$sibling)}
         Refusal $f "$incident 8063 Fable wrong effort" 'INTEGRATION_RESUME_ROUTE' ($fable+@('-Effort','medium'))
         Refusal $f "$incident 8063 Fable wrong row" 'INTEGRATION_RESUME_ROUTE' ($fable+@('-Route','14'))
         foreach($role in @('review','planning')){Refusal $f "$incident 8063 Fable wrong role $role" 'INTEGRATION_RESUME_ROUTE' ($fable+@('-Role',$role))}
@@ -783,7 +783,7 @@ exit 0
         Save $f.cfg.resumePath $f.binding
         $routeMutant=Mutant 'route' 'dispatch-lane.ps1' "    throw 'INTEGRATION_RESUME_ROUTE: exact eligible implementation route required'" '    # Synthetic omission: exact role/route guard.'
         Discriminator $f "$incident implementation role" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Role','planning')
-        Discriminator $f "$incident upper-tier route" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Model','gpt-6.1-sol')
+        Discriminator $f "$incident Sol off its row-7 slot placement" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Model','gpt-6.1-sol')
         Discriminator $f "$incident 8063 claude sibling model on the fallback route" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Harness','claude','-Model','claude-sonnet-5-5')
         Discriminator $f "$incident 8063 Fable fallback route effort" 'INTEGRATION_RESUME_ROUTE' $routeMutant ($fable+@('-Effort','medium'))
         $sourceMutant=Mutant 'source-binding' 'landed-integration-evidence.psm1' (GuardLine 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_SOURCE: changed binding') '  # Synthetic omission: source bytes comparison.'
@@ -1467,7 +1467,9 @@ exit $LASTEXITCODE
       $f.cfg.dispatch=Join-Path $PSScriptRoot 'dispatch-lane.ps1'
       ValidPlan9334 $f 'ordinary dead first stop admitted'
       foreach($role in @('review','planning')){Refusal9334 $f "wrong role $role" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Role',$role)}
-      Refusal9334 $f 'wrong route' 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol')
+      Refusal9334 $f 'Sol off its row-7 slot placement' 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol')
+      ValidPlan9334 $f 'current row-7 codex slot codex/gpt-6.1-sol/high/7/provisional admitted for the ordinary variant' @('-Dry','-Model','gpt-6.1-sol','-Placement','provisional')
+      ValidPlan9334 $f 'current row-7 claude slot claude/claude-opus-5-5/xhigh/7/provisional admitted for the ordinary variant' @('-Dry','-Harness','claude','-Model','claude-opus-5-5','-Effort','xhigh','-Placement','provisional')
       ValidPlan9334 $f '8063 claude/claude-fable-5-1/high/7/override-Todd fallback route admitted for the ordinary variant' @('-Dry','-Harness','claude','-Model','claude-fable-5-1')
       $f.cfg.semanticAttemptId='synthetic-other-attempt'
       Refusal9334 $f 'foreign semantic attempt' 'INTEGRATION_RESUME_BINDING: semantic attempt mismatch'
@@ -1824,7 +1826,9 @@ exit $LASTEXITCODE
       Discriminator9334 $f 'watchdog relaunch cannot carry a successor binding' 'INTEGRATION_RESUME_SUCCESSOR: host-only successor dispatch' $hostMutant @('-Dry','-Relaunch','1')
       $tupleMutant=Mutant9334 'successor-exact-tuple' 'dispatch-lane.ps1' (GuardLine9334 'dispatch-lane.ps1' 'SUCCESSOR_GUARD_EXACT_TUPLE') '      # Synthetic omission: exact prior tuple.'
       Discriminator9334 $f 'crossed tuple: eligible fable route against the astra prior' 'INTEGRATION_RESUME_SUCCESSOR: crossed tuple or attempt' $tupleMutant @('-Dry','-Harness','claude','-Model','claude-fable-5-1')
-      Refusal9334 $f 'ineligible route' 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol')
+      # Today's row-7 slot passes the route gate but still crosses the retained Astra prior tuple.
+      Refusal9334 $f 'crossed tuple: current sol slot against the astra prior' 'INTEGRATION_RESUME_SUCCESSOR: crossed tuple or attempt' @('-Dry','-Model','gpt-6.1-sol','-Placement','provisional')
+      Refusal9334 $f 'ineligible route: Sol off its row-7 slot placement' 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol')
       $f.cfg.semanticAttemptId='synthetic-other-attempt';Save9334 $f.config $f.cfg
       Refusal9334 $f 'crossed semantic attempt' 'INTEGRATION_RESUME_BINDING: semantic attempt mismatch'
       $f.cfg.semanticAttemptId='';Save9334 $f.config $f.cfg

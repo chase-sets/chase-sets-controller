@@ -691,7 +691,11 @@ foreach($pr in $orderedPullRequests){
   $requestIdentity=Get-Identity "landed-integration-start/v2`n$legacyIdentity`n$($census.newBase)`n$authorIdentity"
   $ackPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$requestIdentity.json"
   $legacyAckPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$legacyIdentity.json"
-  if($author.family-ceq'astra'-and(Test-Path -LiteralPath $legacyAckPath -PathType Leaf)){$ackPath=$legacyAckPath;$requestIdentity=$legacyIdentity}
+  # Author-free v1 acknowledgements predate the author-bearing v2 identity and
+  # the Fable fallback (#8119): only the standing Astra author wrote them, so
+  # only that exact author tuple may adopt one. Every other author keeps its own.
+  $legacyAuthorRoute=$author.harness-ceq'codex'-and$author.family-ceq'astra'-and$author.effort-ceq'high'-and$author.row-eq7-and$author.placement-ceq'override-Todd'
+  if($legacyAuthorRoute-and(Test-Path -LiteralPath $legacyAckPath -PathType Leaf)){$ackPath=$legacyAckPath;$requestIdentity=$legacyIdentity}
   if(Test-Path -LiteralPath $ackPath -PathType Leaf){
     $disposition.action='RETAINED_START'
     $plan.Add(@{pr=$pr;disposition=$disposition;worktree=$worktree;ackPath=$ackPath;requestIdentity=$requestIdentity})

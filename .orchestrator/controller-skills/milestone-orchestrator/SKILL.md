@@ -342,9 +342,12 @@ Universal launcher rules remain in the shared launcher and tests:
   restores, checks out, switches, or otherwise normalizes the worktree.
 - The sole exception to ordinary clean, attached implementation admission is
   `-InterruptedIntegrationResumePath`, a closed
-  `interrupted-canonical-integration/v1` binding. It permits only
-  the exact author tuple recorded by the bound prior launch and accepted by
-  historical-read validation. Prior launch,
+  `interrupted-canonical-integration/v1` binding. It permits only an
+  implementation lane on row 7's current policy slot for its harness (the
+  slot's current model and effort, with reserve placement as override-Todd) or
+  on the retained astra/codex or fable/claude tuple at high, row 7,
+  override-Todd; an attached v3 successor also needs exactly the tuple its
+  bound prior launch recorded. Prior launch,
   start acknowledgement and request, canonical helper conflict, PR, original
   branch/head, onto, stopped HEAD/commit, native todo/done, complete index
   stages, and every changed byte must agree. Historical first stops require
