@@ -115,7 +115,7 @@ function Test-CapacityCases([string]$Name) {
       foreach($toward in @('claude','codex')) {foreach($k in 0..4) {foreach($row in 1..15) {foreach($onToward in @($false,$true)) {
         $f=Copy-Forecast;$f.balance.toward=$toward;$f.balance.steps=$k;Set-Forecast $f
         $from=if($onToward){$toward}elseif($toward -ceq 'claude'){'codex'}else{'claude'}
-        $model=if($from -ceq 'codex'){'gpt-6.1-sol'}else{'claude-opus-5-5'}
+        $model=if($from -ceq 'codex' -and $row -in @(14,15)){'gpt-6-astra'}elseif($from -ceq 'codex'){'gpt-6.1-sol'}else{'claude-opus-5-5'}
         $p=Plan @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row}
         # Toward Claude every off-toward row with an admitted own Claude slot flips once steps >= 1;
         # toward Codex the ordered prefix still bounds the first k rows.

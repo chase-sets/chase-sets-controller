@@ -9,8 +9,8 @@ try {
   New-Item -ItemType Directory $root | Out-Null
   $future = [datetimeoffset]::UtcNow.AddDays(1).ToString('o')
   $accounts = @(
-    [ordered]@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after=$future}}},
-    [ordered]@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='blocked';next_retry_after=$future}}},
+    [ordered]@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$future}}},
+    [ordered]@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$future}}},
     [ordered]@{provider='claude';disabled=$false;routingModels=@{}}
   )
   function Select-Fixture($Name, $Payload) {
@@ -19,18 +19,18 @@ try {
     Get-LandedIntegrationAuthor $path
   }
   $blocked = Select-Fixture 'blocked' @{accounts=$accounts;error=$null}
-  Assert-True ($blocked.harness -ceq 'claude' -and $blocked.model -ceq 'claude-fable-5-1') 'all blocked with future resets must select Fable on Claude'
-  $accounts[1].routingModels.'gpt-6-astra'.status = 'ready'
-  Assert-True ((Select-Fixture 'one-ready' @{accounts=$accounts}).model -ceq 'gpt-6-astra') 'one ready account must retain Astra'
+  Assert-True ($blocked.harness -ceq 'claude' -and $blocked.model -ceq 'claude-opus-5-5' -and $blocked.effort -ceq 'xhigh') 'all blocked with future resets must select Opus row-7 policy slot'
+  $accounts[1].routingModels.'gpt-6.1-sol'.status = 'ready'
+  Assert-True ((Select-Fixture 'one-ready' @{accounts=$accounts}).model -ceq 'gpt-6.1-sol') 'one ready account must retain Sol'
   $accounts[1].disabled = $true
-  Assert-True ((Select-Fixture 'disabled-ready' @{accounts=$accounts}).model -ceq 'claude-fable-5-1') 'disabled accounts must not defeat an all-enabled block'
-  $accounts[1].disabled = $false; $accounts[1].routingModels.'gpt-6-astra'.status = 'blocked'
+  Assert-True ((Select-Fixture 'disabled-ready' @{accounts=$accounts}).model -ceq 'claude-opus-5-5') 'disabled accounts must not defeat an all-enabled block'
+  $accounts[1].disabled = $false; $accounts[1].routingModels.'gpt-6.1-sol'.status = 'blocked'
   foreach ($variant in @('missing-reset','past-reset','missing-model','bad-account','bad-shape','error','unparsable')) {
     $payload = @{accounts=($accounts | ConvertTo-Json -Depth 8 | ConvertFrom-Json -DateKind String);error=$null}
     switch ($variant) {
-      'missing-reset' { $payload.accounts[0].routingModels.'gpt-6-astra'.PSObject.Properties.Remove('next_retry_after') }
-      'past-reset' { $payload.accounts[0].routingModels.'gpt-6-astra'.next_retry_after = '2020-01-01T00:00:00Z' }
-      'missing-model' { $payload.accounts[0].routingModels.PSObject.Properties.Remove('gpt-6-astra') }
+      'missing-reset' { $payload.accounts[0].routingModels.'gpt-6.1-sol'.PSObject.Properties.Remove('next_retry_after') }
+      'past-reset' { $payload.accounts[0].routingModels.'gpt-6.1-sol'.next_retry_after = '2020-01-01T00:00:00Z' }
+      'missing-model' { $payload.accounts[0].routingModels.PSObject.Properties.Remove('gpt-6.1-sol') }
       'bad-account' { $payload.accounts[1].disabled = 'unknown' }
       'bad-shape' { $payload.accounts = 'blocked' }
       'error' { $payload.error = 'status unavailable' }
@@ -39,10 +39,10 @@ try {
       $path=Join-Path $root 'unparsable.json';[IO.File]::WriteAllText($path, '{invalid')
       $selected=Get-LandedIntegrationAuthor $path
     } else { $selected=Select-Fixture $variant $payload }
-    Assert-True ($selected.model -ceq 'gpt-6-astra') "$variant must fail closed"
+    Assert-True ($selected.model -ceq 'gpt-6.1-sol') "$variant must fail closed"
   }
   $missing = Get-LandedIntegrationAuthor (Join-Path $root 'unreachable.json')
-  Assert-True ($missing.model -ceq 'gpt-6-astra') 'unreachable status must fail closed'
+  Assert-True ($missing.model -ceq 'gpt-6.1-sol') 'unreachable status must fail closed'
   Add-Type -TypeDefinition @'
 using System;
 using System.Net;
@@ -72,7 +72,7 @@ public sealed class IntegrationStatusServer : IDisposable {
 '@
   $previousPoolUrl=$env:CODEX_POOL_STATUS_URL
   try {
-    foreach ($case in @(@('http-blocked',@{accounts=$accounts;error=$null},'claude-fable-5-1'),@('http-ready',@{accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6-astra'=@{status='ready'}}})},'gpt-6-astra'))) {
+    foreach ($case in @(@('http-blocked',@{accounts=$accounts;error=$null},'claude-opus-5-5'),@('http-ready',@{accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='ready'}}})},'gpt-6.1-sol'))) {
       $server=[IntegrationStatusServer]::new(($case[1] | ConvertTo-Json -Depth 8))
       try {
         $env:CODEX_POOL_STATUS_URL="http://127.0.0.1:$($server.Port)/api/status"
@@ -82,8 +82,11 @@ public sealed class IntegrationStatusServer : IDisposable {
   } finally {
     if($null-eq$previousPoolUrl){Remove-Item Env:CODEX_POOL_STATUS_URL -ErrorAction SilentlyContinue}else{$env:CODEX_POOL_STATUS_URL=$previousPoolUrl}
   }
-  foreach ($tuple in @(@('codex','gpt-6-astra'),@('claude','claude-fable-5-1'))) {
-    Assert-IntegrationAuthor $tuple[0] $tuple[1] high 7 override-Todd
+  foreach ($tuple in @(@('codex','gpt-6.1-sol','high',7,'provisional'),@('claude','claude-opus-5-5','xhigh',7,'provisional'))) {
+    Assert-IntegrationAuthor @tuple
+  }
+  foreach ($tuple in @(@('codex','gpt-6-astra','high',7,'override-Todd'),@('claude','claude-fable-5-1','high',7,'override-Todd'))) {
+    Assert-IntegrationAuthor @tuple -HistoricalRead
   }
   foreach ($tuple in @(@('codex','claude-fable-5-1','high',7,'override-Todd'),@('claude','gpt-6-astra','high',7,'override-Todd'),@('claude','claude-fable-5','high',7,'override-Todd'),@('claude','claude-fable-5-1','medium',7,'override-Todd'),@('claude','claude-fable-5-1','high',4,'override-Todd'),@('claude','claude-fable-5-1','high',7,'provisional'))) {
     $rejected=$false;try { Assert-IntegrationAuthor @tuple } catch { $rejected=$_.Exception.Message -like 'INTEGRATION_AUTHOR_UNAVAILABLE*' }

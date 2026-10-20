@@ -200,7 +200,7 @@ function Test-PlatformSeatNativePublication {
       } elseif ($mode -ceq 'reducer-reads-register') {
         Set-CensusSourceMutation $f 'dispatch-ownership.ps1' '$productAnchors = @{}' '$productAnchors = @{}; try { [void][IO.File]::ReadAllText((Join-Path $RuntimeRoot ''platform-handoff.md'')) } catch { throw ''synthetic unreadable register read'' }'
       }
-      $parameters = @{Harness='codex';Model='gpt-6-astra';Effort='high';Row=7;Placement='override-Todd';LaneRole='implementation';
+      $parameters = @{Harness='codex';Model='gpt-6.1-sol';Effort='high';Row=7;Placement='provisional';LaneRole='implementation';
         PromptFile=$prompt;Worktree=$f.product;Label=$label;IntegrationTargetPath=$requestPath;IntegrationAuthorityFixturePath=$f.api;
         StartRequestIdentity=('c'*64);StartAcknowledgementPath=(Join-Path $f.runtime "dispatch-start-$('c'*64).json");
         ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$f.runtime;TestTempRoot=$f.temp;

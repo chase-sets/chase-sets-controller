@@ -1748,14 +1748,15 @@ exit $LASTEXITCODE
   # --- negative controls: each guard actually refuses --------------------------
   Assert-Throws { & $launcher -Harness claude -Model opus -Effort high -PromptFile $prompt -Worktree $worktree -Label "model-alias" -DryRun -ExecutablePath $fakeExe } "EXPLICIT_MODEL_NOT_CURRENT" "unversioned model aliases must refuse"
   Assert-Throws { & $launcher -Harness claude -Model claude-opus-4-8 -Effort high -PromptFile $prompt -Worktree $worktree -Label "deprecated-opus" -DryRun -ExecutablePath $fakeExe } "EXPLICIT_MODEL_NOT_CURRENT" "deprecated Opus 4.8 must refuse"
+  Assert-Throws { & $launcher -Harness codex -Model gpt-6-astra -Effort high -Row 14 -Placement reserve -PromptFile $prompt -Worktree $worktree -Label "raw-reserve" -DryRun -ExecutablePath $fakeExe } "ROUTING_PLACEMENT_UNSUPERVISED" "raw reserve placement must refuse"
   $exactOpus5 = & $launcher -Harness claude -Model claude-opus-5-5 -Effort high -PromptFile $prompt -Worktree $worktree -Label "exact-opus5" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
   Assert-True (@($exactOpus5.arguments) -contains "claude-opus-5-5") "exact Opus 5 remains selectable independently of Opus 4.8"
   $exactFable51 = & $launcher -Harness claude -Model claude-fable-5-1 -Effort high -PromptFile $prompt -Worktree $worktree -Label "exact-fable51" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
   Assert-True (@($exactFable51.arguments) -contains "claude-fable-5-1") "Fable 5.1 is passed to the harness with its exact version"
   $automaticRow7 = & $launcher -Harness codex -Row 7 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "automatic-row7-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
   $automaticRow14 = & $launcher -Harness claude -Row 14 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "automatic-row14-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
-  Assert-True ($automaticRow7.routing.model-ceq'gpt-6-astra'-and$automaticRow7.routing.placement-ceq'override-Todd') 'automatic row-7 Codex author route was not closed as override-Todd'
-  Assert-True ($automaticRow14.routing.model-ceq'claude-fable-5-1'-and$automaticRow14.routing.placement-ceq'override-Todd') 'automatic row-14 Claude author route was not closed as override-Todd'
+  Assert-True ($automaticRow7.routing.model-ceq'gpt-6.1-sol'-and$automaticRow7.routing.placement-ceq'provisional') 'automatic row-7 Codex route follows the policy slot'
+  Assert-True ($automaticRow14.routing.model-ceq'claude-opus-5-5'-and$automaticRow14.routing.placement-ceq'provisional') 'automatic row-14 Claude route follows the policy slot'
   $lifecycleRuntime=Join-Path $testRoot 'automatic-watchdog-lifecycle';New-Item -ItemType Directory -Path $lifecycleRuntime|Out-Null
   foreach($plan in @($automaticRow7,$automaticRow14)){
     $label="automatic-watchdog-row$($plan.routing.row)";$launchId=[guid]::NewGuid().ToString();$now=[datetimeoffset]::UtcNow
@@ -1771,7 +1772,7 @@ exit $LASTEXITCODE
   $placementMutantRoot=Join-Path $testRoot 'dispatch-placement-mutant';New-Item -ItemType Directory -Force -Path $placementMutantRoot|Out-Null
   Get-ChildItem $PSScriptRoot -File|Copy-Item -Destination $placementMutantRoot
   $placementMutant=Join-Path $placementMutantRoot 'dispatch-lane.ps1';$placementSource=Get-Content -LiteralPath $launcher -Raw
-  $placementNeedle="`$Placement = 'override-Todd'";Assert-True (([regex]::Matches($placementSource,[regex]::Escape($placementNeedle))).Count-eq1) 'F3 keep-reserve mutation anchor is not unique'
+  $placementNeedle="`$Placement = if ([string]`$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]`$dispatchRouting.placement }";Assert-True (([regex]::Matches($placementSource,[regex]::Escape($placementNeedle))).Count-eq1) 'F3 reserve mapping mutation anchor is not unique'
   [IO.File]::WriteAllText($placementMutant,$placementSource.Replace($placementNeedle,"`$Placement = [string]`$dispatchRouting.placement"),[Text.UTF8Encoding]::new($false))
   Assert-Throws { & $placementMutant -Harness codex -Row 7 -LaneRole implementation -PromptFile $prompt -Worktree $worktree -Label "keep-reserve-$([guid]::NewGuid())" -DryRun -ExecutablePath $fakeExe } 'ROUTING_PLACEMENT_UNSUPERVISED' 'keep-reserve mutant must refuse before launch'
   Write-Output 'MUTANT F3 keep-reserve RED (ROUTING_PLACEMENT_UNSUPERVISED)'

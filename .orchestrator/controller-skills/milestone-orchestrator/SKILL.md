@@ -343,7 +343,8 @@ Universal launcher rules remain in the shared launcher and tests:
 - The sole exception to ordinary clean, attached implementation admission is
   `-InterruptedIntegrationResumePath`, a closed
   `interrupted-canonical-integration/v1` binding. It permits only
-  codex/gpt-6-astra/high, implementation, row 7, override-Todd. Prior launch,
+  the exact author tuple recorded by the bound prior launch and accepted by
+  historical-read validation. Prior launch,
   start acknowledgement and request, canonical helper conflict, PR, original
   branch/head, onto, stopped HEAD/commit, native todo/done, complete index
   stages, and every changed byte must agree. Historical first stops require
@@ -477,18 +478,13 @@ from `lane-stall-watchdog-batch.ps1`, within five minutes of observation. Harnes
 death resumes the exact partial/worktree on the same configuration; quota or
 session death is classified only from the native provider terminal envelope
 and uses only the current routing row's closed qualified fallback table. The
-installed runtime table sends a
-quota-blocked or refused `gpt-6-astra` author to `claude-fable-5-1` and a
-quota-blocked or refused `gpt-6.1-sol` author to `claude-opus-5-5`, each at the
-same effort and placed `override-Todd` in the closed table. The installed
-table carries Astra-to-Fable only on rows 7/14/15, never rows 8/11/12; that is
-runtime compatibility behavior pending its removal, not a Fable reserve or row
-restriction. A
-`watchdog-lane/v3` integration lane, whose installed author set is still
-hard-coded to codex/`gpt-6-astra`/high/row 7/`override-Todd` until the runtime
-moves it to row 7's policy slots,
-records `lane-blocked`/`NO_QUALIFIED_FALLBACK` instead of falling to
-Fable 5.1. Author lanes and watchdog relaunches retain that uppercase spelling;
+installed runtime uses the current row policy fallback for quota and session
+death; rows 9/11/12 remain closed for host diagnosis, while retained legacy
+Astra/Fable sources move once to the current other-harness policy slot.
+Policy reserve is logged as override-Todd. A
+`watchdog-lane/v3` integration lane uses row 7's current policy-slot author;
+historical Astra/Fable tuples remain observable through historical-read
+validation. Author lanes and watchdog relaunches retain that uppercase spelling;
 strict controller-review dispatch and receipt tuples instead use `override-todd`,
 as required by the strict classifier (#8064). A
 closed v2 specification carries that route directly. The bounded v1 adapter
@@ -497,12 +493,10 @@ same attempt/lane/transcript/configuration/worktree/branch/head; missing,
 ambiguous, wrong-head, wrong-attempt, or wrong-configuration evidence is a
 closed provenance refusal and never selects a row or fallback. A
 supported configuration without one records `lane-blocked`/
-`NO_QUALIFIED_FALLBACK` instead of inventing a move; the installed Astra-to-Fable
-5.1 and Sol 6.1-to-Opus 5.5 moves remain closed watchdog table entries, never
-recomputed from capacity on relaunch. The four own-slot Claude quota fallbacks
-in model-routing apply whether or not the original author was flipped. The
-relaunched Fable 5.1 row-7 author resumes an interrupted
-integration through the same closed binding as the Astra author. `dispatch-lane`
+`NO_QUALIFIED_FALLBACK` instead of inventing a move; policy fallbacks are
+recomputed from the current routing generation, while historical sources stay
+readable. The four own-slot Claude quota fallbacks in model-routing apply
+whether or not the original author was flipped. `dispatch-lane`
 remains the sole launcher and `log-event.ps1` the sole ledger producer, and
 the relaunch continues from the partial, never from zero. A successful row is
 logged only after exact replacement launch ownership/start acknowledgement;

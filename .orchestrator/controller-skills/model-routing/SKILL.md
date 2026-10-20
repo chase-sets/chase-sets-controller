@@ -260,11 +260,14 @@ lane is at relaunch 0 and running its row's own policy slot (same harness,
 family and effort), it relaunches the same semantic attempt on that row's
 other-harness slot, `primary` before `fallback`, at that slot's effort and
 placement, provided the registry admits that effort with usable accounts. The
-closed table always takes precedence. Rows 7, 9, 14 and 15 (installed runtime compatibility exclusions),
-rows 11 and 12 (installed runtime compatibility exclusions), integration lanes, non-implementation
-lanes, lanes that have already relaunched, and routes that are not their row's
-policy slot keep `NO_QUALIFIED_FALLBACK` for host diagnosis. Placement comes
-from the policy slot, never from capability evidence.
+closed table always takes precedence. Rows 9, 11 and 12,
+integration lanes, non-implementation lanes, lanes that have already relaunched
+(except retained legacy Astra/Fable sources), and routes that are not their
+row's policy slot keep NO_QUALIFIED_FALLBACK for host diagnosis. Retained
+legacy Astra/Fable keys are read-only compatibility sources and move once to
+the current other-harness policy slot under the same lineage reservation.
+Placement comes from the policy slot, with reserve logged as override-Todd,
+never from capability evidence.
 
 A lineage crosses harnesses on policy authority at most once. Before
 dispatching a policy move the watchdog atomically reserves a closed
@@ -480,10 +483,10 @@ lane-budget policy applies. The same model may work on several tasks at once
 ordinary lane capacity, heavy-verifier admission and single-writer-per-branch.
 
 Quota/session fallbacks use the row's policy fallback, not a closed
-Astra-to-Fable or Fable-to-Astra policy. Installed runtime compatibility tables
-are not routing authority; dispatch explicit models matching the policy until
-those runtime hard-codes are removed. Author dispatches keep their slot's
-placement; strict controller-review tuples use `override-todd` for an override.
+vendor-specific policy. Legacy keys remain readable only as historical
+sources. Author dispatches keep their slot's placement, mapping a
+policy reserve to runtime override-Todd; strict controller-review tuples use
+override-todd for an override.
 Never substitute a below-bar model merely to keep a lane occupied.
 
 ## Challenger quotas and rebalance

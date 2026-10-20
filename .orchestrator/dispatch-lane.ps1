@@ -363,9 +363,12 @@ function Assert-DispatchInterruptedVacancy {
 
 # Legacy explicit role/placement contracts remain caller-owned. Automatic
 # selection closes the policy route against the watchdog envelope before any
-# launch. Todd's protected author routes use the same override as landed
-# integration authors; an otherwise-unwatchable policy placement is refused.
+# launch. Automatic policy placements are normalized into the watchdog
+# envelope; an otherwise-unwatchable placement is refused.
 if ($routingExplicit) {
+if ($Placement -ceq 'reserve') {
+  throw 'ROUTING_PLACEMENT_UNSUPERVISED: reserve is a policy source value, not a runtime placement'
+}
 if ($Model -cin @('gpt-6.1-sol', 'gpt-6-luna', 'claude-opus-5-5') -and $Placement -ceq 'measured') {
   throw 'dispatch-lane: successor placement is provisional until an independently reviewed routing rebalance'
 }
@@ -413,27 +416,15 @@ $Model = [string]$dispatchRouting.model
 $Effort = [string]$dispatchRouting.effort
 $Harness = [string]$dispatchRouting.harness
 if (-not $routingExplicit) {
-  if ($Placement -and $Placement -cne $dispatchRouting.placement) { throw 'ROUTING_PLACEMENT_MISMATCH: automatic selection owns policy placement' }
-  $Placement = [string]$dispatchRouting.placement
-  $automaticRouteKey = "$($dispatchRouting.row)|$($dispatchRouting.family)/$($dispatchRouting.effort)"
-  $protectedAuthorRoutes = @(
-    '7|astra/high','7|fable/high',
-    '14|fable/medium','14|fable/high','14|astra/high',
-    '15|fable/high','15|astra/high'
-  )
-  if ($LaneRole -eq 'implementation' -and $automaticRouteKey -in $protectedAuthorRoutes) {
-    $Placement = 'override-Todd'
-  }
-  $automaticToddRoutes = $protectedAuthorRoutes + @(
-    '4|opus/high','5|opus/high','6|opus/high','7|opus/high','10|opus/high',
-    '3|opus/low','3|opus/medium','3|opus/high','3|sol/medium',
-    '4|opus/medium','5|opus/medium','10|opus/medium','13|sol/medium',
-    '13|opus/low','13|opus/medium','3|sonnet/medium','13|sonnet/medium','10|sonnet/high'
-  )
+  $automaticPolicyPlacement = if ([string]$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]$dispatchRouting.placement }
+  if ($Placement -and $Placement -cne $automaticPolicyPlacement) { throw 'ROUTING_PLACEMENT_MISMATCH: automatic selection owns policy placement' }
+  # Policy files use `reserve` for a slot that is still Todd-authorized. The
+  # runtime envelope deliberately has no `reserve` placement, so translate it
+  # once at the automatic route boundary and log the admitted placement.
+  $Placement = if ([string]$dispatchRouting.placement -ceq 'reserve') { 'override-Todd' } else { [string]$dispatchRouting.placement }
   $automaticPlacementInvalid = if ($LaneRole -eq 'implementation') {
-    ($Placement -cnotmatch '^(measured|provisional|override-[a-z0-9._-]+)$' -and
-      -not ($Placement -ceq 'override-Todd' -and $automaticRouteKey -cin $automaticToddRoutes)) -or
-    ($dispatchRouting.family -ceq 'sonnet' -and $Placement -cne $(if ($automaticRouteKey -cin @('3|sonnet/high','13|sonnet/high')) { 'provisional' } else { 'override-Todd' }))
+    ($Placement -cnotmatch '^(measured|provisional|override-[a-z0-9._-]+)$') -or
+    ($dispatchRouting.family -ceq 'sonnet' -and $Placement -cne $(if ($dispatchRouting.row -in @(3,13) -and $dispatchRouting.effort -ceq 'high') { 'provisional' } else { 'override-Todd' }))
   } else { $Placement -notmatch '^(measured|provisional|override-[a-z0-9._-]+)$' }
   if ($automaticPlacementInvalid) {
     throw 'ROUTING_PLACEMENT_UNSUPERVISED: automatic policy placement is not admitted by the watchdog'

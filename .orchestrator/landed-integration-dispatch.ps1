@@ -548,7 +548,7 @@ function Assert-IntegrationTerminal($Value){
 Assert-LegacyPlatformRegisterInactive
 $census=if($FixturePath){Read-RebaseJson $FixturePath}else{Get-ProductionCensus}
 $integrationAuthor=if($FixturePath-and-not$PoolStatusFixturePath){
-  Get-LandedIntegrationAuthor -DefaultAstra
+  Get-LandedIntegrationAuthor -DefaultCodex
 }else{Get-LandedIntegrationAuthor $PoolStatusFixturePath}
 $script:worktreeCensus=$null
 Assert-CensusKeys $census @('schemaVersion','complete','newBase','landed','openPullRequests') @('activeBranches')

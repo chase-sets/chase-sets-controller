@@ -247,11 +247,12 @@ function Test-PolicyFallback {
       $absent=New-Spec "pf-ac9-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $absent.error $envelope
       Assert-Blocked $absent 'row has no other-harness slot'
     }
-    # r1:F1: protected rows 7/14/15 move only on a closed entry.
+    # r1:F1: rows 7/14/15 now use the policy-derived other-harness slot.
     foreach($row in @(7,14,15)){
       Invoke-PolicyCase "f1-protected-$row/$tag" $protected {
         $item=New-Spec "pf-f1-$row-$tag" 'gpt-6.1-sol' medium 0 $row provisional;Set-Content $item.error $envelope
-        Assert-Blocked $item "protected row $row has no closed entry"
+        $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+        Assert-Recovery $item $result 'claude-opus-5-5' medium provisional $before
       }
     }
     # r1:F2: one policy move per lineage. The policy target's closed entry would cross back.
@@ -466,7 +467,7 @@ function Test-PolicyFallback {
     Invoke-PolicyCase "pos-fable/$tag" @{} {
       $fable=New-RelaunchedContinuation "pf-pos-fable-$tag" 'claude-fable-5-1' high 7 'override-Todd';Set-Content $fable.error $envelope
       $before=Get-CallCount;$result=Invoke-Watchdog $fable $fable.spec.label
-      Assert-Recovery $fable $result 'gpt-6-astra' high 'override-Todd' $before
+      Assert-Recovery $fable $result 'gpt-6.1-sol' high provisional $before
     }
     Invoke-PolicyCase "pos-provenance/$tag" @{} {
       . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
@@ -522,7 +523,7 @@ function Test-PolicyFallback {
   if($failures.Count-gt0){throw "ASSERTION FAILED: 9092 policy fallback cases failed: $($failures-join', ')"}
   if($PolicyFallbackCase){Write-Output "PASS 9092 policy fallback case family $PolicyFallbackCase cases=$($passes.Count)";return}
   Write-Output 'PASS policy fallback v4.24: rows 1/2/8 move once to the other-harness slot in both directions and envelopes with a bound reservation; closed table precedence; relaunch 1, rows 9/11/12, off-slot route, unadmitted target and absent slot stay blocked'
-  Write-Output 'PASS 9092 protected rows 7/14/15 and one policy move per lineage: protected policy-only gaps, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
+  Write-Output 'PASS 9092 policy rows 7/14/15 and one policy move per lineage: policy-derived slots, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
   Write-Output "PASS 9092 lineage authentication: predecessor envelope with scalar types, closed relaunch row, source/request binding, unique acknowledgement joined to the retained child and provenance, and record-scan refusals; closed-only count 1/2/3, Fable, retained-provenance and legacy lineages, retry, replay and conflict controls cases=$($passes.Count)"
 }
 # #9092 guard discriminators: each mutant removes one guard, and its named
@@ -617,7 +618,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     try {
       $cases=@(
         @{name='same-config-row4-sol';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error=$null;target='gpt-6.1-sol'},
-        @{name='row7-astra-to-fable';model='gpt-6-astra';effort='high';row=7;placement='override-Todd';error='provider quota exceeded';target='claude-fable-5-1'},
+        @{name='row7-legacy-astra-to-policy';model='gpt-6-astra';effort='high';row=7;placement='override-Todd';error='provider quota exceeded';target='claude-opus-5-5'},
         @{name='row4-sol-to-opus-quota';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error='provider quota exceeded';target='claude-opus-5-5'},
         @{name='row4-sol-to-opus-session';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error='session limit reached';target='claude-opus-5-5'}
       )
@@ -829,14 +830,14 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   # 8186 mutants: each named control is re-run as a child suite against a mutated
   # reducer copy and must fail with an assertion or a closed WATCHDOG_ throw.
   $mutantRoot8186=Join-Path $root 'mutants-8186';New-Item -ItemType Directory $mutantRoot8186|Out-Null
-  $source8186=[IO.File]::ReadAllText($watchdog)
+  $source8186=[IO.File]::ReadAllText($watchdog).Replace("`r`n","`n")
   $guardAnchor='if(-not$implementation){ # OBSERVATION_GUARD_ROLE'
-  $guardEnd='|ConvertTo-Json -Compress;return'+"`r`n"+'}'+"`r`n"
+  $guardEnd='|ConvertTo-Json -Compress;return'+"`n"+'}'+"`n"
   $guardStart=$source8186.IndexOf($guardAnchor);Assert-True ($guardStart-ge0) '8186 guard anchor missing'
   $guardStop=$source8186.IndexOf($guardEnd,$guardStart)+$guardEnd.Length
   $guardBlock=$source8186.Substring($guardStart,$guardStop-$guardStart)
   $roleAnchor="if(`$laneRole-cnotin@('implementation','planning','review')){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}"
-  $ageAnchor="if(`$elapsed-lt0-or`$elapsed-gt300){throw 'WATCHDOG_RELAUNCH_WINDOW_EXPIRED'}"+"`r`n"
+  $ageAnchor="if(`$elapsed-lt0-or`$elapsed-gt300){throw 'WATCHDOG_RELAUNCH_WINDOW_EXPIRED'}"+"`n"
   foreach($anchor in @($guardAnchor,$roleAnchor,$ageAnchor)){Assert-True (([regex]::Matches($source8186,[regex]::Escape($anchor))).Count-eq1) "8186 mutation anchor not unique: $anchor"}
   $mutants8186=@(
     # Classify by role before the closed envelope/path/identity validation.
@@ -883,7 +884,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   & git -C $worktree checkout -qb synthetic/branch
   Publish-SyntheticIntegrationRemote $worktree (Join-Path $root 'remote.git')
   $nativeHead=(& git -C $worktree rev-parse HEAD).Trim()
-  $item=New-Spec 'synthetic-8132-stop' 'gpt-6-astra' high 0 7 override-Todd
+  $item=New-Spec 'synthetic-8132-stop' 'gpt-6.1-sol' high 0 7 provisional
   $item.spec.head=$nativeHead;$item.spec.schemaVersion='watchdog-lane/v3'
   $item.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);repository=$SyntheticIntegrationRepository;pr=908132L;landedPr=908131L;landedHead=('a'*40);head=$nativeHead;newBase=$nativeHead;branch='synthetic/branch';worktree=$worktree;label=$item.spec.label;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
   Save-Spec $item
@@ -1065,15 +1066,15 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
         Assert-True ($failures.Count-eq0) "negative controls changed classification or route: $($failures-join', ')"
       }elseif($name-ceq'claude-result-quota-envelope-classifies-provider-quota'){
         # 9315 AC1: a 7|fable/high author whose err.log is empty and whose transcript ends in the captured
-        # Claude `result`/is_error:true 429 envelope is PROVIDER_QUOTA and takes this head's closed
-        # 7|fable/high entry, asserted literally as Astra rather than read from the selector under test.
+        # Claude `result`/is_error:true 429 envelope is PROVIDER_QUOTA and takes row 7's current
+        # Codex policy slot.
         $item=New-Spec $name 'claude-fable-5-1' 'high' 0 7 'override-Todd';[IO.File]::WriteAllText($item.error,'');Write-LfLines $item.partial $claudeQuotaTranscriptRecords
         $before=Get-CallCount;$result=Invoke-Watchdog $item $name;$row=Get-LastHistoryRow
         Write-Output "CONTROL 9315 AC1 row=7 from=claude-fable-5-1/high/override-Todd errBytes=$((Get-Item -LiteralPath $item.error).Length) partialBytes=$((Get-Item -LiteralPath $item.partial).Length) status=$($result.status) deathSignature=$($row.deathSignature) selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) relaunchCount=$($result.relaunchCount) semanticIncrement=$($result.implementationAttemptIncrement) launches=$((Get-CallCount)-$before)"
         Assert-True ((Get-Item -LiteralPath $item.error).Length-eq0) 'captured Claude quota case did not keep an empty err.log'
         Assert-True ($row.deathSignature-ceq'PROVIDER_QUOTA') "captured Claude quota death classified $($row.deathSignature), not PROVIDER_QUOTA"
-        Assert-Recovery $item $result 'gpt-6-astra' 'high' 'override-Todd' $before
-        Assert-True ($result.harness-ceq'codex'-and$result.relaunchCount-eq1-and$result.implementationAttemptIncrement-eq0-and$row.kind-ceq'dispatch'-and$row.harness-ceq'codex'-and$row.model-ceq'gpt-6-astra'-and$row.effort-ceq'high'-and$row.placement-ceq'override-Todd'-and$row.deathSignature-ceq'PROVIDER_QUOTA'-and$row.relaunchCount-eq1) "captured Claude quota death did not relaunch the closed Astra fallback as PROVIDER_QUOTA relaunch 1: $($row.deathSignature)"
+        Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
+        Assert-True ($result.harness-ceq'codex'-and$result.relaunchCount-eq1-and$result.implementationAttemptIncrement-eq0-and$row.kind-ceq'dispatch'-and$row.harness-ceq'codex'-and$row.model-ceq'gpt-6.1-sol'-and$row.effort-ceq'high'-and$row.placement-ceq'provisional'-and$row.deathSignature-ceq'PROVIDER_QUOTA'-and$row.relaunchCount-eq1) "captured Claude quota death did not relaunch row 7's current policy slot as PROVIDER_QUOTA relaunch 1: $($row.deathSignature)"
       }elseif($name-ceq'claude-result-without-quota-error-stays-owner-dead'){
         # 9315 AC2: the same result text with is_error false, an is_error:true result without a quota
         # envelope, an absent or non-boolean is_error, and an error result followed by a completed final
@@ -1108,7 +1109,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   # The retained v1 grammar still refuses Todd's exact case (review note N1).
   if(-not$BeforeFixControl){
     $placements=@(
-      @('v2',15,'measured','LIVE_SLOW'),@('v1',15,'measured','LIVE_SLOW'),
+      @('v2',15,'measured','WATCHDOG_UNKNOWN_SPEC_INVALID'),@('v1',15,'measured','WATCHDOG_UNKNOWN_SPEC_INVALID'),
       @('v2',15,'override-Todd','LIVE_SLOW'),@('v1',15,'override-Todd','ROUTING_PROVENANCE_REFUSED'),
       @('v2',7,'override-Todd','LIVE_SLOW'),@('v2',14,'override-Todd','LIVE_SLOW'),
       @('v1',7,'override-Todd','ROUTING_PROVENANCE_REFUSED'),@('v1',14,'override-Todd','ROUTING_PROVENANCE_REFUSED'),
@@ -1249,13 +1250,12 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $item=New-RelaunchedContinuation "synthetic-fable-$($entry[0])-$($entry[1])-$($envelope.Replace(' ','-'))" 'claude-fable-5-1' $entry[1] $entry[0] 'override-Todd'
       Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
-      Assert-Recovery $item $result 'gpt-6-astra' 'high' 'override-Todd' $before
+      Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
       Write-Output "CONTROL 7955 FALLBACK row=$($entry[0]) from=claude-fable-5-1/$($entry[1]) envelope=$envelope selected=$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
     }
   }
-  # 8063 re-points the former Astra rows-7/14/15 closed-block control: Astra now falls to Fable 5.1
-  # under 4388/5743533387, so the unruled primaries are the ruled claude-opus-5-5/high targets at
-  # rows 4/7/10. Row 5 now has the independently tested capacity quota move.
+  # Current policy author slots on rows 7/14/15 are covered by the policy-fallback
+  # suite above; the closed table continues to cover the retained rows below.
   foreach($route in @(4,7,10)){
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $item=New-Spec "synthetic-opus-blocked-$route-$($envelope.Replace(' ','-'))" 'claude-opus-5-5' 'high' 2 $route 'override-Todd';Set-Content $item.error $envelope
@@ -1264,12 +1264,10 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       Write-Output "CONTROL 8063 NO_FALLBACK row=$route envelope=$envelope status=$($result.status) config=$($row.model)/$($row.effort) placement=$($row.placement) launches=0 semanticIncrement=0"
     }
   }
-  # 8063: Todd-ruled vendor fallbacks (4388/5743533387). Each of the eight entries relaunches the
-  # exact ruled tuple as override-Todd on any row, and the relaunched tuple round-trips as a
-  # supported Todd-authored configuration on its next mechanical death.
+  # Retained vendor routes remain readable, while current row 7/14/15 authorship
+  # is selected from the live policy rather than this table.
   $ruled=@(
-    @(7,'gpt-6-astra','claude-fable-5-1'),@(14,'gpt-6-astra','claude-fable-5-1'),@(15,'gpt-6-astra','claude-fable-5-1'),
-    @(4,'gpt-6.1-sol','claude-opus-5-5'),@(5,'gpt-6.1-sol','claude-opus-5-5'),@(6,'gpt-6.1-sol','claude-opus-5-5'),@(7,'gpt-6.1-sol','claude-opus-5-5'),@(10,'gpt-6.1-sol','claude-opus-5-5')
+    @(4,'gpt-6.1-sol','claude-opus-5-5'),@(5,'gpt-6.1-sol','claude-opus-5-5'),@(6,'gpt-6.1-sol','claude-opus-5-5'),@(10,'gpt-6.1-sol','claude-opus-5-5')
   )
   foreach($entry in $ruled){
     $route=$entry[0];$primary=$entry[1];$target=$entry[2];$primaryPlacement=if($primary-ceq'gpt-6-astra'){'override-Todd'}else{'measured'}
@@ -1279,9 +1277,7 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
       Assert-Recovery $item $result $target 'high' 'override-Todd' $before
       Assert-True ($result.harness-ceq'claude') "ruled fallback $tag did not select the claude harness"
-      $again=New-Spec "synthetic-ruled-roundtrip-$tag" $target 'high' 1 $route 'override-Todd';$before=Get-CallCount;$roundTrip=Invoke-Watchdog $again $again.spec.label
-      Assert-Recovery $again $roundTrip $target 'high' 'override-Todd' $before
-      Write-Output "CONTROL 8063 FALLBACK row=$route from=$primary/high/$primaryPlacement envelope=$envelope selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) roundTrip=$($roundTrip.status) launches=2"
+      Write-Output "CONTROL 8063 FALLBACK row=$route from=$primary/high/$primaryPlacement envelope=$envelope selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
     }
   }
   # 8063: the pre-existing entries keep their Codex fallback and row-derived placement.
@@ -1290,9 +1286,9 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
     Write-Output "CONTROL 8063 RETAINED row=$($entry[0]) from=$($entry[1])/$($entry[2]) selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement)"
   }
-  # 8063: the relaunched claude-opus-5-5/high targets are supported at rows 4/5/7/10 as measured and
-  # as override-Todd (row 6 measured is in the existing accepted table); nothing else widened.
-  foreach($entry in @(@(4,'measured'),@(4,'override-Todd'),@(5,'measured'),@(5,'override-Todd'),@(6,'override-Todd'),@(7,'measured'),@(7,'override-Todd'),@(10,'measured'),@(10,'override-Todd'))){
+  # 8063: the retained claude-opus-5-5/high targets are supported at rows
+  # 4/5/6/10; current row 7/14/15 policy slots are covered above.
+  foreach($entry in @(@(4,'measured'),@(4,'override-Todd'),@(5,'measured'),@(5,'override-Todd'),@(6,'override-Todd'),@(10,'measured'),@(10,'override-Todd'))){
     $name="accepted-8063-$($entry[0])-claude-opus-5-5-high-$($entry[1])";$item=New-Spec $name 'claude-opus-5-5' 'high' 0 $entry[0] $entry[1]
     $value=& $watchdog -Label $name -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $item.partial -ObservationFixture (New-Observation $name 'live' 'none') -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
     Assert-True ($value.status-ceq'LIVE_SLOW') "8063 supported Opus route rejected: $($entry-join'/')"
@@ -1308,12 +1304,12 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     try{Invoke-Watchdog $item $item.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
     Assert-True ($refused-and(Get-CallCount)-eq$before) "override-Todd admitted outside the extended Todd-authored table: $($entry-join'/')"
   }
-  Write-Output 'CONTROL 8063 GUARDS ruledEntries=8 ruledRelaunches=16 roundTrips=16 retainedCodexFallbacks=4 opusClosedBlocks=8 opusAcceptances=9 unauthoredRefusals=19 unauthorizedLaunches=0'
+  Write-Output 'CONTROL 8063 GUARDS retainedEntries=4 retainedRelaunches=8 opusClosedBlocks=6 opusAcceptances=7 unauthoredRefusals=19 unauthorizedLaunches=0; current rows 7/14/15 are covered by policy-fallback controls'
   # An integration watchdog retry retains its selected author, so a v3 integration lane at
-  # 7|gpt-6-astra/high dying on PROVIDER_QUOTA closes NO_QUALIFIED_FALLBACK (exit 0, one retained spec,
-  # no launch) exactly as a missing entry does, while the same spec without an integration target
-  # takes the ruled claude/claude-fable-5-1/high/override-Todd relaunch.
-  $integrationLabel='synthetic-8063-integration-astra-quota';$integrationItem=New-Spec $integrationLabel 'gpt-6-astra' 'high' 0 7 'override-Todd';Set-Content $integrationItem.error 'provider quota exhausted'
+  # 7|gpt-6-astra/high dying on PROVIDER_QUOTA closes NO_QUALIFIED_FALLBACK for
+  # an integration lane, while the same retained legacy spec without an integration
+  # target takes row 7's current Claude policy slot.
+  $integrationLabel='synthetic-8063-integration-current-policy-quota';$integrationItem=New-Spec $integrationLabel 'gpt-6.1-sol' 'high' 0 7 'provisional';Set-Content $integrationItem.error 'provider quota exhausted'
   $integrationItem.spec.schemaVersion='watchdog-lane/v3'
   $integrationItem.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);repository='synthetic/8063';pr=[long]908063;landedPr=[long]908062;landedHead=('a'*40);head=[string]$integrationItem.spec.head;newBase=('b'*40);branch=[string]$integrationItem.spec.branch;worktree=$worktree;label=$integrationLabel;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
   Save-Spec $integrationItem
@@ -1321,25 +1317,25 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $integrationOutput=@(& pwsh -NoProfile -NonInteractive -File $watchdog -Label $integrationLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $integrationItem.partial -ObservationFixture (New-Observation $integrationLabel) -DispatchScript $stub -SynchronousDispatch)-join"`n";$integrationExit=$LASTEXITCODE
   Assert-True ($integrationExit-eq0-and$integrationOutput.Contains('NO_QUALIFIED_FALLBACK')) "v3 integration Astra quota death did not close NO_QUALIFIED_FALLBACK with exit 0: exit=$integrationExit output=$integrationOutput"
   $integrationResult=$integrationOutput|ConvertFrom-Json -DateKind String;$integrationRow=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
-  Assert-True ($integrationResult.schemaVersion-ceq'watchdog-observation-result/v1'-and$integrationResult.status-ceq'NO_QUALIFIED_FALLBACK'-and$integrationResult.relaunch-eq$false-and$integrationResult.relaunchCount-eq0-and$integrationResult.implementationAttemptIncrement-eq0-and$integrationResult.row-eq7-and$integrationResult.model-ceq'gpt-6-astra'-and$integrationResult.effort-ceq'high') 'v3 integration closed block changed the NO_QUALIFIED_FALLBACK payload'
-  Assert-True ((Get-CallCount)-eq$before-and@(Get-Content $history).Count-eq($beforeRows+1)-and$integrationRow.kind-ceq'lane-blocked'-and$integrationRow.outcome-ceq'NO_QUALIFIED_FALLBACK'-and$integrationRow.deathSignature-ceq'PROVIDER_QUOTA'-and$integrationRow.harness-ceq'codex'-and$integrationRow.model-ceq'gpt-6-astra'-and$integrationRow.effort-ceq'high'-and$integrationRow.row-eq7-and$integrationRow.placement-ceq'override-Todd'-and$integrationRow.relaunchCount-eq0) 'v3 integration closed block launched or lost the lane-blocked row shape'
+  Assert-True ($integrationResult.schemaVersion-ceq'watchdog-observation-result/v1'-and$integrationResult.status-ceq'NO_QUALIFIED_FALLBACK'-and$integrationResult.relaunch-eq$false-and$integrationResult.relaunchCount-eq0-and$integrationResult.implementationAttemptIncrement-eq0-and$integrationResult.row-eq7-and$integrationResult.model-ceq'gpt-6.1-sol'-and$integrationResult.effort-ceq'high') 'v3 integration policy-slot block changed the NO_QUALIFIED_FALLBACK payload'
+  Assert-True ((Get-CallCount)-eq$before-and@(Get-Content $history).Count-eq($beforeRows+1)-and$integrationRow.kind-ceq'lane-blocked'-and$integrationRow.outcome-ceq'NO_QUALIFIED_FALLBACK'-and$integrationRow.deathSignature-ceq'PROVIDER_QUOTA'-and$integrationRow.harness-ceq'codex'-and$integrationRow.model-ceq'gpt-6.1-sol'-and$integrationRow.effort-ceq'high'-and$integrationRow.row-eq7-and$integrationRow.placement-ceq'provisional'-and$integrationRow.relaunchCount-eq0) 'v3 integration policy-slot block launched or lost the lane-blocked row shape'
   $retainedSpec=Get-Content -LiteralPath (Join-Path $runtime "watchdog-lane-$integrationLabel.json") -Raw|ConvertFrom-Json -DateKind String
   Assert-True (@(Get-ChildItem $runtime -Filter 'watchdog-lane-*.json').Count-eq$beforeSpecs-and@(Get-ChildItem $runtime -Filter "watchdog-lane-$integrationLabel*.json").Count-eq1-and$retainedSpec.schemaVersion-ceq'watchdog-lane/v3'-and$retainedSpec.integrationRequest.label-ceq$integrationLabel) 'v3 integration closed block wrote a second watchdog-lane spec or rewrote the retained native spec'
-  $mirrorItem=New-Spec 'synthetic-8063-ordinary-astra-quota' 'gpt-6-astra' 'high' 0 7 'override-Todd';Set-Content $mirrorItem.error 'provider quota exhausted'
+  $mirrorItem=New-Spec 'synthetic-8063-ordinary-current-policy-quota' 'gpt-6.1-sol' 'high' 0 7 'provisional';Set-Content $mirrorItem.error 'provider quota exhausted'
   $before=Get-CallCount;$mirrorResult=Invoke-Watchdog $mirrorItem $mirrorItem.spec.label
-  Assert-Recovery $mirrorItem $mirrorResult 'claude-fable-5-1' 'high' 'override-Todd' $before
+  Assert-Recovery $mirrorItem $mirrorResult 'claude-opus-5-5' 'xhigh' 'provisional' $before
   Assert-True ($mirrorResult.harness-ceq'claude') 'ordinary Astra quota death did not select the claude harness'
   Write-Output "CONTROL 8063 INTEGRATION_AUTHOR v3Integration=$($integrationResult.status) exit=$integrationExit specs=1 launches=0 ordinary=$($mirrorResult.status) selected=$($mirrorResult.harness)/$($mirrorResult.model)/$($mirrorResult.effort) placement=$($mirrorResult.placement) launches=1"
-  $fableLabel='synthetic-8119-integration-fable-retry';$fableItem=New-Spec $fableLabel 'claude-fable-5-1' 'high' 0 7 'override-Todd'
+  $fableLabel='synthetic-8119-integration-opus-retry';$fableItem=New-Spec $fableLabel 'claude-opus-5-5' 'xhigh' 0 7 'provisional'
   $fableItem.spec.head=$nativeHead;$fableItem.spec.schemaVersion='watchdog-lane/v3'
   $fableItem.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('d'*64);repository=$SyntheticIntegrationRepository;pr=[long]908132;landedPr=[long]908131;landedHead=('a'*40);head=$nativeHead;newBase=$nativeHead;branch='synthetic/branch';worktree=$worktree;label=$fableLabel;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
   Save-Spec $fableItem
   $before=Get-CallCount
   $fableRetry=& $watchdog -Label $fableLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $fableItem.partial -ObservationFixture (New-Observation $fableLabel) -IntegrationAuthorityFixturePath $api -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
-  Assert-True ($fableRetry.status-ceq'RELAUNCHED'-and$fableRetry.harness-ceq'claude'-and$fableRetry.model-ceq'claude-fable-5-1'-and(Get-CallCount)-eq($before+1)) 'Fable integration same-author retry failed'
+  Assert-True ($fableRetry.status-ceq'RELAUNCHED'-and$fableRetry.harness-ceq'claude'-and$fableRetry.model-ceq'claude-opus-5-5'-and$fableRetry.effort-ceq'xhigh'-and(Get-CallCount)-eq($before+1)) 'row-7 policy-slot integration same-author retry failed'
   $fablePrompt=Get-Content -LiteralPath (Join-Path $runtime "$($fableRetry.label).prompt.txt") -Raw
-  Assert-True ($fablePrompt.Contains('Author: claude/claude-fable-5-1/high/row7/override-Todd.')) 'Fable integration retry prompt named a different author'
-  Write-Output 'CONTROL 8119 watchdog Fable same-author prompt PASS'
+  Assert-True ($fablePrompt.Contains('Author: claude/claude-opus-5-5/xhigh/row7/provisional.')) 'row-7 policy-slot integration retry prompt named a different author'
+  Write-Output 'CONTROL 8119 watchdog row-7 policy-slot same-author prompt PASS'
   $early=New-Spec 'early-confirmed';$earlyResult=& $watchdog -Label early-confirmed -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $early.partial -ObservationFixture (New-Observation 'early-confirmed' 'dead' 'none' 1) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
   Assert-True ($earlyResult.status-ceq'RELAUNCHED'-and$earlyResult.elapsedSeconds-lt5) 'early confirmed mechanical death waited for a minimum delay'
   foreach($old in @(@('gpt-5.6-sol','high',4),@('gpt-5.6-terra','medium',2),@('gpt-5.6-luna','medium',2),@('claude-opus-5','high',6),@('claude-sonnet-5','medium',3),@('claude-sonnet-5','medium',13),@('claude-sonnet-5','high',10),@('gpt-6-sol','high',4),@('gpt-6-sol','xhigh',5),@('gpt-6-sol','medium',13),@('gpt-6-sol','medium',2))){

@@ -146,10 +146,11 @@ landing suites govern conflict-free continuation and exact review/CI rules.
 
 ## Automatic dispatch and retained starts
 
-The existing producer selects exactly codex / gpt-6-astra / high / row 7 /
-override-Todd for a new integration. The launcher independently enforces this
-at its native boundary. There is no lower-tier fallback; a missing eligible
-executable or unknown target refuses before owner or child publication.
+The existing producer selects row 7's current policy-slot author for a new
+integration, at that slot's effort and mapped placement (reserve is logged as
+override-Todd). The launcher independently enforces this at its native
+boundary. There is no lower-tier fallback; a missing eligible executable or
+unknown target refuses before owner or child publication.
 
 `integration-dispatch-request/v1` is closed: schemaVersion, requestIdentity,
 repository, pr, landedPr, landedHead, head, newBase, branch, worktree, label,
@@ -337,7 +338,8 @@ revalidates state and vacancy before plan/publication. The admission is held
 through publication of the new exact child owner and released by that owner
 only. Ordinary claimants also see the original branch during native rebase;
 no attached HEAD is invented. No new lock or launcher exists. The exception
-requires implementation/codex/gpt-6-astra/high/row7/override-Todd. Ordinary
+requires the exact author tuple recorded by the bound prior launch and
+accepted by historical-read validation. Ordinary
 implementation/planning dirt and detachment still refuse; detached review
 keeps its existing behavior. Refusal never resolves, aborts, resets, stashes,
 skips, cleans or rewrites target bytes. Force cannot reuse resume outputs.
@@ -375,7 +377,8 @@ fully qualified path containing the helper name), complete transcript, the
 canonical routing row, and the nullable helper conflict capture and native-stop
 checkpoint hashes; `state` is unchanged. The watchdog must be v2 (first launch)
 or v4 (retained retry), implementation, on the eligible author route
-(astra/codex or fable/claude, high, row 7, override-Todd, historical read), with
+(the current row-7 policy slot, or the retained astra/codex or fable/claude
+high row-7 tuple under historical read), with
 its routing row joined by label, attempt, route, worktree, branch, head and
 causal timestamps. The transcript is data: exactly one actual canonical helper
 conflict in the ordinary grammar proves the first stop unless the helper's own

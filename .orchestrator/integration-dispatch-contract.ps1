@@ -10,13 +10,6 @@ function Get-IntegrationRoutingAuthority {
   catch { throw "INTEGRATION_ROUTING_DATA_REFUSED: $($_.Exception.Message)" }
 }
 
-function Get-IntegrationFamilyCurrent([object]$Data,[string]$Family) {
-  $entry = $Data.registry.families.PSObject.Properties[$Family]
-  if ($null -eq $entry -or $entry.Value.current -isnot [string]) {
-    throw "INTEGRATION_ROUTING_FAMILY_MISSING: $Family"
-  }
-  return [string]$entry.Value.current
-}
 function Assert-IntegrationRequest($Request) {
   $keys = @('schemaVersion','requestIdentity','repository','pr','landedPr','landedHead','head','newBase','branch','worktree','label','sourceIdentity','sourceHead','runtimeRoot','historyPath')
   foreach($key in @('schemaVersion','requestIdentity','repository','landedHead','head','newBase','branch','worktree','label','sourceIdentity','sourceHead','runtimeRoot','historyPath')) { if ($Request.$key -isnot [string]) { throw "INTEGRATION_REQUEST_INVALID: $key type" } }
@@ -41,19 +34,25 @@ function Test-IntegrationAuthorRoute($Harness, $Model, $Effort, $Row, $Placement
   $data = Get-IntegrationRoutingAuthority -ReadOnly
   $identity = Get-RoutingModelIdentity $data.registry $Model
   if ($null -eq $identity -or (-not $identity.current -and -not $HistoricalRead)) { return $false }
-  $astra = $Harness -ceq 'codex' -and $identity.family -ceq 'astra' -and $identity.provider -ceq $Harness
-  $fable = $Harness -ceq 'claude' -and $identity.family -ceq 'fable' -and $identity.provider -ceq $Harness
-  return ($astra -or $fable) -and $Effort -ceq 'high' -and $Row -eq 7 -and $Placement -ceq 'override-Todd'
+  if ($HistoricalRead -and $Effort -ceq 'high' -and $Row -eq 7 -and $Placement -ceq 'override-Todd' -and
+      (($Harness -ceq 'codex' -and $identity.family -ceq 'astra' -and $identity.provider -ceq $Harness) -or
+       ($Harness -ceq 'claude' -and $identity.family -ceq 'fable' -and $identity.provider -ceq $Harness))) { return $true }
+  if (-not $identity.current -or $identity.provider -cne $Harness -or $Row -ne 7) { return $false }
+  try {
+    $slot = Resolve-RoutingSelection -Row 7 -Harness $Harness -ReadOnly
+    $mappedPlacement = if ([string]$slot.placement -ceq 'reserve') { 'override-Todd' } else { [string]$slot.placement }
+    return ($slot.model -ceq $Model -and $slot.effort -ceq $Effort -and $mappedPlacement -ceq $Placement)
+  } catch { return $false }
 }
 
 function Assert-IntegrationAuthor($Harness, $Model, $Effort, $Row, $Placement, [switch]$HistoricalRead) {
   if (-not (Test-IntegrationAuthorRoute $Harness $Model $Effort $Row $Placement -HistoricalRead:$HistoricalRead)) {
-    throw 'INTEGRATION_AUTHOR_UNAVAILABLE: requires current astra/codex or fable/claude family at high/7/override-Todd'
+    throw 'INTEGRATION_AUTHOR_UNAVAILABLE: requires the current row-7 policy slot at its effort and mapped placement'
   }
 }
 
-function Get-IntegrationPoolPreference([string]$AstraModel,[string]$PoolStatusFixturePath) {
-  $astra='codex';$fable='claude'
+function Get-IntegrationPoolPreference([string]$CodexModel,[string]$PoolStatusFixturePath) {
+  $codex='codex';$claude='claude'
   try {
     $body = if ($PoolStatusFixturePath) {
       Get-Content -LiteralPath $PoolStatusFixturePath -Raw
@@ -62,34 +61,34 @@ function Get-IntegrationPoolPreference([string]$AstraModel,[string]$PoolStatusFi
       (Invoke-WebRequest -Uri $url -TimeoutSec 3 -NoProxy -ErrorAction Stop).Content
     }
     $status = $body | ConvertFrom-Json -DateKind String -ErrorAction Stop
-    if ($null -eq $status -or $status.error -or $status.accounts -isnot [array]) { return $astra }
+    if ($null -eq $status -or $status.error -or $status.accounts -isnot [array]) { return $codex }
     foreach ($account in $status.accounts) {
-      if ($account.provider -isnot [string] -or $account.disabled -isnot [bool]) { return $astra }
+      if ($account.provider -isnot [string] -or $account.disabled -isnot [bool]) { return $codex }
     }
     $accounts = @($status.accounts | Where-Object { $_.provider -ceq 'codex' -and $_.disabled -ceq $false })
-    if ($accounts.Count -eq 0) { return $astra }
+    if ($accounts.Count -eq 0) { return $codex }
     $now = [datetimeoffset]::UtcNow
     foreach ($account in $accounts) {
-      $routeProperty = $account.routingModels.PSObject.Properties[$AstraModel]
+      $routeProperty = $account.routingModels.PSObject.Properties[$CodexModel]
       $route = if ($routeProperty) { $routeProperty.Value } else { $null }
       $retry = [datetimeoffset]::MinValue
       if ($null -eq $route -or $route.status -cne 'blocked' -or
           $route.next_retry_after -isnot [string] -or
           $route.next_retry_after -cnotmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$' -or
-          -not [datetimeoffset]::TryParse($route.next_retry_after, [ref]$retry) -or $retry -le $now) { return $astra }
+          -not [datetimeoffset]::TryParse($route.next_retry_after, [ref]$retry) -or $retry -le $now) { return $codex }
     }
-    return $fable
-  } catch { return $astra }
+    return $claude
+  } catch { return $codex }
 }
 
-function Get-LandedIntegrationAuthor([string]$PoolStatusFixturePath = '', [switch]$DefaultAstra) {
+function Get-LandedIntegrationAuthor([string]$PoolStatusFixturePath = '', [switch]$DefaultCodex) {
   $data = Get-IntegrationRoutingAuthority
-  $astraModel = Get-IntegrationFamilyCurrent $data 'astra'
-  $preference = if ($DefaultAstra) { 'codex' } else { Get-IntegrationPoolPreference $astraModel $PoolStatusFixturePath }
-  # The status signal selects a preferred family, never bypasses the registry's
-  # per-account admission. Protected authorship still closes the resolved route.
+  $codexModel = (Resolve-RoutingSelection -Row 7 -Harness codex -ReadOnly).model
+  $preference = if ($DefaultCodex) { 'codex' } else { Get-IntegrationPoolPreference $codexModel $PoolStatusFixturePath }
+  # The status signal selects a preferred harness, never bypasses the policy
+  # slot's registry admission or changes its effort and placement.
   $author = Resolve-RoutingSelection -Row 7 -Harness $preference
-  $author.placement = 'override-Todd'
+  if ([string]$author.placement -ceq 'reserve') { $author.placement = 'override-Todd' }
   Assert-IntegrationAuthor $author.harness $author.model $author.effort $author.row $author.placement
   return $author
 }

@@ -171,11 +171,14 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   # Implementation predecessors retain family-derived historical routes, including
   # frozen compatibility routes whose family slot left the live policy.
   $historical=$Value.state-cin@('running','exited')-and$(if($Implementation){$historicalRoutes.ContainsKey($key)-or$Value.model-ceq'gpt-5.6-terra'}else{$Value.model-cin$retiredSelectors})
-  # These standing author placements come from Todd's row-7/14/15 ruling,
-  # never from task prose or the ordinary row-7 Sol compatibility route.
-  # Historical predecessor fallback targets remain readable, never selectable.
-  $astraAuthor=$key-cin@('7|astra/high','14|astra/high')
-  $toddAuthor=$astraAuthor-or$key-cin@('7|fable/high','14|fable/medium','14|fable/high','15|fable/high','15|astra/high','4|opus/high','5|opus/high','6|opus/high','7|opus/high','10|opus/high')
+  # Current policy slots are the source of Todd-authorized placements. Legacy
+  # Astra/Fable keys remain readable for retained lanes, but are never inferred
+  # as fresh policy routes.
+  $policySlot=$false
+  $rowEntry=$routingAuthority.policy.rows.PSObject.Properties[[string]$Value.row]
+  if($rowEntry){foreach($slot in @($rowEntry.Value.slots.PSObject.Properties)){if([string]$slot.Value.family-ceq[string]$identity.family-and[string]$slot.Value.effort-ceq[string]$Value.effort){$policySlot=$true;break}}}
+  $legacyPolicyRoute=$key-cin@('7|astra/high','7|fable/high','14|fable/medium','14|fable/high','14|astra/high','15|fable/high','15|astra/high')
+  $toddAuthor=$policySlot-or$legacyPolicyRoute-or$key-cin@('4|opus/high','5|opus/high','6|opus/high','7|opus/high','10|opus/high')
   $toddAuthor=$toddAuthor-or$key-cin$benchmarkAuthorRoutes
   $sonnetQuota=$Implementation-and$key-cin@('3|sonnet/high','13|sonnet/high')
   $toddAuthor=$toddAuthor-or($identity-and$identity.family-ceq'sonnet'-and-not$sonnetQuota)
@@ -185,7 +188,7 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   $routeEnvelopeInvalid=if($Implementation -and $historical){$false}elseif($Implementation){
     (-not$supported.ContainsKey($key))-or
     ($Value.placement-cnotmatch'^(measured|provisional|override-[a-z0-9._-]+)$'-and-not($toddAuthor-and$Value.placement-ceq'override-Todd'))-or
-    ($astraAuthor-and$Value.placement-cne'override-Todd')
+    ($legacyPolicyRoute-and$Value.placement-cne'override-Todd')
   }else{
     $Value.row-lt0-or$Value.row-gt15-or$Value.placement-isnot[string]-or$Value.placement-notmatch'^$|^(measured|provisional|override-[a-z0-9._-]+)$'
   }
@@ -210,27 +213,30 @@ function Test-WatchdogEnvelopeFields($Value,[string[]]$Keys,[string]$ExpectedLab
 # row's own policy slot (same harness, family and effort) moves once to the same
 # row's other-harness slot, primary before fallback, at that slot's effort and
 # placement, if the registry admits that effort with usable accounts. Protected
-# authorship rows 7/9/14/15, review rows 11/12, integration lanes and off-slot
-# routes keep NO_QUALIFIED_FALLBACK: registry admission is not upper-tier
-# authorship authority, so a protected row moves only on a closed entry.
+# Review rows 9/11/12, integration lanes and off-slot routes keep
+# NO_QUALIFIED_FALLBACK. Policy slots on rows 7/14/15 are ordinary current
+# author slots; their reserve placement is mapped to override-Todd at runtime.
 function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext){
   if(-not$Implementation-or$null-ne$IntegrationContext-or$null-eq$Identity-or-not$Identity.current){return $null}
   $row=[int]$Spec.row
-  if($row-lt1-or$row-gt15-or$row-in@(7,9,11,12,14,15)){return $null}
-  if([long]$Spec.relaunchCount-ne0){return $null}
+  if($row-lt1-or$row-gt15-or$row-in@(9,11,12)){return $null}
+  $routeKey="$row|$($Identity.family)/$($Spec.effort)"
+  $legacy=$routeKey-cin@('7|astra/high','7|fable/high','14|fable/medium','14|fable/high','14|astra/high','15|fable/high','15|astra/high')
+  if([long]$Spec.relaunchCount-ne0-and-not$legacy){return $null}
   $rowEntry=$Data.policy.rows.PSObject.Properties[[string]$row]
   if($null-eq$rowEntry){return $null}
   $slots=@($rowEntry.Value.slots.PSObject.Properties)
   $harness=[string]$Spec.harness
   $own=@($slots|Where-Object{$_.Name-cin@("$harness.primary","$harness.fallback")-and[string]$_.Value.family-ceq[string]$Identity.family-and[string]$_.Value.effort-ceq[string]$Spec.effort})
-  if($own.Count-eq0){return $null}
+  if($own.Count-eq0-and-not$legacy){return $null}
   $other=if($harness-ceq'codex'){'claude'}else{'codex'}
   foreach($name in @("$other.primary","$other.fallback")){
     $slot=@($slots|Where-Object{$_.Name-ceq$name})
     if($slot.Count-ne1){continue}
     $model=Get-WatchdogCurrentModel $Data ([string]$slot[0].Value.family)
     if($null-eq$model-or(Get-RoutingAdmissionReason $Data.registry $model ([string]$slot[0].Value.effort))){continue}
-    return @($other,[string]$slot[0].Value.family,[string]$slot[0].Value.effort,[string]$slot[0].Value.placement)
+    $placement=if([string]$slot[0].Value.placement-ceq'reserve'){'override-Todd'}else{[string]$slot[0].Value.placement}
+    return @($other,[string]$slot[0].Value.family,[string]$slot[0].Value.effort,$placement)
   }
   return $null
 }
@@ -605,34 +611,25 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
     '4|astra/high'=@('codex','sol','high');'4|sol/medium'=@('codex','sol','high')
     '5|astra/high'=@('codex','sol','high');'5|sol/xhigh'=@('codex','sol','high')
     '6|opus/high'=@('codex','sol','high');'6|astra/high'=@('codex','sol','high')
-    # Row 7 has no closed scope discriminator: never infer noncore authority
-    # for a lower-tier fallback. Astra also preserves the Fable reserve.
-    '7|fable/high'=@('codex','astra','high')
     '10|astra/high'=@('codex','sol','high');'10|sonnet/high'=@('codex','sol','high')
-    '14|fable/medium'=@('codex','astra','high');'14|fable/high'=@('codex','astra','high')
-    '15|fable/high'=@('codex','astra','high')
-    # Todd-ruled vendor fallbacks (4388/5743533387, #8063): a quota-blocked or
-    # refused Astra author falls to the Fable family and a Sol author falls to
-    # the Opus family at the same effort. The fourth element is
-    # the ruled placement: every entry below relaunches as override-Todd on
-    # any row because Todd placed the fallback author, not the routing row.
-    '7|astra/high'=@('claude','fable','high','override-Todd');'14|astra/high'=@('claude','fable','high','override-Todd');'15|astra/high'=@('claude','fable','high','override-Todd')
     '4|sol/high'=@('claude','opus','high','override-Todd');'5|sol/high'=@('claude','opus','high','override-Todd');'6|sol/high'=@('claude','opus','high','override-Todd')
-    '7|sol/high'=@('claude','opus','high','override-Todd');'10|sol/high'=@('claude','opus','high','override-Todd')
+    '10|sol/high'=@('claude','opus','high','override-Todd')
     '3|sol/medium'=@('claude','opus','medium','override-Todd');'13|sol/medium'=@('claude','opus','medium','override-Todd')
     '3|opus/medium'=@('codex','sol','medium','override-Todd');'13|opus/medium'=@('codex','sol','medium','override-Todd')
     '13|opus/low'=@('codex','sol','medium','override-Todd')
     '10|opus/medium'=@('codex','sol','high','override-Todd');'4|opus/medium'=@('codex','sol','high','override-Todd')
     '5|opus/high'=@('codex','sol','high','override-Todd')
   }
-  # One policy move per lineage, before closed selection: a continuation whose
-  # closed entry would cross harnesses needs an authenticated, unconsumed lineage.
-  $consumed=$fallback.ContainsKey($routeKey)-and[long]$spec.relaunchCount-gt0-and$fallback[$routeKey][0]-cne[string]$spec.harness-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)
-  # The closed table keeps precedence; the policy fills only its gaps.
-  if(-not$consumed-and-not$fallback.ContainsKey($routeKey)){
+  # The closed table keeps precedence; the policy fills its gaps. Legacy
+  # Astra/Fable keys are intentionally admitted through the policy reader at
+  # any relaunch count so retained lanes can cross to today's slot once.
+  $policyFallback=$null
+  if(-not$fallback.ContainsKey($routeKey)){
     $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null})
     if($null-ne$policyFallback){$fallback[$routeKey]=$policyFallback;$policySelected=$true}
   }
+  $policyMoveConsumed=[long]$spec.relaunchCount-gt0-and(Test-WatchdogPolicyMoveConsumed $runtimeFull $spec)
+  $consumed=$policyMoveConsumed-and($policySelected-or($fallback.ContainsKey($routeKey)-and[string]$fallback[$routeKey][0]-cne[string]$spec.harness))
   $qualified=-not$consumed-and$fallback.ContainsKey($routeKey)
   if($qualified){
     $nextHarness,$nextFamily,$nextEffort,$ruledPlacement=$fallback[$routeKey]
