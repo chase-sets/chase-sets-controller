@@ -2346,12 +2346,12 @@ try {
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
-     if ($isTimedRoute -and $isHostVerifier -and -not $callerBinding.Record) {
+    if ($isTimedRoute -and $isHostVerifier -and -not $callerBinding.Record) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
       if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }
       if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
       if (-not (Test-SafeDirectory $receiptRoot)) { throw "heavy-verifier: receipt directory is unsafe" }
-       $receiptPath = Join-Path $receiptRoot $(if ($isDiagnostic) { "host-heavy-diagnostic-$lockId.json" } else { "host-heavy-verifier-$lockId.json" })
+      $receiptPath = Join-Path $receiptRoot $(if ($isDiagnostic) { "host-heavy-diagnostic-$lockId.json" } else { "host-heavy-verifier-$lockId.json" })
       if (Test-Path -LiteralPath $receiptPath) { throw "heavy-verifier: diagnostic receipt path already exists" }
     }
     # The child is started normally, then assigned immediately. The assignment

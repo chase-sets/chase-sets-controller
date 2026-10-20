@@ -86,11 +86,45 @@ import fs from "node:fs";
 import path from "node:path";
 fs.appendFileSync(path.resolve(".orchestrator/artifacts/preflight"), "preflight\n");
 '@
+  Set-Content -LiteralPath (Join-Path $worktree 'scripts/run-workspaces.mjs') @'
+import fs from "node:fs";
+import {spawn} from "node:child_process";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
+
+export function loadTestEnvironment({includeTestDatabaseUrl = false} = {}) {
+  if (includeTestDatabaseUrl) process.env.TEST_DATABASE_URL = "fixture://test-db";
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  const args = process.argv.slice(2);
+  fs.writeFileSync(path.resolve(".orchestrator/artifacts/run-workspaces-args"), JSON.stringify(args));
+  if (args.length !== 2 || args[0] !== "test:db*" || args[1] !== "--workspace=@chase-sets/payments") {
+    process.stderr.write("fixture run-workspaces received unexpected arguments\n");
+    process.exitCode = 2;
+  } else {
+    loadTestEnvironment({includeTestDatabaseUrl: true});
+    const child = spawn(process.execPath, [path.resolve("scripts/db-body.mjs")], {
+      cwd: path.resolve("bounded-contexts/payments"),
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", (error) => { process.stderr.write(`${error}\n`); process.exitCode = 1; });
+    child.once("exit", (code, signal) => { process.exitCode = signal ? 1 : (code ?? 1); });
+  }
+}
+'@
   Set-Content -LiteralPath (Join-Path $worktree 'scripts/db-body.mjs') @'
 import fs from "node:fs";
 import {spawn} from "node:child_process";
 import path from "node:path";
 const out = path.resolve("../../.orchestrator/artifacts");
+if (!process.env.TEST_DATABASE_URL) {
+  process.stderr.write("TEST_DATABASE_URL is required by the fixture DB test\n");
+  process.exitCode = 4;
+  process.exit();
+}
 fs.appendFileSync(`${out}/body`, "body\n");
 if (process.env.WORKSPACE_DB_HANG === "1") {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio: "ignore", windowsHide: true});
@@ -101,6 +135,11 @@ if (process.env.WORKSPACE_DB_HANG === "1") {
   Set-Content -LiteralPath (Join-Path $worktree 'scripts/file-body.mjs') @'
 import fs from "node:fs";
 import path from "node:path";
+if (!process.env.TEST_DATABASE_URL) {
+  process.stderr.write("TEST_DATABASE_URL is required by the fixture vitest\n");
+  process.exitCode = 4;
+  process.exit();
+}
 fs.writeFileSync(path.resolve("../../.orchestrator/artifacts/file-args"), JSON.stringify(process.argv.slice(2)));
 '@
   Set-Content -LiteralPath (Join-Path $worktree 'bounded-contexts/payments/node_modules/.bin/vitest.cmd') @'
@@ -120,6 +159,9 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $noFile = Invoke-Route @('-WorkspaceDbTest', '@chase-sets/payments', '-WorkspaceDbBudgetSeconds', '10')
   Assert-True (Test-Path (Join-Path $artifacts 'preflight')) 'no-file route ran DB preflight'
   Assert-True (Test-Path (Join-Path $artifacts 'body')) 'no-file route ran Payments test:db'
+  $runWorkspaceArgs = @(Get-Content (Join-Path $artifacts 'run-workspaces-args') -Raw | ConvertFrom-Json)
+  Assert-True ($runWorkspaceArgs.Count -eq 2 -and $runWorkspaceArgs[0] -ceq 'test:db*' -and
+    $runWorkspaceArgs[1] -ceq '--workspace=@chase-sets/payments') 'no-file route invokes run-workspaces with the exact scoped DB selector'
   $noFileReceipt = @(Get-Receipts | Where-Object workspace -eq '@chase-sets/payments')[0]
   Assert-True ($noFileReceipt -and $noFileReceipt.file -eq $null -and $noFileReceipt.budgetSeconds -eq 10 -and
     $noFileReceipt.timedOut -eq $false -and $noFileReceipt.elapsedMs -ge 0) 'no-file receipt records workspace, null file, budget and elapsed'
@@ -180,6 +222,19 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   Assert-True (-not (Get-Process -Id $grandchildPid -ErrorAction SilentlyContinue)) 'timeout kills the whole child tree'
   Assert-True (-not (Test-Path (Join-Path $runtime 'verify-lock.d'))) 'timeout releases the shared heavy lock'
   Write-Output 'PASS workspace-db timeout kills descendants at budget, records timed-out and releases lock'
+
+  $environmentMutantRuntime = Join-Path $root 'environment-mutant-runtime'
+  Copy-Item -LiteralPath $runtime -Destination $environmentMutantRuntime -Recurse
+  $environmentMutantRunner = Join-Path $environmentMutantRuntime 'workspace-db-test.mjs'
+  $environmentMutantSource = Get-Content -LiteralPath $environmentMutantRunner -Raw
+  $environmentMutantSource = $environmentMutantSource -replace '        await runWorkspaces\.loadTestEnvironment\(\{ includeTestDatabaseUrl: true \}\);', '        // MUTANT: skipped product test environment loading'
+  [IO.File]::WriteAllText($environmentMutantRunner, $environmentMutantSource)
+  Remove-Item -LiteralPath (Join-Path $artifacts 'file-args') -Force -ErrorAction SilentlyContinue
+  $environmentMutantEntry = Start-Route (Join-Path $environmentMutantRuntime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile',$validFile,'-WorkspaceDbBudgetSeconds','10'))
+  Assert-True ($environmentMutantEntry.Process.WaitForExit(30000)) 'environment-loading mutant completed'
+  $environmentMutantText = $environmentMutantEntry.Out.GetAwaiter().GetResult() + $environmentMutantEntry.Err.GetAwaiter().GetResult()
+  Assert-True ($environmentMutantEntry.Process.ExitCode -ne 0 -and $environmentMutantText -match 'TEST_DATABASE_URL') 'environment-loading mutant was caught by the marker-required fixture'
+  Write-Output 'PASS mutant that skips test-environment loading is caught by the marker-required fixture'
 
   $mutantRuntime = Join-Path $root 'mutant-runtime'
   Copy-Item -LiteralPath $runtime -Destination $mutantRuntime -Recurse
