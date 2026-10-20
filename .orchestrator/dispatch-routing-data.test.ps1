@@ -582,7 +582,15 @@ function Invoke-Case([string]$Name){
       Assert-True ($a.routing.model-ceq'gpt-99-alpha'-and$b.routing.model-ceq'gpt-99-gamma'-and
         $b.routing.effort-ceq'medium'-and$b.routing.placement-ceq'provisional'-and$b.routing.policyGeneration-eq2) 'policy generation changes dispatch model, effort and placement without reinstall'
       Refuses @{Placement='measured'} 'ROUTING_PLACEMENT_MISMATCH'
+      # A reserve slot is still Todd-authorized: automatic selection logs it as
+      # override-Todd, which the watchdog admits for that same slot; raw reserve
+      # never reaches the runtime envelope.
       $fixture.policy.rows['4'].slots['codex.primary'].placement='reserve';Write-State
+      $reserve=Plan
+      Assert-True ($reserve.routing.model-ceq'gpt-99-gamma'-and$reserve.routing.slot-ceq'codex.primary'-and$reserve.routing.placement-ceq'override-Todd') 'automatic reserve slot is logged as override-Todd'
+      Refuses @{Placement='reserve'} 'ROUTING_PLACEMENT_MISMATCH'
+      # A policy placement outside the watchdog envelope is refused before launch.
+      $fixture.policy.rows['4'].slots['codex.primary'].placement='override-Synthetic';Write-State
       Refuses @{} 'ROUTING_PLACEMENT_UNSUPERVISED'
     }
     'current' {
