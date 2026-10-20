@@ -1067,11 +1067,13 @@ if ($strictController -and -not $controllerCorrection) {
   }
 }
 
-# Serialize appends across concurrent orchestrator/watchdog processes.
+# Serialize appends across concurrent orchestrator/watchdog processes. The
+# writer lock is keyed to the directory of the one file this body appends to,
+# resolved exactly as the append below resolves it.
 $integrationDuplicate = $false
 $laneTimeAlreadyRecorded = $false
-Invoke-WithOrchestrationLogLock -Body {
-  $targetParent = Split-Path -Parent ([IO.Path]::GetFullPath($target))
+$targetParent = Split-Path -Parent ([IO.Path]::GetFullPath($target))
+Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
   if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
     throw "log target parent does not exist: $targetParent"
   }

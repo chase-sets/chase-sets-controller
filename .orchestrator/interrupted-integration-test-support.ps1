@@ -31,7 +31,7 @@ function Get-8076GuardSites([string]$Module) {
 # all Git repositories, commits, contents and process trees below are synthetic.
 function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier) {
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
-  . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
+  . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'); . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-7963-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
   [IO.Directory]::CreateDirectory($root) | Out-Null
   # Reproduce the actual retired Terra launch with the pre-migration launcher.
@@ -41,7 +41,7 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $historicalZip = Join-Path $root 'pre-migration.zip'
   & git -C (Split-Path -Parent $PSScriptRoot) archive --format=zip "--output=$historicalZip" b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780 .orchestrator
   if ($LASTEXITCODE -ne 0) { throw '7963 historical launcher archive failed' }
-  Expand-Archive -LiteralPath $historicalZip -DestinationPath $historicalRoot
+  Expand-Archive -LiteralPath $historicalZip -DestinationPath $historicalRoot; [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
