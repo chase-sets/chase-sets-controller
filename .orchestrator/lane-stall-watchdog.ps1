@@ -171,6 +171,9 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   # Implementation predecessors retain family-derived historical routes, including
   # frozen compatibility routes whose family slot left the live policy.
   $historical=$Value.state-cin@('running','exited')-and$(if($Implementation){$historicalRoutes.ContainsKey($key)-or$Value.model-ceq'gpt-5.6-terra'}else{$Value.model-cin$retiredSelectors})
+  # Todd placed every Claude capacity flip (4388/6098327249): Resolve-CapacityRouting
+  # logs the row's own Claude slot as override-Todd, so a Claude lane on its row's
+  # Claude slot (same family and effort) carries Todd authority at any slot placement.
   # Current policy slots are the source of Todd-authorized placements. Legacy
   # Astra/Fable keys remain readable for retained lanes, but are never inferred
   # as fresh policy routes.
@@ -179,7 +182,7 @@ function Get-WatchdogRouteFacts($Value,[bool]$Implementation){
   if($rowEntry -and $identity){foreach($slot in @($rowEntry.Value.slots.PSObject.Properties)){
     $slotHarness=([string]$slot.Name).Split('.')[0]
     $slotPlacement=if([string]$slot.Value.placement-ceq'reserve'){'override-Todd'}else{[string]$slot.Value.placement}
-    if($slotHarness-ceq[string]$Value.harness-and[string]$slot.Value.family-ceq[string]$identity.family-and[string]$slot.Value.effort-ceq[string]$Value.effort-and$slotPlacement-ceq'override-Todd'){$policySlot=$true;break}
+    if($slotHarness-ceq[string]$Value.harness-and[string]$slot.Value.family-ceq[string]$identity.family-and[string]$slot.Value.effort-ceq[string]$Value.effort-and($slotPlacement-ceq'override-Todd'-or$slotHarness-ceq'claude')){$policySlot=$true;break}
   }}
   $legacyPolicyRoute=$key-cin@('7|astra/high','7|fable/high','14|fable/medium','14|fable/high','14|astra/high','15|fable/high','15|astra/high')
   $toddAuthor=$policySlot-or$legacyPolicyRoute-or$key-cin@('4|opus/high','5|opus/high','6|opus/high','7|opus/high','10|opus/high')

@@ -1265,6 +1265,16 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       # 8063: 7|claude-opus-5-5/high is now the Todd-ruled Sol fallback author (4388/5743533387);
       # this control stays pointed at the unruled 7|claude-opus-5-5/medium spelling instead.
       $effort=if($model-ceq'claude-opus-5-5'-and$route-eq7){'medium'}else{'high'}
+      # #82: 14|opus/high and 15|opus/high are the rows' own Claude slots, which a
+      # Claude capacity flip logs as override-Todd (4388/6098327249): admitted, not lower-tier.
+      if($model-ceq'claude-opus-5-5'-and$route-in@(14,15)){
+        $item=New-Spec "flip-claude-slot-$route" $model 'high' 0 $route 'override-Todd';$before=Get-CallCount
+        Assert-Recovery $item (Invoke-Watchdog $item $item.spec.label) $model 'high' 'override-Todd' $before
+        $item=New-Spec "synthetic-lower-tier-$route-$model-medium" $model 'medium' 0 $route 'override-Todd';$before=Get-CallCount;$refused=$false
+        try{Invoke-Watchdog $item $item.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
+        Assert-True ($refused-and(Get-CallCount)-eq$before) "off-slot Claude author $route/$model/medium inherited Todd authority"
+        continue
+      }
       $item=New-Spec "synthetic-lower-tier-$route-$model" $model $effort 0 $route 'override-Todd';$before=Get-CallCount;$refused=$false
       try{Invoke-Watchdog $item $item.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
       Assert-True ($refused-and(Get-CallCount)-eq$before) "lower-tier author $route/$model inherited Todd authority"
