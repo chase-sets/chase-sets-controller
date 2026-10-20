@@ -1278,11 +1278,22 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       Assert-True ($refused-and(Get-CallCount)-eq$before) "route mutation $route/$($mutation.name) launched"
     }
   }
-  # #82: the other Claude capacity-flip targets (row-7 Opus/xhigh, row-13 Haiku/max) are admitted.
-  foreach($flip in @(@(7,'claude-opus-5-5','xhigh'),@(13,'claude-haiku-5-5','max'))){
-    $item=New-Spec "flip-claude-slot-$($flip[0])" $flip[1] $flip[2] 0 $flip[0] 'override-Todd';$before=Get-CallCount
-    Assert-Recovery $item (Invoke-Watchdog $item $item.spec.label) $flip[1] $flip[2] 'override-Todd' $before
+  # #82: a Claude capacity flip (4388/6098327249) launches the row's own Claude slot
+  # logged override-Todd; the watchdog admits it on every flip row the fixture policy
+  # carries, at that slot's own family and effort.
+  $flipPolicy=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json') -Raw|ConvertFrom-Json
+  $flipRegistry=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json') -Raw|ConvertFrom-Json
+  $flipRows=0
+  foreach($flipRow in @(7,13,14,15)){
+    $rowEntry=$flipPolicy.rows.PSObject.Properties[[string]$flipRow];if($null-eq$rowEntry){continue}
+    $slot=$rowEntry.Value.slots.PSObject.Properties['claude.primary'];if($null-eq$slot){$slot=$rowEntry.Value.slots.PSObject.Properties['claude.fallback']};if($null-eq$slot){continue}
+    $family=$flipRegistry.families.PSObject.Properties[[string]$slot.Value.family];if($null-eq$family-or$family.Value.current-isnot[string]){continue}
+    $flipModel=[string]$family.Value.current;$flipEffort=[string]$slot.Value.effort
+    $item=New-Spec "flip-claude-slot-$flipRow" $flipModel $flipEffort 0 $flipRow 'override-Todd';$before=Get-CallCount
+    Assert-Recovery $item (Invoke-Watchdog $item $item.spec.label) $flipModel $flipEffort 'override-Todd' $before
+    $flipRows++
   }
+  Assert-True ($flipRows-ge2) 'fixture policy carried fewer than two Claude flip rows'
   foreach($model in @('gpt-6.1-sol','gpt-6.1-sol','gpt-6-luna','claude-sonnet-5-5','claude-opus-5-5')){
     foreach($route in @(7,14,15)){
       # 8063: 7|claude-opus-5-5/high is now the Todd-ruled Sol fallback author (4388/5743533387);
@@ -1290,9 +1301,8 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       $effort=if($model-ceq'claude-opus-5-5'-and$route-eq7){'medium'}else{'high'}
       # #82: 14|opus/high and 15|opus/high are the rows' own Claude slots, which a
       # Claude capacity flip logs as override-Todd (4388/6098327249): admitted, not lower-tier.
-      if($model-ceq'claude-opus-5-5'-and$route-in@(14,15)){
-        $item=New-Spec "flip-claude-slot-$route" $model 'high' 0 $route 'override-Todd';$before=Get-CallCount
-        Assert-Recovery $item (Invoke-Watchdog $item $item.spec.label) $model 'high' 'override-Todd' $before
+      $ownSlot=$flipPolicy.rows.PSObject.Properties[[string]$route].Value.slots.PSObject.Properties['claude.primary']
+      if($model-ceq'claude-opus-5-5'-and$route-in@(14,15)-and$ownSlot-and[string]$ownSlot.Value.family-ceq'opus'-and[string]$ownSlot.Value.effort-ceq'high'){
         $item=New-Spec "synthetic-lower-tier-$route-$model-medium" $model 'medium' 0 $route 'override-Todd';$before=Get-CallCount;$refused=$false
         try{Invoke-Watchdog $item $item.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
         Assert-True ($refused-and(Get-CallCount)-eq$before) "off-slot Claude author $route/$model/medium inherited Todd authority"
