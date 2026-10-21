@@ -480,7 +480,7 @@ function Remove-DisposableLock {
 # #206: teardown removes the disposable root only after every process this test
 # started under it has exited. Ownership is proven by exact ancestry, never by a
 # path match alone: a live process is this test's when its parent chain reaches
-# this test process, or an exact identity the test recorded (a wrapper, or a
+# this test process, or a live exact identity the test recorded (a wrapper, or a
 # child identity published in the root), each link started no earlier than its
 # parent. It is under the root when that chain names the root or ends at a
 # recorded identity. Nothing else is ever stopped; a root it holds is retained.
@@ -538,9 +538,9 @@ function Select-TeardownProcesses($Table, $Known, [string]$Path, [int]$SelfId) {
       if (Test-TeardownRecorded $byId $current.Id $current.StartTicks) { $owner = 'recorded' }
       elseif ($current.ParentId -eq $SelfId) { $owner = if ($null -ne $self -and $current.StartTicks -ge $self.StartTicks - 10) { 'self' } else { 'none' } }
       elseif (Test-TeardownRecorded $byId $current.ParentId $current.StartTicks -AtOrBefore) {
-        # The recorded parent has exited, is still exact, or its PID now names
-        # a newer process that this one predates.
-        $owner = if ($null -eq $parent -or $current.StartTicks -lt $parent.StartTicks -or (Test-TeardownRecorded $byId $parent.Id $parent.StartTicks)) { 'recorded' } else { 'none' }
+        # Only a live, exact recorded parent vouches for its child. Once it has
+        # exited, a reused PID can parent anything: only an exact record counts.
+        $owner = if ($null -ne $parent -and (Test-TeardownRecorded $byId $parent.Id $parent.StartTicks)) { 'recorded' } else { 'none' }
       } elseif ($null -eq $parent -or $parent.StartTicks -gt $current.StartTicks + 10) { $owner = 'none' }
       else { $current = $parent }
     }
@@ -1906,7 +1906,9 @@ catch { $_.Exception.Message; exit 1 }
 # #206 discriminator. A synthetic census pins exactly which processes teardown
 # may stop. Then a recorded relay starts a holder whose working directory is
 # inside a probe and exits, the shape of the fixture-route harness after its
-# stand-in: plain removal fails, and teardown stops that orphan and removes it.
+# stand-in: plain removal fails, teardown leaves that orphan running while only
+# its exited relay is recorded, and stops it and removes the probe once the
+# holder's own identity is recorded explicitly.
 function Test-DisposableTeardown {
   $base = [DateTime]::UtcNow.Ticks
   $named = "pwsh.exe -File $root\fixture.ps1"
@@ -1917,23 +1919,26 @@ function Test-DisposableTeardown {
       @(-10, $PID, 10, $named),                           # child naming the root: selected
       @(-11, -10, 20, 'git.exe status'),                  # its unnamed child: selected through it
       @(-12, $PID, 10, 'pwsh.exe -Command Start-Sleep'),  # child outside the root: kept
-      @(-20, -99, 30, 'harness'),                         # orphan of exited recorded -99: selected
+      @(-20, -99, 30, 'harness'),                         # unrecorded orphan of exited recorded -99: kept
+      @(-23, -99, 35, 'harness'),                         # recorded orphan of exited recorded -99: selected
       @(-21, -98, 30, $named),                            # orphan of unrecorded -98 naming the root: kept
       @(-22, -1, 30, $named),                             # sibling of this test naming the root: kept
       @(-97, -1, 50, 'reused'),                           # newer holder of recorded PID -97: kept
       @(-30, -97, 60, $named),                            # its child: kept
-      @(-31, -97, 40, 'orphan'),                          # predates that reuse, so recorded -97's: selected
+      @(-31, -97, 40, 'orphan'),                          # unrecorded, predates that reuse: kept
+      @(-50, -2, 42, 'wrapper'),                          # live exact recorded wrapper: selected
+      @(-51, -50, 45, 'harness'),                         # its unrecorded child: selected through it
       @(-40, -96, 70, 'published'))) {                    # exact published identity: selected
     $table[[int]$row[0]] = [pscustomobject]@{ Id = [int]$row[0]; ParentId = [int]$row[1]; StartTicks = $base + 1000 * $row[2]; Name = 'synthetic'; Text = [string]$row[3] }
   }
-  $known = @(foreach ($recorded in @(@(-99, 5), @(-97, 5), @(-40, 70))) { [pscustomobject]@{ Id = $recorded[0]; StartTicks = $base + 1000 * $recorded[1] } })
+  $known = @(foreach ($recorded in @(@(-99, 5), @(-97, 5), @(-40, 70), @(-23, 35), @(-50, 42))) { [pscustomobject]@{ Id = $recorded[0]; StartTicks = $base + 1000 * $recorded[1] } })
   $selected = @(Select-TeardownProcesses $table $known $root $PID | ForEach-Object { $_.Id } | Sort-Object)
-  Assert-True (($selected -join ',') -ceq '-40,-31,-20,-11,-10') "teardown selects only exact descendants of this test or of a recorded identity under the root (selected=$($selected -join ','))"
+  Assert-True (($selected -join ',') -ceq '-51,-50,-40,-23,-11,-10') "teardown selects only exact descendants of this test or of a live recorded identity, or exact recorded identities, under the root (selected=$($selected -join ','))"
 
   $probe = Join-Path $root 'teardown-probe'
   $held = Join-Path $probe 'held'
   New-Item -ItemType Directory -Path $held | Out-Null
-  # Not *.json, so the holder stays unrecorded and only its relay proves it.
+  # Not *.json, so the holder stays unrecorded until the test records it explicitly.
   $holderIdentityPath = Join-Path $probe 'holder.identity'
   $relayScript = Join-Path $probe 'relay.ps1'
   [IO.File]::WriteAllText($relayScript, @'
@@ -1950,24 +1955,30 @@ exit 0
   foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $relayScript, $held, $holderIdentityPath)) { [void]$relayStart.ArgumentList.Add($argument) }
   $relay = [Diagnostics.Process]::Start($relayStart)
   $relayIdentity = [pscustomobject]@{ pid = $relay.Id; processStartUtc = $relay.StartTime.ToUniversalTime().ToString('o') }
-  # Recorded like a wrapper, so the final teardown can also reach its orphan.
+  # Recorded like a wrapper. The holder is recorded too once it publishes: with
+  # its relay exited, only its own exact identity lets a teardown stop it.
   $testWrapperIdentities.Add($relayIdentity)
   $holder = $null
   try {
     Wait-Condition { $relay.HasExited -and $(try { $null -ne (Read-ChildIdentity $holderIdentityPath).pid } catch { $false }) } 'teardown probe holder publication after its relay exits' 90
     $holder = Read-ChildIdentity $holderIdentityPath
+    $testWrapperIdentities.Add($holder)
     $blocked = $false
     try { Remove-Item -LiteralPath $probe -Recurse -Force } catch { $blocked = $true }
     Assert-True ($blocked -and (Test-ExactProcess $holder) -and (Test-Path -LiteralPath $held)) "plain removal fails while the exited relay's orphan holds its working directory (control)"
-    $result = Complete-DisposableTeardown $probe @($relayIdentity) 3
+    # Control: with only the exited relay recorded, the holder is an unrecorded
+    # child of an absent parent, which PID reuse could fake, so it is left running.
+    $unrecorded = Complete-DisposableTeardown $probe @($relayIdentity) 1
+    Assert-True (-not $unrecorded.Removed -and $unrecorded.Stopped.Count -eq 0 -and (Test-ExactProcess $holder) -and (Test-Path -LiteralPath $held)) "teardown leaves the exited relay's unrecorded orphan running and retains the probe (control: removed=$($unrecorded.Removed) stopped=$($unrecorded.Stopped.Count))"
+    $result = Complete-DisposableTeardown $probe @($relayIdentity, $holder) 3
     Assert-True ($result.Removed -and -not (Test-Path -LiteralPath $probe) -and -not (Test-ExactProcess $holder) -and
-      @($result.Stopped | Where-Object { $_.Id -eq [int]$holder.pid }).Count -eq 1) "teardown stops the recorded relay's orphan and removes the probe (removed=$($result.Removed) reason=$($result.Reason))"
+      @($result.Stopped | Where-Object { $_.Id -eq [int]$holder.pid }).Count -eq 1) "teardown stops the explicitly recorded orphan and removes the probe (removed=$($result.Removed) reason=$($result.Reason))"
   } finally {
     foreach ($identity in @($holder, $relayIdentity)) {
       if ($identity -and (Test-ExactProcess $identity)) { Stop-ExactProcess $identity }
     }
   }
-  Write-Output 'PASS teardown stops only exact descendants under the root: synthetic census, recorded-relay orphan stopped, probe removed'
+  Write-Output 'PASS teardown stops only exact descendants under the root: synthetic census, unrecorded orphan of an exited relay kept, recorded orphan stopped, probe removed'
 }
 $bodyFailed = $false
 try {
