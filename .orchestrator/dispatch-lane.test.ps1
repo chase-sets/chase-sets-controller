@@ -985,11 +985,14 @@ try {
       $controlSource9382=if($control9382 -ceq 'installed-baseline'){@(& git -C (Split-Path -Parent $PSScriptRoot) show "${prelogBaseline}:.orchestrator/dispatch-lane.ps1") -join "`n"}else{$launcherSource9382.Replace($voidOmissionNeedle,'if ($false) {')}
       $controlSubject9382=New-AdmissionLauncherSubject $control9382 $controlSource9382
       if($control9382 -ceq 'installed-baseline') {
-        foreach($file9382 in @('log-event.ps1','review-head-contract.psm1')) {
+        foreach($file9382 in @('log-event.ps1','review-head-contract.psm1','orchestration-log-lock.psm1')) {
           $old9382=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${prelogBaseline}:.orchestrator/$file9382")
           Assert-True ($LASTEXITCODE -eq 0) "9382 extract exact baseline $file9382"
           [IO.File]::WriteAllLines((Join-Path $controlSubject9382.ScriptRoot $file9382),$old9382,[Text.UTF8Encoding]::new($false))
         }
+        # #122: the baseline logger takes the lock without -Root; its own lock module is keyed to this subject root.
+        . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
+        [void](Set-ArchivedOrchestrationLogMutexName $controlSubject9382.ScriptRoot)
       }
       $controlLog9382=Join-Path $controlSubject9382.ScriptRoot 'dispatch-log.jsonl'
       $controlRequest9382=$controllerArgs.Clone();$controlRequest9382.Label="synthetic-$control9382"
