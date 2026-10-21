@@ -273,19 +273,19 @@ function Invoke-ReaderInventory {
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928)
     'heavy-admission-preload.test.ps1'=@(82,582,611,980,986,1076,1133,1280,1326,1845,1849)
     'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
-    # The release inventory record is not heavy owner state; these installer
-    # reads observe fixture-retained owner bytes and use fixture-local sharing.
-    'install-controller-skills.ps1'=@(137,138)
-    'install-controller-skills.test.ps1'=@(206,207,223,224,228,229,248,249)
+    # install-controller-skills.ps1 reads the installed release record, not heavy
+    # owner state; the test-file sites compare fixture-retained owner bytes.
+    'install-controller-skills.ps1'=@(138)
+    'install-controller-skills.test.ps1'=@(207,224,229,249)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(304,307,429,499,903,947,959,973,1008,1012,1017,1029,1048,1078,1082,1093,1118,1129,1200,1475,1480,1499,1505,1636,1637,1716,1717,1726,1727,1732,1739,1740,1741,1751,1754,1764,1775,1797,1802,1814,1819,1836,1850,1951,1952,1956,1957,1975,1976,1981,1982,2208,2209,2215,2216,2227,2228,2230,2231,2240,2241,2251,2252,2273,2274,2278,2279,2290,2291,2295,2296,2312,2313,2326,2327)
+    'invoke-heavy-verifier.test.ps1'=@(307,499,973,1017,1029,1078,1082,1093,1118,1200,1637,1717,1727,1741,1952,1957,1976,1982,2209,2216,2228,2231,2241,2252,2274,2279,2291,2296,2313,2327)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(878,889)
+    'interrupted-integration-test-support.ps1'=@(889)
     'landed-integration-evidence-test-support.ps1'=@(219)
     'landed-integration-r3.test.ps1'=@(42)
-    'lane-stall-watchdog.test.ps1'=@(505,533,536,551,554)
+    'lane-stall-watchdog.test.ps1'=@(505,551,554)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(134,197,236)
   }
@@ -309,6 +309,13 @@ function Invoke-ReaderInventory {
   $unknown=[Collections.Generic.List[string]]::new()
   $readPattern='(?:ReadAll(?:Text|Bytes)|Get-Content|readFileSync|read_text|read_bytes|\[IO.File\]::Open|ReadOwnerBytes)'
   $pathPattern='(?:\$\w*owner\w*Path\b|\$RecordPath\b|\$ClaimPath\b|\bownerPath\b|owner\.json|transitionPath|ReadOwnerBytes\(transition|DERIVED_OWNER|E2E_OWNER|readFileSync\(lock,)'
+  # A fixture exception must still name a discovered opener. A stale line would
+  # otherwise exempt whatever opener later lands on it.
+  $findStale={ param([hashtable]$Pins) @(foreach($name in $Pins.Keys){ $lines=(Read-Source $name)-split "`n"; foreach($line in $Pins[$name]){ if($line-gt$lines.Length -or -not($lines[$line-1]-match$readPattern-and$lines[$line-1]-match$pathPattern)){"${name}:$line"} } }) }
+  $staleFixtures=@(& $findStale $fixtures)
+  Assert-Owner ($staleFixtures.Count-eq0) "owner-reader-inventory stale fixture sites: $($staleFixtures -join ', ')"
+  $stalePinMutant=$fixtures.Clone(); $stalePinMutant['install-controller-skills.ps1']=@(137,138)
+  Assert-Owner ((@(& $findStale $stalePinMutant)) -ccontains 'install-controller-skills.ps1:137') 'stale fixture pin control is RED'
   $selfSource=Read-Source 'owner-publication.test.ps1'
   foreach($spec in @(@('Invoke-Primitive',4,'deliberately held positive/negative readers and injected claim opener'),@('Test-ReaderContract',3,'source-only regression expressions, not executed opens'),@('Invoke-ReaderInventory',3,'source-only inventory expressions, not executed opens'),@('Invoke-ReaderMatrix',1,'deliberately cached-handle negative control'))) {
     $body=Get-Definition $selfSource $spec[0]
