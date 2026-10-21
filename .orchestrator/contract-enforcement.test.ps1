@@ -578,6 +578,224 @@ Assert-Mutant 'controller-skill-installed-by-product' { Test-ControllerSkillPlac
 Assert-Mutant 'controller-backlog-planning-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Plan controller issues with the planning skill', 'Plan controller issues freely') $installInventory }
 Assert-Mutant 'controller-backlog-routing-deleted' { Test-ControllerSkillPlacement ($controllerSkill -replace 'Check each issue against Repository routing', 'Check each issue') $installInventory }
 
+# --- per-issue platform handoff (orchestrator-shared Platform handoff) ----------
+# Labels and markers are the only transport between the product and platform
+# loops. Pins are whitespace-insensitive. Each mutant is probed against one
+# check and removes one boundary (a take-back trigger, a write order, the
+# return bound, the holder's process check) or restores milestone ownership, a
+# merge-queue exception, a date or an issue identity.
+$handoffRules = @(
+  'Labels and markers are the only transport between the product and platform loops; milestones play no part.',
+  'An issue is held while it carries `dispatch:platform` without `dispatch:platform-return`, and returning while it carries `dispatch:platform-return`.',
+  'The product loop chooses handoffs and requests returns. Beyond the handoff and take-back writes below, it never touches an issue carrying either label, or that issue''s PR or branch.',
+  'The platform loop works only issues with `dispatch:platform` and without `dispatch:platform-return`.',
+  'The controller loop owns `.orchestrator/platform-handoff.json`, the platform run, acknowledgment when no platform supervisor runs, and platform fixes from take-back causes.',
+  '`.orchestrator/platform-handoff.json` has exactly the fields `schemaVersion` (`platform-handoff/v1`), `accepting` (boolean), `maxInFlight` (an integer of zero or more), and `idleHours`, `maxHours` and `releaseHours` (positive integers). Only the controller loop writes it. An absent, unreadable or invalid file means not accepting.',
+  'Authorities come from complete paginated reads, and an incomplete read makes no handoff and no clock-based take-back for that issue this cycle.',
+  'Label age is the newest `LabeledEvent` for `dispatch:platform`; return age is the newest `LabeledEvent` for `dispatch:platform-return`.',
+  'Activity is the newest of label age, the `updatedAt` of every PR in the issue''s `closedByPullRequestsReferences(includeClosedPrs: true)`, and comments containing `<!-- loop-`.',
+  'Handoff: while the file is accepting and fewer than `maxInFlight` open issues carry either label, the product loop adds `dispatch:platform` to the lowest-ranked issue that has a current ready receipt (`issue-readiness/v1`), `priority:p2` or `priority:p3`, a fast-path tier in its brief and one `<!-- routing:` marker in its body; has no `risk:*`, `kind:ops` or `kind:security` label, no open linked PR and no live lane; blocks no open issue; and has never had a `platform-take-back` marker.',
+  'Take-back: the product loop takes back an open held issue for one of these reasons, named in its marker:',
+  'The merge queue is no exception.',
+  'A take-back writes in order, skipping each step already done: (a) one comment `<!-- platform-take-back: {"version":1,"reason":"<reason>"} -->` with a one-line cause; (b) add `dispatch:platform-return`; (c) remove `dispatch:platform`.',
+  'Each cycle, a take-back marker newer than the newest `dispatch:platform` labeled event resumes at the first undone step, unless a release marker newer than it exists.',
+  'Acknowledgment is the holder''s alone: the live platform supervisor, or the controller loop when none runs.',
+  'In order, the holder (1) confirms by a fresh read that no linked platform PR is in the merge queue, dequeuing and re-reading until it is out or merged; (2) removes `dispatch:platform`; (3) posts `<!-- platform-released: {"version":1,"by":"platform"|"controller","outcome":"released"|"merged"} -->`, with `merged` when the platform PR merged; (4) removes `dispatch:platform-return`.',
+  'The product loop owns the issue again only when neither label is present and a release marker is newer than its take-back.',
+  'It then delivers normally: a closed issue needs nothing; an open platform PR is adopted after an exact-head independent review, or closed.',
+  'A return not acknowledged within `releaseHours` of its return label gets one controller defect from the product loop, and the issue stays untouched.'
+)
+$takeBackReasons = [ordered]@{
+  'needs-replan' = 'the issue gained `status:needs-replan`.'
+  'needs-operator' = 'the issue gained `status:needs-operator`.'
+  'handoff-closed' = 'the handoff file is not accepting.'
+  'idle' = 'no activity for `idleHours`.'
+  'max-age' = 'label age is older than `maxHours`.'
+  'priority' = 'the issue is now `priority:p0` or `priority:p1`.'
+  'dependent' = 'the issue now blocks an open issue.'
+}
+$takeBackWriteOrder = @('(a) one comment `<!-- platform-take-back:', '(b) add `dispatch:platform-return`', '(c) remove `dispatch:platform`')
+$acknowledgmentOrder = @('(1) confirms by a fresh read that no linked platform PR is in the merge queue', '(2) removes `dispatch:platform`;', '(3) posts `<!-- platform-released:', '(4) removes `dispatch:platform-return`')
+$supervisionRules = @(
+  'This thread alone writes the product container''s `.orchestrator/platform-handoff.json`.',
+  'Set `accepting: true` only while a Chase Sets supervisor started with a `handoff` object naming both labels is live.',
+  'Write `accepting: false` before stopping that supervisor, and as soon as it is found stopped.',
+  'Raise `maxInFlight` from the weekly scorecard of platform deliveries and take-backs.',
+  'The tunable numbers live only in that file, never in skill text.',
+  'Start or resume a platform run only from Windows through the platform checkout''s `scripts/executor/start-loop.ps1 <config>`, recording the config path, run name, executor SHA and supervisor PID.',
+  'Start or resume a Chase Sets run only with a `handoff` object naming `dispatch:platform` and `dispatch:platform-return`.',
+  'Observe runs and their PRs read-only.',
+  'A historical log line or a matching PID alone is not liveness, and alert silence is not health.',
+  'Never hand-edit the platform checkout or the WSL executor checkout; platform defects go to the platform''s self loop, which owns every platform-repository issue.',
+  'Upgrade the executor only while no Chase Sets supervisor is live.',
+  'Each cycle, read the Chase Sets issues carrying `dispatch:platform-return` from a complete paginated read.',
+  'While no Chase Sets supervisor is live, this thread is their holder: acknowledge each one (`by: controller`) only after confirming that no process of the run remains, the supervisor and every descendant, and after the shared acknowledgment''s merge-queue check; then make the remaining acknowledgment writes in order.',
+  'When a live holder has not acknowledged a return within `releaseHours`, write `accepting: false`, stop the run, and acknowledge the same way.',
+  'For each distinct platform cause named in `platform-take-back` comments, file one platform issue through the platform repository''s planning path.',
+  'Criteria for retiring the host loop live in the platform roadmap.'
+)
+$milestonePlatformText = @(
+  '(?ms)^### Orchestration platform\r?\n.*?(?=^## )',
+  '(?ms)^`orchestrator-shared` Platform handoff decides.*?(?=\r?\n\r?\n)',
+  '(?ms)^Enqueue, repair, and landed-integration actions below never touch.*?(?=\r?\n\r?\n)',
+  '(?ms)^These reclamation rules never remove a worktree.*?(?=\r?\n\r?\n)'
+)
+$registerOwnership = 'ownership register|platform-owned|register edit|platform-handoff\.md'
+
+function Edit-Policy([string]$Text, [string]$Old, [string]$New) {
+  # Builds a mutant outside its probe, so a stale anchor fails loudly instead of
+  # counting as a killed mutant.
+  $match = [regex]::Match($Text, (([regex]::Escape($Old)) -replace '\\ ', '\s+'))
+  if (-not $match.Success) { throw "MUTANT ANCHOR MISSING: $Old" }
+  return $Text.Replace($match.Value, $New)
+}
+function Test-PlatformTimeless([string]$Text, [string]$Name) {
+  # Schema versions (`platform-handoff/v1`) and section references pass.
+  Assert-Enforced ($Text -notmatch '(?i)\b\d{4}-\d{2}-\d{2}\b|#\d|\bISS-\d|\b\d+/\d{6,}\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b') "$Name carries no date, issue, comment, ISS or commit identity"
+}
+function Assert-InOrder([string]$Text, [string[]]$Steps, [string]$Name) {
+  $last = -1
+  foreach ($step in $Steps) {
+    $index = $Text.IndexOf($step, [StringComparison]::Ordinal)
+    Assert-Enforced ($index -gt $last) "$Name writes keep their order: $step"
+    $last = $index
+  }
+}
+function Test-SharedPlatformHandoff([string]$Shared) {
+  $section = [regex]::Match($Shared, '(?ms)^## Platform handoff\r?\n(.*?)(?=^## |\z)')
+  Assert-Enforced $section.Success 'orchestrator-shared has a Platform handoff section'
+  $raw = $section.Groups[1].Value
+  $text = Compact-Text $raw
+  foreach ($rule in $handoffRules) {
+    Assert-Enforced ($text.Contains($rule, [StringComparison]::Ordinal)) "orchestrator-shared Platform handoff lacks: $rule"
+  }
+  $reasons = @([regex]::Matches($raw, '(?m)^- `([a-z-]+)`: ([^\r\n]+?)\r?$'))
+  Assert-Enforced ((@($reasons | ForEach-Object { $_.Groups[1].Value }) -join ',') -ceq (@($takeBackReasons.Keys) -join ',')) "take-back reasons are exactly $(@($takeBackReasons.Keys) -join ', ')"
+  foreach ($reason in $reasons) {
+    Assert-Enforced ($reason.Groups[2].Value -ceq $takeBackReasons[$reason.Groups[1].Value]) "take-back reason $($reason.Groups[1].Value) keeps its trigger"
+  }
+  Assert-InOrder $text $takeBackWriteOrder 'take-back'
+  Assert-InOrder $text $acknowledgmentOrder 'acknowledgment'
+  Assert-Enforced ([regex]::Matches($text, 'merge queue').Count -eq 2 -and $text -notmatch '(?i)\b(en)?queued\b') 'the merge queue is no take-back exception; only the acknowledgment reads it'
+  Assert-Enforced ($raw -cnotmatch $registerOwnership) 'Platform handoff reads no ownership register'
+  Test-PlatformTimeless $raw 'orchestrator-shared Platform handoff'
+}
+function Test-PlatformSupervisionHandoff([string]$Supervision) {
+  $text = Compact-Text $Supervision
+  foreach ($rule in $supervisionRules) {
+    Assert-Enforced ($text.Contains($rule, [StringComparison]::Ordinal)) "platform-supervision lacks: $rule"
+  }
+  Assert-Enforced ($Supervision -cnotmatch $registerOwnership -and $Supervision -notmatch '(?i)\bmilestone|\bpartition|\broll ?back|\bincumbent') 'platform-supervision carries no register, milestone, partition, rollback or incumbent text'
+  Test-PlatformTimeless $Supervision 'platform-supervision'
+}
+function Test-MilestonePlatformText([string]$Milestone) {
+  foreach ($pattern in $milestonePlatformText) {
+    $paragraph = [regex]::Match($Milestone, $pattern)
+    Assert-Enforced $paragraph.Success "milestone-orchestrator keeps its platform text: $pattern"
+    Assert-Enforced ($paragraph.Value -cnotmatch $registerOwnership) 'milestone-orchestrator platform text reads no ownership register'
+    Test-PlatformTimeless $paragraph.Value 'milestone-orchestrator platform text'
+  }
+}
+# AC3 inside the battery: no controller skill file reads or names the register.
+$skillFiles = [ordered]@{}
+foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $controller 'controller-skills') -Recurse -File | Sort-Object FullName)) {
+  $skillFiles[$file.FullName] = $strictUtf8.GetString([IO.File]::ReadAllBytes($file.FullName))
+}
+function Test-NoRegisterOwnership([Collections.IDictionary]$Files) {
+  Assert-Enforced ($Files.Count -ge 10) "skill census found only $($Files.Count) files"
+  foreach ($entry in $Files.GetEnumerator()) {
+    Assert-Enforced ($entry.Value -cnotmatch $registerOwnership) "$($entry.Key) carries no ownership register text"
+  }
+}
+function Copy-SkillFiles([Collections.IDictionary]$Files, [string]$Path, [string]$Text) {
+  $copy = [ordered]@{}
+  foreach ($entry in $Files.GetEnumerator()) { $copy[$entry.Key] = $entry.Value }
+  if (-not $copy.Contains($Path)) { throw "MUTANT TARGET MISSING: $Path" }
+  $copy[$Path] = $Text
+  return $copy
+}
+
+$handoffMutantsBefore = $script:mutants
+Test-SharedPlatformHandoff $sharedText
+Test-PlatformSupervisionHandoff $supervisionText
+Test-MilestonePlatformText $milestoneText
+Test-NoRegisterOwnership $skillFiles
+Test-PlatformTimeless ('Schema `platform-handoff/v1` and `issue-readiness/v1`, marker version 1, section 4 and ' + [char]0x00A7 + '9.') 'schema and section-reference control'
+
+$sharedHandoffMutants = [ordered]@{}
+foreach ($reason in @($takeBackReasons.Keys)) {
+  $sharedHandoffMutants["take-back-trigger-removed-$reason"] = [regex]::Replace($sharedText, '(?m)^- `' + [regex]::Escape($reason) + '`:[^\r\n]*\r?\n', '')
+}
+$sharedHandoffMutants['merge-queue-exception-restored'] = Edit-Policy $sharedText 'The merge queue is no exception.' 'An issue whose platform PR is in the merge queue is not taken back.'
+$sharedHandoffMutants['merge-queue-wait-appended'] = Edit-Policy $sharedText 'The merge queue is no exception.' 'The merge queue is no exception. Wait while its PR is in the merge queue.'
+$sharedHandoffMutants['queued-pr-exception-appended'] = Edit-Policy $sharedText 'The merge queue is no exception.' 'The merge queue is no exception. A queued platform PR finishes first.'
+$sharedHandoffMutants['max-age-queue-exception'] = Edit-Policy $sharedText 'label age is older than `maxHours`.' 'label age is older than `maxHours` and no PR is queued.'
+$sharedHandoffMutants['take-back-labels-swapped'] = Edit-Policy $sharedText '(b) add `dispatch:platform-return`; (c) remove `dispatch:platform`.' '(b) remove `dispatch:platform`; (c) add `dispatch:platform-return`.'
+$sharedHandoffMutants['take-back-comment-last'] = Edit-Policy $sharedText '(a) one comment `<!-- platform-take-back: {"version":1,"reason":"<reason>"} -->` with a one-line cause; (b) add `dispatch:platform-return`; (c) remove `dispatch:platform`.' '(a) add `dispatch:platform-return`; (b) remove `dispatch:platform`; (c) one comment `<!-- platform-take-back: {"version":1,"reason":"<reason>"} -->` with a one-line cause.'
+$sharedHandoffMutants['take-back-resume-overrides-release'] = Edit-Policy $sharedText 'resumes at the first undone step, unless a release marker newer than it exists.' 'resumes at the first undone step.'
+$sharedHandoffMutants['acknowledgment-return-label-before-marker'] = Edit-Policy $sharedText '(3) posts `<!-- platform-released: {"version":1,"by":"platform"|"controller","outcome":"released"|"merged"} -->`, with `merged` when the platform PR merged; (4) removes `dispatch:platform-return`.' '(3) removes `dispatch:platform-return`; (4) posts `<!-- platform-released: {"version":1,"by":"platform"|"controller","outcome":"released"|"merged"} -->`, with `merged` when the platform PR merged.'
+$sharedHandoffMutants['acknowledgment-queue-check-after-label'] = Edit-Policy $sharedText '(1) confirms by a fresh read that no linked platform PR is in the merge queue, dequeuing and re-reading until it is out or merged; (2) removes `dispatch:platform`;' '(1) removes `dispatch:platform`; (2) confirms by a fresh read that no linked platform PR is in the merge queue, dequeuing and re-reading until it is out or merged;'
+$sharedHandoffMutants['product-owns-before-acknowledgment'] = Edit-Policy $sharedText 'The product loop owns the issue again only when neither label is present and a release marker is newer than its take-back.' 'The product loop owns the issue again once it adds `dispatch:platform-return`.'
+$sharedHandoffMutants['product-owns-without-release-marker'] = Edit-Policy $sharedText 'only when neither label is present and a release marker is newer than its take-back.' 'only when neither label is present.'
+$sharedHandoffMutants['controller-acknowledges-beside-live-supervisor'] = Edit-Policy $sharedText 'the live platform supervisor, or the controller loop when none runs.' 'the live platform supervisor or the controller loop.'
+$sharedHandoffMutants['return-wait-unbounded'] = Edit-Policy $sharedText 'A return not acknowledged within `releaseHours` of its return label gets one controller defect from the product loop, and the issue stays untouched.' 'The product loop waits for the acknowledgment.'
+$sharedHandoffMutants['missing-file-keeps-handoffs'] = Edit-Policy $sharedText 'An absent, unreadable or invalid file means not accepting.' 'An absent file keeps the current handoffs.'
+$sharedHandoffMutants['incomplete-read-counts-as-idle'] = Edit-Policy $sharedText 'an incomplete read makes no handoff and no clock-based take-back for that issue this cycle.' 'an incomplete read counts as no activity.'
+$sharedHandoffMutants['re-handoff-after-take-back'] = Edit-Policy $sharedText '; and has never had a `platform-take-back` marker.' '.'
+$sharedHandoffMutants['milestone-ownership-appended'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. The platform loop also keeps each platform-owned milestone in the ownership register.'
+$sharedHandoffMutants['milestone-partition-restored'] = Edit-Policy $sharedText 'Labels and markers are the only transport between the product and platform loops; milestones play no part.' 'The platform loop owns whole milestones assigned to it.'
+$sharedHandoffMutants['section-dated'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. Adopted 2026-10-21.'
+$sharedHandoffMutants['section-issue-number'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. See #192.'
+$sharedHandoffMutants['section-iss-identity'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. Platform side: ISS-258.'
+foreach ($entry in $sharedHandoffMutants.GetEnumerator()) {
+  Assert-Enforced ($entry.Value -cne $sharedText) "shared handoff mutant changes the text: $($entry.Key)"
+  Assert-Mutant "shared-handoff-$($entry.Key)" { Test-SharedPlatformHandoff $entry.Value }
+}
+
+$supervisionHandoffMutants = [ordered]@{}
+$supervisionHandoffMutants['acknowledgment-without-process-check'] = Edit-Policy $supervisionText 'only after confirming that no process of the run remains, the supervisor and every descendant, and after the shared acknowledgment''s merge-queue check;' 'after the shared acknowledgment''s merge-queue check;'
+$supervisionHandoffMutants['acknowledgment-supervisor-only-check'] = Edit-Policy $supervisionText 'no process of the run remains, the supervisor and every descendant,' 'the supervisor has exited,'
+$supervisionHandoffMutants['acknowledgment-without-queue-check'] = Edit-Policy $supervisionText ', and after the shared acknowledgment''s merge-queue check;' ';'
+$supervisionHandoffMutants['accepting-without-live-supervisor'] = Edit-Policy $supervisionText 'Set `accepting: true` only while a Chase Sets supervisor started with a `handoff` object naming both labels is live.' 'Set `accepting: true` whenever the platform has capacity.'
+$supervisionHandoffMutants['accepting-left-open-on-stop'] = Edit-Policy $supervisionText 'Write `accepting: false` before stopping that supervisor, and as soon as it is found stopped.' 'Leave `accepting` unchanged when the supervisor stops.'
+$supervisionHandoffMutants['run-without-handoff-object'] = Edit-Policy $supervisionText 'Start or resume a Chase Sets run only with a `handoff` object naming `dispatch:platform` and `dispatch:platform-return`.' 'Start or resume a Chase Sets run with its usual config.'
+$supervisionHandoffMutants['run-noncanonical-start'] = Edit-Policy $supervisionText 'only from Windows through the platform checkout''s `scripts/executor/start-loop.ps1 <config>`, recording the config path, run name, executor SHA and supervisor PID.' 'by any available means.'
+$supervisionHandoffMutants['overdue-holder-left-running'] = Edit-Policy $supervisionText 'write `accepting: false`, stop the run, and acknowledge the same way.' 'file a platform issue.'
+$supervisionHandoffMutants['executor-hand-patched'] = Edit-Policy $supervisionText 'Never hand-edit the platform checkout or the WSL executor checkout;' 'Hand-patch the WSL executor checkout when a run stops;'
+$supervisionHandoffMutants['executor-upgraded-while-live'] = Edit-Policy $supervisionText 'Upgrade the executor only while no Chase Sets supervisor is live.' 'Upgrade the executor at any time.'
+$supervisionHandoffMutants['observation-mutates'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and repair their PRs.'
+$supervisionHandoffMutants['one-issue-per-take-back'] = Edit-Policy $supervisionText 'For each distinct platform cause named in `platform-take-back` comments, file one platform issue' 'For each take-back, file one platform issue'
+$supervisionHandoffMutants['max-in-flight-unbounded'] = Edit-Policy $supervisionText 'Raise `maxInFlight` from the weekly scorecard of platform deliveries and take-backs.' 'Raise `maxInFlight` whenever the queue is short.'
+$supervisionHandoffMutants['retirement-criteria-restated'] = Edit-Policy $supervisionText 'Criteria for retiring the host loop live in the platform roadmap.' 'Retire the host loop after one zero-touch delivery.'
+$supervisionHandoffMutants['register-read-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Read the ownership register in `.orchestrator/platform-handoff.md` first.'
+$supervisionHandoffMutants['milestone-idle-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. An idle run completes its milestone.'
+$supervisionHandoffMutants['rollback-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Rollback follows the runbook.'
+$supervisionHandoffMutants['incumbent-partition-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. The incumbent keeps its partition.'
+$supervisionHandoffMutants['dated'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Since 2026-10-21.'
+$supervisionHandoffMutants['issue-number'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Tracked on #368.'
+$supervisionHandoffMutants['iss-identity'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Use the ISS-136 status command.'
+foreach ($entry in $supervisionHandoffMutants.GetEnumerator()) {
+  Assert-Enforced ($entry.Value -cne $supervisionText) "supervision handoff mutant changes the text: $($entry.Key)"
+  Assert-Mutant "supervision-handoff-$($entry.Key)" { Test-PlatformSupervisionHandoff $entry.Value }
+}
+
+$milestonePlatformMutants = [ordered]@{}
+$milestonePlatformMutants['cycle-text-dated'] = Edit-Policy $milestoneText 'then hands off new ones.' 'then hands off new ones (2026-10-21).'
+$milestonePlatformMutants['selection-text-issue-number'] = Edit-Policy $milestoneText 'milestone membership never does.' 'milestone membership never does (#192).'
+$milestonePlatformMutants['landing-text-iss-identity'] = Edit-Policy $milestoneText 'the platform loop refreshes its own branch.' 'the platform loop refreshes its own branch (ISS-142).'
+$milestonePlatformMutants['reclamation-text-register'] = Edit-Policy $milestoneText 'until `orchestrator-shared` Platform handoff returns the issue.' 'until the ownership register changes.'
+foreach ($entry in $milestonePlatformMutants.GetEnumerator()) {
+  Assert-Enforced ($entry.Value -cne $milestoneText) "milestone platform mutant changes the text: $($entry.Key)"
+  Assert-Mutant "milestone-platform-$($entry.Key)" { Test-MilestonePlatformText $entry.Value }
+}
+
+$milestoneSkillPath = [IO.Path]::GetFullPath((Join-Path $controller 'controller-skills/milestone-orchestrator/SKILL.md'))
+$supervisionPath = [IO.Path]::GetFullPath((Join-Path $controller 'controller-skills/controller-orchestrator/references/platform-supervision.md'))
+Assert-Mutant 'skill-platform-owned-rows-restored' { Test-NoRegisterOwnership (Copy-SkillFiles $skillFiles $milestoneSkillPath ($milestoneText + "`r`nThe protected set equals the platform-owned milestone rows.`r`n")) }
+Assert-Mutant 'skill-register-edit-restored' { Test-NoRegisterOwnership (Copy-SkillFiles $skillFiles $milestoneSkillPath ($milestoneText + "`r`nOwnership changes need a Todd comment and the register edit.`r`n")) }
+Assert-Mutant 'skill-register-read-restored' { Test-NoRegisterOwnership (Copy-SkillFiles $skillFiles $supervisionPath ($supervisionText + "`r`n" + 'Read the container''s `.orchestrator/platform-handoff.md` each cycle.' + "`r`n")) }
+$handoffMutants = $script:mutants - $handoffMutantsBefore
+
 # --- the controller loop never waits for a product install -----------------------
 # The release step ends at the tag: release/ moves then and the next change starts.
 # The product install is evidence to read, never a gate on the next release.
@@ -625,4 +843,5 @@ Assert-Mutant 'controller-loads-milestone' { Test-SharedPointers $milestoneText 
 
 Write-Output 'PASS 9737 AC5 pace-raise-pin=PASS dispatch-duty-pin=PASS mutants=2 survivors=0'
 Write-Output "PASS platform-supervision boundaries=$($platformRules.Count) whitespace-control=PASS"
+Write-Output "PASS platform-handoff shared-rules=$($handoffRules.Count) take-back-reasons=$($takeBackReasons.Count) supervision-rules=$($supervisionRules.Count) skill-files=$($skillFiles.Count) mutants=$handoffMutants survivors=0"
 Write-Output "PASS contract-enforcement files=$($hygieneFiles.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
