@@ -2500,6 +2500,21 @@ try {
     }
     $nativeExitCode = $child.ExitCode
     $exitCode = if ($childTimedOut) { 124 } else { $nativeExitCode }
+    $workspaceDbOutcome = $null
+    $workspaceDbReason = $null
+    if ($isWorkspaceDbTest) {
+      if ($exitCode -eq 73 -and -not $childTimedOut) {
+        $workspaceDbOutcome = 'preflight-failed'
+        $workspaceDbReason = 'DB preflight failed; workspace DB test was not executed'
+      } elseif ($childTimedOut) {
+        $workspaceDbOutcome = 'timed-out'
+        $workspaceDbReason = 'workspace DB test exceeded its budget'
+      } elseif ($exitCode -eq 0) {
+        $workspaceDbOutcome = 'passed'
+      } else {
+        $workspaceDbOutcome = 'test-failed'
+      }
+    }
     if ($isHostVerifier -or $isControllerFixture) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
@@ -2544,6 +2559,8 @@ try {
           lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
           root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
         }
+        if ($workspaceDbOutcome) { $receipt.Add('outcome', $workspaceDbOutcome) }
+        if ($workspaceDbReason) { $receipt.Add('reason', $workspaceDbReason) }
         if ($callerBinding.Record) {
           $receipt.Add('launchId', [string]$callerBinding.Record.launchId)
           $receipt.Add('laneRole', [string]$callerBinding.Record.laneRole)

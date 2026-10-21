@@ -125,6 +125,11 @@ pnpm-lock.yaml
   Set-Content -LiteralPath (Join-Path $worktree 'scripts/db-test-preflight.mjs') @'
 import fs from "node:fs";
 import path from "node:path";
+if (process.env.WORKSPACE_DB_PREFLIGHT_FAIL === "1") {
+  process.stderr.write("TEST_DATABASE_URL is not reachable\n");
+  process.exitCode = 1;
+  process.exit();
+}
 fs.appendFileSync(path.resolve(".orchestrator/artifacts/preflight"), "preflight\n");
 '@
   Set-Content -LiteralPath (Join-Path $worktree 'scripts/run-workspaces.mjs') @'
@@ -167,6 +172,11 @@ if (!process.env.TEST_DATABASE_URL) {
   process.exit();
 }
 fs.appendFileSync(`${out}/body`, "body\n");
+if (process.env.WORKSPACE_DB_FAIL === "1") {
+  process.stderr.write("fixture DB test failed\n");
+  process.exitCode = 1;
+  process.exit();
+}
 if (process.env.WORKSPACE_DB_HANG === "1") {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio: "ignore", windowsHide: true});
   fs.writeFileSync(`${out}/grandchild.pid`, String(child.pid));
@@ -205,7 +215,8 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
     $runWorkspaceArgs[1] -ceq '--workspace=@chase-sets/payments') 'no-file route invokes run-workspaces with the exact scoped DB selector'
   $noFileReceipt = @(Get-Receipts | Where-Object workspace -eq '@chase-sets/payments')[0]
   Assert-True ($noFileReceipt -and $noFileReceipt.file -eq $null -and $noFileReceipt.budgetSeconds -eq 10 -and
-    $noFileReceipt.timedOut -eq $false -and $noFileReceipt.elapsedMs -ge 0) 'no-file receipt records workspace, null file, budget and elapsed'
+    $noFileReceipt.timedOut -eq $false -and $noFileReceipt.elapsedMs -ge 0 -and
+    $noFileReceipt.outcome -ceq 'passed') 'no-file receipt records workspace, null file, budget, elapsed and passed outcome'
   $pnpmShim = Get-Command pnpm -All -CommandType Application | Where-Object Source -like '*\pnpm.CMD' | Select-Object -First 1
   $pnpmScript = Join-Path (Split-Path -Parent $pnpmShim.Source) 'node_modules/pnpm/bin/pnpm.cjs'
   $directIdentity = "verify:test-db`n$($noFileReceipt.executable)`n$pnpmScript`nrun`nverify:test-db"
@@ -218,6 +229,22 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   Assert-True ((Get-Content (Join-Path $artifacts 'file-args') -Raw | ConvertFrom-Json)[-1] -ceq $validFile.Substring('bounded-contexts/payments/'.Length)) 'file route passes exactly the workspace-relative file'
   Assert-True ($fileReceipt.arguments -contains $validFile) 'file route receipt contains the fixed file argument'
   Assert-True (-not (Test-Path (Join-Path $runtime 'verify-lock.d'))) 'successful workspace routes release the shared heavy lock'
+
+  Remove-Item -LiteralPath (Join-Path $artifacts 'body') -Force
+  $preflightEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_PREFLIGHT_FAIL = '1' }
+  $preflightText = Complete-Route $preflightEntry 73
+  $preflightReceipt = @(Get-Receipts | Where-Object outcome -ceq 'preflight-failed')[0]
+  Assert-True ($preflightText -match 'TEST_DATABASE_URL is not reachable' -and
+    $preflightText -match 'DB preflight failed; refusing workspace DB test route') 'preflight stderr remains visible'
+  Assert-True ($preflightReceipt -and $preflightReceipt.exit -eq 73 -and $preflightReceipt.nativeExit -eq 73 -and
+    $preflightReceipt.outcome -ceq 'preflight-failed' -and $preflightReceipt.reason -match 'DB preflight failed' -and
+    -not (Test-Path (Join-Path $artifacts 'body'))) 'preflight failure refuses with distinct receipt outcome before test execution'
+
+  $redEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_FAIL = '1' }
+  $redText = Complete-Route $redEntry 1
+  $redReceipt = @(Get-Receipts | Where-Object { $_.exit -eq 1 -and $_.nativeExit -eq 1 } | Select-Object -Last 1)[0]
+  Assert-True ($redText -match 'fixture DB test failed' -and $redReceipt -and $redReceipt.outcome -ceq 'test-failed') 'reachable DB test failure remains exit 1 and is distinct from preflight refusal'
+  Write-Output 'PASS workspace-db preflight refusal exit=73 outcome=preflight-failed and reachable red test exit=1'
 
   $collisionFile = 'bounded-contexts/payments/features/payments/api/other/features/payments/api/saved-instrument-attempt.db.test.ts'
   New-Item -ItemType Directory -Path (Split-Path -Parent (Join-Path $worktree $collisionFile)) -Force | Out-Null
@@ -281,7 +308,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   }
   Remove-Item -LiteralPath (Join-Path $worktree 'bounded-contexts/payments/features/payments/api/untracked.db.test.ts') -Force
   Remove-Item -LiteralPath $foreignLock -Recurse -Force
-  Assert-True (@(Get-Receipts).Count -eq 3) 'invalid requests create no receipt'
+  Assert-True (@(Get-Receipts).Count -eq 5) 'invalid requests create no receipt'
   Write-Output 'PASS workspace-db route accepted Payments, exact file, closed refusals, receipt identity and pre-admission controls'
 
   $start = [Diagnostics.ProcessStartInfo]::new()

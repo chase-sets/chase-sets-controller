@@ -33,7 +33,10 @@ function run(executable, commandArguments) {
 }
 
 const preflight = await run(process.execPath, [path.join(repositoryRoot, "scripts", "db-test-preflight.mjs")]);
-if (preflight !== 0) process.exitCode = preflight;
+if (preflight !== 0) {
+  process.stderr.write("workspace-db-test: DB preflight failed; refusing workspace DB test route\n");
+  process.exitCode = 73;
+}
 else if (workspaceFile) {
   const relativeToWorkspace = workspaceFile.slice("bounded-contexts/payments/".length);
   let runWorkspaces;
