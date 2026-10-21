@@ -370,24 +370,29 @@ Assert-Mutant "report-drops-non-blocking-ids" { Test-QualityKeys $qualityContrac
 # Policy-only boundary: pins are section-scoped and whitespace-insensitive.
 # Each negative control removes one permission boundary, not a runtime fixture.
 $platformRules = @(
-  # v2.116: the platform loop and its migration belong to the controller thread;
-  # the product loop reads only the ownership register and applies the partition.
-  @(3, 'platform-handoff.md', 'unregistered-handoff.md'),
+  # The platform loop and its migration belong to the controller thread. The
+  # product loop applies orchestrator-shared Platform handoff by label each
+  # cycle; milestone membership never grants the platform loop an issue.
   @(3, 'The orchestration platform loop and its migration belong to the controller thread.', 'The orchestration platform loop belongs to this orchestrator.'),
   @(3, 'This orchestrator does not observe, start, stop, upgrade or repair platform supervisors or executors and never touches the platform checkout.', 'This orchestrator supervises, restarts and repairs platform executors.'),
-  @(3, 'It reads only the ownership register (section 1) of', 'It reads all of'),
-  @(3, 'handle incumbent-owned scope as usual and leave platform-side causes to the controller thread.', 'repair platform-side causes directly.'),
+  @(3, 'Once per cycle, before step 7, it applies `orchestrator-shared` Platform handoff from `.orchestrator/platform-handoff.json` and complete issue reads:', 'Once per cycle it reads the platform register:'),
+  @(3, 'it resumes unfinished take-backs, takes back held issues that meet a take-back reason, files one controller defect for each return not acknowledged within `releaseHours`, returns acknowledged issues to normal delivery, then hands off new ones.', 'it hands off new issues.'),
+  @(3, 'handle it as usual and leave platform-side causes to the controller thread.', 'repair platform-side causes directly.'),
   @(3, 'Renew the host identity record and apply any newer controller release (§2).', 'Renew the host identity record.'),
-  @(4, 'protected set must equal its platform-owned milestone rows', 'protected set may omit platform-owned milestones'),
-  @(4, 'current ruling protects milestones 155 and 158 exactly', 'current ruling protects only milestone 155'),
-  @(4, 'Future ownership changes require BOTH a Todd comment on #4388 and the register edit', 'Future ownership changes require only an idle log'),
+  @(4, '`orchestrator-shared` Platform handoff decides which issues the platform loop holds; milestone membership never does.', 'The ownership register decides which milestones the platform loop owns.'),
+  @(4, 'Selection already excludes issues carrying `dispatch:platform` or `dispatch:platform-return` (`PLATFORM_HELD`).', 'Selection excludes platform milestones.'),
+  @(4, 'On such an issue, its PR or its branch, the host never dispatches, reviews, enqueues, rebases, closes, reclaims worktrees, runs its watchdog, or kills processes', 'On such an issue the host may dispatch, review, enqueue, rebase, close, reclaim, watchdog, or kill platform work'),
+  @(4, 'a taken-back issue is runnable again only when that contract returns it', 'a taken-back issue is runnable at once'),
   @(4, 'All platform-repo issues belong to its self loop; the host never dispatches lanes there.', 'Host dispatches platform-repo lanes.'),
-  @(4, 'the incumbent never dispatches, enqueues, rebases, closes, reclaims worktrees, runs its watchdog, or kills platform processes', 'the incumbent may dispatch, enqueue, rebase, close, reclaim, watchdog, or kill platform work'),
+  @(4, 'Unknown label state is not mutation authority; retry the read while unrelated work continues.', 'Unknown label state counts as unlabeled.'),
   @(6, 'watchdog and termination rules below apply only to incumbent-owned lanes', 'watchdog and termination apply to both loops'),
-  @(8, 'incumbent-owned scope (section 4), including direct-enqueue fallback', 'any scope including platform direct-enqueue fallback'),
-  @(8, 'platform #367 while ISS-110 is open, then #368, instead of dispatch into its branch', 'platform branch for an incumbent rebase'),
+  @(8, 'Enqueue, repair, and landed-integration actions below never touch an issue carrying either platform handoff label (section 4), its PR or its branch, including the direct-enqueue fallback.', 'Enqueue, repair, and landed-integration actions below apply to any scope, including platform direct-enqueue fallback.'),
+  @(8, 'The landed-integration census records such a target and never rebases it; the platform loop refreshes its own branch.', 'The landed-integration census dispatches an incumbent rebase into the platform branch.'),
   @(8, 'do not invoke a dispatch path that would mutate one', 'invoke unrestricted auto-integration'),
-  @(9, 'exclude platform-owned worktrees and processes even after idle, park, or merge', 'include idle or merged platform worktrees and processes'),
+  @(9, 'never remove a worktree, branch or process of an issue carrying either platform handoff label (`platform-held-issue`), even after idle, park, or merge, until `orchestrator-shared` Platform handoff returns the issue.', 'remove idle or merged platform worktrees and processes.'),
+  @(9, 'Read each candidate''s issue labels and newest path-bound dispatch identity each run; unknown retains.', 'Read each candidate''s newest path-bound dispatch identity each run; unknown retains.'),
+  @(11, 'A platform handoff or take-back is a host decision under `orchestrator-shared` Platform handoff, never a Todd question.', 'A platform handoff or take-back needs a Todd comment and a register change.'),
+  @(13, 'excluding issues carrying either platform handoff label, the policy''s named CI/controller-evidence milestones and parked issues.', 'excluding platform milestones, the policy''s named CI/controller-evidence milestones and parked issues.'),
   @(15, 'When automation replaces a host duty, remove the redundant routine in the same reviewed adoption change after its replacement coverage is exercised.', 'Keep old and new routines running indefinitely after adoption.'),
   @(15, 'Use existing issue/PR and execution evidence to check whether the action, wait or failure disappeared; add no report, approval stage or delivery gate.', 'Require a new report and approval gate before continuing delivery.')
 )

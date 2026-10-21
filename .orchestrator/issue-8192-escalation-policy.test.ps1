@@ -70,7 +70,7 @@ $script:sectionRules = @(
   @(11, 'the host resolves the question with a second independent lane.'),
   @(11, 'It goes to Todd only as a priority or scope question or a packaged operator action.'),
   @(11, 'Escalate to Todd only when a tradeoff would change product priority or accepted product scope.'),
-  @(11, 'The existing Todd-reserved rules are unchanged: platform ownership transfer (§4), host rotation (§2), rollback (§3), and reclaiming unrecognized worktrees (§9).'),
+  @(11, 'The existing Todd-reserved rules are unchanged: host rotation (§2) and reclaiming unrecognized worktrees (§9).'),
   @(11, 'They never list process decisions as waiting on Todd.')
 )
 
