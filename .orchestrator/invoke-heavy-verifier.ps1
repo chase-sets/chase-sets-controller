@@ -2320,6 +2320,12 @@ try {
       }
     }
     $start.Environment["CHASE_SETS_HEAVY_SLOT_ID"] = $lockId
+    $workspaceDbStagePath = $null
+    if ($isWorkspaceDbTest) {
+      $workspaceDbStagePath = Join-Path ([IO.Path]::GetTempPath()) "chase-sets-workspace-db-stage-$lockId.json"
+      if (Test-Path -LiteralPath $workspaceDbStagePath) { throw "heavy-verifier: workspace DB stage path already exists" }
+      $start.Environment["CHASE_SETS_WORKSPACE_DB_STAGE_PATH"] = $workspaceDbStagePath
+    }
     # An inherited descriptor never crosses into a new owner's tree. A Gate
     # owner publishes its own descriptor only in the guarded environment.
     [void]$start.Environment.Remove("CHASE_SETS_HEAVY_SLOT_TRANSPORT")
@@ -2503,12 +2509,20 @@ try {
     $workspaceDbOutcome = $null
     $workspaceDbReason = $null
     if ($isWorkspaceDbTest) {
-      if ($exitCode -eq 73 -and -not $childTimedOut) {
-        $workspaceDbOutcome = 'preflight-failed'
-        $workspaceDbReason = 'DB preflight failed; workspace DB test was not executed'
-      } elseif ($childTimedOut) {
+      $workspaceDbStage = $null
+      if ($workspaceDbStagePath -and (Test-Path -LiteralPath $workspaceDbStagePath -PathType Leaf)) {
+        try { $workspaceDbStage = [IO.File]::ReadAllText($workspaceDbStagePath) | ConvertFrom-Json } catch { $workspaceDbStage = $null }
+        Remove-Item -LiteralPath $workspaceDbStagePath -Force -ErrorAction SilentlyContinue
+      }
+      if ($childTimedOut) {
         $workspaceDbOutcome = 'timed-out'
         $workspaceDbReason = 'workspace DB test exceeded its budget'
+      } elseif ($exitCode -eq 73 -and $workspaceDbStage -and [string]$workspaceDbStage.stage -ceq 'preflight') {
+        $workspaceDbOutcome = 'preflight-failed'
+        $workspaceDbReason = 'DB preflight failed; workspace DB test was not executed'
+      } elseif ($exitCode -eq 73) {
+        $workspaceDbOutcome = 'not-executed'
+        $workspaceDbReason = 'workspace DB test refused after the DB preflight passed; see stderr'
       } elseif ($exitCode -eq 0) {
         $workspaceDbOutcome = 'passed'
       } else {

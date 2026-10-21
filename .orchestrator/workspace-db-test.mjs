@@ -18,12 +18,19 @@ const workspace = "@chase-sets/payments";
 const workspaceDirectory = path.join(repositoryRoot, "bounded-contexts", "payments");
 const workspaceFile = fileIndex >= 0 ? args[3].replaceAll("\\", "/") : null;
 const runWorkspacesPath = join(repositoryRoot, "scripts", "run-workspaces.mjs");
+const stagePath = process.env.CHASE_SETS_WORKSPACE_DB_STAGE_PATH || null;
+function childEnvironment() {
+  // Read process.env at spawn time: the file route loads the test environment first.
+  const environment = { ...process.env, npm_execpath: pnpm };
+  delete environment.CHASE_SETS_WORKSPACE_DB_STAGE_PATH;
+  return environment;
+}
 
 function run(executable, commandArguments) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, commandArguments, {
       cwd: repositoryRoot,
-      env: { ...process.env, npm_execpath: pnpm },
+      env: childEnvironment(),
       stdio: "inherit",
       windowsHide: true,
     });
@@ -35,6 +42,12 @@ function run(executable, commandArguments) {
 const preflight = await run(process.execPath, [path.join(repositoryRoot, "scripts", "db-test-preflight.mjs")]);
 if (preflight !== 0) {
   process.stderr.write("workspace-db-test: DB preflight failed; refusing workspace DB test route\n");
+  // Only this stage claims a preflight refusal; any other exit 73 (for example a
+  // heavy-slot refusal inside the test run) is reported as not executed.
+  if (stagePath) {
+    try { fs.writeFileSync(stagePath, JSON.stringify({ stage: "preflight", preflightExit: preflight }), { flag: "wx" }); }
+    catch (error) { process.stderr.write(`workspace-db-test: could not record preflight stage: ${error.message}\n`); }
+  }
   process.exitCode = 73;
 }
 else if (workspaceFile) {

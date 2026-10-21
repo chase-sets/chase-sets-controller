@@ -94,13 +94,17 @@ resolved; it is not a release gate.
 
 ### WorkspaceDbTest contract
 
-`invoke-heavy-verifier.ps1 -WorkspaceDbTest` requires the worktree's sandbox
-PostgreSQL to be running before admission. Start the sandbox `postgres`
-compose service before retrying the route. The route runs its DB preflight
-first; when that preflight cannot reach PostgreSQL it refuses with exit `73`,
-records `outcome=preflight-failed` and a reason naming the DB preflight, and
-leaves the preflight's stderr visible. A reachable database with a failing DB
-test remains a normal test failure (exit `1`); budget expiry remains `124`.
+`invoke-heavy-verifier.ps1 -WorkspaceDbTest` needs the worktree's sandbox
+PostgreSQL running and `TEST_DATABASE_URL` valid. Start the sandbox `postgres`
+compose service (or run `pnpm run dev:bootstrap`) before the route. Inside its
+admitted slot the route runs the DB preflight first. When the preflight fails
+for any reason (PostgreSQL unreachable, URL missing or disallowed) the route
+exits `73` (not executed), records `outcome=preflight-failed` with a reason
+naming the preflight, and leaves the preflight's stderr visible. An exit `73`
+after the preflight passed (for example a heavy-slot refusal) records
+`outcome=not-executed`; read stderr for the cause. A failing DB test is the
+test's nonzero exit (normally `1`, `outcome=test-failed`); budget expiry is
+`124` (`outcome=timed-out`).
 
 ## 6. Defects and rulings
 

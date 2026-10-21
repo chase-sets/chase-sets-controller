@@ -177,6 +177,11 @@ if (process.env.WORKSPACE_DB_FAIL === "1") {
   process.exitCode = 1;
   process.exit();
 }
+if (process.env.WORKSPACE_DB_REFUSE === "1") {
+  process.stderr.write("heavy-admission: fixture nested refusal\n");
+  process.exitCode = 73;
+  process.exit();
+}
 if (process.env.WORKSPACE_DB_HANG === "1") {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio: "ignore", windowsHide: true});
   fs.writeFileSync(`${out}/grandchild.pid`, String(child.pid));
@@ -225,12 +230,13 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
 
   $fileRun = Invoke-Route @('-WorkspaceDbTest', '@chase-sets/payments', '-WorkspaceDbTestFile', $validFile, '-WorkspaceDbBudgetSeconds', '10')
   $fileReceipt = @(Get-Receipts | Where-Object { $_.workspace -eq '@chase-sets/payments' -and $_.file -eq $validFile })[0]
-  Assert-True ($fileReceipt -and $fileReceipt.budgetSeconds -eq 10 -and $fileReceipt.timedOut -eq $false -and $fileReceipt.elapsedMs -ge 0) 'file receipt records workspace, file, budget and elapsed'
+  Assert-True ($fileReceipt -and $fileReceipt.budgetSeconds -eq 10 -and $fileReceipt.timedOut -eq $false -and $fileReceipt.elapsedMs -ge 0 -and $fileReceipt.outcome -ceq 'passed') 'file receipt records workspace, file, budget, elapsed and passed outcome'
   Assert-True ((Get-Content (Join-Path $artifacts 'file-args') -Raw | ConvertFrom-Json)[-1] -ceq $validFile.Substring('bounded-contexts/payments/'.Length)) 'file route passes exactly the workspace-relative file'
   Assert-True ($fileReceipt.arguments -contains $validFile) 'file route receipt contains the fixed file argument'
   Assert-True (-not (Test-Path (Join-Path $runtime 'verify-lock.d'))) 'successful workspace routes release the shared heavy lock'
 
   Remove-Item -LiteralPath (Join-Path $artifacts 'body') -Force
+  $preflightStarted = Get-Date
   $preflightEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_PREFLIGHT_FAIL = '1' }
   $preflightText = Complete-Route $preflightEntry 73
   $preflightReceipt = @(Get-Receipts | Where-Object outcome -ceq 'preflight-failed')[0]
@@ -244,7 +250,13 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $redText = Complete-Route $redEntry 1
   $redReceipt = @(Get-Receipts | Where-Object { $_.exit -eq 1 -and $_.nativeExit -eq 1 } | Select-Object -Last 1)[0]
   Assert-True ($redText -match 'fixture DB test failed' -and $redReceipt -and $redReceipt.outcome -ceq 'test-failed') 'reachable DB test failure remains exit 1 and is distinct from preflight refusal'
-  Write-Output 'PASS workspace-db preflight refusal exit=73 outcome=preflight-failed and reachable red test exit=1'
+  $refuseEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_REFUSE = '1' }
+  $refuseText = Complete-Route $refuseEntry 73
+  $refuseReceipt = @(Get-Receipts | Where-Object outcome -ceq 'not-executed')[0]
+  Assert-True ($refuseText -match 'fixture nested refusal' -and $refuseReceipt -and $refuseReceipt.exit -eq 73 -and $refuseReceipt.reason -match 'after the DB preflight passed' -and
+    @(Get-Receipts | Where-Object outcome -ceq 'preflight-failed').Count -eq 1) 'exit 73 after a passing preflight is not-executed, never preflight-failed'
+  Assert-True (@(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'chase-sets-workspace-db-stage-*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $preflightStarted }).Count -eq 0) 'workspace DB stage files are removed after each run'
+  Write-Output 'PASS workspace-db preflight refusal exit=73 outcome=preflight-failed, later refusal outcome=not-executed, reachable red test exit=1'
 
   $collisionFile = 'bounded-contexts/payments/features/payments/api/other/features/payments/api/saved-instrument-attempt.db.test.ts'
   New-Item -ItemType Directory -Path (Split-Path -Parent (Join-Path $worktree $collisionFile)) -Force | Out-Null
@@ -308,7 +320,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   }
   Remove-Item -LiteralPath (Join-Path $worktree 'bounded-contexts/payments/features/payments/api/untracked.db.test.ts') -Force
   Remove-Item -LiteralPath $foreignLock -Recurse -Force
-  Assert-True (@(Get-Receipts).Count -eq 5) 'invalid requests create no receipt'
+  Assert-True (@(Get-Receipts).Count -eq 6) 'invalid requests create no receipt'
   Write-Output 'PASS workspace-db route accepted Payments, exact file, closed refusals, receipt identity and pre-admission controls'
 
   $start = [Diagnostics.ProcessStartInfo]::new()
@@ -323,7 +335,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $timedText = $timedOut.Out.GetAwaiter().GetResult() + $timedOut.Err.GetAwaiter().GetResult()
   Assert-True ($timed.ExitCode -eq 124) "hanging route exits 124: $timedText"
   $timeoutReceipt = @(Get-Receipts | Where-Object timedOut -eq $true)[0]
-  Assert-True ($timeoutReceipt -and $timeoutReceipt.exit -eq 124 -and $timeoutReceipt.timedOut -eq $true -and $timeoutReceipt.elapsedMs -ge 5000) 'timeout receipt records timed-out and elapsed budget'
+  Assert-True ($timeoutReceipt -and $timeoutReceipt.exit -eq 124 -and $timeoutReceipt.timedOut -eq $true -and $timeoutReceipt.elapsedMs -ge 5000 -and $timeoutReceipt.outcome -ceq 'timed-out' -and $timeoutReceipt.reason -match 'budget') 'timeout receipt records timed-out and elapsed budget'
   $grandchildPath = Join-Path $artifacts 'grandchild.pid'
   $markerDeadline = [DateTime]::UtcNow.AddSeconds(5)
   while (-not (Test-Path -LiteralPath $grandchildPath) -and [DateTime]::UtcNow -lt $markerDeadline) { Start-Sleep -Milliseconds 50 }
