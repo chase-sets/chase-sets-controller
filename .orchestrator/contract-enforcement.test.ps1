@@ -620,7 +620,7 @@ $supervisionRules = @(
   'This thread alone writes the product container''s `.orchestrator/platform-handoff.json`.',
   'Set `accepting: true` only while a Chase Sets supervisor started with a `handoff` object naming both labels is live.',
   'Write `accepting: false` before stopping that supervisor, and as soon as it is found stopped.',
-  'Raise `maxInFlight` from the weekly scorecard of platform deliveries and take-backs.',
+  'Raise `maxInFlight` from the weekly platform scorecard (`platform-scorecard.ps1`) and that week''s `platform-take-back` markers.',
   'The tunable numbers live only in that file, never in skill text.',
   'Start or resume a platform run only from Windows through the platform checkout''s `scripts/executor/start-loop.ps1 <config>`, recording the config path, run name, executor SHA and supervisor PID.',
   'Start or resume a Chase Sets run only with a `handoff` object naming `dispatch:platform` and `dispatch:platform-return`.',
@@ -765,7 +765,7 @@ $supervisionHandoffMutants['executor-hand-patched'] = Edit-Policy $supervisionTe
 $supervisionHandoffMutants['executor-upgraded-while-live'] = Edit-Policy $supervisionText 'Upgrade the executor only while no Chase Sets supervisor is live.' 'Upgrade the executor at any time.'
 $supervisionHandoffMutants['observation-mutates'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and repair their PRs.'
 $supervisionHandoffMutants['one-issue-per-take-back'] = Edit-Policy $supervisionText 'For each distinct platform cause named in `platform-take-back` comments, file one platform issue' 'For each take-back, file one platform issue'
-$supervisionHandoffMutants['max-in-flight-unbounded'] = Edit-Policy $supervisionText 'Raise `maxInFlight` from the weekly scorecard of platform deliveries and take-backs.' 'Raise `maxInFlight` whenever the queue is short.'
+$supervisionHandoffMutants['max-in-flight-unbounded'] = Edit-Policy $supervisionText 'Raise `maxInFlight` from the weekly platform scorecard (`platform-scorecard.ps1`) and that week''s `platform-take-back` markers.' 'Raise `maxInFlight` whenever the queue is short.'
 $supervisionHandoffMutants['retirement-criteria-restated'] = Edit-Policy $supervisionText 'Criteria for retiring the host loop live in the platform roadmap.' 'Retire the host loop after one zero-touch delivery.'
 $supervisionHandoffMutants['register-read-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. Read the ownership register in `.orchestrator/platform-handoff.md` first.'
 $supervisionHandoffMutants['milestone-idle-restored'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and their PRs read-only. An idle run completes its milestone.'

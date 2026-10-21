@@ -12,9 +12,9 @@ This thread alone writes the product container's
 `.orchestrator/platform-handoff.json`. Set `accepting: true` only while a
 Chase Sets supervisor started with a `handoff` object naming both labels is
 live. Write `accepting: false` before stopping that supervisor, and as soon as
-it is found stopped. Raise `maxInFlight` from the weekly scorecard of platform
-deliveries and take-backs. The tunable numbers live only in that file, never
-in skill text.
+it is found stopped. Raise `maxInFlight` from the weekly platform scorecard
+(`platform-scorecard.ps1`) and that week's `platform-take-back` markers. The
+tunable numbers live only in that file, never in skill text.
 
 ## Runs
 
