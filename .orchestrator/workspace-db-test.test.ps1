@@ -236,7 +236,6 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   Assert-True (-not (Test-Path (Join-Path $runtime 'verify-lock.d'))) 'successful workspace routes release the shared heavy lock'
 
   Remove-Item -LiteralPath (Join-Path $artifacts 'body') -Force
-  $preflightStarted = Get-Date
   $preflightEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_PREFLIGHT_FAIL = '1' }
   $preflightText = Complete-Route $preflightEntry 73
   $preflightReceipt = @(Get-Receipts | Where-Object outcome -ceq 'preflight-failed')[0]
@@ -253,9 +252,9 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $refuseEntry = Start-Route (Join-Path $runtime 'invoke-heavy-verifier.ps1') ((Common-Arguments '') + @('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbBudgetSeconds','10')) @{ WORKSPACE_DB_REFUSE = '1' }
   $refuseText = Complete-Route $refuseEntry 73
   $refuseReceipt = @(Get-Receipts | Where-Object outcome -ceq 'not-executed')[0]
-  Assert-True ($refuseText -match 'fixture nested refusal' -and $refuseReceipt -and $refuseReceipt.exit -eq 73 -and $refuseReceipt.reason -match 'after the DB preflight passed' -and
+  Assert-True ($refuseText -match 'fixture nested refusal' -and $refuseReceipt -and $refuseReceipt.exit -eq 73 -and $refuseReceipt.reason -match 'without a preflight stage record' -and
     @(Get-Receipts | Where-Object outcome -ceq 'preflight-failed').Count -eq 1) 'exit 73 after a passing preflight is not-executed, never preflight-failed'
-  Assert-True (@(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'chase-sets-workspace-db-stage-*.json' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $preflightStarted }).Count -eq 0) 'workspace DB stage files are removed after each run'
+  Assert-True ($preflightReceipt.lockId -and $refuseReceipt.lockId -and -not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetTempPath()) "chase-sets-workspace-db-stage-$($preflightReceipt.lockId).json")) -and -not (Test-Path -LiteralPath (Join-Path ([IO.Path]::GetTempPath()) "chase-sets-workspace-db-stage-$($refuseReceipt.lockId).json"))) 'workspace DB stage files are removed after each run'
   Write-Output 'PASS workspace-db preflight refusal exit=73 outcome=preflight-failed, later refusal outcome=not-executed, reachable red test exit=1'
 
   $collisionFile = 'bounded-contexts/payments/features/payments/api/other/features/payments/api/saved-instrument-attempt.db.test.ts'

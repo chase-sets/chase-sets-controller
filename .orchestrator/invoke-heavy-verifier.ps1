@@ -2522,7 +2522,7 @@ try {
         $workspaceDbReason = 'DB preflight failed; workspace DB test was not executed'
       } elseif ($exitCode -eq 73) {
         $workspaceDbOutcome = 'not-executed'
-        $workspaceDbReason = 'workspace DB test refused after the DB preflight passed; see stderr'
+        $workspaceDbReason = 'exit 73 without a preflight stage record (for example a heavy-slot refusal); see stderr'
       } elseif ($exitCode -eq 0) {
         $workspaceDbOutcome = 'passed'
       } else {
@@ -2604,6 +2604,8 @@ try {
   # The nested owner stops before release: after this point no descendant can
   # obtain a signed continuation from this wrapper, and the private key dies here.
   Stop-NestedOwner
+  $leftoverWorkspaceDbStage = Get-Variable -Name workspaceDbStagePath -ValueOnly -ErrorAction SilentlyContinue
+  if ($leftoverWorkspaceDbStage) { Remove-Item -LiteralPath $leftoverWorkspaceDbStage -Force -ErrorAction SilentlyContinue }
   if ($diagnosticSourceStream) { $diagnosticSourceStream.Dispose(); $diagnosticSourceStream = $null }
   if ($diagnosticJobHandle -ne [IntPtr]::Zero) {
     [HeavyDiagnosticJob]::Close($diagnosticJobHandle)
