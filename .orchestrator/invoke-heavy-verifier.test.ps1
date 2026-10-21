@@ -10,6 +10,8 @@ param(
   [switch]$PrecursorOnly,
   [switch]$LegacyOnly,
   [switch]$FixtureEquivalenceOnly,
+  # #206: only the disposable-root teardown discriminator.
+  [switch]$TeardownOnly,
   # #9627 named bypass mutants of the ControllerFixtureEquivalence route.
   [ValidateSet('', 'arbitrary-phase', 'forward-baseline', 'unchecked-evidence', 'untracked-check', 'unbound-source-bytes', 'unchecked-ancestry', 'platform-slot', 'early-release', 'bypass-eligibility')][string]$FixtureMutant = '',
   [string]$GuardRevision = ""
@@ -341,7 +343,7 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
   Write-Output 'PASS native DB closed entry'
   return
 }
-if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly)) {
+if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly -or $TeardownOnly)) {
   & $PSCommandPath -NativeDbOnly
 }
 function Assert-PrecursorAdmissionSurface([string]$Source) {
@@ -475,6 +477,132 @@ function Remove-DisposableLock {
   Assert-True (-not (Test-IsReparse $lock)) "ordinary disposable lock is not a reparse target"
   Remove-Item -LiteralPath $lock -Recurse -Force
 }
+# #206: teardown removes the disposable root only after every process this test
+# started under it has exited. Ownership is proven by exact ancestry, never by a
+# path match alone: a live process is this test's when its parent chain reaches
+# this test process, or an exact identity the test recorded (a wrapper, or a
+# child identity published in the root), each link started no earlier than its
+# parent. It is under the root when that chain names the root or ends at a
+# recorded identity. Nothing else is ever stopped; a root it holds is retained.
+function ConvertTo-TeardownIdentity($Value) {
+  $processId = 0; $start = [DateTimeOffset]::MinValue
+  if ($null -eq $Value -or -not [int]::TryParse([string]$Value.pid, [ref]$processId) -or $processId -le 0 -or
+      -not [DateTimeOffset]::TryParse([string]$Value.processStartUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$start)) {
+    return
+  }
+  return [pscustomobject]@{ Id = $processId; StartTicks = $start.UtcTicks }
+}
+function Get-TeardownKnownIdentities([string]$Path, $Recorded) {
+  foreach ($value in @($Recorded)) { ConvertTo-TeardownIdentity $value }
+  foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter '*.json' -File -Force -ErrorAction SilentlyContinue)) {
+    try { ConvertTo-TeardownIdentity ([IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json -DateKind String) } catch {}
+  }
+}
+function Get-TeardownProcessTable {
+  $table = @{}
+  foreach ($entry in @(CimCmdlets\Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate, Name, CommandLine, ExecutablePath -ErrorAction Stop)) {
+    if ($null -eq $entry.CreationDate) { continue }
+    $table[[int]$entry.ProcessId] = [pscustomobject]@{
+      Id = [int]$entry.ProcessId; ParentId = [int]$entry.ParentProcessId; StartTicks = ([datetime]$entry.CreationDate).ToUniversalTime().Ticks
+      Name = [string]$entry.Name; CommandLine = [string]$entry.CommandLine; Text = "$($entry.ExecutablePath) $($entry.CommandLine)"
+    }
+  }
+  return $table
+}
+# CIM creation times carry microseconds and recorded identities 100 ns ticks,
+# so a PID matches a recorded identity when the starts agree within 10 ticks.
+function Test-TeardownRecorded($ById, [int]$Id, [long]$Ticks, [switch]$AtOrBefore) {
+  if (-not $ById.ContainsKey($Id)) { return $false }
+  foreach ($recorded in $ById[$Id]) {
+    if ($(if ($AtOrBefore) { $recorded -le $Ticks + 10 } else { [Math]::Abs($recorded - $Ticks) -le 10 })) { return $true }
+  }
+  return $false
+}
+function Select-TeardownProcesses($Table, $Known, [string]$Path, [int]$SelfId) {
+  $byId = @{}
+  foreach ($identity in @($Known)) {
+    if ($null -eq $identity) { continue }
+    if (-not $byId.ContainsKey($identity.Id)) { $byId[$identity.Id] = [Collections.Generic.List[long]]::new() }
+    $byId[$identity.Id].Add($identity.StartTicks)
+  }
+  $self = $Table[$SelfId]
+  $ancestors = @{}
+  for ($walk = $self; $null -ne $walk -and -not $ancestors.ContainsKey($walk.ParentId); $walk = $Table[$walk.ParentId]) { $ancestors[$walk.ParentId] = $true }
+  foreach ($process in @($Table.Values)) {
+    # Console hosts are skipped, as in the guard's own descendant census.
+    if ($process.Id -eq $SelfId -or $ancestors.ContainsKey($process.Id) -or $process.Name -iin @('conhost.exe', 'openconsole.exe')) { continue }
+    $named = $false; $owner = $null; $current = $process
+    for ($depth = 0; $depth -lt 64 -and $null -eq $owner; $depth++) {
+      if ($current.Text.IndexOf($Path, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $named = $true }
+      $parent = $Table[$current.ParentId]
+      if (Test-TeardownRecorded $byId $current.Id $current.StartTicks) { $owner = 'recorded' }
+      elseif ($current.ParentId -eq $SelfId) { $owner = if ($null -ne $self -and $current.StartTicks -ge $self.StartTicks - 10) { 'self' } else { 'none' } }
+      elseif (Test-TeardownRecorded $byId $current.ParentId $current.StartTicks -AtOrBefore) {
+        # The recorded parent has exited, is still exact, or its PID now names
+        # a newer process that this one predates.
+        $owner = if ($null -eq $parent -or $current.StartTicks -lt $parent.StartTicks -or (Test-TeardownRecorded $byId $parent.Id $parent.StartTicks)) { 'recorded' } else { 'none' }
+      } elseif ($null -eq $parent -or $parent.StartTicks -gt $current.StartTicks + 10) { $owner = 'none' }
+      else { $current = $parent }
+    }
+    if ($owner -ceq 'recorded' -or ($owner -ceq 'self' -and $named)) { $process }
+  }
+}
+function Stop-TeardownProcess($Process) {
+  try {
+    $live = [Diagnostics.Process]::GetProcessById($Process.Id)
+    if ([Math]::Abs($live.StartTime.ToUniversalTime().Ticks - $Process.StartTicks) -gt 10) { return $false }
+    $live.Kill()
+    return $live.WaitForExit(10000)
+  } catch { return $false }
+}
+# Never throws, so it cannot replace a body failure that is already propagating.
+function Complete-DisposableTeardown([string]$Path, $Recorded, [int]$Attempts = 10) {
+  $stopped = [Collections.Generic.List[object]]::new()
+  $reason = $null; $attempt = 0
+  try {
+    $resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    if (-not $resolved.StartsWith($systemTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or (Test-IsReparse $resolved)) {
+      $reason = 'it is not an ordinary directory below system temp, so nothing was stopped or removed.'
+      $Attempts = 0
+    }
+    while ($attempt -lt $Attempts -and (Test-Path -LiteralPath $resolved)) {
+      $attempt++
+      if ($attempt -gt 1) { Start-Sleep -Milliseconds ([Math]::Min(2000, 250 * ($attempt - 1))) }
+      try {
+        # Census again after each kill: a target can start a child in between.
+        for ($round = 0; $round -lt 5; $round++) {
+          $known = @(Get-TeardownKnownIdentities $resolved $Recorded) + @($stopped)
+          $progress = $false
+          foreach ($target in @(Select-TeardownProcesses (Get-TeardownProcessTable) $known $resolved $PID | Sort-Object StartTicks)) {
+            if (Stop-TeardownProcess $target) { $stopped.Add($target); $progress = $true }
+          }
+          if (-not $progress) { break }
+        }
+      } catch { $reason = "process census failed: $($_.Exception.Message)" }
+      try { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop } catch { $reason = $_.Exception.Message }
+    }
+  } catch { $reason = "teardown error: $($_.Exception.Message)" }
+  $removed = -not (Test-Path -LiteralPath $Path)
+  return [pscustomobject]@{ Removed = $removed; Reason = $(if ($removed) { $null } else { $reason }); Attempts = $attempt; Stopped = $stopped }
+}
+function Write-TeardownReport([string]$Path, $Teardown) {
+  try {
+    $describe = { param($Process) $text = ("$($Process.CommandLine)" -replace '\s+', ' ').Trim(); "pid=$($Process.Id) $($Process.Name) $($text.Substring(0, [Math]::Min(300, $text.Length)))" }
+    if ($Teardown.Stopped.Count) {
+      [Console]::Error.WriteLine("TEARDOWN stopped $($Teardown.Stopped.Count) process(es) this test started under ${Path}: $(@($Teardown.Stopped | ForEach-Object { & $describe $_ }) -join ' | ')")
+    }
+    if (-not $Teardown.Removed) {
+      $holders = 'unavailable'
+      try {
+        $naming = @((Get-TeardownProcessTable).Values | Where-Object { $_.Text.IndexOf($Path, [StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { & $describe $_ })
+        $holders = if ($naming.Count) { $naming -join ' | ' } else { 'none' }
+      } catch {}
+      [Console]::Error.WriteLine("TEARDOWN FAILED: retained $Path after $($Teardown.Attempts) removal attempt(s): $($Teardown.Reason) Live processes naming the root, left running: $holders.")
+    }
+  } catch {
+    [Console]::Error.WriteLine("TEARDOWN report error for ${Path}: $($_.Exception.Message)")
+  }
+}
 function Invoke-Guard([string]$Lane, [string[]]$ChildArguments, [hashtable]$Extra = @{}) {
   $parameters = @{
     Gate = "verify:static"
@@ -498,8 +626,11 @@ function Read-Owner {
   if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return $null }
   try { return Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch { return $null }
 }
-function Wait-Condition([scriptblock]$Condition, [string]$Message) {
-  for ($attempt = 0; $attempt -lt 400; $attempt++) {
+function Wait-Condition([scriptblock]$Condition, [string]$Message, [int]$TimeoutSeconds = 0) {
+  # Default: 400 polls. A fixture whose startup chains several cold pwsh
+  # launches adds a wall-clock deadline; the wait is never shorter (#206).
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  for ($attempt = 0; $attempt -lt 400 -or [DateTime]::UtcNow -lt $deadline; $attempt++) {
     if (& $Condition) { return }
     Start-Sleep -Milliseconds 25
   }
@@ -1747,7 +1878,10 @@ catch { $_.Exception.Message; exit 1 }
     $evidence = New-FixtureEvidence
     $route = Start-FixtureRoute (Get-FixtureParameters $evidence) 'descendant'
     try {
-      Wait-Condition { (Test-Path -LiteralPath $grandchildIdentity) -and (Test-Path -LiteralPath $fixtureBody) } 'fixture route descendant publication'
+      # Publication chains three cold pwsh starts (wrapper, stand-in, harness)
+      # and outlasts the 400-poll default under load (#206), so it gets the
+      # route's own 90-second budget.
+      Wait-Condition { (Test-Path -LiteralPath $grandchildIdentity) -and (Test-Path -LiteralPath $fixtureBody) } 'fixture route descendant publication' 90
       $standIn = Read-FixtureBody
       Wait-Condition { -not (Test-ExactProcess ([pscustomobject]@{ pid = $standIn.pid; processStartUtc = $standIn.processStartUtc })) } 'fixture route child exit'
       $grandchild = Read-ChildIdentity $grandchildIdentity
@@ -1769,8 +1903,77 @@ catch { $_.Exception.Message; exit 1 }
   }
   Write-Output "PASS heavy verifier ControllerFixtureEquivalence closed route (mutant=$(if ($FixtureMutant) { $FixtureMutant } else { 'none' }))"
 }
+# #206 discriminator. A synthetic census pins exactly which processes teardown
+# may stop. Then a recorded relay starts a holder whose working directory is
+# inside a probe and exits, the shape of the fixture-route harness after its
+# stand-in: plain removal fails, and teardown stops that orphan and removes it.
+function Test-DisposableTeardown {
+  $base = [DateTime]::UtcNow.Ticks
+  $named = "pwsh.exe -File $root\fixture.ps1"
+  $table = @{}
+  foreach ($row in @(
+      @(-1, -2, -100, $named),                            # ancestor of this test: never selected
+      @($PID, -1, 0, 'pwsh.exe -File test.ps1'),
+      @(-10, $PID, 10, $named),                           # child naming the root: selected
+      @(-11, -10, 20, 'git.exe status'),                  # its unnamed child: selected through it
+      @(-12, $PID, 10, 'pwsh.exe -Command Start-Sleep'),  # child outside the root: kept
+      @(-20, -99, 30, 'harness'),                         # orphan of exited recorded -99: selected
+      @(-21, -98, 30, $named),                            # orphan of unrecorded -98 naming the root: kept
+      @(-22, -1, 30, $named),                             # sibling of this test naming the root: kept
+      @(-97, -1, 50, 'reused'),                           # newer holder of recorded PID -97: kept
+      @(-30, -97, 60, $named),                            # its child: kept
+      @(-31, -97, 40, 'orphan'),                          # predates that reuse, so recorded -97's: selected
+      @(-40, -96, 70, 'published'))) {                    # exact published identity: selected
+    $table[[int]$row[0]] = [pscustomobject]@{ Id = [int]$row[0]; ParentId = [int]$row[1]; StartTicks = $base + 1000 * $row[2]; Name = 'synthetic'; Text = [string]$row[3] }
+  }
+  $known = @(foreach ($recorded in @(@(-99, 5), @(-97, 5), @(-40, 70))) { [pscustomobject]@{ Id = $recorded[0]; StartTicks = $base + 1000 * $recorded[1] } })
+  $selected = @(Select-TeardownProcesses $table $known $root $PID | ForEach-Object { $_.Id } | Sort-Object)
+  Assert-True (($selected -join ',') -ceq '-40,-31,-20,-11,-10') "teardown selects only exact descendants of this test or of a recorded identity under the root (selected=$($selected -join ','))"
+
+  $probe = Join-Path $root 'teardown-probe'
+  $held = Join-Path $probe 'held'
+  New-Item -ItemType Directory -Path $held | Out-Null
+  # Not *.json, so the holder stays unrecorded and only its relay proves it.
+  $holderIdentityPath = Join-Path $probe 'holder.identity'
+  $relayScript = Join-Path $probe 'relay.ps1'
+  [IO.File]::WriteAllText($relayScript, @'
+param([string]$Held, [string]$IdentityPath)
+$start = [Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+$start.UseShellExecute = $false; $start.CreateNoWindow = $true; $start.WorkingDirectory = $Held
+$start.Environment['HV_TEARDOWN_HOLDER'] = $IdentityPath
+foreach ($argument in @('-NoProfile', '-NonInteractive', '-Command', '$self = Get-Process -Id $PID; [IO.File]::WriteAllText($env:HV_TEARDOWN_HOLDER, ([ordered]@{ pid = $PID; processStartUtc = $self.StartTime.ToUniversalTime().ToString(''o'') } | ConvertTo-Json -Compress)); Start-Sleep -Seconds 120')) { [void]$start.ArgumentList.Add($argument) }
+[void][Diagnostics.Process]::Start($start)
+exit 0
+'@)
+  $relayStart = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
+  $relayStart.UseShellExecute = $false; $relayStart.CreateNoWindow = $true
+  foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $relayScript, $held, $holderIdentityPath)) { [void]$relayStart.ArgumentList.Add($argument) }
+  $relay = [Diagnostics.Process]::Start($relayStart)
+  $relayIdentity = [pscustomobject]@{ pid = $relay.Id; processStartUtc = $relay.StartTime.ToUniversalTime().ToString('o') }
+  # Recorded like a wrapper, so the final teardown can also reach its orphan.
+  $testWrapperIdentities.Add($relayIdentity)
+  $holder = $null
+  try {
+    Wait-Condition { $relay.HasExited -and $(try { $null -ne (Read-ChildIdentity $holderIdentityPath).pid } catch { $false }) } 'teardown probe holder publication after its relay exits' 90
+    $holder = Read-ChildIdentity $holderIdentityPath
+    $blocked = $false
+    try { Remove-Item -LiteralPath $probe -Recurse -Force } catch { $blocked = $true }
+    Assert-True ($blocked -and (Test-ExactProcess $holder) -and (Test-Path -LiteralPath $held)) "plain removal fails while the exited relay's orphan holds its working directory (control)"
+    $result = Complete-DisposableTeardown $probe @($relayIdentity) 3
+    Assert-True ($result.Removed -and -not (Test-Path -LiteralPath $probe) -and -not (Test-ExactProcess $holder) -and
+      @($result.Stopped | Where-Object { $_.Id -eq [int]$holder.pid }).Count -eq 1) "teardown stops the recorded relay's orphan and removes the probe (removed=$($result.Removed) reason=$($result.Reason))"
+  } finally {
+    foreach ($identity in @($holder, $relayIdentity)) {
+      if ($identity -and (Test-ExactProcess $identity)) { Stop-ExactProcess $identity }
+    }
+  }
+  Write-Output 'PASS teardown stops only exact descendants under the root: synthetic census, recorded-relay orphan stopped, probe removed'
+}
+$bodyFailed = $false
 try {
   Assert-DisposableRoot
+  if ($TeardownOnly -or -not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly)) { Test-DisposableTeardown }
+  if ($TeardownOnly) { return }
   if ($RoleAdmissionOnly -or $RulingFourOnly -or -not ($DiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly)) { Test-NativeRoleAdmission }
   if ($RoleAdmissionOnly) { return }
   if ($FixtureEquivalenceOnly -or -not ($DiscriminatorOnly -or $RulingFourOnly -or $PrecursorOnly -or $LegacyOnly)) { Test-ControllerFixtureEquivalence }
@@ -2374,33 +2577,15 @@ try {
   Assert-True (-not (Test-Path -LiteralPath $lock)) "stale contention winner cleans up"
 
   Write-Output "PASS heavy verifier guard coverage"
+} catch {
+  $bodyFailed = $true
+  throw
 } finally {
-  foreach ($identity in $testWrapperIdentities) {
-    try {
-      if (Test-ExactProcess $identity) { Stop-ExactProcess $identity }
-    } catch {
-      # Final cleanup remains bounded to wrappers started by this temp-root test.
-    }
-  }
-  foreach ($identityPath in @(
-      (Join-Path $root "discriminator-child.json"),
-      (Join-Path $root "grandchild-child.json"),
-      (Join-Path $root "grandchild-relay.json"),
-      (Join-Path $root "grandchild-worker.json"),
-      (Join-Path $root "orphan-child.json"),
-      (Join-Path $root "pending-child.json")
-    )) {
-    if (Test-Path -LiteralPath $identityPath -PathType Leaf) {
-      try {
-        $identity = Read-ChildIdentity $identityPath
-        if (Test-ExactProcess $identity) { Stop-ExactProcess $identity }
-      } catch {
-        # Final cleanup remains bounded to identities published in this temp root.
-      }
-    }
-  }
-  if (Test-Path -LiteralPath $root) {
-    Assert-DisposableRoot
-    Remove-Item -LiteralPath $root -Recurse -Force
-  }
+  # #206: recorded wrappers, published child identities and exact descendants
+  # of either or of this test under the root are stopped before it is removed.
+  $teardown = Complete-DisposableTeardown $root $testWrapperIdentities
+  Write-TeardownReport $root $teardown
+  # A teardown failure is reported on its own line and never replaces a body
+  # failure; after a passing body it exits 3, distinct from an assertion's 1.
+  if (-not $teardown.Removed -and -not $bodyFailed) { exit 3 }
 }
