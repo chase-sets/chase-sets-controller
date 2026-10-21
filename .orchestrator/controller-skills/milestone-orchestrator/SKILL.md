@@ -134,26 +134,26 @@ No flow snapshot, replan reconciliation, or metrics check exists in the cycle.
 The orchestration platform loop and its migration belong to the controller
 thread. This orchestrator does not observe, start, stop, upgrade or repair
 platform supervisors or executors and never touches the platform checkout.
-It reads only the ownership register (section 1) of
-`.orchestrator/platform-handoff.md` to learn which milestones the platform
-loop owns, and applies the partition in section 4 of this skill. When
-Chase Sets `main` or the actual deploy is red, handle incumbent-owned scope
-as usual and leave platform-side causes to the controller thread.
+Once per cycle, before step 7, it applies `orchestrator-shared` Platform
+handoff from `.orchestrator/platform-handoff.json` and complete issue reads:
+it resumes unfinished take-backs, takes back held issues that meet a
+take-back reason, files one controller defect for each return not
+acknowledged within `releaseHours`, returns acknowledged issues to normal
+delivery, then hands off new ones. When Chase Sets `main` or the actual deploy
+is red, handle it as usual and leave platform-side causes to the controller
+thread.
 
 ## 4. Work selection and ready gate
 
-The native ownership register in the canonical handoff controls selection:
-the incumbent's protected set must equal its platform-owned milestone rows.
-Todd's current ruling protects milestones 155 and 158 exactly; do not freeze
-that pilot list in dispatch policy. Future ownership changes require BOTH a
-Todd comment on #4388 and the register edit, never inferred idle or completion.
-All other Chase Sets scope remains incumbent-owned. All platform-repo issues
-belong to its self loop; the host never dispatches lanes there. Platform
-`targetMilestone` enforces the other side of the partition (ISS-135).
-On platform-owned work the incumbent never dispatches, enqueues, rebases,
-closes, reclaims worktrees, runs its watchdog, or kills platform processes.
-Unknown ownership is not incumbent mutation authority; resolve the register
-and ruling while unrelated incumbent work continues.
+`orchestrator-shared` Platform handoff decides which issues the platform loop
+holds; milestone membership never does. Selection already excludes issues
+carrying `dispatch:platform` or `dispatch:platform-return` (`PLATFORM_HELD`).
+On such an issue, its PR or its branch, the host never dispatches, reviews,
+enqueues, rebases, closes, reclaims worktrees, runs its watchdog, or kills
+processes, and a taken-back issue is runnable again only when that contract
+returns it. All platform-repo issues belong to its self loop; the host never
+dispatches lanes there. Unknown label state is not mutation authority; retry
+the read while unrelated work continues.
 
 Rebuild the runnable set from live GitHub state every cycle: the pinned program
 tracking issue, milestone descriptions and exit gates, sub-issues, issue
@@ -768,13 +768,13 @@ These serialized revision-equal updates retain take/expiry/release times;
 expiry is inert observation, never an automatic lift. State records grant no
 hold or landing authority. Unverified state remains UNKNOWN, never no-hold.
 
-Incumbent enqueue, repair, and landed-integration actions below are confined to
-incumbent-owned scope (section 4), including direct-enqueue fallback. A qualifying
-landed-integration obligation for a platform-owned PR goes to platform #367
-while ISS-110 is open, then #368, instead of dispatch into its branch. The
-platform's refresh-forward path (ISS-079/ISS-142) absorbs it. The complete census
-still observes those targets, but never authorizes unrestricted auto-integration
-into a platform branch; do not invoke a dispatch path that would mutate one.
+Enqueue, repair, and landed-integration actions below never touch an issue
+carrying either platform handoff label (section 4), its PR or its branch,
+including the direct-enqueue fallback. The landed-integration census records
+such a target and never rebases it; the platform loop refreshes its own
+branch. The complete census still observes those targets, but never
+authorizes unrestricted auto-integration into a platform branch; do not
+invoke a dispatch path that would mutate one.
 
 `landing-preflight.ps1 -Action Apply` is the preferred enqueue path. It
 must re-observe exact head, current review receipt, required checks, queue
@@ -850,17 +850,18 @@ sweep exists.
 
 ## 9. Reclamation
 
-These reclamation rules exclude platform-owned worktrees and processes even
-after idle, park, or merge. Ownership transfer requires section 4's Todd ruling
-and register change; rollback follows the separately authorized runbook.
+These reclamation rules never remove a worktree, branch or process of an issue
+carrying either platform handoff label (`platform-held-issue`), even after
+idle, park, or merge, until `orchestrator-shared` Platform handoff returns the
+issue.
 
 After merge, remove the recognized incumbent PR's worktree and branch and
 release its lane. Todd's 2026-10-04 directive also authorizes recognized-landed
 worktrees: clean, unlocked, non-live, idle at least six hours, HEAD reachable
 from base, with complete zero open head-PR and child-PR authority. Reclaim
 recognized orphan branches only at their exact SHA; protect `main`, `archive/`
-and `salvage/` on every branch-deletion route. Parse the current ownership
-register and newest path-bound dispatch identity each run; unknown retains.
+and `salvage/` on every branch-deletion route. Read each candidate's issue
+labels and newest path-bound dispatch identity each run; unknown retains.
 Remove nothing else without Todd's word: a dirty, unpushed, locked, or
 unrecognized worktree is reported on #4388 with its path and head, not
 reclaimed. Terminate only the exact lane owner and descendants, and release
@@ -1024,9 +1025,10 @@ Agents own those choices under §4. Escalate to Todd only when a tradeoff would
 change product priority or accepted product scope. Other legal and external
 authority reaches Todd only as a packaged operator action.
 
-The existing Todd-reserved rules are unchanged: platform ownership transfer
-(§4), host rotation (§2), rollback (§3), and reclaiming unrecognized worktrees
-(§9). Status posts list only open priority or scope questions and link the
+The existing Todd-reserved rules are unchanged: host rotation (§2) and
+reclaiming unrecognized worktrees (§9). A platform handoff or take-back is a
+host decision under `orchestrator-shared` Platform handoff, never a Todd
+question. Status posts list only open priority or scope questions and link the
 pinned Waiting-on-Todd issue for packaged operator actions; they never repeat
 its list inline. They never list process decisions as waiting on Todd.
 
@@ -1101,8 +1103,9 @@ without per-PR Reports for velocity. DROUGHT is the only alarm; every
 of `status`, `alarms` and observation history. Other diagnostics do not trigger
 work except the existing duty to repair named gaps.
 For these metrics, `committed-product-milestone/v1` counts every issue kind in
-an open committed commerce/mobile outcome, excluding platform-owned milestones,
-the policy's named CI/controller-evidence milestones and parked issues. A
+an open committed commerce/mobile outcome, excluding issues carrying either
+platform handoff label, the policy's named CI/controller-evidence milestones
+and parked issues. A
 `[controller]` title or canonical dispatch/review controller evidence at any
 age excludes controller-owned issues. Ownership does not expire with the
 observation window. Kind changes never produce
