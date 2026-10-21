@@ -110,6 +110,9 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
     $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
     $resumeInvocation=$false
     if($configIndex-ge0-and$configIndex+1-lt$Arguments.Count){$resumeInvocation=[bool](Read-RebaseJson $Arguments[$configIndex+1]).resume}
+    # The retained watchdog relaunches the interrupted resume itself, so its child
+    # environment is the resume environment (#204).
+    if([IO.Path]::GetFileName($Script)-ceq'lane-stall-watchdog.ps1'){$resumeInvocation=$true}
     $gitEnvironmentNames=@('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')
     if($resumeInvocation-and-not$KeepGitEnvironment){foreach($name in $gitEnvironmentNames){[void]$psi.Environment.Remove($name)}}
     if($resumeInvocation-and$KeepGitEnvironment){$psi.Environment['GIT_ALTERNATE_OBJECT_DIRECTORIES']=Join-Path $root 'synthetic-alternate-objects'}
