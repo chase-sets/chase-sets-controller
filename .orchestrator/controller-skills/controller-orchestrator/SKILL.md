@@ -92,6 +92,16 @@ Tags older than `controller-v2.116` cannot be installed by tag. Hosted CI
 (`controller-battery.yml`) is informational until its LOCAL_ONLY items are
 resolved; it is not a release gate.
 
+### WorkspaceDbTest contract
+
+`invoke-heavy-verifier.ps1 -WorkspaceDbTest` requires the worktree's sandbox
+PostgreSQL to be running before admission. Start the sandbox `postgres`
+compose service before retrying the route. The route runs its DB preflight
+first; when that preflight cannot reach PostgreSQL it refuses with exit `73`,
+records `outcome=preflight-failed` and a reason naming the DB preflight, and
+leaves the preflight's stderr visible. A reachable database with a failing DB
+test remains a normal test failure (exit `1`); budget expiry remains `124`.
+
 ## 6. Defects and rulings
 
 Fixes, test repairs, reruns, sequencing and releases are this loop's
