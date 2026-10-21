@@ -282,7 +282,7 @@ function Invoke-ReaderInventory {
     'invoke-heavy-verifier.test.ps1'=@(307,499,973,1017,1029,1078,1082,1093,1118,1200,1637,1717,1727,1741,1952,1957,1976,1982,2209,2216,2228,2231,2241,2252,2274,2279,2291,2296,2313,2327)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(889)
+    'interrupted-integration-test-support.ps1'=@(895)
     'landed-integration-evidence-test-support.ps1'=@(219)
     'landed-integration-r3.test.ps1'=@(42)
     'lane-stall-watchdog.test.ps1'=@(505,551,554)

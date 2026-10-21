@@ -92,7 +92,7 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
     return ($output -join "`n").Trim()
   }
   function Save([string]$Path,$Value) { [IO.File]::WriteAllText($Path,($Value|ConvertTo-Json -Depth 20 -Compress),[Text.UTF8Encoding]::new($false)) }
-  function Native([string]$Script,[string[]]$Arguments) {
+  function Native([string]$Script,[string[]]$Arguments,[switch]$KeepGitEnvironment) {
     $script:resume7963Counter++
     $stem=Join-Path $artifacts ("7963-$candidateTag-$Carrier-{0:d3}" -f $script:resume7963Counter)
     $configIndex=[Array]::IndexOf($Arguments,'-Config')
@@ -104,19 +104,25 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
         $resumeBytesPath="$stem.resume-input.bin";$resumeBytesHash=Get-RebaseHash $resumeBytes
         [IO.File]::WriteAllBytes($resumeBytesPath,$resumeBytes)
       }
-      # The child inherits this environment, so routing names the state it reads (#9619).
+      # The child inherits routing state, so routing names the state it reads (#9619).
       Save "$stem.input.json" ([ordered]@{config=$invocationConfig;resumeInputBytesPath=$resumeBytesPath;resumeInputSha256=$resumeBytesHash;dispatchSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($invocationConfig.dispatch)));routing=[ordered]@{root=$env:CHASE_SETS_ROUTING_DATA_ROOT;lkg=$env:CHASE_SETS_ROUTING_LKG_PATH}})
     }
     $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+    $resumeInvocation=$false
+    if($configIndex-ge0-and$configIndex+1-lt$Arguments.Count){$resumeInvocation=[bool](Read-RebaseJson $Arguments[$configIndex+1]).resume}
+    $gitEnvironmentNames=@('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')
+    if($resumeInvocation-and-not$KeepGitEnvironment){foreach($name in $gitEnvironmentNames){[void]$psi.Environment.Remove($name)}}
+    if($resumeInvocation-and$KeepGitEnvironment){$psi.Environment['GIT_ALTERNATE_OBJECT_DIRECTORIES']=Join-Path $root 'synthetic-alternate-objects'}
     foreach($argument in @('-NoProfile','-NonInteractive','-File',$Script)+$Arguments){[void]$psi.ArgumentList.Add($argument)}
+    $gitEnvironment=[ordered]@{};foreach($name in $gitEnvironmentNames){$gitEnvironment[$name]=$psi.Environment[$name]}
     $p=[Diagnostics.Process]::Start($psi)
     try {
       $start=$p.StartTime.ToUniversalTime().ToString('o');$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync();$p.WaitForExit()
       $stdout=$out.GetAwaiter().GetResult();$stderr=$err.GetAwaiter().GetResult()
       [IO.File]::WriteAllText("$stem.stdout.txt",$stdout);[IO.File]::WriteAllText("$stem.stderr.txt",$stderr)
-      $result=[ordered]@{pid=$p.Id;startIdentity=$start;exitCode=$p.ExitCode;hasExited=$p.HasExited;script=$Script;arguments=$Arguments;stdoutPath="$stem.stdout.txt";stderrPath="$stem.stderr.txt"}
+      $result=[ordered]@{pid=$p.Id;startIdentity=$start;exitCode=$p.ExitCode;hasExited=$p.HasExited;script=$Script;arguments=$Arguments;stdoutPath="$stem.stdout.txt";stderrPath="$stem.stderr.txt";gitEnvironment=$gitEnvironment}
       Save "$stem.result.json" $result
-      return [pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      return [pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json";gitEnvironment=$gitEnvironment}
     } finally { $p.Dispose() }
   }
   function Identity8076($Process,$Expected) {
@@ -501,7 +507,7 @@ exit $LASTEXITCODE
       throw
     }
   }
-  function Launch($f,[string[]]$Extra=@()) { Save $f.config $f.cfg; Native $runner (@('-Config',$f.config)+$Extra) }
+  function Launch($f,[string[]]$Extra=@(),[switch]$KeepGitEnvironment) { Save $f.config $f.cfg; Native $runner (@('-Config',$f.config)+$Extra) -KeepGitEnvironment:$KeepGitEnvironment }
   function RawState($f) {
     $files=[ordered]@{};$gitDir=Join-Path $f.repo '.git'
     foreach($file in @(Get-ChildItem -LiteralPath $f.repo -Recurse -File -Force|Sort-Object FullName)){
@@ -920,6 +926,12 @@ exit 0
       if($Carrier-ceq'watchdog'){$f.cfg.entryOnly=$true}
       $run=Launch $f
       Proof ($run.exit-in@(0,2)-and(Test-Path -LiteralPath $f.cfg.entry)) "$incident candidate actual child entry exit=$($run.exit) raw=$($run.resultPath)"
+      $gitEnvironmentNames=@('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')
+      Proof (@($gitEnvironmentNames|Where-Object{-not[string]::IsNullOrEmpty([string]$run.gitEnvironment[$_])}).Count-eq0) "$incident resume child launch strips redirected Git environment"
+      $entryBefore=if(Test-Path -LiteralPath $f.cfg.entry){Get-RebaseHash ([IO.File]::ReadAllBytes($f.cfg.entry))}else{$null}
+      $guardControl=Launch $f @('-Dry') -KeepGitEnvironment
+      $entryAfter=if(Test-Path -LiteralPath $f.cfg.entry){Get-RebaseHash ([IO.File]::ReadAllBytes($f.cfg.entry))}else{$null}
+      Proof ($guardControl.exit-ne0-and$guardControl.stderr.Contains('INTEGRATION_RESUME_GIT_UNKNOWN: redirected GIT_ALTERNATE_OBJECT_DIRECTORIES')-and-not$guardControl.stdout.Contains('"heavyAdmission"')-and$entryAfter-ceq$entryBefore) "$incident redirected alternate object directory remains refused raw=$($guardControl.resultPath)"
       $entry=Read-RebaseJson $f.cfg.entry
       Proof ((Get-RebaseRecordIdentity $entry)-ceq(Get-RebaseRecordIdentity $entryState)) "$incident complete raw index/stages/staged/unstaged/metadata entry equality"
       $watchdog=Read-RebaseJson (Join-Path $f.runtime "watchdog-lane-$($f.cfg.label).json")
@@ -1051,6 +1063,10 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
     $script:ordinary9334Counter++
     $stem=Join-Path $artifacts ("9334-$candidateTag-$Carrier-{0:d3}" -f $script:ordinary9334Counter)
     $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+    $configIndex=[Array]::IndexOf($Arguments,'-Config')
+    if($configIndex-ge0-and$configIndex+1-lt$Arguments.Count-and$(foreach($c in @(Read-RebaseJson $Arguments[$configIndex+1])){[bool]$c.resume-or-not[string]::IsNullOrEmpty([string]$c.resumePath)})){
+      foreach($name in @('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')){[void]$psi.Environment.Remove($name)}
+    }
     foreach($argument in @('-NoProfile','-NonInteractive','-File',$Script)+$Arguments){[void]$psi.ArgumentList.Add($argument)}
     $p=[Diagnostics.Process]::Start($psi)
     try {
