@@ -88,7 +88,7 @@ function Get-ControllerInstallProcessIdentityState($ProcessId, [string]$StartIde
 }
 
 function Test-ControllerInstallOwnerShape($Record) {
-  if ($null -eq $Record -or $Record.schemaVersion -notin @(2, 3, 4, 5)) { return $false }
+  if ($null -eq $Record -or $Record.schemaVersion -isnot [long] -or $Record.schemaVersion -notin @(2, 3, 4, 5)) { return $false }
   $legacyCommon = @('schemaVersion', 'lockId', 'owner', 'lane', 'branch', 'pid', 'processStartUtc', 'startedUtc', 'gate', 'commandIdentity')
   $expected = if ($Record.schemaVersion -in @(2, 3)) {
     @($legacyCommon) + @('state', 'childPid', 'childProcessStartUtc')
@@ -252,7 +252,8 @@ function Remove-ClaimedOwnerLock([string]$LockPath, [string]$ClaimPath, [string]
     if ($raw -cne $ExpectedRaw) { return $false }
     try { $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch { return $false }
     if ($RequireDead -and -not (Test-ReclaimableOwner $record)) { return $false }
-    if ($record.schemaVersion -eq 5) {
+    if ($record.schemaVersion -eq 5 -and
+        (Get-ControllerInstallProcessIdentityState $record.childPid ([string]$record.childProcessStartUtc)) -ceq 'dead') {
       $root = [IO.Path]::GetFullPath([string]$record.admissionRoot).TrimEnd('\', '/')
       if (Test-Path -LiteralPath $root) {
         if (-not (Test-ControllerInstallSafeDirectory $root)) { return $false }

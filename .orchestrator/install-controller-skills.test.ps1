@@ -22,6 +22,7 @@ function Get-CodexRootSnapshot([string]$Root) {
   (@(Get-ChildItem -LiteralPath $Root -Force | Sort-Object Name | ForEach-Object { "$($_.Name)|$($_.LinkType)|$(@($_.Target)[0])" }) -join "`n")
 }
 $realCodexBefore = Get-CodexRootSnapshot $realCodexRoot
+  $reusedProcess = $null
 try {
   $relativeFiles = @(
     "model-routing/SKILL.md",
@@ -285,13 +286,34 @@ landing-preflight/v1
   Assert-True (-not (Test-Path -LiteralPath $nativeLock)) 'dead owner reclaim removes verify-lock.d'
   $installedHeadBeforeHeavy = Get-ContainerHead
   $v14 = Publish-Release "controller-v1.4" { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'second heavy helper revision' }
+  $schema5Root = Join-Path ([IO.Path]::GetTempPath()) 'chase-sets-heavy-admission-207-f1'
+  [void][IO.Directory]::CreateDirectory($schema5Root)
+  [IO.File]::WriteAllText((Join-Path $schema5Root 'sentinel.txt'), 'retain this root')
+  $reusedScript = Join-Path $sandbox 'reused-child.vbs'
+  [IO.File]::WriteAllText($reusedScript, 'WScript.Sleep 60000')
+  $reusedProcess = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/wscript.exe') -ArgumentList @('//B', '//Nologo', $reusedScript) -WindowStyle Hidden -PassThru
+  $schema5Owner = [ordered]@{
+    schemaVersion = [long]5; lockId = ('c' * 32); owner = 'reused@test'; lane = 'reused-child'; branch = 'main'
+    pid = 2147483647; processStartUtc = '2020-01-01T00:00:00Z'; startedUtc = $deadStarted
+    gate = 'verify:test'; commandIdentity = ('d' * 64); worktree = (Resolve-Path $container).Path
+    head = $v13; identityMode = 'branch'; state = 'attached'; childPid = $reusedProcess.Id
+    childProcessStartUtc = '2020-01-01T00:00:00Z'; admissionRoot = $schema5Root
+  }
+  [void][IO.Directory]::CreateDirectory($nativeLock)
+  [IO.File]::WriteAllText($ownerPath, ($schema5Owner | ConvertTo-Json -Compress))
+  $reusedChild = Invoke-Installer 'controller-v1.4'
+  Assert-True ($reusedChild.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $nativeLock)) "schema-5 reused child owner is reclaimed and install proceeds: $($reusedChild.Output)"
+  Assert-True ((Test-Path -LiteralPath $schema5Root) -and (Test-Path -LiteralPath (Join-Path $schema5Root 'sentinel.txt'))) 'schema-5 reused child preserves its admission root'
+  Remove-Item -LiteralPath $schema5Root -Recurse -Force
+  $installedHeadBeforeHeavy = Get-ContainerHead
+  $v15 = Publish-Release "controller-v1.5.1" { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'third heavy helper revision' }
   function Assert-HeavyOwnerRefusal($Result) {
     Assert-True ($Result.ExitCode -ne 0 -and ($Result.Output -replace '\s+', ' ') -match 'retained verifier owner') 'heavy release must refuse live replacement/schema6 downgrade/retained owner'
   }
   foreach ($owner in @($liveOwner, '{"schemaVersion":6,"native":{"linux":null}}', '{"schemaVersion":5}', 'unreadable')) {
     [void][IO.Directory]::CreateDirectory($nativeLock)
     [IO.File]::WriteAllText($ownerPath, $owner)
-    $heavyRefusal = Invoke-Installer "controller-v1.4"
+    $heavyRefusal = Invoke-Installer "controller-v1.5.1"
     Assert-HeavyOwnerRefusal $heavyRefusal
     Assert-True ($heavyRefusal.Output -match 'heavy classification: heavy') 'heavy release records shared classification'
     Assert-True ([IO.File]::ReadAllText($ownerPath) -ceq $owner) 'installer preserves exact retained owner, including schema6 downgrade'
@@ -301,7 +323,36 @@ landing-preflight/v1
   }
   Assert-True ((Get-ContainerHead) -ceq $installedHeadBeforeHeavy) 'all refused heavy installs leave the installed release checked out'
   $record = Get-Content -LiteralPath (Join-Path $destinationRoot "native-db/release.json") -Raw | ConvertFrom-Json
-  Assert-True ($record.tag -ceq "controller-v1.3.2") 'a refused install does not record the refused release'
+  Assert-True ($record.tag -ceq "controller-v1.4") 'a refused install does not record the refused release'
+
+  $liveSchema4Start = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+  $liveSchema4Owner = [ordered]@{
+    schemaVersion = [long]4; lockId = ('e' * 32); owner = 'live@test'; lane = 'live-owner'; branch = $null
+    pid = $PID; processStartUtc = $liveSchema4Start; startedUtc = $liveSchema4Start
+    gate = 'verify:test'; commandIdentity = ('f' * 64); worktree = (Resolve-Path $container).Path
+    head = $installedHeadBeforeHeavy; identityMode = 'immutable-head'; state = 'launching'; childPid = $null; childProcessStartUtc = $null
+  }
+  $liveSchema4Raw = $liveSchema4Owner | ConvertTo-Json -Compress
+  [void][IO.Directory]::CreateDirectory($nativeLock)
+  [IO.File]::WriteAllText($ownerPath, $liveSchema4Raw)
+  $liveSchema4Refusal = Invoke-Installer 'controller-v1.5.1'
+  Assert-HeavyOwnerRefusal $liveSchema4Refusal
+  Assert-True ([IO.File]::ReadAllText($ownerPath) -ceq $liveSchema4Raw) 'valid schema-4 live owner is refused without rewriting owner bytes'
+
+  foreach ($schemaVersion in @([double]4.0, '4')) {
+    $numericOwner = [ordered]@{
+      schemaVersion = $schemaVersion; lockId = ('1' * 32); owner = 'numeric@test'; lane = 'numeric-owner'; branch = $null
+      pid = 2147483647; processStartUtc = '2020-01-01T00:00:00Z'; startedUtc = $deadStarted
+      gate = 'verify:test'; commandIdentity = ('2' * 64); worktree = (Resolve-Path $container).Path
+      head = $installedHeadBeforeHeavy; identityMode = 'immutable-head'; state = 'launching'; childPid = $null; childProcessStartUtc = $null
+    }
+    $numericRaw = $numericOwner | ConvertTo-Json -Compress
+    [void][IO.Directory]::CreateDirectory($nativeLock)
+    [IO.File]::WriteAllText($ownerPath, $numericRaw)
+    $numericRefusal = Invoke-Installer 'controller-v1.5.1'
+    Assert-HeavyOwnerRefusal $numericRefusal
+    Assert-True ([IO.File]::ReadAllText($ownerPath) -ceq $numericRaw) "schemaVersion $schemaVersion is refused without reclaiming the owner"
+  }
 
   $installerPath = Join-Path $publisher '.orchestrator/install-controller-skills.ps1'
   $mutantText = $installerText.Replace("if (Test-Path -LiteralPath (Join-Path `$PSScriptRoot 'verify-lock.d')) {", "if (`$false) {")
@@ -683,6 +734,7 @@ landing-preflight/v1
   } finally {
     $destinationRoot = $originalDestinationRoot
     $codexRoot = $originalCodexRoot
+    if ($reusedProcess -and -not $reusedProcess.HasExited) { Stop-Process -Id $reusedProcess.Id -Force -ErrorAction SilentlyContinue }
   }
 
   Assert-True ((Get-CodexRootSnapshot $realCodexRoot) -ceq $realCodexBefore) "the real Codex skill root is unchanged"
