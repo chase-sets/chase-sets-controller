@@ -4,13 +4,27 @@ Set-StrictMode -Version Latest
 # installed before and after the root-keyed rule never hold different names.
 $script:OrchestrationLogContainerRoot = 'D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator'.ToLowerInvariant()
 
+# Device and local administrative-share spellings of a drive path name the same
+# directory; fold them lexically (no filesystem read) so every alias of one root,
+# including the container, derives one name.
+function ConvertTo-OrchestrationLogLexicalPath([string]$Path) {
+  $p = $Path.Replace('/', '\')
+  if ($p -match '^\\\\[?.]\\UNC\\(.+)$') { $p = '\\' + $Matches[1] }
+  elseif ($p -match '^\\\\[?.]\\([A-Za-z]:.*)$') { $p = $Matches[1] }
+  $local = @('localhost', '127.0.0.1', '::1', [Environment]::MachineName)
+  if ($p -match '^\\\\([^\\]+)\\([A-Za-z])\$(\\.*)?$' -and $Matches[1] -in $local) {
+    $p = $Matches[2] + ':' + $(if ($Matches[3]) { $Matches[3] } else { '\' })
+  }
+  if ($p -match '^[A-Za-z]:$') { $p += '\' }
+  $p
+}
 function Get-OrchestrationLogMutexName {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root)
 
   # Lexical, never a filesystem read: one name per canonical root, so a copied,
   # archived or temp runtime never shares a name with another root.
-  $full = [IO.Path]::GetFullPath($Root)
+  $full = [IO.Path]::GetFullPath((ConvertTo-OrchestrationLogLexicalPath $Root))
   $pathRoot = [IO.Path]::GetPathRoot($full)
   $canonical = $full.TrimEnd('\', '/')
   if ($canonical.Length -lt $pathRoot.Length) { $canonical = $pathRoot }

@@ -3,7 +3,7 @@ param(
   # none runs the candidate. A mutant name (or all) first runs its bound cases on
   # the unmutated candidate as the in-control arm, then requires each bound case
   # to fail on the mutant for the bound reason: KILLED.
-  [ValidateSet('none', 'all', 'machine-name', 'module-dir-selector', 'leaf-selector', 'root-from-scriptroot', 'relative-base', 'omit-lock', 'container-hashed', 'archive-global')]
+  [ValidateSet('none', 'all', 'machine-name', 'module-dir-selector', 'leaf-selector', 'root-from-scriptroot', 'relative-base', 'omit-lock', 'container-hashed', 'archive-global', 'no-alias-fold')]
   [string]$Mutant = 'none'
 )
 $ErrorActionPreference = 'Stop'
@@ -57,6 +57,8 @@ $script:MutantEdits = @{
     New-LockEdit 'orchestration-log-lock.psm1' 'if (-not $owned) { throw "orchestration log lock refused: exclusive writer lock timed out" }' '# MUTANT omit-lock: no refusal'
   )
   'container-hashed' = @(New-LockEdit 'orchestration-log-lock.psm1' $script:Selector '  # MUTANT container-hashed')
+  # Names the raw spelling only, so device and local-share aliases of the container split from it.
+  'no-alias-fold' = @(New-LockEdit 'orchestration-log-lock.psm1' '  $full = [IO.Path]::GetFullPath((ConvertTo-OrchestrationLogLexicalPath $Root))' '  $full = [IO.Path]::GetFullPath($Root) # MUTANT no-alias-fold')
   # Skips the archive rewrite; the candidate subject is otherwise unchanged.
   'archive-global' = @()
 }
@@ -76,6 +78,7 @@ $script:Bindings = [ordered]@{
   'relative-base' = @(New-LockBinding 'AC2-R2' @("AC2 cost-harvest-relative refuses exactly with zero rows while R2 is held; observed 'COMPLETED' rows=1"))
   'omit-lock' = @(New-LockBinding 'AC3a' @("AC3a a worker on the held root refuses exactly with zero body; observed 'RAN' rows=1"))
   'container-hashed' = @(New-LockBinding 'AC4' @("AC4 a container-root worker refuses exactly with zero body while raw Global\ChaseSetsOrchLog is held; observed 'RAN' rows=1"))
+  'no-alias-fold' = @(New-LockBinding 'AC1' @("AC1 container aliases get the cutover name $($script:RawName); observed"))
   'archive-global' = @(New-LockBinding 'AC6' @("worker runs once while raw Global\ChaseSetsOrchLog is held; $refused"))
 }
 
@@ -194,7 +197,17 @@ function Write-MutantOutcome([string]$Name, $Binding, $Result, [string]$Outcome)
 # AC1 stated independently of the module: the full path, trailing separators
 # trimmed except on a drive root, lower-cased; the container keeps the raw name.
 function Get-ExpectedLogMutexName([string]$Root) {
-  $full = [IO.Path]::GetFullPath($Root)
+  # \\?\X:, \\.\X:, \\?\UNC\host\X$ and \\host\X$ on this machine spell X: (R122-1).
+  $spelled = $Root -replace '/', '\'
+  $spelled = $spelled -replace '^\\\\[?.]\\UNC\\', '\\' -replace '^\\\\[?.]\\(?=[A-Za-z]:)', ''
+  foreach ($hostName in @('localhost', '127.0.0.1', '::1', [Environment]::MachineName)) {
+    $prefix = '\\' + $hostName + '\'
+    if ($spelled.Length -gt $prefix.Length + 1 -and $spelled.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $spelled[$prefix.Length + 1] -eq '$') {
+      $spelled = $spelled[$prefix.Length] + ':' + $spelled.Substring($prefix.Length + 2)
+    }
+  }
+  if ($spelled -match '^[A-Za-z]:$') { $spelled += '\' }
+  $full = [IO.Path]::GetFullPath($spelled)
   $pathRoot = [IO.Path]::GetPathRoot($full)
   $canonical = if ($full.Length -gt $pathRoot.Length) { $full.TrimEnd([char[]]@([char]'\', [char]'/')) } else { $pathRoot }
   $canonical = $canonical.ToLowerInvariant()
@@ -429,8 +442,8 @@ function Test-RootNames($Subject, $Result) {
     copy = @($copyRoot)
     lane = @($lane)
     missing = @($missing)
-    drive = @('D:\', 'D:/', 'd:\')
-    container = @($script:ContainerRoot, ($script:ContainerRoot.ToLowerInvariant().Replace('\', '/') + '/'), 'D:\Users\ToddS\Source\Repos\chase-sets\main\..\.orchestrator', "$($script:ContainerRoot)\.", "$($script:ContainerRoot.ToUpperInvariant())\")
+    drive = @('D:\', 'D:/', 'd:\', '\\?\D:\', '\\?\d:')
+    container = @($script:ContainerRoot, ($script:ContainerRoot.ToLowerInvariant().Replace('\', '/') + '/'), 'D:\Users\ToddS\Source\Repos\chase-sets\main\..\.orchestrator', "$($script:ContainerRoot)\.", "$($script:ContainerRoot.ToUpperInvariant())\", ('\\?\' + $script:ContainerRoot), ('\\.\' + $script:ContainerRoot.ToLowerInvariant()), ('\\localhost\D$' + $script:ContainerRoot.Substring(2)), ('\\?\UNC\127.0.0.1\d$' + $script:ContainerRoot.Substring(2) + '\'), ('\\' + [Environment]::MachineName + '\D$' + $script:ContainerRoot.Substring(2)))
   }
   $list = [Collections.Generic.List[string]]::new()
   foreach ($group in $roots.Values) { foreach ($root in $group) { $list.Add($root) } }
