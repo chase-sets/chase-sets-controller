@@ -275,8 +275,8 @@ function Invoke-ReaderInventory {
     'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
-    'install-controller-skills.ps1'=@(138)
-    'install-controller-skills.test.ps1'=@(207,224,229,249)
+    'install-controller-skills.ps1'=@(145)
+    'install-controller-skills.test.ps1'=@(208,225,230,319,340,354)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(309,627,1104,1148,1160,1209,1213,1224,1249,1331,1768,1848,1858,1872,2166,2171,2190,2196,2423,2430,2442,2445,2455,2466,2488,2493,2505,2510,2527,2541)
@@ -301,6 +301,8 @@ function Invoke-ReaderInventory {
   foreach($line in @(20,32,33,92,124,125,154,162,174,194,195,205,209,315,396,399,504,505,531,533)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='Python read_text/read_bytes or pipe read';shareAfter='unchanged';decoder='unchanged Python decoder';callers='embedded native fixture setup / proc observation / pipe transport';owner='#9624; non-heavy-owner fixture/proc/transport reads, explicitly retained'})
   }
+  $table.Add(@{site='controller-install-lock.psm1:226';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
+  $table.Add(@{site='controller-install-lock.psm1:247';api='File.Open / StreamReader (claim bytes read once)';shareBefore='new in #207';shareAfter=4;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Remove-ClaimedOwnerLock (renamed claim, not live owner.json)';owner='#207 installer dead-owner reclaim (#210)'})
   $table.Add(@{site='fleet-exclusive-admission.psm1:92';api='File.ReadAllText(paths.record)';shareBefore=1;shareAfter=1;decoder='strict UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Read-FleetAdmissionRecord';owner='separate fleet-admission.d protocol, not the heavy owner'})
   $table.Add(@{site='dispatch-ownership.ps1:518';api='File.ReadAllText(RecordPath)';shareBefore=1;shareAfter=1;decoder='UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record, never heavy owner.json'})
   # Discover owner/transition reads across tracked source languages, including
