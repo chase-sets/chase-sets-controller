@@ -343,7 +343,7 @@ exit $code
 '@,[Text.UTF8Encoding]::new($false))
   $runner=Join-Path $root 'synthetic-launch.ps1'
   [IO.File]::WriteAllText($runner,@'
-param([string]$Config,[switch]$Dry,[switch]$NoCim,[string]$Role='implementation',[string]$Harness='codex',[string]$Model='gpt-6-astra',[string]$Effort='',[string]$Route='7',[string]$Placement='override-Todd')
+param([string]$Config,[switch]$Dry,[switch]$NoCim,[string]$Role='implementation',[string]$Harness='codex',[string]$Model='gpt-6.1-sol',[string]$Effort='high',[string]$Route='7',[string]$Placement='provisional')
 $ErrorActionPreference='Stop'
 if($NoCim){Import-Module Microsoft.PowerShell.Management;Import-Module Microsoft.PowerShell.Utility;Remove-Module CimCmdlets -Force -ErrorAction SilentlyContinue;$PSModuleAutoLoadingPreference='None'}
 $cfg=Get-Content -Raw $Config|ConvertFrom-Json -DateKind String
