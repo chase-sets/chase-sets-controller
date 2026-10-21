@@ -71,14 +71,23 @@ function Get-Section([string]$Text, [int]$Number) {
   return $match.Value.TrimEnd("`n")
 }
 
-function Test-ReleaseIdentity([string]$Milestone, [string]$Routing) {
+function Get-RoutingVersion([string]$Routing) {
+  $headers = [regex]::Matches($Routing, "(?m)^# Model Routing \(v(?<version>\d+\.\d+), (?<date>\d{4}-\d{2}-\d{2})\)$")
+  if ($headers.Count -ne 1) { throw 'installed model-routing skill has no unique versioned release header' }
+  $versionText = $headers[0].Groups['version'].Value
+  try { [void]([version]$versionText) } catch { throw 'installed model-routing skill has a malformed release version' }
+  return $versionText
+}
+
+function Test-ReleaseIdentity([string]$Milestone, [string]$Routing, [string]$ExpectedRoutingVersion) {
   $milestoneHeaders = [regex]::Matches($Milestone, "(?m)^# Milestone Orchestrator \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)$")
   $routingHeaders = [regex]::Matches($Routing, "(?m)^# Model Routing \(v\d+\.\d+, \d{4}-\d{2}-\d{2}\)$")
+  $routingVersion = if ($routingHeaders.Count -eq 1) { $routingHeaders[0].Groups[0].Value -replace '^# Model Routing \(v|,.*$', '' } else { $null }
   return (
     $milestoneHeaders.Count -eq 1 -and
     $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.117, 2026-10-18)" -and
     $routingHeaders.Count -eq 1 -and
-    $routingHeaders[0].Value -ceq "# Model Routing (v4.26, 2026-10-16)" -and
+    $routingVersion -ceq $ExpectedRoutingVersion -and
     -not $Routing.Contains("v4.5", [StringComparison]::Ordinal) -and
     $archive.Contains("Version 2.60 removes overhead that returns nothing for one operator", [StringComparison]::Ordinal) -and
     $archive.Contains("Version 2.59 removes the runtime retired by v2.58", [StringComparison]::Ordinal) -and
@@ -431,7 +440,12 @@ Add-MutantClaim "quality-verdict-not-retro-input" $true (Test-PreservedSections 
 $sectionTitleMutant = $milestone.Replace("## 8. Landing and deploy", "## 8. Landing, deploy, and manual attempts", [StringComparison]::Ordinal)
 Add-MutantClaim "section-title-moved" $true (Test-PreservedSections $sectionTitleMutant $baseMilestone) "section titles preserved in order"
 
-Assert-6997 (Test-ReleaseIdentity $milestone $routing) "v2.117/v4.26 release identity is invalid"
+$expectedRoutingVersion = Get-RoutingVersion $routing
+Assert-6997 (Test-ReleaseIdentity $milestone $routing $expectedRoutingVersion) "v2.117/installed model-routing release identity is invalid"
+$routingMalformedMutant = $routing -replace '(?m)^# Model Routing \(v\d+\.\d+,', '# Model Routing (vmalformed,'
+$malformedRoutingRejected = $false
+try { [void](Get-RoutingVersion $routingMalformedMutant) } catch { $malformedRoutingRejected = $true }
+Add-MutantClaim "malformed-routing-version" $true (-not $malformedRoutingRejected) "installed model-routing header version"
 # v2.58: no live train authority. The only permitted mentions of a release train are the
 # section-7 retirement sentence and the v2.58 header retirement list.
 function Test-NoTrainAuthority([string]$Milestone) {
@@ -445,9 +459,9 @@ Assert-6997 (Test-NoTrainAuthority $milestone) "live skill retains release-train
 $trainMutant = $milestone.Replace("Controller releases are not part of this loop.", "Controller releases ship on the next weekly train.", [StringComparison]::Ordinal)
 Add-MutantClaim "train-authority-reintroduced" (Test-NoTrainAuthority $milestone) (Test-NoTrainAuthority $trainMutant) "v2.58 no live train authority"
 $oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
-Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing) "milestone release header"
+Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing $expectedRoutingVersion) "milestone release header"
 $previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.116, 2026-10-18)")
-Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing) "milestone release header"
+Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing $expectedRoutingVersion) "milestone release header"
 
 # v2.116: controller release proof, including the #9373 CI-sourced reuse rule,
 # left the product skill for the controller repository. Section 7 must not
@@ -472,7 +486,7 @@ Add-MutantClaim "MUTANT_AUTONOMY_SURFACE_ACCEPTED" (Test-DescendantFootprint $ex
 # MUTANT_UNRELATED_INVALID_DESCENDANT_ACCEPTED: retaining the accepted unrelated
 # descendant path must never mask a genuine current release-provenance regression;
 # that stays governed by Test-ReleaseIdentity alone.
-Add-MutantClaim "MUTANT_UNRELATED_INVALID_DESCENDANT_ACCEPTED" (Test-DescendantFootprint $expectedPaths $syntheticActualPaths) (Test-ReleaseIdentity $oldPinMutant $routing) "current release provenance identity"
+Add-MutantClaim "MUTANT_UNRELATED_INVALID_DESCENDANT_ACCEPTED" (Test-DescendantFootprint $expectedPaths $syntheticActualPaths) (Test-ReleaseIdentity $oldPinMutant $routing $expectedRoutingVersion) "current release provenance identity"
 
 # MUTANT_PROTECTED_6997_HISTORY_REBOUND: the ratchet is a per-path subset check
 # against the frozen historical list, not a count/size check, so silently dropping

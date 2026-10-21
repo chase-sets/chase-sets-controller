@@ -402,7 +402,7 @@ exit $LASTEXITCODE
     $cfg.helper=Join-Path $runtime 'rebase-integration.ps1'
     if($CurrentRequest){
       [void](FixtureGit $repo @('push','origin','main:refs/heads/main'))
-      $request=Get-RebaseHash ([Text.Encoding]::UTF8.GetBytes("landed-integration-start/v2`n$request`n$onto`ncodex/gpt-6-astra/high/7/override-Todd"))
+      $request=Get-RebaseHash ([Text.Encoding]::UTF8.GetBytes("landed-integration-start/v2`n$request`n$onto`ncodex/gpt-6.1-sol/high/7/provisional"))
       $cfg.request=$request;$cfg.targetPath=Join-Path $runtime "integration-request-$label.json";$cfg.authorityPath=Join-Path $case 'synthetic-authority.json'
       $repository='synthetic-7963/native-integration'
       Save $cfg.targetPath ([ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=$request;repository=$repository;pr=$pr;landedPr=$o.landedPr;landedHead=$onto;head=$original;newBase=$onto;branch=$branch;worktree=$repo;label=$label;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=(Join-Path $runtime 'dispatch-log.jsonl')})
