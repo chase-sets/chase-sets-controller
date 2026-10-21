@@ -87,7 +87,14 @@ if ($head -cne $releaseCommit) {
   if ($DestinationRoot) { $handover += @('-DestinationRoot', $DestinationRoot) }
   if ($CodexSkillRoot) { $handover += @('-CodexSkillRoot', $CodexSkillRoot) }
   & (Get-Process -Id $PID).Path @handover
-  exit $LASTEXITCODE
+  $handoverExit = $LASTEXITCODE
+  if ($handoverExit -ne 0) {
+    $restore = Invoke-ContainerGit @('checkout', '--quiet', '--detach', $head) -AllowFailure
+    if ($restore.ExitCode -ne 0) {
+      [Console]::Error.WriteLine("controller skill install refused: failed to restore previous HEAD $head after handover exit ${handoverExit}: $(($restore.Lines | Select-Object -First 3) -join ' ')")
+    }
+  }
+  exit $handoverExit
 }
 
 $installLockModule = Join-Path $PSScriptRoot "controller-install-lock.psm1"
@@ -333,7 +340,10 @@ Invoke-WithControllerInstallLock -Body {
       try { $admissionHeld = $admissionMutex.WaitOne(30000) } catch [Threading.AbandonedMutexException] { $admissionHeld = $true }
       if (-not $admissionHeld) { throw 'controller skill install refused: product admission unavailable' }
       if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'verify-lock.d')) {
-        throw 'controller skill install refused: retained verifier owner; no live replacement or schema6 downgrade'
+        [void](Invoke-ReclaimableControllerVerifyOwner -ContainerRoot $container)
+        if (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'verify-lock.d')) {
+          throw 'controller skill install refused: retained verifier owner; no live replacement or schema6 downgrade'
+        }
       }
     }
     $helperPath = Join-Path $PSScriptRoot 'native-db-admission.py'

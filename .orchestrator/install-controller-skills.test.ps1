@@ -238,31 +238,81 @@ landing-preflight/v1
   [IO.File]::WriteAllBytes($identityPath, $identityBytes)
 
   $v13 = Publish-Release "controller-v1.3" { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'heavy helper revision' }
+  $installerText = [IO.File]::ReadAllText((Join-Path $publisher '.orchestrator/install-controller-skills.ps1'))
+  $handoverMutantText = [regex]::Replace($installerText,
+    '(?ms)  \$handoverExit = \$LASTEXITCODE\r?\n.*?  exit \$handoverExit',
+    '  exit $LASTEXITCODE')
+  Assert-True ($handoverMutantText -cne $installerText) 'handover-restore mutant changes its exact target'
+
+  # Control: install the same candidate through an outer installer with the
+  # restore block removed. The refusal is expected to leave candidate bytes and
+  # the candidate HEAD, proving this regression test detects the pre-fix defect.
+  $controlContainer = Join-Path $sandbox 'control-container'
+  $controlDestination = Join-Path $sandbox 'control-live'
+  $controlCodexRoot = Join-Path $sandbox 'control-codex-skills'
+  & git clone --quiet --no-hardlinks $container $controlContainer
+  & git -C $controlContainer remote remove origin
+  [IO.File]::WriteAllText((Join-Path $controlContainer '.orchestrator/install-controller-skills.ps1'), $handoverMutantText)
+  & git -C $controlContainer add .orchestrator/install-controller-skills.ps1
+  & git -C $controlContainer commit -q -m 'control mutant'
+  Copy-Item -LiteralPath $destinationRoot -Destination $controlDestination -Recurse -Force
+  $controlOwnerPath = Join-Path $controlContainer '.orchestrator/verify-lock.d/owner.json'
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $controlOwnerPath))
+  [IO.File]::WriteAllText($controlOwnerPath, $liveOwner)
+  $controlInstalledHead = (& git -C $controlContainer rev-parse HEAD).Trim()
+  $controlInstaller = Join-Path $controlContainer '.orchestrator/install-controller-skills.ps1'
+  $controlOutput = @(& pwsh -NoProfile -NonInteractive -File $controlInstaller -ReleaseTag 'controller-v1.3' -ReleaseRepository $publisher -DestinationRoot $controlDestination -CodexSkillRoot $controlCodexRoot 2>&1)
+  $controlExit = $LASTEXITCODE
+  $controlHead = (& git -C $controlContainer rev-parse HEAD).Trim()
+  & git -C $controlContainer diff --quiet $controlInstalledHead -- .orchestrator
+  $controlTreeChanged = $LASTEXITCODE -ne 0
+  Assert-True ($controlExit -ne 0 -and $controlHead -ceq $v13 -and $controlTreeChanged) 'pre-fix handover mutant leaves candidate HEAD and bytes'
+  Write-Output 'PASS control mutant: without handover restore, refusal leaves candidate HEAD and tracked candidate bytes'
+
+  # A valid dead legacy owner is reclaimable under the same mutex used by the
+  # heavy verifier. The candidate then installs and removes only its lock.
+  $deadStarted = [DateTime]::UtcNow.AddMinutes(-1).ToString('o')
+  $deadOwner = [ordered]@{
+    schemaVersion = [long]4; lockId = ('a' * 32); owner = 'dead@test'; lane = 'dead-owner'; branch = $null
+    pid = 2147483647; processStartUtc = '2020-01-01T00:00:00Z'; startedUtc = $deadStarted
+    gate = 'verify:test'; commandIdentity = ('b' * 64); worktree = (Resolve-Path $container).Path
+    head = $v12; identityMode = 'immutable-head'; state = 'started'; childPid = 2147483646; childProcessStartUtc = $deadStarted
+  }
+  [IO.File]::WriteAllText($ownerPath, ($deadOwner | ConvertTo-Json -Compress))
+  [void](Publish-Release "controller-v1.3.2" { [IO.File]::WriteAllText((Join-Path $publisher '.orchestrator/install-controller-skills.ps1'), $installerText) })
+  $reclaimed = Invoke-Installer 'controller-v1.3.2'
+  Assert-True ($reclaimed.ExitCode -eq 0 -and $reclaimed.Output -match 'Installed controller release controller-v1\.3\.2') "dead owner is reclaimed and heavy install proceeds: $($reclaimed.Output)"
+  Assert-True (-not (Test-Path -LiteralPath $nativeLock)) 'dead owner reclaim removes verify-lock.d'
+  $installedHeadBeforeHeavy = Get-ContainerHead
+  $v14 = Publish-Release "controller-v1.4" { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'second heavy helper revision' }
   function Assert-HeavyOwnerRefusal($Result) {
     Assert-True ($Result.ExitCode -ne 0 -and ($Result.Output -replace '\s+', ' ') -match 'retained verifier owner') 'heavy release must refuse live replacement/schema6 downgrade/retained owner'
   }
   foreach ($owner in @($liveOwner, '{"schemaVersion":6,"native":{"linux":null}}', '{"schemaVersion":5}', 'unreadable')) {
+    [void][IO.Directory]::CreateDirectory($nativeLock)
     [IO.File]::WriteAllText($ownerPath, $owner)
-    $heavyRefusal = Invoke-Installer "controller-v1.3"
+    $heavyRefusal = Invoke-Installer "controller-v1.4"
     Assert-HeavyOwnerRefusal $heavyRefusal
     Assert-True ($heavyRefusal.Output -match 'heavy classification: heavy') 'heavy release records shared classification'
     Assert-True ([IO.File]::ReadAllText($ownerPath) -ceq $owner) 'installer preserves exact retained owner, including schema6 downgrade'
+    Assert-True ((Get-ContainerHead) -ceq $installedHeadBeforeHeavy) 'a refused heavy install restores the installed head'
+    & git -C $container diff --quiet $installedHeadBeforeHeavy -- .orchestrator
+    Assert-True ($LASTEXITCODE -eq 0) 'a refused heavy install leaves no candidate bytes in tracked .orchestrator'
   }
-  Assert-True ((Get-ContainerHead) -ceq $v13) 'a refused heavy install leaves the release checked out for the next attempt'
+  Assert-True ((Get-ContainerHead) -ceq $installedHeadBeforeHeavy) 'all refused heavy installs leave the installed release checked out'
   $record = Get-Content -LiteralPath (Join-Path $destinationRoot "native-db/release.json") -Raw | ConvertFrom-Json
-  Assert-True ($record.tag -ceq "controller-v1.2") 'a refused install does not record the refused release'
+  Assert-True ($record.tag -ceq "controller-v1.3.2") 'a refused install does not record the refused release'
 
   $installerPath = Join-Path $publisher '.orchestrator/install-controller-skills.ps1'
-  $installerText = [IO.File]::ReadAllText($installerPath)
   $mutantText = $installerText.Replace("if (Test-Path -LiteralPath (Join-Path `$PSScriptRoot 'verify-lock.d')) {", "if (`$false) {")
   Assert-True ($mutantText -cne $installerText) 'heavy-refusal mutant changes its exact target'
-  [void](Publish-Release "controller-v1.4" { [IO.File]::WriteAllText($installerPath, $mutantText) })
-  $mutantResult = Invoke-Installer "controller-v1.4"
+  [void](Publish-Release "controller-v1.4.1" { [IO.File]::WriteAllText($installerPath, $mutantText) })
+  $mutantResult = Invoke-Installer "controller-v1.4.1"
   Assert-True ($mutantResult.ExitCode -eq 0) "refusal mutant reaches an install, not an unrelated failure: $($mutantResult.Output)"
   $mutantRejected = $false
   try { Assert-HeavyOwnerRefusal $mutantResult } catch { $mutantRejected = $_.Exception.Message -match '^FAIL: heavy release must refuse' }
   Assert-True $mutantRejected 'heavy-refusal regression assertion kills skipped-refusal mutant'
-  [void](Publish-Release "controller-v1.4.1" { [IO.File]::WriteAllText($installerPath, $installerText) })
+  [void](Publish-Release "controller-v1.4.2" { [IO.File]::WriteAllText($installerPath, $installerText) })
 
   # Rollback is the same command with an earlier tag.
   Remove-Item -LiteralPath $ownerPath -Force
