@@ -65,6 +65,10 @@ else if (workspaceFile) {
     process.stderr.write(`workspace-db-test: could not read Payments package.json: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   }
+  if (process.exitCode === undefined && packageJson?.name !== workspace) {
+    process.stderr.write(`workspace-db-test: Payments package name is not ${workspace}; refusing zero-test run\n`);
+    process.exitCode = 1;
+  }
   const scripts = packageJson?.scripts;
   const hasDatabaseScript = scripts && typeof scripts === "object" &&
     Object.keys(scripts).some((name) => name === "test:db" || name.startsWith("test:db:"));
