@@ -1,6 +1,6 @@
 ---
 name: orchestrator-shared
-description: "Contract between the chase-sets product loop (milestone-orchestrator) and controller loop (controller-orchestrator): who owns which work, where issues are filed, release tags, and the controller-defect hand-off. Read it with either orchestrator skill; it does not run a loop."
+description: "Contract between the chase-sets product loop (milestone-orchestrator) and controller loop (controller-orchestrator): who owns which work, where issues are filed, release tags, the controller-defect hand-off, and the per-issue platform handoff. Read it with either orchestrator skill; it does not run a loop."
 ---
 
 # Orchestrator Shared Contract
@@ -57,3 +57,76 @@ a controller defect filed by the product loop as top priority when it blocks
 product delivery and fixes it forward through its release process. Each
 product-side emergency rollback is logged by the product loop as
 `escaped-defect`, and the controller loop finds its cause.
+
+## Platform handoff
+
+The product loop may hand individual low-priority Chase Sets issues to the
+orchestration platform's Chase Sets loop (the platform loop) and take them
+back. Labels and markers are the only transport between the product and
+platform loops; milestones play no part. An issue is held while it carries
+`dispatch:platform` without `dispatch:platform-return`, and returning while it
+carries `dispatch:platform-return`.
+
+- The product loop chooses handoffs and requests returns. Beyond the handoff
+  and take-back writes below, it never touches an issue carrying either label,
+  or that issue's PR or branch.
+- The platform loop works only issues with `dispatch:platform` and without
+  `dispatch:platform-return`.
+- The controller loop owns `.orchestrator/platform-handoff.json`, the platform
+  run, acknowledgment when no platform supervisor runs, and platform fixes
+  from take-back causes.
+
+`.orchestrator/platform-handoff.json` has exactly the fields `schemaVersion`
+(`platform-handoff/v1`), `accepting` (boolean), `maxInFlight` (an integer of
+zero or more), and `idleHours`, `maxHours` and `releaseHours` (positive
+integers). Only the controller loop writes it. An absent, unreadable or
+invalid file means not accepting.
+
+Authorities come from complete paginated reads, and an incomplete read makes
+no handoff and no clock-based take-back for that issue this cycle. Label age
+is the newest `LabeledEvent` for `dispatch:platform`; return age is the
+newest `LabeledEvent` for `dispatch:platform-return`. Activity is the newest
+of label age, the `updatedAt` of every PR in the issue's
+`closedByPullRequestsReferences(includeClosedPrs: true)`, and comments
+containing `<!-- loop-`.
+
+Handoff: while the file is accepting and fewer than `maxInFlight` open issues
+carry either label, the product loop adds `dispatch:platform` to the
+lowest-ranked issue that has a current ready receipt (`issue-readiness/v1`),
+`priority:p2` or `priority:p3`, a fast-path tier in its brief and one
+`<!-- routing:` marker in its body; has no `risk:*`, `kind:ops` or
+`kind:security` label, no open linked PR and no live lane; blocks no open
+issue; and has never had a `platform-take-back` marker.
+
+Take-back: the product loop takes back an open held issue for one of these
+reasons, named in its marker:
+
+- `needs-replan`: the issue gained `status:needs-replan`.
+- `needs-operator`: the issue gained `status:needs-operator`.
+- `handoff-closed`: the handoff file is not accepting.
+- `idle`: no activity for `idleHours`.
+- `max-age`: label age is older than `maxHours`.
+- `priority`: the issue is now `priority:p0` or `priority:p1`.
+- `dependent`: the issue now blocks an open issue.
+
+The merge queue is no exception. A take-back writes in order, skipping each
+step already done: (a) one comment `<!-- platform-take-back: {"version":1,"reason":"<reason>"} -->`
+with a one-line cause; (b) add `dispatch:platform-return`; (c) remove
+`dispatch:platform`. Each cycle, a take-back marker newer than the newest
+`dispatch:platform` labeled event resumes at the first undone step, unless a
+release marker newer than it exists.
+
+Acknowledgment is the holder's alone: the live platform supervisor, or the
+controller loop when none runs. In order, the holder (1) confirms by a fresh
+read that no linked platform PR is in the merge queue, dequeuing and
+re-reading until it is out or merged; (2) removes `dispatch:platform`; (3)
+posts `<!-- platform-released: {"version":1,"by":"platform"|"controller","outcome":"released"|"merged"} -->`,
+with `merged` when the platform PR merged; (4) removes
+`dispatch:platform-return`.
+
+The product loop owns the issue again only when neither label is present and
+a release marker is newer than its take-back. It then delivers normally: a
+closed issue needs nothing; an open platform PR is adopted after an exact-head
+independent review, or closed. A return not acknowledged within
+`releaseHours` of its return label gets one controller defect from the
+product loop, and the issue stays untouched.

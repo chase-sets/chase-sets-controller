@@ -1,13 +1,13 @@
 # The cross-loop contract is stated once, in orchestrator-shared. Each section's
-# anchor sentence must be there and in neither loop skill; copying one back into
-# a loop skill must fail.
+# anchor sentence must be there and in neither loop skill nor the controller's
+# platform-supervision reference; copying one back into any of them must fail.
 $ErrorActionPreference = "Stop"
 $skills = Join-Path $PSScriptRoot "controller-skills"
 $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $script:assertions = 0
 $script:mutants = 0
 
-function Read-Skill([string]$Name) { $strictUtf8.GetString([IO.File]::ReadAllBytes((Join-Path $skills "$Name/SKILL.md"))) }
+function Read-Skill([string]$Name, [string]$File = "SKILL.md") { $strictUtf8.GetString([IO.File]::ReadAllBytes((Join-Path $skills "$Name/$File"))) }
 function Compact-Text([string]$Text) { ($Text -replace "\s+", " ").Trim() }
 function Assert-Shared([bool]$Condition, [string]$Message) {
   $script:assertions += 1
@@ -21,14 +21,16 @@ $anchors = @(
   [pscustomobject]@{ Key = 'Releases'; Section = 'Releases'; Value = 'Release tags are the only install authority: never install an untagged commit or by any other path' }
   [pscustomobject]@{ Key = 'Releases-no-wait'; Section = 'Releases'; Value = 'The controller loop never waits for a product install: it keeps building and releasing, and tags may accumulate. The product loop installs only the newest tag' }
   [pscustomobject]@{ Key = 'Defects'; Section = 'Defects'; Value = 'The product loop files a controller defect as an issue on `chase-sets/chase-sets-controller` and continues product work.' }
+  [pscustomobject]@{ Key = 'Platform handoff'; Section = 'Platform handoff'; Value = 'Labels and markers are the only transport between the product and platform loops; milestones play no part.' }
+  [pscustomobject]@{ Key = 'Platform handoff-return'; Section = 'Platform handoff'; Value = 'The product loop owns the issue again only when neither label is present and a release marker is newer than its take-back.' }
 )
 
-function Test-StatedOnce([string]$Shared, [string]$Milestone, [string]$Controller) {
+function Test-StatedOnce([string]$Shared, [string]$Milestone, [string]$Controller, [string]$Supervision) {
   foreach ($entry in $anchors) {
     $section = [regex]::Match($Shared, "(?ms)^## $([regex]::Escape($entry.Section))\r?\n(.*?)(?=^## |\z)")
     Assert-Shared $section.Success "orchestrator-shared has section $($entry.Key)"
     Assert-Shared ((Compact-Text $section.Groups[1].Value).Contains($entry.Value, [StringComparison]::Ordinal)) "orchestrator-shared $($entry.Key) states its anchor"
-    foreach ($loop in @(@('milestone-orchestrator', $Milestone), @('controller-orchestrator', $Controller))) {
+    foreach ($loop in @(@('milestone-orchestrator', $Milestone), @('controller-orchestrator', $Controller), @('platform-supervision', $Supervision))) {
       Assert-Shared (-not (Compact-Text $loop[1]).Contains($entry.Value, [StringComparison]::Ordinal)) "$($loop[0]) restates orchestrator-shared $($entry.Key)"
     }
   }
@@ -48,12 +50,15 @@ function Assert-SharedMutant([string]$Name, [scriptblock]$Probe) {
 $shared = Read-Skill 'orchestrator-shared'
 $milestone = Read-Skill 'milestone-orchestrator'
 $controller = Read-Skill 'controller-orchestrator'
-Test-StatedOnce $shared $milestone $controller
+$supervision = Read-Skill 'controller-orchestrator' 'references/platform-supervision.md'
+Test-StatedOnce $shared $milestone $controller $supervision
 foreach ($entry in $anchors) {
   $anchor = $entry.Value
-  Assert-SharedMutant "copy-back-milestone-$($entry.Key)" { Test-StatedOnce $shared ($milestone + "`r`n" + $anchor + "`r`n") $controller }
-  Assert-SharedMutant "copy-back-controller-$($entry.Key)" { Test-StatedOnce $shared $milestone ($controller + "`r`n" + $anchor + "`r`n") }
-  Assert-SharedMutant "shared-drops-$($entry.Key)" { Test-StatedOnce ([regex]::Replace($shared, ((@($anchor -split ' ') | ForEach-Object { [regex]::Escape($_) }) -join '\s+'), 'removed text.')) $milestone $controller }
+  Assert-SharedMutant "copy-back-milestone-$($entry.Key)" { Test-StatedOnce $shared ($milestone + "`r`n" + $anchor + "`r`n") $controller $supervision }
+  Assert-SharedMutant "copy-back-controller-$($entry.Key)" { Test-StatedOnce $shared $milestone ($controller + "`r`n" + $anchor + "`r`n") $supervision }
+  Assert-SharedMutant "copy-back-supervision-$($entry.Key)" { Test-StatedOnce $shared $milestone $controller ($supervision + "`r`n" + $anchor + "`r`n") }
+  Assert-SharedMutant "shared-drops-$($entry.Key)" { Test-StatedOnce ([regex]::Replace($shared, ((@($anchor -split ' ') | ForEach-Object { [regex]::Escape($_) }) -join '\s+'), 'removed text.')) $milestone $controller $supervision }
 }
-Assert-SharedMutant 'shared-dated' { Test-StatedOnce ($shared + "`r`nUpdated 2026-10-18.`r`n") $milestone $controller }
+Assert-SharedMutant 'shared-dated' { Test-StatedOnce ($shared + "`r`nUpdated 2026-10-18.`r`n") $milestone $controller $supervision }
+Assert-SharedMutant 'shared-platform-handoff-issue-number' { Test-StatedOnce ($shared.Replace('The merge queue is no exception.', 'The merge queue is no exception (#192).')) $milestone $controller $supervision }
 Write-Output "PASS orchestrator-shared stated-once anchors=$($anchors.Count) assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
