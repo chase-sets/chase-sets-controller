@@ -265,6 +265,11 @@ function Test-7926F1TerminalCleanup {
   $beforeLogger=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/log-event.ps1")
   Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed logger available'
   [IO.File]::WriteAllText((Join-Path $beforeRoot 'log-event.ps1'),($beforeLogger-join"`n"))
+  # #122: the reviewed logger takes the lock without -Root; give it its own lock module, keyed to this root.
+  $beforeLock=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/orchestration-log-lock.psm1")
+  Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed logger lock available'
+  [IO.File]::WriteAllText((Join-Path $beforeRoot 'orchestration-log-lock.psm1'),($beforeLock-join"`n"))
+  [void](Set-ArchivedOrchestrationLogMutexName $beforeRoot)
   foreach($arm in @('candidate','before')){
     $container=Join-Path $fixtureRoot "synthetic-f1-$arm";$runtime=Join-Path $container 'runtime'
     New-Item -ItemType Directory -Path $runtime|Out-Null
