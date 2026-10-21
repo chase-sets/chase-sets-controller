@@ -72,7 +72,7 @@ function Get-Section([string]$Text, [int]$Number) {
 }
 
 function Get-RoutingVersion([string]$Routing) {
-  $headers = [regex]::Matches($Routing, "(?m)^# Model Routing \(v(?<version>\d+\.\d+), (?<date>\d{4}-\d{2}-\d{2})\)$")
+  $headers = [regex]::Matches($Routing, "(?m)^# Model Routing \(v(?<version>[^,\r\n]+), (?<date>\d{4}-\d{2}-\d{2})\)\r?$")
   if ($headers.Count -ne 1) { throw 'installed model-routing skill has no unique versioned release header' }
   $versionText = $headers[0].Groups['version'].Value
   try { [void]([version]$versionText) } catch { throw 'installed model-routing skill has a malformed release version' }

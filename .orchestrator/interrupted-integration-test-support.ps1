@@ -343,7 +343,7 @@ exit $code
 '@,[Text.UTF8Encoding]::new($false))
   $runner=Join-Path $root 'synthetic-launch.ps1'
   [IO.File]::WriteAllText($runner,@'
-param([string]$Config,[switch]$Dry,[switch]$NoCim,[string]$Role='implementation',[string]$Harness='codex',[string]$Model='gpt-6.1-sol',[string]$Effort='high',[string]$Route='7',[string]$Placement='provisional')
+param([string]$Config,[switch]$Dry,[switch]$NoCim,[string]$Role='implementation',[string]$Harness='codex',[string]$Model='gpt-6-astra',[string]$Effort='',[string]$Route='7',[string]$Placement='override-Todd')
 $ErrorActionPreference='Stop'
 if($NoCim){Import-Module Microsoft.PowerShell.Management;Import-Module Microsoft.PowerShell.Utility;Remove-Module CimCmdlets -Force -ErrorAction SilentlyContinue;$PSModuleAutoLoadingPreference='None'}
 $cfg=Get-Content -Raw $Config|ConvertFrom-Json -DateKind String
@@ -438,7 +438,7 @@ exit $LASTEXITCODE
     $candidateDispatcher=$cfg.dispatch
     if(-not$CurrentRequest){$cfg.dispatch=$historicalDispatcher;Save $config $cfg}
     try {
-      $seed=if($CurrentRequest){Native $runner @('-Config',$config)}else{Native $runner @('-Config',$config,'-Model','gpt-5.6-terra','-Route','2','-Placement','measured')} # historical dispatcher fixture only
+      $seed=if($CurrentRequest){Native $runner @('-Config',$config,'-Model','gpt-6.1-sol','-Effort','high','-Placement','provisional')}else{Native $runner @('-Config',$config,'-Model','gpt-5.6-terra','-Route','2','-Placement','measured')} # historical dispatcher fixture only
     } finally {
       $cfg.dispatch=$candidateDispatcher;Save $config $cfg
     }
