@@ -330,7 +330,19 @@ if ($identityMode -ceq "branch") {
 function Assert-HostVerifierGitState {
   if (-not $isHostVerifier -and -not $isNativeDb) { return }
   $status = Invoke-GitIdentityProbe @("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none") "clean state"
-  if ($status) { throw "heavy-verifier: host verifier requires a clean exact-head worktree" }
+  if ($status) {
+    $preview = (@($status -split "`r?`n" | Select-Object -First 5) -join "`n")
+    throw "heavy-verifier: host verifier requires a clean exact-head worktree`n$preview"
+  }
+}
+function Test-SafeFile([string]$Path) {
+  try {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    return -not $item.PSIsContainer -and
+      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)
+  } catch {
+    return $false
+  }
 }
 $diagnosticScriptFull = $null
 $diagnosticDefinition = $null
@@ -428,6 +440,7 @@ function Assert-DiagnosticDeclaration {
 Assert-DiagnosticDeclaration
 
 $workspaceDbFile = $null
+$workspaceDbTestFileSupplied = $PSBoundParameters.ContainsKey('WorkspaceDbTestFile')
 $workspaceDbBudgetMaximumSeconds = 900.0
 function Assert-WorkspaceDbRoute {
   if (-not $isWorkspaceDbTest) { return }
@@ -435,7 +448,10 @@ function Assert-WorkspaceDbRoute {
       $WorkspaceDbBudgetSeconds -le 0 -or $WorkspaceDbBudgetSeconds -gt $workspaceDbBudgetMaximumSeconds) {
     throw "heavy-verifier: workspace DB budget must be finite, greater than zero, and no more than $workspaceDbBudgetMaximumSeconds seconds"
   }
-  if (-not [string]::IsNullOrWhiteSpace($WorkspaceDbTestFile)) {
+  if ($workspaceDbTestFileSupplied -and [string]::IsNullOrWhiteSpace($WorkspaceDbTestFile)) {
+    throw 'heavy-verifier: workspace DB test file must not be empty'
+  }
+  if ($workspaceDbTestFileSupplied) {
     $normalized = $WorkspaceDbTestFile.Replace('\', '/')
     if ([IO.Path]::IsPathFullyQualified($WorkspaceDbTestFile) -or
         $normalized.StartsWith('/') -or $normalized -cmatch '^[A-Za-z]:/' -or
@@ -459,6 +475,14 @@ function Assert-WorkspaceDbRoute {
     $treeType = ((& git -C $worktreeFull cat-file -t "HEAD:$normalized" 2>$null) -join '').Trim()
     if ($LASTEXITCODE -ne 0 -or $treeType -cne 'blob') {
       throw 'heavy-verifier: workspace DB test file is not a tracked file at the supplied worktree HEAD'
+    }
+    $workspaceRelativeFilter = $normalized.Substring('bounded-contexts/payments/'.Length)
+    $trackedPayments = @(& git -C $worktreeFull ls-files -- 'bounded-contexts/payments/**' 2>$null)
+    $matches = @($trackedPayments | Where-Object {
+        $_.Substring('bounded-contexts/payments/'.Length).IndexOf($workspaceRelativeFilter, [StringComparison]::OrdinalIgnoreCase) -ge 0
+      })
+    if ($matches.Count -ne 1) {
+      throw 'heavy-verifier: workspace DB test file filter must identify exactly one tracked payments path'
     }
     $script:workspaceDbFile = $normalized
   }
@@ -834,7 +858,10 @@ function Get-HeavyCallerBinding([switch]$Recheck) {
 function Assert-HeavyCallerEligibility($Expected = $null) {
   $binding = Get-HeavyCallerBinding
   if ($binding.Reason) { throw "heavy-verifier: caller eligibility: $($binding.Reason)" }
-  if ($binding.Record -and ($binding.Record.laneRole -cne 'implementation' -or $binding.Row -eq 13)) {
+  $workspaceDbImplementationLane = $isWorkspaceDbTest -and $binding.Record -and
+    $binding.Record.laneRole -ceq 'implementation' -and $binding.Row -eq 7
+  if ($binding.Record -and -not $workspaceDbImplementationLane -and
+      ($binding.Record.laneRole -cne 'implementation' -or $binding.Row -eq 13)) {
     throw "heavy-verifier: caller eligibility: role=$($binding.Record.laneRole) routing-row=$($binding.Row) cannot reserve heavy verification"
   }
   if ($Expected -and ($Expected.Path -cne $binding.Path -or -not [string]::Equals($Expected.Raw, $binding.Raw, [StringComparison]::Ordinal) -or
@@ -1327,8 +1354,7 @@ $arguments = if ($isAttachedAdmission) {
   @($diagnosticScriptFull)
 } elseif ($isWorkspaceDbTest) {
   $workspaceDbRunnerPath = Join-Path $PSScriptRoot 'workspace-db-test.mjs'
-  if (-not (Test-Path -LiteralPath $workspaceDbRunnerPath -PathType Leaf) -or
-      ((Get-Item -LiteralPath $workspaceDbRunnerPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::None) {
+  if (-not (Test-SafeFile $workspaceDbRunnerPath)) {
     throw 'heavy-verifier: canonical workspace DB runner is absent or unsafe'
   }
   $workspaceDbArguments = @($workspaceDbRunnerPath, '--pnpm-script', $pnpmScript)
@@ -1382,15 +1408,6 @@ function Test-SafeDirectory([string]$Path) {
   try {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     return $item.PSIsContainer -and
-      (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)
-  } catch {
-    return $false
-  }
-}
-function Test-SafeFile([string]$Path) {
-  try {
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    return -not $item.PSIsContainer -and
       (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)
   } catch {
     return $false
@@ -2346,7 +2363,7 @@ try {
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
     $callerBinding = Assert-HeavyCallerEligibility $callerBinding
-    if ($isTimedRoute -and $isHostVerifier -and -not $callerBinding.Record) {
+    if ($isTimedRoute -and $isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
       if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }
       if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
@@ -2488,7 +2505,7 @@ try {
       Assert-HostVerifierGitState
       if (-not (Test-ThisOwner)) { throw "heavy-verifier: receipt refused because exact owner changed" }
     }
-    if ($isHostVerifier -and -not $callerBinding.Record) {
+    if ($isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator/artifacts"
       if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
       if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
@@ -2517,14 +2534,20 @@ try {
         if ($diagnosticResultSha256) { $receipt.Add('resultSha256', $diagnosticResultSha256) }
       } elseif ($isWorkspaceDbTest) {
         $receipt = [ordered]@{
-          schema = "host-heavy-verifier/v1"; authority = "host-verifier"
+          schema = "host-heavy-verifier/v1"; route = "workspace-db-test"
+          authority = $(if ($callerBinding.Record) { "dispatch-lane" } else { "host-verifier" })
           worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
           identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
           workspace = $WorkspaceDbTest; file = $workspaceDbFile
-          budgetSeconds = $WorkspaceDbBudgetSeconds; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
+          budgetSeconds = $WorkspaceDbBudgetSeconds; elapsedMs = $childElapsedMs; timedOut = $childTimedOut; nativeExit = $nativeExitCode
           commandIdentity = $commandIdentity; executable = $command; arguments = @($arguments)
           lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
           root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
+        }
+        if ($callerBinding.Record) {
+          $receipt.Add('launchId', [string]$callerBinding.Record.launchId)
+          $receipt.Add('laneRole', [string]$callerBinding.Record.laneRole)
+          $receipt.Add('routingRow', [int]$callerBinding.Row)
         }
       } else {
         $receipt = [ordered]@{

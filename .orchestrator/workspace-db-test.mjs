@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import fs from "node:fs";
 import path, { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -22,7 +23,7 @@ function run(executable, commandArguments) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, commandArguments, {
       cwd: repositoryRoot,
-      env: process.env,
+      env: { ...process.env, npm_execpath: pnpm },
       stdio: "inherit",
       windowsHide: true,
     });
@@ -49,7 +50,7 @@ else if (workspaceFile) {
     } else {
       try {
         await runWorkspaces.loadTestEnvironment({ includeTestDatabaseUrl: true });
-        process.exitCode = await run(process.execPath, [pnpm, "--dir", workspaceDirectory, "exec", "vitest", "run", "--config", "./tests/vitest.config.mjs", relativeToWorkspace]);
+        process.exitCode = await run(process.execPath, [pnpm, "--config.verify-deps-before-run=false", "--dir", workspaceDirectory, "exec", "vitest", "run", "--config", "./tests/vitest.config.mjs", relativeToWorkspace]);
       } catch (error) {
         process.stderr.write(`workspace-db-test: could not load product test environment: ${error instanceof Error ? error.message : String(error)}\n`);
         process.exitCode = 1;
@@ -57,5 +58,20 @@ else if (workspaceFile) {
     }
   }
 } else {
-  process.exitCode = await run(process.execPath, [runWorkspacesPath, "test:db*", `--workspace=${workspace}`]);
+  let packageJson;
+  try {
+    packageJson = JSON.parse(fs.readFileSync(path.join(workspaceDirectory, "package.json"), "utf8"));
+  } catch (error) {
+    process.stderr.write(`workspace-db-test: could not read Payments package.json: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+  const scripts = packageJson?.scripts;
+  const hasDatabaseScript = scripts && typeof scripts === "object" &&
+    Object.keys(scripts).some((name) => name === "test:db" || name.startsWith("test:db:"));
+  if (process.exitCode === undefined && !hasDatabaseScript) {
+    process.stderr.write("workspace-db-test: Payments has no test:db or test:db:* script; refusing zero-test run\n");
+    process.exitCode = 1;
+  } else if (process.exitCode === undefined) {
+    process.exitCode = await run(process.execPath, [runWorkspacesPath, "test:db*", `--workspace=${workspace}`]);
+  }
 }
