@@ -2314,10 +2314,23 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
     $output=@(& git.exe --no-optional-locks -C $copy @arguments 2>&1)
     if($LASTEXITCODE-ne0){throw "8102 copy Git failed: $($arguments -join ' ') $($output -join "`n")"}
   }
-  # Copied-runtime tests have synthetic Git history. Carry only the immutable
-  # pre-migration fixture commit, without changing their candidate HEAD/tree.
-  $output=@(& git.exe -C $copy fetch --quiet --no-tags --depth=1 $sourceRoot b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780 2>&1)
-  if($LASTEXITCODE-ne0){throw "8102 historical fixture fetch failed: $($output -join ' ')"}
+  # Copied-runtime tests have synthetic Git history. Resolve the immutable
+  # pre-migration fixture through the caller's read-only alternates instead of
+  # asking the dev clone's upload side to advertise a private object.
+  $privateObjectDirectories=@()
+  if(-not [string]::IsNullOrWhiteSpace($env:GIT_ALTERNATE_OBJECT_DIRECTORIES)){
+    $privateObjectDirectories=@($env:GIT_ALTERNATE_OBJECT_DIRECTORIES -split [regex]::Escape([IO.Path]::PathSeparator) | ForEach-Object {$_.Trim().Trim('"')} | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
+    if($privateObjectDirectories.Count){
+      $alternates=Join-Path $copy '.git/objects/info/alternates'
+      [IO.Directory]::CreateDirectory((Split-Path -Parent $alternates))|Out-Null
+      [IO.File]::WriteAllText($alternates,(($privateObjectDirectories -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
+    }
+  }
+  $historical='b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780'
+  $historicalType=@(& git.exe -C $copy cat-file -t "${historical}^{commit}" 2>&1)
+  if($LASTEXITCODE-ne0-or(($historicalType-join '').Trim()-cne'commit')){throw "8102 historical fixture unavailable through GIT_ALTERNATE_OBJECT_DIRECTORIES"}
+  $output=@(& git.exe -C $copy update-ref refs/heads/synthetic/8102-historical $historical 2>&1)
+  if($LASTEXITCODE-ne0){throw "8102 historical fixture ref update failed: $($output -join ' ')"}
   return [pscustomobject]@{label=$Label;container=$container;root=$copy;runtime=(Join-Path $copy '.orchestrator');applied=$applied}
 }
 # Runs one carrier from a copy in its own pwsh process, bounded, and returns the

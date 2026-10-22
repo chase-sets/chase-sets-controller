@@ -981,7 +981,12 @@ try {
     $voidOmissionNeedle="if (`$prelaunchReview.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') {"
     $launcherSource9382=[IO.File]::ReadAllText($launcher)
     Assert-True ($launcherSource9382.Split(@($voidOmissionNeedle),[StringSplitOptions]::None).Count -eq 2) '9382 unique launcher void omission seam'
-    foreach($control9382 in @('installed-baseline','AC1-AC4-void-omitted')) {
+    $controls9382=@('installed-baseline','AC1-AC4-void-omitted')
+    if([string]::IsNullOrWhiteSpace($env:GIT_ALTERNATE_OBJECT_DIRECTORIES)){
+      Write-Output "LOCAL_PRIVATE_HISTORY #9382 installed-baseline skipped: GIT_ALTERNATE_OBJECT_DIRECTORIES is not configured (baseline=$prelogBaseline)"
+      $controls9382=@('AC1-AC4-void-omitted')
+    }
+    foreach($control9382 in $controls9382) {
       $controlSource9382=if($control9382 -ceq 'installed-baseline'){@(& git -C (Split-Path -Parent $PSScriptRoot) show "${prelogBaseline}:.orchestrator/dispatch-lane.ps1") -join "`n"}else{$launcherSource9382.Replace($voidOmissionNeedle,'if ($false) {')}
       $controlSubject9382=New-AdmissionLauncherSubject $control9382 $controlSource9382
       if($control9382 -ceq 'installed-baseline') {
