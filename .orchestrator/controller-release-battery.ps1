@@ -74,10 +74,28 @@ function Stop-Battery([string]$Code) {
 }
 
 # Result and baseline-evidence writes stay physically under .orchestrator/artifacts
-# (#98). A path is accepted only when it lies beneath the canonical artifact root
-# and no existing component, from the volume root through the path itself, is a
-# reparse point (junction, symlink or mount). Links are refused, never followed,
-# so the reparse-free full path is the physical path the write reaches.
+# (#98). The artifact root is canonical: its parent is resolved once through every
+# link above it (a worktree or TEMP below a junction is supported). A path is then
+# accepted only when it lies beneath that canonical root and no existing component
+# from the root itself through the path is a reparse point (junction, symlink or
+# mount). Links at or below the root are refused, never followed, so the
+# reparse-free path under the physical root is the physical path a write reaches.
+function Resolve-BatteryPhysicalPath([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
+  $current = [IO.Path]::GetPathRoot($full)
+  foreach ($part in $full.Substring($current.Length).Split([char[]]@("\", "/"), [StringSplitOptions]::RemoveEmptyEntries)) {
+    $current = [IO.Path]::Combine($current, $part)
+    $attributes = $null
+    try { $attributes = [IO.File]::GetAttributes($current) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {}
+    if ($null -ne $attributes -and $attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+      # The final target is itself canonical, so the walk continues from it.
+      $target = [IO.DirectoryInfo]::new($current).ResolveLinkTarget($true)
+      if ($null -ne $target) { $current = $target.FullName }
+    }
+  }
+  return $current.TrimEnd("\", "/")
+}
+
 function Assert-BatteryArtifactPath([string]$Root, [string]$Path, [string]$Code) {
   $full = [IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
   if (-not ([string]::Equals($full, $Root, [StringComparison]::OrdinalIgnoreCase) -or
@@ -88,8 +106,24 @@ function Assert-BatteryArtifactPath([string]$Root, [string]$Path, [string]$Code)
     $attributes = $null
     try { $attributes = [IO.File]::GetAttributes($cursor) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {}
     if ($null -ne $attributes -and $attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Battery $Code }
+    if ([string]::Equals($cursor, $Root, [StringComparison]::OrdinalIgnoreCase)) { break }
   }
   return $full
+}
+
+# Test seam (#98), inert in production: the battery self-test replaces this empty
+# body in a copied battery to swap the artifact root between validation and a write.
+function Invoke-BatteryArtifactWriteSeam([string]$Path) {}
+
+# Detect, not prevent (#98): each check above runs before its write, but the root
+# can still be swapped for a link between that check and the open, so a write may
+# land outside the artifact root before this recheck notices. The recheck runs the
+# same at-or-below and beneath-root checks on the written path and stops the
+# battery with the same refusal code, so a swap is a loud refusal, never a silent
+# escape. Preventing the write itself (handle-anchored no-follow opens) is tracked
+# separately.
+function Confirm-BatteryArtifactWrite([string]$Root, [string]$Path, [string]$Code) {
+  [void](Assert-BatteryArtifactPath $Root $Path $Code)
 }
 
 function Test-SameBatteryPath([string]$Left, [string]$Right) {
@@ -831,14 +865,17 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
     } else {
       [IO.Path]::GetFullPath((Join-Path $controller $ResultPath))
     }
-    $artifactRoot = [IO.Path]::GetFullPath((Join-Path $runtime "artifacts")).TrimEnd("\", "/")
-    # Every existing ancestor through artifacts is refused if it is a reparse
-    # point, before and after the root is created; the reparse-free root is then
-    # the canonical root every later result and evidence path is checked against.
+    # The canonical root is the physical .orchestrator joined with artifacts, so
+    # a link at artifacts itself is still refused below, before and after the
+    # root is created; every later result and evidence path is checked against it.
+    $artifactRoot = Join-Path (Resolve-BatteryPhysicalPath $runtime) "artifacts"
     $artifactRoot = Assert-BatteryArtifactPath $artifactRoot $artifactRoot "BATTERY_RESULT_PATH_INVALID"
+    $resultDirectory = Split-Path -Parent $resolvedResult
+    $resultDirectory = Join-Path (Resolve-BatteryPhysicalPath (Split-Path -Parent $resultDirectory)) (Split-Path -Leaf $resultDirectory)
+    if ($resultDirectory.TrimEnd("\", "/") -cne $artifactRoot) { Stop-Battery "BATTERY_RESULT_PATH_INVALID" }
+    $resolvedResult = Join-Path $artifactRoot ([IO.Path]::GetFileName($resolvedResult))
     $rawPath = [IO.Path]::ChangeExtension($resolvedResult, ".log")
-    if ((Split-Path -Parent $resolvedResult).TrimEnd("\", "/") -cne $artifactRoot -or
-        (Test-SameBatteryPath $resolvedResult $rawPath) -or
+    if ((Test-SameBatteryPath $resolvedResult $rawPath) -or
         [IO.Path]::GetFileName($resolvedResult).IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) {
       Stop-Battery "BATTERY_RESULT_PATH_INVALID"
     }
@@ -999,11 +1036,14 @@ $baselineEvidenceCount = 0
 function Save-BatteryBaselineEvidence([string]$Directory, [string]$Name, [string]$Text, [string]$Identity) {
   $evidencePath = Assert-BatteryArtifactPath $artifactRoot (Join-Path $Directory $Name) "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$Identity"
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+  Invoke-BatteryArtifactWriteSeam $evidencePath
   # CreateNew: retained evidence is never truncated or overwritten.
   $stream = [IO.FileStream]::new($evidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
   try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+  Confirm-BatteryArtifactWrite $artifactRoot $evidencePath "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$Identity"
   return [ordered]@{
-    relativePath = [IO.Path]::GetRelativePath($controller, $evidencePath).Replace("\", "/")
+    # Relative to the canonical root, which may differ from the controller path.
+    relativePath = ".orchestrator/artifacts/" + [IO.Path]::GetRelativePath($artifactRoot, $evidencePath).Replace("\", "/")
     byteLength = $bytes.Length
     sha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
   }
@@ -1242,7 +1282,9 @@ try {
     foreach ($outputPath in @($rawPath, $resolvedResult, [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt"))) {
       [void](Assert-BatteryArtifactPath $artifactRoot $outputPath "BATTERY_RESULT_PATH_INVALID")
     }
+    Invoke-BatteryArtifactWriteSeam $rawPath
     [IO.File]::WriteAllBytes($rawPath, $rawBytes)
+    Confirm-BatteryArtifactWrite $artifactRoot $rawPath "BATTERY_RESULT_PATH_INVALID"
     $rawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes))).ToLowerInvariant()
     $resultRecord = [ordered]@{
       schemaVersion = "controller-battery-result/v1"
@@ -1284,9 +1326,14 @@ try {
     }
     if ($null -ne $batteryFailure) { $resultRecord.failureCode = $failureCode }
     $resultBytes = [Text.UTF8Encoding]::new($false).GetBytes(($resultRecord | ConvertTo-Json -Compress -Depth 20) + "`n")
+    Invoke-BatteryArtifactWriteSeam $resolvedResult
     [IO.File]::WriteAllBytes($resolvedResult, $resultBytes)
+    Confirm-BatteryArtifactWrite $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID"
     # Diagnostic per-line child timing; not bound by the result record.
-    try { [IO.File]::WriteAllLines([IO.Path]::ChangeExtension($resolvedResult, ".timing.txt"), [string[]]@($timingLines)) } catch {}
+    $timingPath = [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt")
+    Invoke-BatteryArtifactWriteSeam $timingPath
+    try { [IO.File]::WriteAllLines($timingPath, [string[]]@($timingLines)) } catch {}
+    Confirm-BatteryArtifactWrite $artifactRoot $timingPath "BATTERY_RESULT_PATH_INVALID"
     Write-Output "BATTERY_RESULT path=$resolvedResult raw=$rawPath"
   }
 } catch {
