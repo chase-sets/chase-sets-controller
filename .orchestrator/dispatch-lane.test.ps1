@@ -1348,7 +1348,7 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
     } else {
       $null
     }
-    if($forcedLauncherProcess.HasExited-and$null-eq$forcedRecord){break}
+    if($forcedLauncherProcess.HasExited){break}
   } while ($null -eq $forcedRecord -or $forcedRecord.state -ne "started")
   Assert-True ($null -ne $forcedRecord -and $forcedRecord.state -eq "started") "long-lived inert launch publishes an exact child identity"
   Assert-True ($forcedRecord.schemaVersion -eq 4 -and
