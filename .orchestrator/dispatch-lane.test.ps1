@@ -1378,8 +1378,8 @@ Start-Sleep -Seconds 300
   $forcedChildProcess.WaitForExit()
   $forcedChildProcess.Dispose()
   $forcedLauncherProcess.WaitForExit()
-  $launcherGone = (Get-DispatchProcessIdentityState $forcedRecord.launcherPid $forcedRecord.launcherStartIdentity) -ceq 'absent'
-  $childGone = (Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -ceq 'absent'
+  $launcherGone = (Get-DispatchProcessIdentityState $forcedRecord.launcherPid $forcedRecord.launcherStartIdentity) -ceq 'dead'
+  $childGone = (Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -ceq 'dead'
   Assert-True ($launcherGone -and $childGone) "forced-launch record has absent recorded launcher and child PIDs"
 
   Invoke-InertRecoveryDispatch
