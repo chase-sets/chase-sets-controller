@@ -54,14 +54,14 @@ function Save-BatteryCiArtifact([string]$ArtifactId, [string]$Path) {
   Assert-Test ($ArtifactId -ceq '67890') 'download exact artifact id'
   [IO.File]::Copy($script:zipPath, $Path, $true)
 }
-function Get-BatteryFleetLoad { return 'none' }
+function Get-BatteryFleetLoad([switch]$Holder) { if ($Holder) { return $null }; return 'none' }
 # #120: a concurrent start records its identity and runs the fixture body; the
 # next checkpoint reads that exit back. Every other concurrent step is production.
 $concurrentStarts = [Collections.Generic.List[string]]::new()
 function Start-BatteryConcurrentItem($Item, $Children) {
   $script:concurrentStarts.Add($Item.identity)
   $records = @(& $Item.executable @($Item.arguments))
-  $handle = [pscustomobject]@{ item = $Item; process = $null; processId = 0; startTicks = 0L; fleetLoad = 'none'
+  $handle = [pscustomobject]@{ item = $Item; process = $null; processId = 0; startTicks = 0L; fleetLoad = 'none'; fleet = (New-BatteryFleetSampler $Item.identity $null)
     startedUtc = [DateTime]::UtcNow.ToString('o'); startError = $null; collected = $false
     completion = [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($records -join "`n"); finishedUtc = [DateTime]::UtcNow.ToString('o'); elapsedMs = 1L } }
   $Children.Add($handle)
@@ -361,8 +361,15 @@ try {
   Assert-Test ($merged.rawLog.sha256 -ceq (Get-FileHash $rawPath -Algorithm SHA256).Hash.ToLowerInvariant()) 'merged raw log binding'
   Assert-Test (($merged.PSObject.Properties.Name | Sort-Object) -join ',' -ceq
     'controllerHead,execution,fleetLoad,hostIdentity,inventory,rawLog,results,schemaVersion,scope') 'unchanged top-level result schema'
-  Assert-Test (($merged.results[0].PSObject.Properties.Name | Sort-Object) -join ',' -ceq
-    'elapsedMs,exitCode,finishedUtc,fleetLoad,identity,provenance,result,startedUtc') 'unchanged per-item result schema'
+  # #99: an executed row adds only fleetSampling; a reused row keeps the old shape.
+  $rowSchema = { param($Row) ($Row.PSObject.Properties.Name | Sort-Object) -join ',' }
+  Assert-Test (@($merged.results | Where-Object { $_.provenance.kind -ceq 'receipt-reuse' }).Count -eq 2 -and
+    @($merged.results | Where-Object { $_.provenance.kind -ceq 'receipt-reuse' -and (& $rowSchema $_) -cne
+      'elapsedMs,exitCode,finishedUtc,fleetLoad,identity,provenance,result,startedUtc' }).Count -eq 0) 'unchanged per-item result schema'
+  Assert-Test (@($merged.results | Where-Object { $_.provenance.kind -ceq 'execution' }).Count -eq 7 -and
+    @($merged.results | Where-Object { $_.provenance.kind -ceq 'execution' -and ((& $rowSchema $_) -cne
+      'elapsedMs,exitCode,finishedUtc,fleetLoad,fleetSampling,identity,provenance,result,startedUtc' -or
+      $_.fleetLoad -cne 'none' -or $_.fleetSampling.samples -lt 2 -or $_.fleetSampling.truncated -or @($_.fleetSampling.holders).Count -ne 0) }).Count -eq 0) 'executed rows add only fleetSampling evidence'
 
   # #120 -ConcurrentIdentity under a CI prior: a listed item with a fresh ci:
   # PASS row keeps its reuse row and is never started; a listed item also named

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ConcurrentIdentity")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ConcurrentIdentity", "FleetSampling")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -2910,6 +2910,493 @@ function Test-BatteryConcurrentIdentity {
   Write-Output 'PASS 120 battery concurrent items: validation, overlap, stable output, failure stop, classification, abort, impact and start failure'
 }
 
+# ---- #99 per-item holder sampling ----
+# fleetSampling is evidence only. These legs drain the fixture battery's stdout
+# line by line while it runs, so a control orders holder entry, an in-flight
+# FLEET_SAMPLE record and holder exit by observed records, not by wall clock.
+# Every holder and lock is synthetic under $testRoot; no live slot is touched.
+$fleet99Item = 'test:quiet-holder.test.ps1'
+$fleet99Churn = 'test:holder-churn.test.ps1'
+# A quiet item: no stdout or stderr, only a ready file and a release wait.
+$fleet99QuietBody = @'
+[IO.File]::WriteAllText('{SIGNAL}\ready', [string]$PID)
+$deadline = [DateTime]::UtcNow.AddMinutes(5)
+while (-not [IO.File]::Exists('{SIGNAL}\release') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+'@
+# A quiet item that publishes a new live holder (its own PID) every few
+# milliseconds, the way the repaired guard publishes, until released.
+$fleet99ChurnBody = @'
+$lock = '{LOCK}'
+[void][IO.Directory]::CreateDirectory($lock)
+$record = Join-Path $lock 'owner.json'
+$started = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+$changes = 0
+$deadline = [DateTime]::UtcNow.AddMinutes(5)
+while (-not [IO.File]::Exists('{SIGNAL}\release') -and [DateTime]::UtcNow -lt $deadline) {
+  $changes++
+  $next = Join-Path $lock "owner.transition.$changes.tmp"
+  [IO.File]::WriteAllText($next, ([ordered]@{ schemaVersion = 4; lockId = [guid]::NewGuid().ToString('N'); lane = "churn-$changes"; gate = 'vitest-full'; pid = $PID; processStartUtc = $started; state = 'started' } | ConvertTo-Json -Compress))
+  if ([IO.File]::Exists($record)) { [IO.File]::Replace($next, $record, [NullString]::Value) } else { [IO.File]::Move($next, $record) }
+  Start-Sleep -Milliseconds 5
+}
+[IO.File]::WriteAllText('{SIGNAL}\changes', [string]$changes)
+Remove-Item -LiteralPath $lock -Recurse -Force
+'@
+
+function New-Fleet99Fixture([string]$Name, [string]$Body, [string]$BatterySource = '') {
+  $signal = Join-Path $testRoot ('fleet99-signal-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($signal)
+  $files = @{ "$Name.test.ps1" = $Body.Replace('{SIGNAL}', $signal).Replace('{LOCK}', (Join-Path $testRoot '.orchestrator\verify-lock.d')) }
+  if ($BatterySource) { $files['controller-release-battery.ps1'] = $BatterySource }
+  $fixture = New-AdmissionFixture $files 'fleet99-'
+  return [pscustomobject]@{ root = $fixture.root; head = $fixture.head; receipt = $fixture.receipt; signal = $signal }
+}
+
+function Start-Fleet99Leg($Fixture, [string]$Label, [string[]]$ExtraArguments = @()) {
+  $resultPath = Join-Path $Fixture.root ".orchestrator/artifacts/99-$Label.json"
+  $start = New-BatteryChildStartInfo $Fixture.root
+  Set-NonAdmittedBatteryChildEnvironment $start
+  foreach ($argument in @(
+      '-NoProfile', '-NonInteractive', '-File', (Join-Path $Fixture.root '.orchestrator/controller-release-battery.ps1'),
+      '-ControllerRoot', $Fixture.root, '-ExpectedControllerHead', $Fixture.head,
+      '-EvidenceReceiptPath', $Fixture.receipt, '-ResultPath', $resultPath
+    ) + $ExtraArguments) { [void]$start.ArgumentList.Add($argument) }
+  $process = [Diagnostics.Process]::Start($start)
+  return [pscustomobject]@{
+    label = $Label; fixture = $Fixture; process = $process; resultPath = $resultPath; pending = $null; eof = $false
+    lines = [Collections.Generic.List[string]]::new(); stderr = $process.StandardError.ReadToEndAsync()
+    run = $null; record = $null
+  }
+}
+
+# Drains stdout into $Leg.lines until $Until (given the newest line, or $null
+# when none arrived) returns a value, the bound passes or output ends; returns
+# that value or $null. Output is always drained, so the battery never blocks.
+function Wait-Fleet99($Leg, [scriptblock]$Until, [int]$Seconds = 30) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  do {
+    $newest = $null
+    if (-not $Leg.eof) {
+      if ($null -eq $Leg.pending) { $Leg.pending = $Leg.process.StandardOutput.ReadLineAsync() }
+      if ($Leg.pending.Wait(25)) {
+        $newest = $Leg.pending.Result
+        $Leg.pending = $null
+        if ($null -eq $newest) { $Leg.eof = $true } else { $Leg.lines.Add($newest) }
+      }
+    } else { Start-Sleep -Milliseconds 25 }
+    $found = & $Until $newest
+    if ($found) { return $found }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $null
+}
+
+function Complete-Fleet99Leg($Leg, [int]$Seconds = 240) {
+  $drained = Wait-Fleet99 $Leg { $Leg.eof } $Seconds
+  if (-not $drained -or -not $Leg.process.WaitForExit(30000)) {
+    try { $Leg.process.Kill($true) } catch {}
+    throw "ASSERTION FAILED: fleet99 battery $($Leg.label) did not finish"
+  }
+  $Leg.run = [pscustomobject]@{ exitCode = $Leg.process.ExitCode; output = ((($Leg.lines -join "`n") + "`n" + $Leg.stderr.Result).Trim()) }
+  if (Test-Path -LiteralPath $Leg.resultPath -PathType Leaf) { $Leg.record = Get-Content -LiteralPath $Leg.resultPath -Raw | ConvertFrom-Json -DateKind String }
+  Write-Host "CONTROL 99 $($Leg.label) exit=$($Leg.run.exitCode) outcome=$(if ($Leg.record) { $Leg.record.execution.outcome } else { 'NO_RECORD' })"
+  return $Leg
+}
+
+# AC1: start the battery, let the quiet item start, enter a synthetic holder,
+# wait for an in-flight FLEET_SAMPLE that records it, remove the holder, then
+# let the item finish.
+function Invoke-Fleet99MidItemLeg([string]$Label, [string]$BatterySource = '', [string[]]$ExtraArguments = @()) {
+  $fixture = New-Fleet99Fixture 'quiet-holder' $fleet99QuietBody $BatterySource
+  $leg = Start-Fleet99Leg $fixture $Label $ExtraArguments
+  $holder = $null
+  $sampleLine = $null
+  try {
+    $readyPath = Join-Path $fixture.signal 'ready'
+    if (Wait-Fleet99 $leg { [IO.File]::Exists($readyPath) } 180) {
+      $holder = Start-SyntheticFleetHolder $testRoot 'synthetic-99-mid-item'
+      $samplePattern = "FLEET_SAMPLE identity=$fleet99Item moment=during sample=* holder=$($holder.identity)"
+      $sampleLine = Wait-Fleet99 $leg { param($line) if ($null -ne $line -and $line -clike $samplePattern) { $line } } 20
+    }
+  } finally {
+    if ($null -ne $holder) { Stop-SyntheticFleetHolder $holder }
+    [IO.File]::WriteAllText((Join-Path $fixture.signal 'release'), 'release')
+  }
+  $leg = Complete-Fleet99Leg $leg
+  $leg | Add-Member -NotePropertyName holder -NotePropertyValue $holder
+  $leg | Add-Member -NotePropertyName sampleLine -NotePropertyValue $sampleLine
+  return $leg
+}
+
+function Get-Fleet99MidItemFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.holder) { $failures.Add('the quiet item never started'); return ,$failures }
+  if ($null -eq $Leg.record -or $Leg.run.exitCode -ne 0 -or $Leg.record.execution.outcome -cne 'PASS') {
+    $failures.Add("battery did not PASS: exit=$($Leg.run.exitCode) $($Leg.run.output)"); return ,$failures
+  }
+  if ($null -eq $Leg.sampleLine) { $failures.Add('no in-flight FLEET_SAMPLE recorded the mid-item holder before it exited') }
+  $rows = @($Leg.record.results | Where-Object { $_.identity -ceq $fleet99Item })
+  if ($rows.Count -ne 1) { $failures.Add("expected one $fleet99Item row, found $($rows.Count)"); return ,$failures }
+  $row = $rows[0]
+  # Evidence only: classification, exit and the start summary stay as before.
+  if ($row.result -cne 'PASS' -or $row.exitCode -ne 0 -or $row.fleetLoad -cne 'none' -or $Leg.record.fleetLoad -cne 'none') {
+    $failures.Add("classification or fleetLoad summary changed: result=$($row.result) exit=$($row.exitCode) fleetLoad=$($row.fleetLoad) admission=$($Leg.record.fleetLoad)")
+  }
+  if (@($Leg.lines | Where-Object { $_ -clike "RESULT identity=$fleet99Item exitCode=0 result=PASS fleetLoad=none startedUtc=* finishedUtc=* elapsedMs=*" }).Count -ne 1) { $failures.Add('RESULT line changed') }
+  if (@($Leg.lines | Where-Object { $_ -clike "CHILD identity=$fleet99Item *" }).Count -ne 0) { $failures.Add('the quiet item produced output') }
+  $sampling = $row.fleetSampling
+  if ($null -eq $sampling) { $failures.Add('no fleetSampling on the executed row'); return ,$failures }
+  $holders = @($sampling.holders)
+  $owner = $Leg.holder.owner
+  if ($holders.Count -ne 1) {
+    $failures.Add("expected exactly the mid-item holder, found $($holders.Count)")
+  } else {
+    $observed = $holders[0]
+    $expected = [ordered]@{ identity = $Leg.holder.identity; lane = $owner.lane; gate = $owner.gate; lockId = $owner.lockId; pid = [string]$owner.pid; started = $owner.processStartUtc }
+    foreach ($field in $expected.Keys) {
+      if ([string]$observed.$field -cne [string]$expected[$field]) { $failures.Add("holder $field is '$($observed.$field)', not '$($expected[$field])'") }
+    }
+    if ((@($observed.moments) -join ',') -cne 'during') { $failures.Add("holder moments '$(@($observed.moments) -join ',')' are not during only") }
+  }
+  if ($sampling.truncated -or $sampling.samples -lt 3 -or $sampling.samples -gt 64) { $failures.Add("samples=$($sampling.samples) truncated=$($sampling.truncated) outside start, in-flight and end within 64") }
+  # A serial item that ran beside a concurrent quiet item may see the same
+  # holder; no item may record any other holder.
+  foreach ($other in @($Leg.record.results | Where-Object { $_.identity -cne $fleet99Item })) {
+    if ($null -eq $other.fleetSampling -or @($other.fleetSampling.holders | Where-Object { $_.identity -cne $Leg.holder.identity }).Count -ne 0) { $failures.Add("$($other.identity) recorded another holder or no sampling") }
+  }
+  return ,$failures
+}
+
+function Assert-Fleet99([string]$Test, $Failures) {
+  Assert-BatteryTest (@($Failures).Count -eq 0) "$($Test): $(@($Failures) -join '; ')"
+  Write-Host "PASS 99 $Test"
+}
+
+function Get-Fleet99Source { return [IO.File]::ReadAllText($battery).Replace("`r`n", "`n") }
+
+# Named mutants. start-only: no in-flight and no end sample. output-only:
+# in-flight samples only on child output records, which a quiet item never emits.
+function Get-Fleet99StartOnlySource {
+  $source = Replace-BatteryFixtureSource (Get-Fleet99Source) 'function Start-BatteryFleetSampler($Sampler, $Process = $null) {' "function Start-BatteryFleetSampler(`$Sampler, `$Process = `$null) {`n  return"
+  return Replace-BatteryFixtureSource $source '  if ($takeEnd) {' '  if ($false) {'
+}
+function Get-Fleet99OutputOnlySource {
+  $source = Replace-BatteryFixtureSource (Get-Fleet99Source) 'function Start-BatteryFleetSampler($Sampler, $Process = $null) {' "function Start-BatteryFleetSampler(`$Sampler, `$Process = `$null) {`n  return"
+  $needle = '          $childTiming.Add(("+{0}ms {1}" -f $itemClock.ElapsedMilliseconds, $first))'
+  return Replace-BatteryFixtureSource $source $needle ("          Add-BatteryFleetObservation `$itemFleet 'during' (Get-BatteryFleetLoad -Holder)`n" + $needle)
+}
+
+function Test-BatteryFleetMidItemHolder {
+  $test = 'fleetload-mid-item-holder'
+  $serial = Invoke-Fleet99MidItemLeg 'mid-item-serial'
+  Assert-Fleet99 "$test serial" (Get-Fleet99MidItemFailures $serial)
+  Assert-BatteryResultTiming $serial
+  $concurrent = Invoke-Fleet99MidItemLeg 'mid-item-concurrent' '' @('-ConcurrentIdentity', $fleet99Item)
+  Assert-Fleet99 "$test concurrent" (Get-Fleet99MidItemFailures $concurrent)
+  Assert-BatteryTest (@($concurrent.lines | Where-Object { $_ -clike "CONCURRENT_START identity=$fleet99Item * fleetLoad=none" }).Count -eq 1) "$($test): the quiet item did not start concurrently"
+  foreach ($mutant in @(
+      @{ name = 'start-only serial'; source = (Get-Fleet99StartOnlySource); arguments = @() },
+      @{ name = 'start-only concurrent'; source = (Get-Fleet99StartOnlySource); arguments = @('-ConcurrentIdentity', $fleet99Item) },
+      @{ name = 'output-only serial'; source = (Get-Fleet99OutputOnlySource); arguments = @() })) {
+    $leg = Invoke-Fleet99MidItemLeg ('mutant-' + $mutant.name.Replace(' ', '-')) $mutant.source $mutant.arguments
+    $failures = Get-Fleet99MidItemFailures $leg
+    Assert-BatteryTest ($null -ne $leg.holder -and $leg.run.exitCode -eq 0 -and $failures.Count -gt 0) "$test $($mutant.name) mutant SURVIVED: exit=$($leg.run.exitCode) $($failures -join '; ')"
+    Write-Host "MUTANT 99 $test $($mutant.name) KILLED: $($failures -join '; ')"
+  }
+  Write-Output "PASS 99 $test serial and concurrent; start-only and output-only mutants KILLED"
+}
+
+# AC3: an item whose holder changes far more often than the cap. The sampling
+# interval is shortened in the fixture copy only; the cap stays 64.
+function Invoke-Fleet99CapLeg([string]$Label, [string]$BatterySource) {
+  $fixture = New-Fleet99Fixture 'holder-churn' $fleet99ChurnBody $BatterySource
+  $lock = Join-Path $testRoot '.orchestrator\verify-lock.d'
+  $leg = Start-Fleet99Leg $fixture $Label
+  $truncatedLine = $null
+  try {
+    $firstPattern = "FLEET_SAMPLE identity=$fleet99Churn moment=during *"
+    if (Wait-Fleet99 $leg { param($line) $null -ne $line -and $line -clike $firstPattern } 180) {
+      $truncatedPattern = "FLEET_SAMPLE_TRUNCATED identity=$fleet99Churn *"
+      $truncatedLine = Wait-Fleet99 $leg { param($line) if ($null -ne $line -and $line -clike $truncatedPattern) { $line } } 30
+    }
+  } finally {
+    [IO.File]::WriteAllText((Join-Path $fixture.signal 'release'), 'release')
+  }
+  $leg = Complete-Fleet99Leg $leg
+  if (Test-Path -LiteralPath $lock) { Remove-Item -LiteralPath $lock -Recurse -Force }
+  $changesPath = Join-Path $fixture.signal 'changes'
+  $leg | Add-Member -NotePropertyName truncatedLine -NotePropertyValue $truncatedLine
+  $leg | Add-Member -NotePropertyName changes -NotePropertyValue $(if (Test-Path -LiteralPath $changesPath) { [int][IO.File]::ReadAllText($changesPath) } else { 0 })
+  return $leg
+}
+
+function Get-Fleet99CapFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record -or $Leg.run.exitCode -ne 0 -or $Leg.record.execution.outcome -cne 'PASS') {
+    $failures.Add("battery did not PASS: exit=$($Leg.run.exitCode) $($Leg.run.output)"); return ,$failures
+  }
+  $row = @($Leg.record.results | Where-Object { $_.identity -ceq $fleet99Churn })
+  if ($row.Count -ne 1 -or $null -eq $row[0].fleetSampling) { $failures.Add('no churn row with fleetSampling'); return ,$failures }
+  $sampling = $row[0].fleetSampling
+  $progress = @($Leg.lines | Where-Object { $_ -clike "FLEET_SAMPLE identity=$fleet99Churn moment=during *" }).Count
+  if ($Leg.changes -le 64) { $failures.Add("only $($Leg.changes) holder changes; the control needs more than the cap") }
+  if ($sampling.samples -ne 64) { $failures.Add("samples=$($sampling.samples), not the cap 64 (start, 62 in flight, reserved end)") }
+  if ($progress -ne 62) { $failures.Add("in-flight progress records=$progress, not 62") }
+  if (-not $sampling.truncated) { $failures.Add('overflow was not recorded as truncated') }
+  if ($Leg.truncatedLine -cne "FLEET_SAMPLE_TRUNCATED identity=$fleet99Churn samples=63 cap=64") { $failures.Add("truncation record '$($Leg.truncatedLine)'") }
+  $holders = @($sampling.holders)
+  if ($holders.Count -lt 2 -or $holders.Count -gt 62 -or @($holders | Where-Object { $_.lane -cnotlike 'churn-*' -or (@($_.moments) -join ',') -cne 'during' }).Count -ne 0 -or
+      @($holders.lockId | Sort-Object -Unique).Count -ne $holders.Count) { $failures.Add("holders are not distinct in-flight churn holders: count=$($holders.Count)") }
+  if ($row[0].result -cne 'PASS' -or $row[0].fleetLoad -cne 'none') { $failures.Add('classification or start summary changed') }
+  foreach ($other in @($Leg.record.results | Where-Object { $_.identity -cne $fleet99Churn })) {
+    if ($other.fleetSampling.truncated) { $failures.Add("$($other.identity) truncated without overflow") }
+  }
+  return ,$failures
+}
+
+function Test-BatteryFleetSampleCap {
+  $test = 'fleetload-sample-cap'
+  $fast = Replace-BatteryFixtureSource (Get-Fleet99Source) 'cap = 64; firstMs = 250; maxMs = 60000' 'cap = 64; firstMs = 20; maxMs = 20'
+  $candidate = Invoke-Fleet99CapLeg 'sample-cap' $fast
+  Assert-Fleet99 $test (Get-Fleet99CapFailures $candidate)
+  foreach ($mutant in @(
+      @{ name = 'cap-ignored'; source = (Replace-BatteryFixtureSource $fast '          if ($sampler.inFlight -ge $sampler.cap - 2) {' '          if ($false) {') },
+      @{ name = 'silent-drop'; source = (Replace-BatteryFixtureSource $fast '            $sampler.truncated = $true' '            $sampler.truncated = $false') })) {
+    $leg = Invoke-Fleet99CapLeg ('mutant-' + $mutant.name) $mutant.source
+    $failures = Get-Fleet99CapFailures $leg
+    Assert-BatteryTest ($leg.run.exitCode -eq 0 -and $failures.Count -gt 0) "$test $($mutant.name) mutant SURVIVED: exit=$($leg.run.exitCode) $($failures -join '; ')"
+    Write-Host "MUTANT 99 $test $($mutant.name) KILLED: $($failures -join '; ')"
+  }
+  Write-Output "PASS 99 $test samples=64 truncated changes=$($candidate.changes); cap-ignored and silent-drop mutants KILLED"
+}
+
+# AC2 control sampler-transition-pause. A fixture-local copy of the repaired
+# guard pauses at its Write-OwnerRecord publication (the delete-shared
+# [IO.File]::Replace of chase-sets/chase-sets#9739: the probe's pause injection,
+# rekeyed to that writer). While the guard is paused a sampler opens the owner
+# record and holds that handle until the released publication has completed or
+# failed. Sampling off, the battery's own Get-BatteryFleetLoad, and the pre-fix
+# Get-Content sampler each run the same Gate transition in their own synthetic
+# container under $testRoot; the guard never sees another container.
+$pause99Anchor = '    [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)'
+$pause99Injection = @'
+    if ($env:BATTERY99_PAUSE_DIR) {
+      $pauseId = [guid]::NewGuid().ToString('N')
+      $pauseSignal = {
+        param([string]$Name, [string]$Text)
+        $pauseTemporary = Join-Path $env:BATTERY99_PAUSE_DIR ('w.' + [guid]::NewGuid().ToString('N') + '.tmp')
+        [IO.File]::WriteAllText($pauseTemporary, $Text)
+        [IO.File]::Move($pauseTemporary, (Join-Path $env:BATTERY99_PAUSE_DIR $Name))
+      }
+      & $pauseSignal "pending.$pauseId.json" $raw
+      $pauseDeadline = [DateTime]::UtcNow.AddSeconds(120)
+      while (-not [IO.File]::Exists((Join-Path $env:BATTERY99_PAUSE_DIR "pending.$pauseId.release")) -and [DateTime]::UtcNow -lt $pauseDeadline) { Start-Sleep -Milliseconds 15 }
+      try {
+        [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
+      } catch {
+        & $pauseSignal "failed.$pauseId.txt" $_.Exception.ToString()
+        throw
+      }
+      & $pauseSignal "published.$pauseId.json" $raw
+    } else {
+      [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
+    }
+'@
+# The pre-fix sampler: Get-BatteryFleetLoad as it was before
+# chase-sets/chase-sets#9739, with the hold inside its Get-Content pipeline,
+# where that handle is still open.
+$pause99PrefixSampler = @'
+function Get-BatteryFleetLoad {
+  $ownerPath = Join-Path (Split-Path -Parent $controller) ".orchestrator\verify-lock.d\owner.json"
+  if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return "none" }
+  try {
+    $owner = Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop | ForEach-Object { Invoke-Sampler99Hold; $_ } | ConvertFrom-Json -DateKind String -ErrorAction Stop
+  } catch {
+    return "none"
+  }
+  if ($null -eq $owner) { return "none" }
+  $wrapperLive = Test-BatteryProcessIdentityLive $owner.pid $owner.processStartUtc
+  $childLive = $false
+  if (-not $wrapperLive -and ($owner.schemaVersion -is [int] -or $owner.schemaVersion -is [long]) -and
+      [long]$owner.schemaVersion -ge 2 -and [long]$owner.schemaVersion -le 5 -and
+      ([string]$owner.state) -cin @("started", "attached")) {
+    $childLive = Test-BatteryProcessIdentityLive $owner.childPid $owner.childProcessStartUtc
+  }
+  if (-not ($wrapperLive -or $childLive)) { return "none" }
+  $identity = "lane=$($owner.lane);gate=$($owner.gate);lockId=$($owner.lockId);pid=$($owner.pid);started=$($owner.processStartUtc)"
+  return ($identity -replace '\s', '_')
+}
+'@
+
+function Get-Pause99Definition([string]$Source, [string]$Name) {
+  $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$null, [ref]$errors)
+  Assert-BatteryTest ($errors.Count -eq 0) 'sampler-transition-pause: battery source does not parse'
+  $definitions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name }, $true))
+  Assert-BatteryTest ($definitions.Count -eq 1) "sampler-transition-pause: expected one $Name"
+  return $definitions[0].Extent.Text
+}
+
+# A delete-sharing snapshot of fixture bytes, taken while the guard is idle.
+function Read-Pause99Bytes([string]$Path) {
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+  try {
+    $copy = [IO.MemoryStream]::new()
+    $stream.CopyTo($copy)
+    return ,$copy.ToArray()
+  } finally { $stream.Dispose() }
+}
+
+function Wait-Pause99File([string]$Directory, [string[]]$Patterns, [int]$Seconds) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  do {
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Directory -File -ErrorAction SilentlyContinue)) {
+      foreach ($pattern in $Patterns) { if ($entry.Name -clike $pattern) { return $entry.FullName } }
+    }
+    Start-Sleep -Milliseconds 20
+  } while ([DateTime]::UtcNow -lt $deadline)
+  return $null
+}
+
+# One Gate run of the paused guard copy with a quiet child. $Sampler is ''
+# (sampling off) or a Get-BatteryFleetLoad definition whose read is held at the
+# pause until the publication outcome is observed.
+function Invoke-Pause99Run([string]$Variant, [string]$Sampler) {
+  $container = Join-Path $testRoot ('pause99-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+  $runtime = Join-Path $container '.orchestrator'
+  $lane = Join-Path $container 'lane'
+  $signal = Join-Path $container 'signal'
+  foreach ($directory in @($runtime, $lane, $signal)) { [void][IO.Directory]::CreateDirectory($directory) }
+  $guardSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'))
+  Assert-BatteryTest ([regex]::Matches($guardSource, [regex]::Escape($pause99Anchor)).Count -eq 1) 'sampler-transition-pause NOT_CONSTRUCTIBLE: the Write-OwnerRecord publication anchor is not unique'
+  $newline = if ($guardSource.Contains("`r`n")) { "`r`n" } else { "`n" }
+  $guard = Join-Path $runtime 'invoke-heavy-verifier.ps1'
+  [IO.File]::WriteAllText($guard, $guardSource.Replace($pause99Anchor, $pause99Injection.Replace("`r`n", "`n").Replace("`n", $newline)), [Text.UTF8Encoding]::new($false))
+  foreach ($name in @('dispatch-ownership.ps1', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-preload.cjs')) {
+    [IO.File]::Copy((Join-Path $PSScriptRoot $name), (Join-Path $runtime $name))
+  }
+  [IO.File]::WriteAllText((Join-Path $lane 'README.md'), "synthetic #99 pause lane`n")
+  foreach ($arguments in @(@('init', '-q', '--initial-branch=synthetic/pause99'), @('config', 'user.name', 'Synthetic 99'), @('config', 'user.email', 'synthetic-99@example.invalid'),
+      @('config', 'commit.gpgsign', 'false'), @('add', '.'), @('commit', '-qm', 'synthetic pause lane'))) {
+    $output = @(& git -C $lane @arguments 2>&1)
+    Assert-BatteryTest ($LASTEXITCODE -eq 0) "sampler-transition-pause git $($arguments[0]) failed: $output"
+  }
+  $head = (& git -C $lane rev-parse HEAD | Out-String).Trim()
+  $pwsh = (Get-Process -Id $PID).Path
+  $child = Join-Path $container 'child.ps1'
+  [IO.File]::WriteAllText($child, "`$deadline = [DateTime]::UtcNow.AddMinutes(3)`nwhile (-not [IO.File]::Exists('$signal\child.release') -and [DateTime]::UtcNow -lt `$deadline) { Start-Sleep -Milliseconds 25 }`n")
+  $launcher = Join-Path $container 'launch.ps1'
+  [IO.File]::WriteAllText($launcher, ("& '$guard' -Gate verify:static -Worktree '$lane' -Lane sampler-pause-$Variant -Branch synthetic/pause99 -ClaimedHead $head " +
+    "-ContainerRoot '$container' -CommandPath '$pwsh' -CommandArgumentList @('-NoProfile', '-NonInteractive', '-File', '$child')`nexit `$LASTEXITCODE`n"))
+  $start = New-BatteryChildStartInfo $container
+  Set-NonAdmittedBatteryChildEnvironment $start
+  foreach ($key in @($start.Environment.Keys | Where-Object { $_ -like 'CHASE_SETS_HEAVY_*' })) { [void]$start.Environment.Remove($key) }
+  $start.Environment['BATTERY99_PAUSE_DIR'] = $signal
+  foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $launcher)) { [void]$start.ArgumentList.Add($argument) }
+  $run = [ordered]@{
+    variant = $Variant; exitCode = $null; paused = 0; published = 0; failed = 0; publishedIsPending = $false; recordIsPublished = $false; lockRemoved = $false
+    samplerOpened = $false; heldAcrossPublication = $false; samplerSummary = $null; pendingLockId = $null; output = ''
+  }
+  $process = [Diagnostics.Process]::Start($start)
+  $stdout = $process.StandardOutput.ReadToEndAsync()
+  $stderr = $process.StandardError.ReadToEndAsync()
+  $samplerProcess = $null
+  try {
+    $pending = Wait-Pause99File $signal @('pending.*.json') 120
+    if ($pending) {
+      $pendingRaw = [IO.File]::ReadAllText($pending)
+      $run.pendingLockId = [string]($pendingRaw | ConvertFrom-Json).lockId
+      if ($Sampler) {
+        $samplerScript = Join-Path $container 'sampler.ps1'
+        [IO.File]::WriteAllText($samplerScript, (@(
+              'param([string]$Controller, [string]$Signal)'
+              'function Invoke-Sampler99Hold {'
+              '  [IO.File]::WriteAllText((Join-Path $Signal "sampler.open"), "open")'
+              '  $deadline = [DateTime]::UtcNow.AddSeconds(120)'
+              '  while (-not [IO.File]::Exists((Join-Path $Signal "sampler.release")) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 15 }'
+              '}'
+              (Get-Pause99Definition (Get-Fleet99Source) 'Test-BatteryProcessIdentityLive')
+              $Sampler
+              '[IO.File]::WriteAllText((Join-Path $Signal "sampler.result"), [string](Get-BatteryFleetLoad))'
+            ) -join "`n"))
+        $samplerStart = New-BatteryChildStartInfo $container
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $samplerScript, '-Controller', $lane, '-Signal', $signal)) { [void]$samplerStart.ArgumentList.Add($argument) }
+        $samplerProcess = [Diagnostics.Process]::Start($samplerStart)
+        $samplerStreams = @($samplerProcess.StandardOutput.ReadToEndAsync(), $samplerProcess.StandardError.ReadToEndAsync())
+        $run.samplerOpened = $null -ne (Wait-Pause99File $signal @('sampler.open') 60)
+      }
+      [IO.File]::WriteAllText(($pending -creplace '\.json$', '.release'), 'release')
+      $outcome = Wait-Pause99File $signal @('published.*.json', 'failed.*.txt') 60
+      if ($outcome -and $outcome -clike '*published.*') {
+        $publishedRaw = [IO.File]::ReadAllText($outcome)
+        $run.publishedIsPending = $publishedRaw -ceq $pendingRaw
+        $bytes = Read-Pause99Bytes (Join-Path $runtime 'verify-lock.d\owner.json')
+        $run.recordIsPublished = [Convert]::ToHexString($bytes) -ceq [Convert]::ToHexString([Text.UTF8Encoding]::new($false).GetBytes($publishedRaw))
+      }
+      if ($null -ne $samplerProcess) {
+        $run.heldAcrossPublication = $run.samplerOpened -and $null -ne $outcome -and -not $samplerProcess.HasExited
+        [IO.File]::WriteAllText((Join-Path $signal 'sampler.release'), 'release')
+        if ($samplerProcess.WaitForExit(60000) -and (Test-Path -LiteralPath (Join-Path $signal 'sampler.result'))) {
+          $run.samplerSummary = [IO.File]::ReadAllText((Join-Path $signal 'sampler.result'))
+        }
+      }
+    }
+  } finally {
+    if ($null -ne $samplerProcess) { [IO.File]::WriteAllText((Join-Path $signal 'sampler.release'), 'release') }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $signal -Filter 'pending.*.json' -File)) { [IO.File]::WriteAllText(($entry.FullName -creplace '\.json$', '.release'), 'release') }
+    [IO.File]::WriteAllText((Join-Path $signal 'child.release'), 'release')
+    if (-not $process.WaitForExit(120000)) { try { $process.Kill($true) } catch {}; throw "ASSERTION FAILED: sampler-transition-pause $Variant guard did not exit" }
+    if ($null -ne $samplerProcess -and -not $samplerProcess.WaitForExit(30000)) { try { $samplerProcess.Kill($true) } catch {} }
+  }
+  $run.exitCode = $process.ExitCode
+  $run.paused = @(Get-ChildItem -LiteralPath $signal -Filter 'pending.*.json' -File).Count
+  $run.published = @(Get-ChildItem -LiteralPath $signal -Filter 'published.*.json' -File).Count
+  $run.failed = @(Get-ChildItem -LiteralPath $signal -Filter 'failed.*.txt' -File).Count
+  $run.lockRemoved = -not (Test-Path -LiteralPath (Join-Path $runtime 'verify-lock.d'))
+  $run.output = ($stdout.Result + "`n" + $stderr.Result).Trim()
+  Write-Host ('CONTROL 99 sampler-transition-pause ' + (@($run.GetEnumerator() | Where-Object { $_.Key -cne 'output' } | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' '))
+  return [pscustomobject]$run
+}
+
+function Get-Pause99Outcome($Run) {
+  return "exit=$($Run.exitCode) paused=$($Run.paused) published=$($Run.published) failed=$($Run.failed) publishedIsPending=$($Run.publishedIsPending) recordIsPublished=$($Run.recordIsPublished) lockRemoved=$($Run.lockRemoved)"
+}
+
+function Test-BatterySamplerTransitionPause {
+  $test = 'sampler-transition-pause'
+  # Every sampler owner read is Get-BatteryFleetLoad's one delete-sharing open.
+  $source = Get-Fleet99Source
+  $reader = Get-Pause99Definition $source 'Get-BatteryFleetLoad'
+  Assert-BatteryTest ([regex]::Matches($reader, '\[IO\.File\]::Open\(').Count -eq 1 -and $reader -match 'FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete' -and
+    $reader -notmatch 'Get-Content|ReadAll') "$($test): Get-BatteryFleetLoad is not the #9739 delete-sharing snapshot read"
+  foreach ($name in @('New-BatteryFleetSampler', 'Add-BatteryFleetObservation', 'Invoke-BatteryFleetSamplerLoop', 'Start-BatteryFleetSampler', 'Complete-BatteryFleetSampler')) {
+    Assert-BatteryTest ((Get-Pause99Definition $source $name) -notmatch '\[IO\.File\]|Get-Content|ReadAll|StreamReader|FileStream') "$($test): $name reads a file other than through Get-BatteryFleetLoad"
+  }
+  # The held sampler is the candidate read with one hold line after its open.
+  $openLine = [regex]::Matches($reader, '(?m)^(\s*)\$stream = \[IO\.File\]::Open\([^\r\n]*\r?\n')
+  Assert-BatteryTest ($openLine.Count -eq 1) "$($test): candidate open line not found"
+  $hold = $openLine[0].Groups[1].Value + "Invoke-Sampler99Hold`n"
+  $held = $reader.Insert($openLine[0].Index + $openLine[0].Length, $hold)
+  Assert-BatteryTest ($held.Replace($hold, '') -ceq $reader) "$($test): held sampler differs beyond the hold"
+  $off = Invoke-Pause99Run 'off' ''
+  $on = Invoke-Pause99Run 'on' $held
+  $prefix = Invoke-Pause99Run 'prefix' $pause99PrefixSampler
+  $green = 'exit=0 paused=1 published=1 failed=0 publishedIsPending=True recordIsPublished=True lockRemoved=True'
+  Assert-BatteryTest ((Get-Pause99Outcome $off) -ceq $green) "$($test): the sampling-off transition did not complete: $(Get-Pause99Outcome $off) $($off.output)"
+  Assert-BatteryTest ($on.samplerOpened -and $on.heldAcrossPublication -and [string]$on.samplerSummary -clike "lane=sampler-pause-on;gate=verify:static;lockId=$($on.pendingLockId);pid=*") "$($test): the sampling-on read did not overlap the paused publication: $(Get-Pause99Outcome $on) summary=$($on.samplerSummary)"
+  Assert-BatteryTest ((Get-Pause99Outcome $on) -ceq (Get-Pause99Outcome $off)) "$($test): sampling changed the transition: on=$(Get-Pause99Outcome $on) off=$(Get-Pause99Outcome $off) $($on.output)"
+  Assert-BatteryTest ($prefix.samplerOpened -and $prefix.heldAcrossPublication -and [string]$prefix.samplerSummary -clike "lane=sampler-pause-prefix;gate=verify:static;lockId=$($prefix.pendingLockId);pid=*") "$($test): the pre-fix read did not overlap the paused publication: $(Get-Pause99Outcome $prefix) summary=$($prefix.samplerSummary)"
+  Assert-BatteryTest ((Get-Pause99Outcome $prefix) -cne (Get-Pause99Outcome $off) -and $prefix.failed -ge 1) "$($test): the pre-fix Get-Content sampler did not fail the transition (control not RED): $(Get-Pause99Outcome $prefix)"
+  Write-Host "MUTANT 99 $test pre-fix-get-content-sampler RED: $(Get-Pause99Outcome $prefix)"
+  Write-Output "PASS 99 $test off=on=[$(Get-Pause99Outcome $on)] pre-fix=RED[$(Get-Pause99Outcome $prefix)]"
+}
+
+function Test-BatteryFleetSampling {
+  Test-BatterySamplerTransitionPause
+  Test-BatteryFleetMidItemHolder
+  Test-BatteryFleetSampleCap
+  Write-Output 'PASS 99 battery holder sampling: transition pause, mid-item holder, sample cap'
+}
+
 try {
 
   Assert-BatteryTest ($batteryManifest.Count -eq 2) "battery manifest count is not 2"
@@ -2942,6 +3429,7 @@ try {
     Test-FailingBatteryResultWriteOmission
     Test-BatteryIncompleteUnderMeasuredLoad
     Test-BatteryConcurrentIdentity
+    Test-BatteryFleetSampling
     Write-Output "PASS controller release battery tests All"
   } elseif ($Scenario -ceq "Admission") {
     Invoke-AdmissionSuite
@@ -2961,6 +3449,8 @@ try {
     Test-BatteryBaselineAlsoFails
   } elseif ($Scenario -ceq 'ConcurrentIdentity') {
     Test-BatteryConcurrentIdentity
+  } elseif ($Scenario -ceq 'FleetSampling') {
+    Test-BatteryFleetSampling
   } else {
     Write-BatterySuiteResult $ExpectedControllerHead $SuiteResultOut
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"

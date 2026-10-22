@@ -150,7 +150,9 @@ function Test-SameBatteryPath([string]$Left, [string]$Right) {
 # a LIVE owner, using the heavy verifier's own liveness rule: the wrapper pid
 # with its process start identity, or (schema 2..5, state started/attached) the
 # child pid with its start identity. A stale or unreadable owner.json is never
-# load. The battery never takes or waits on that slot.
+# load. The battery never takes or waits on that slot. -Holder returns the live
+# holder's identity fields and summary string, or $null when the slot is
+# vacant, stale or unreadable (#99).
 function Test-BatteryProcessIdentityLive([object]$ProcessId, [object]$ProcessStartUtc) {
   if ($ProcessId -isnot [int] -and $ProcessId -isnot [long]) { return $false }
   if ([long]$ProcessId -lt 1 -or [long]$ProcessId -gt [int]::MaxValue) { return $false }
@@ -165,9 +167,10 @@ function Test-BatteryProcessIdentityLive([object]$ProcessId, [object]$ProcessSta
   }
 }
 
-function Get-BatteryFleetLoad {
+function Get-BatteryFleetLoad([switch]$Holder) {
+  $vacant = if ($Holder) { $null } else { "none" }
   $ownerPath = Join-Path (Split-Path -Parent $controller) ".orchestrator\verify-lock.d\owner.json"
-  if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return "none" }
+  if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return $vacant }
   try {
     $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
     try {
@@ -176,9 +179,9 @@ function Get-BatteryFleetLoad {
     } finally { $stream.Dispose() }
     $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
-    return "none"
+    return $vacant
   }
-  if ($null -eq $owner) { return "none" }
+  if ($null -eq $owner) { return $vacant }
   $wrapperLive = Test-BatteryProcessIdentityLive $owner.pid $owner.processStartUtc
   $childLive = $false
   if (-not $wrapperLive -and ($owner.schemaVersion -is [int] -or $owner.schemaVersion -is [long]) -and
@@ -186,9 +189,174 @@ function Get-BatteryFleetLoad {
       ([string]$owner.state) -cin @("started", "attached")) {
     $childLive = Test-BatteryProcessIdentityLive $owner.childPid $owner.childProcessStartUtc
   }
-  if (-not ($wrapperLive -or $childLive)) { return "none" }
+  if (-not ($wrapperLive -or $childLive)) { return $vacant }
   $identity = "lane=$($owner.lane);gate=$($owner.gate);lockId=$($owner.lockId);pid=$($owner.pid);started=$($owner.processStartUtc)"
-  return ($identity -replace '\s', '_')
+  if (-not $Holder) { return ($identity -replace '\s', '_') }
+  return [pscustomobject][ordered]@{
+    identity = ($identity -replace '\s', '_'); lane = [string]$owner.lane; gate = [string]$owner.gate
+    lockId = [string]$owner.lockId; pid = $owner.pid; started = [string]$owner.processStartUtc
+  }
+}
+
+# Per-item holder sampling (#99), evidence only: an item's fleetLoad stays its
+# start sample's summary, and sampling never changes classification, outcome,
+# reuse or MEASURED_LOAD. Every sample is one Get-BatteryFleetLoad snapshot read
+# (a delete-sharing open, read and close), so a sample that overlaps an owner
+# publication cannot fail it. An item gets a start sample, in-flight samples
+# from one background sampler that the item runner drives independently of the
+# child's stdout/stderr (a quiet item is still sampled), and an end sample after
+# its child exits: at most cap samples per item, the end sample reserved.
+# In-flight intervals double from firstMs to maxMs. When the in-flight budget is
+# spent while the item still runs, its in-flight sampling stops and the item
+# records truncated. Bounded sampling can miss a brief holder, so an empty holder
+# list means none was observed, never that the fleet was vacant.
+function New-BatteryFleetSampler([string]$Identity, $StartHolder) {
+  $sampler = @{
+    identity = $Identity; cap = 64; firstMs = 250; maxMs = 60000
+    samples = 0; inFlight = 0; truncated = $false; ended = $false; process = $null
+    intervalMs = 0; nextDueTicks = [long]::MaxValue; holders = [Collections.Generic.List[object]]::new()
+    summary = $(if ($null -eq $StartHolder) { "none" } else { $StartHolder.identity })
+  }
+  Add-BatteryFleetObservation $sampler "start" $StartHolder
+  return $sampler
+}
+
+# Counts one sample and records its holder once, with the holder's identity
+# fields and every moment (start, during, end) that observed it. The caller
+# holds the sampler lock once the sampler is registered.
+function Add-BatteryFleetObservation($Sampler, [string]$Moment, $Holder) {
+  $Sampler.samples++
+  if ($null -eq $Holder) { return }
+  $record = $null
+  foreach ($known in $Sampler.holders) { if ($known.identity -ceq $Holder.identity) { $record = $known; break } }
+  if ($null -eq $record) {
+    $record = [ordered]@{
+      identity = $Holder.identity; lane = $Holder.lane; gate = $Holder.gate; lockId = $Holder.lockId; pid = $Holder.pid
+      started = $Holder.started; moments = [Collections.Generic.List[string]]::new(); firstSample = $Sampler.samples; lastSample = 0
+    }
+    $Sampler.holders.Add($record)
+  }
+  if (-not $record.moments.Contains($Moment)) { $record.moments.Add($Moment) }
+  $record.lastSample = $Sampler.samples
+}
+
+# The background sampler. Each pass gives every due item one in-flight sample
+# and every exited child (concurrent items) its end sample; one snapshot read
+# serves all of them. Each in-flight sample prints a FLEET_SAMPLE progress line
+# and an exhausted budget prints FLEET_SAMPLE_TRUNCATED once, through the
+# battery's host so lines never interleave with the item runner's output.
+function Invoke-BatteryFleetSamplerLoop($State) {
+  while (-not $State.stop) {
+    $notices = [Collections.Generic.List[string]]::new()
+    try {
+      $due = [Collections.Generic.List[object]]::new()
+      $exited = [Collections.Generic.List[object]]::new()
+      $now = [DateTime]::UtcNow.Ticks
+      [Threading.Monitor]::Enter($State.lock)
+      try {
+        foreach ($sampler in $State.active) {
+          if ($sampler.ended) { continue }
+          if ($null -ne $sampler.process -and $sampler.process.HasExited) { $exited.Add($sampler); continue }
+          if ($sampler.nextDueTicks -gt $now) { continue }
+          if ($sampler.inFlight -ge $sampler.cap - 2) {
+            $sampler.truncated = $true
+            $sampler.nextDueTicks = [long]::MaxValue
+            $notices.Add("FLEET_SAMPLE_TRUNCATED identity=$($sampler.identity) samples=$($sampler.samples) cap=$($sampler.cap)")
+            continue
+          }
+          $due.Add($sampler)
+        }
+      } finally { [Threading.Monitor]::Exit($State.lock) }
+      if ($due.Count -gt 0 -or $exited.Count -gt 0) {
+        $holder = Get-BatteryFleetLoad -Holder
+        $summary = if ($null -eq $holder) { "none" } else { $holder.identity }
+        [Threading.Monitor]::Enter($State.lock)
+        try {
+          foreach ($sampler in $due) {
+            if ($sampler.ended) { continue }
+            $sampler.inFlight++
+            Add-BatteryFleetObservation $sampler "during" $holder
+            $sampler.intervalMs = [Math]::Min($sampler.maxMs, $sampler.intervalMs * 2)
+            $sampler.nextDueTicks = [DateTime]::UtcNow.AddMilliseconds($sampler.intervalMs).Ticks
+            $notices.Add("FLEET_SAMPLE identity=$($sampler.identity) moment=during sample=$($sampler.samples) holder=$summary")
+          }
+          foreach ($sampler in $exited) {
+            if ($sampler.ended) { continue }
+            $sampler.ended = $true
+            Add-BatteryFleetObservation $sampler "end" $holder
+          }
+        } finally { [Threading.Monitor]::Exit($State.lock) }
+      }
+    } catch {
+      $notices.Add("FLEET_SAMPLE_ERROR message=$($_.Exception.Message -creplace '\s+', '_')")
+    }
+    foreach ($notice in $notices) { $Host.UI.WriteLine($notice) }
+    [void]$State.wake.WaitOne(100)
+  }
+}
+
+# Registers a started item for in-flight sampling; the first registration of a
+# run starts the background sampler. A concurrent item passes its child process
+# so the sampler takes the end sample as soon as that child exits.
+function Start-BatteryFleetSampler($Sampler, $Process = $null) {
+  if ($null -eq $fleetSampling.host) {
+    $state = @{
+      lock = [object]::new(); active = [Collections.Generic.List[object]]::new(); stop = $false
+      wake = [Threading.AutoResetEvent]::new($false); controller = $controller
+    }
+    $definitions = @("Test-BatteryProcessIdentityLive", "Get-BatteryFleetLoad", "Add-BatteryFleetObservation", "Invoke-BatteryFleetSamplerLoop") |
+      ForEach-Object { (Get-Command -Name $_ -CommandType Function).ScriptBlock.Ast.Extent.Text }
+    $runspace = [runspacefactory]::CreateRunspace($Host)
+    $runspace.Open()
+    $shell = [powershell]::Create()
+    $shell.Runspace = $runspace
+    [void]$shell.AddScript('param($State, $Definitions) . ([scriptblock]::Create($Definitions)); $controller = $State.controller; Invoke-BatteryFleetSamplerLoop $State').
+      AddArgument($state).AddArgument($definitions -join "`n")
+    $fleetSampling.host = @{ state = $state; runspace = $runspace; shell = $shell; async = $shell.BeginInvoke() }
+  }
+  $state = $fleetSampling.host.state
+  [Threading.Monitor]::Enter($state.lock)
+  try {
+    $Sampler.process = $Process
+    $Sampler.intervalMs = $Sampler.firstMs
+    $Sampler.nextDueTicks = [DateTime]::UtcNow.AddMilliseconds($Sampler.firstMs).Ticks
+    $state.active.Add($Sampler)
+  } finally { [Threading.Monitor]::Exit($state.lock) }
+}
+
+# Ends an item's sampling after its child has exited and returns the additive
+# per-item evidence. The end sample is taken here unless the background sampler
+# already took it for an exited concurrent child.
+function Complete-BatteryFleetSampler($Sampler) {
+  $takeEnd = $true
+  if ($null -ne $fleetSampling.host) {
+    $state = $fleetSampling.host.state
+    [Threading.Monitor]::Enter($state.lock)
+    try {
+      $takeEnd = -not $Sampler.ended
+      $Sampler.ended = $true
+      [void]$state.active.Remove($Sampler)
+    } finally { [Threading.Monitor]::Exit($state.lock) }
+  } elseif ($Sampler.ended) {
+    $takeEnd = $false
+  }
+  if ($takeEnd) {
+    $Sampler.ended = $true
+    Add-BatteryFleetObservation $Sampler "end" (Get-BatteryFleetLoad -Holder)
+  }
+  return [ordered]@{ samples = $Sampler.samples; truncated = $Sampler.truncated; holders = @($Sampler.holders) }
+}
+
+function Stop-BatteryFleetSamplerHost {
+  $samplerHost = $fleetSampling.host
+  if ($null -eq $samplerHost) { return }
+  $fleetSampling.host = $null
+  $samplerHost.state.stop = $true
+  [void]$samplerHost.state.wake.Set()
+  if (-not $samplerHost.async.AsyncWaitHandle.WaitOne(10000)) { $samplerHost.shell.Stop() }
+  $samplerHost.shell.Dispose()
+  $samplerHost.runspace.Dispose()
+  $samplerHost.state.wake.Dispose()
 }
 
 function Assert-BatteryAdmission {
@@ -1143,9 +1311,10 @@ function Invoke-BatteryBaselineClassification($Failed, $Item) {
 # full pipe. Each child's PID and start time are recorded at start so an abort
 # kills only trees this battery started. Children never take an admission slot.
 function Start-BatteryConcurrentItem($Item, $Children) {
+  $fleet = New-BatteryFleetSampler $Item.identity (Get-BatteryFleetLoad -Holder)
   $handle = [pscustomobject]@{
     item = $Item; process = $null; processId = 0; startTicks = 0L; stdout = $null; stderr = $null
-    fleetLoad = Get-BatteryFleetLoad; startedUtc = [DateTime]::UtcNow.ToString("o")
+    fleet = $fleet; fleetLoad = $fleet.summary; startedUtc = [DateTime]::UtcNow.ToString("o")
     clock = [Diagnostics.Stopwatch]::StartNew(); startError = $null; collected = $false
   }
   $Children.Add($handle)
@@ -1176,6 +1345,7 @@ function Start-BatteryConcurrentItem($Item, $Children) {
   $handle.stdout = $process.StandardOutput.ReadToEndAsync()
   $handle.stderr = $process.StandardError.ReadToEndAsync()
   $process.StandardInput.Close()
+  Start-BatteryFleetSampler $fleet $process
   return $handle
 }
 
@@ -1210,6 +1380,7 @@ function Receive-BatteryConcurrentItem($Handle, [switch]$Wait) {
     if ($null -eq $exit) { return }
   }
   $Handle.collected = $true
+  $itemFleetSampling = Complete-BatteryFleetSampler $Handle.fleet
   $measuredLoad = ($exit.exitCode -eq 75) -and ($exit.output -cmatch '(?m)^MEASURED_LOAD ')
   $result = [pscustomobject][ordered]@{
     identity = $item.identity
@@ -1222,6 +1393,7 @@ function Receive-BatteryConcurrentItem($Handle, [switch]$Wait) {
     elapsedMs = [long]$exit.elapsedMs
     output = ([string]$exit.output).Trim()
     provenance = [ordered]@{kind='execution';command=$item.command;attempt='local-battery';source='local'}
+    fleetSampling = $itemFleetSampling
   }
   $results.Add($result)
   Add-BatteryTimingLines $result.identity @("ITEM $($result.identity) elapsedMs=$($result.elapsedMs) concurrent=1")
@@ -1403,6 +1575,7 @@ function Write-BatteryDeferredLines {
 }
 
 $timingLines = [Collections.Generic.List[string]]::new()
+$fleetSampling = @{ host = $null }
 $stoppedAt = $null
 $notRun = [Collections.Generic.List[string]]::new()
 $concurrentMode = $null -ne $concurrentIdentities -and $concurrentIdentities.Count -gt 0
@@ -1465,7 +1638,9 @@ try {
       Write-BatteryItemLines $result.identity @("RESULT identity=$($result.identity) exitCode=0 result=PASS fleetLoad=$($result.fleetLoad) startedUtc=$($result.startedUtc) finishedUtc=$($result.finishedUtc) elapsedMs=$($result.elapsedMs) provenance=receipt-reuse prior=$($reuse.priorHead)")
       continue
     }
-    $itemFleetLoad = Get-BatteryFleetLoad
+    $itemFleetLoad = Get-BatteryFleetLoad -Holder
+    $itemFleet = New-BatteryFleetSampler $item.identity $itemFleetLoad
+    Start-BatteryFleetSampler $itemFleet
     $startedUtc = [DateTime]::UtcNow.ToString("o")
     $itemClock = [Diagnostics.Stopwatch]::StartNew()
     $executionStarted = $true
@@ -1480,6 +1655,7 @@ try {
     } finally {
       $itemClock.Stop()
       $finishedUtc = [DateTime]::UtcNow.ToString("o")
+      $itemFleetSampling = Complete-BatteryFleetSampler $itemFleet
     }
     # MEASURED_LOAD (#8102): a timed fixture that missed its bound while the
     # platform slot was held for its whole window exits 75 and prints a
@@ -1492,12 +1668,13 @@ try {
       command = $item.command
       exitCode = $exitCode
       result = if ($exitCode -eq 0) { "PASS" } elseif ($measuredLoad) { "MEASURED_LOAD" } else { "FAIL" }
-      fleetLoad = $itemFleetLoad
+      fleetLoad = $itemFleet.summary
       startedUtc = $startedUtc
       finishedUtc = $finishedUtc
       elapsedMs = $itemClock.ElapsedMilliseconds
       output = $childOutput.Trim()
       provenance = $provenance
+      fleetSampling = $itemFleetSampling
     }
     Add-BatteryTimingLines $item.identity (@("ITEM $($item.identity) elapsedMs=$($itemClock.ElapsedMilliseconds)") + @($childTiming))
     $results.Add($result)
@@ -1602,6 +1779,7 @@ try {
 } finally {
   # An abort (Stop-Battery or an exception) kills only the trees it started.
   if ($concurrentChildren.Count -gt 0) { $concurrentAbortLines = Stop-BatteryConcurrentChildren }
+  Stop-BatteryFleetSamplerHost
   $batteryClock.Stop()
   $batteryFinishedUtc = [DateTime]::UtcNow.ToString("o")
   if ($baselineCreated) { & git -C $controller worktree remove --force $baselineRoot 2>&1 | Out-Null }
@@ -1659,6 +1837,7 @@ try {
           identity = $_.identity; exitCode = $_.exitCode; result = $_.result; fleetLoad = $_.fleetLoad
           provenance = $_.provenance; startedUtc = $_.startedUtc; finishedUtc = $_.finishedUtc; elapsedMs = $_.elapsedMs
         }
+        if ($null -ne $_.PSObject.Properties["fleetSampling"]) { $row.fleetSampling = $_.fleetSampling }
         if ($null -ne $_.PSObject.Properties["baseline"]) { $row.baseline = $_.baseline }
         $row
       })
