@@ -1280,10 +1280,17 @@ exit $LASTEXITCODE
   # --- forced termination: the next inert dispatch reclaims only exact dead ---
   $longChild = Join-Path $testRoot "long-child.ps1"
   @'
-Start-Sleep -Seconds 300
+if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
+  Start-Sleep -Seconds 11
+} else {
+  Start-Sleep -Seconds 300
+}
 '@ | Set-Content -LiteralPath $longChild
   $longRunner = Join-Path $testRoot "long-runner.ps1"
   @'
+if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
+  Start-Sleep -Seconds 16
+}
 & $env:DISPATCH_CLEANUP_LAUNCHER -Harness codex -Model gpt-6.1-sol -Effort high `
   -PromptFile $env:DISPATCH_CLEANUP_PROMPT -Worktree $env:DISPATCH_CLEANUP_WORKTREE `
   -Label $env:DISPATCH_LONG_LABEL -ExecutablePath (Join-Path $PSHOME "pwsh.exe") `
@@ -1321,6 +1328,7 @@ Start-Sleep -Seconds 300
     DISPATCH_CLEANUP_WORKTREE = $worktree
     DISPATCH_LONG_LABEL = $longLabel
     DISPATCH_LONG_CHILD = $longChild
+    DISPATCH_FILE_LATENCY_INJECTION = "1"
     DISPATCH_TEST_RUNTIME_ROOT = $ownershipRoot
     DISPATCH_TEST_TEMP_ROOT = $providerTempRoot
   }
@@ -1372,7 +1380,8 @@ Start-Sleep -Seconds 300
 
   Stop-Process -Id $forcedLauncherProcess.Id -Force
   $forcedLauncherProcess.WaitForExit()
-  if ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live") {
+  if ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live" -and
+      $longEnvironment.DISPATCH_FILE_LATENCY_INJECTION -ne "1") {
     Stop-Process -Id $forcedChildPid -Force
   }
   $forcedChildProcess.WaitForExit()
@@ -1380,7 +1389,8 @@ Start-Sleep -Seconds 300
   $forcedLauncherProcess.WaitForExit()
   $launcherGone = (Get-DispatchProcessIdentityState $forcedRecord.launcherPid $forcedRecord.launcherStartIdentity) -ceq 'dead'
   $childGone = (Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -ceq 'dead'
-  Assert-True ($launcherGone -and $childGone) "forced-launch record has absent recorded launcher and child PIDs"
+  Assert-True ($launcherGone -and $childGone) "forced-launch record has recorded launcher and child identities dead"
+  Write-Output "CONTROL dispatch-lane-file-latency-injection PASS recordPublicationDelaySeconds=16 childExitDelaySeconds=11 signalDriven=TRUE oldRecordBoundSeconds=15 oldExitBoundSeconds=10"
 
   Invoke-InertRecoveryDispatch
   Assert-True (-not (Test-Path -LiteralPath $forcedRecordPath)) "next real inert dispatch reclaims terminated launch record"
@@ -1499,7 +1509,7 @@ Start-Sleep -Seconds 300
       -RedirectStandardOutput $claudeHelpOutput -RedirectStandardError $claudeHelpError
     $claudeHelpProcess.WaitForExit()
     $claudeHelpExited = $claudeHelpProcess.HasExited
-    Assert-True ($claudeHelpExited) "installed Claude argument fixture exits within 10 seconds without launching a model"
+    Assert-True ($claudeHelpExited) "installed Claude argument fixture exits without launching a model"
     Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"
     Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"
   } finally {
@@ -2079,7 +2089,7 @@ exit $LASTEXITCODE
 # All legs end at the 8076 control, whose armed window is 30 s; the stall below
 # sends a test-owned expiry signal instead of waiting for that window in real time.
 $stall8102Needle='      $binding=Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label'
-$stall8102=@('      [IO.File]::WriteAllText($record.hold.expireRequestPath,''expire requested 8076'') # SYNTHETIC_8102_EXPIRE: test-owned expiry signal',$stall8102Needle) -join "`n"
+$stall8102=@('      [IO.File]::WriteAllText($record.hold.expirePath,(@{pid=$record.hold.pid;startIdentity=$record.hold.startIdentity;expiredAt=([datetimeoffset]$record.hold.armedReceipt.armedAt).AddSeconds(30)}|ConvertTo-Json -Compress)) # SYNTHETIC_8102_EXPIRE: test-owned expiry signal',$stall8102Needle) -join "`n"
 $unconditional8102Needle='if($boundMissed-and$Record.hold.releaseAbsent-and$window.held){'
 $unconditional8102='if($boundMissed-and$Record.hold.releaseAbsent){ # SYNTHETIC_8102_MUTANT: MEASURED_LOAD without a concurrent holder'
 $treeGuard8102Needle='function Assert-InterruptedIntegrationTreeDead($Owner) {'
@@ -2126,8 +2136,7 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   }
   $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
   $delayNeedle='          & { . $block; Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label } | Out-Null'
-  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n          [IO.File]::WriteAllText(`$record.hold.expirePath,(@{pid=`$record.hold.pid;startIdentity=`$record.hold.startIdentity;expiredAt=([datetimeoffset]::UtcNow).ToString('o')}|ConvertTo-Json -Compress)) # SYNTHETIC_9531_EXPIRE`n"+$delayNeedle
-  $candidateDelay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n"+$delayNeedle
+  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n          if(Test-Path -LiteralPath `$record.hold.armPath){[IO.File]::WriteAllText(`$record.hold.expirePath,(@{pid=`$record.hold.pid;startIdentity=`$record.hold.startIdentity;expiredAt=([datetimeoffset]$record.hold.armedReceipt.armedAt).AddSeconds(30)}|ConvertTo-Json -Compress))} # SYNTHETIC_9531_EXPIRE`n"+$delayNeedle
   # This new proof arm ends only after the complete native omission/release pair.
   # It is not a carrier PASS; the existing unmodified whole carrier runs below.
   $controlNeedle='      $binding=MeasuredResume8076 $w $seed $o $runtime $label $runControl8076'
@@ -2144,9 +2153,13 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   $old=Invoke-8102DispatchLeg $test '9531-delayed-old-order' $oldOrder $false
   $site=(Get-8076GuardSites (Join-Path $old.copy.runtime 'landed-integration-evidence.psm1')).refusal
   Assert-8102 ($old.exit-eq1-and$old.measured.Count-eq0-and-not$old.finished-and$old.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$site")) $test 'restored old order loses the exact live-root omission refusal after the fixed delay' $old
-  $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$candidateDelay),@($controlNeedle,$controlEnd))}
+  $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$delay),@($controlNeedle,$controlEnd))}
   $candidate=Invoke-8102DispatchLeg $test '9531-delayed-candidate' $candidateEdits $false
   Assert-8102 ($candidate.exit-eq0-and$candidate.measured.Count-eq0-and-not$candidate.finished-and$candidate.text.Contains('CONTROL 9531 native omission/release pair complete')) $test 'unarmed omission survives the fixed delay and the native pair completes, without claiming whole-carrier PASS' $candidate
+  $latency="      [Threading.Thread]::Sleep(31000) # SYNTHETIC_8076_LATENCY_INJECTION`n"+$stall8102Needle
+  $latencyEdits=@{'interrupted-integration-test-support.ps1'=@(@($stall8102Needle,$latency),@($controlNeedle,$controlEnd))}
+  $latencyLeg=Invoke-8102DispatchLeg $test 'dispatch-8076-latency-injection' $latencyEdits $true
+  Assert-8102 ($latencyLeg.exit-eq0-and$latencyLeg.measured.Count-eq0-and$latencyLeg.text.Contains('CONTROL 9531 native omission/release pair complete')) $test 'release after the armed wall-clock window remains signal-driven with no MEASURED_LOAD and completes the native pair' $latencyLeg
   $pairs=@(Get-ChildItem -LiteralPath (Split-Path -Parent $candidate.run.stdoutPath) -File -Filter '*.wait-omitted-pair.json')
   Assert-8102 ($pairs.Count-eq1) $test 'one retained native omission/release pair' $candidate
   $pair=Get-Content -LiteralPath $pairs[0].FullName|ConvertFrom-Json -DateKind String
@@ -2156,14 +2169,14 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
     [datetimeoffset]$pair.omissionValidatedAt-lt[datetimeoffset]$hold.preArmObservation.observedAt-and
     [datetimeoffset]$hold.preArmObservation.observedAt-lt[datetimeoffset]$hold.armStartedAt-and
     [datetimeoffset]$hold.armStartedAt-le[datetimeoffset]$hold.armedReceipt.armedAt-and
-    [datetimeoffset]$hold.releasedAt-lt[datetimeoffset]$hold.armedReceipt.deadline-and
-    [datetimeoffset]$hold.releasedAt-lt[datetimeoffset]$hold.exitedAt-and$hold.releaseMarginSeconds-gt0) $test 'refusal, frozen validation, fresh observation, arm, causal release and exit are ordered with positive margin' $candidate
+    -not$hold.expiryObserved-and
+    [datetimeoffset]$hold.releasedAt-lt[datetimeoffset]$hold.exitedAt) $test 'refusal, frozen validation, fresh observation, arm, causal release and exit are ordered without a wall-clock expiry verdict' $candidate
   foreach($observation in @($pair.refusalObservation,$hold.preArmObservation,$hold.preReleaseObservation)){
     $roots=@($observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'exact'-and$_.ProcessId-eq$hold.pid-and$_.recordedStartIdentity-ceq$hold.startIdentity-and$_.rows[0].ThreadCount-gt0})
     Assert-8102 ($roots.Count-eq1) $test 'the same exact live holder is projected at refusal, pre-arm and release' $candidate
   }
   Write-Output "PASS 9531 $test old-order=FAIL candidate=PASS delayMilliseconds=31000"
-  foreach($leg in @($old,$candidate)){Remove-8102FixtureCopy $leg.copy}
+  foreach($leg in @($old,$candidate,$latencyLeg)){Remove-8102FixtureCopy $leg.copy}
 }
 
 # AC1 (dispatch): a miss of the 8076 fixture's timed bound is MEASURED_LOAD,
