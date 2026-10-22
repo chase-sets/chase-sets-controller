@@ -73,6 +73,25 @@ function Stop-Battery([string]$Code) {
   throw "FAIL controller-release-battery: $Code"
 }
 
+# Result and baseline-evidence writes stay physically under .orchestrator/artifacts
+# (#98). A path is accepted only when it lies beneath the canonical artifact root
+# and no existing component, from the volume root through the path itself, is a
+# reparse point (junction, symlink or mount). Links are refused, never followed,
+# so the reparse-free full path is the physical path the write reaches.
+function Assert-BatteryArtifactPath([string]$Root, [string]$Path, [string]$Code) {
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
+  if (-not ([string]::Equals($full, $Root, [StringComparison]::OrdinalIgnoreCase) -or
+            $full.StartsWith($Root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
+    Stop-Battery $Code
+  }
+  for ($cursor = $full; -not [string]::IsNullOrEmpty($cursor); $cursor = [IO.Path]::GetDirectoryName($cursor)) {
+    $attributes = $null
+    try { $attributes = [IO.File]::GetAttributes($cursor) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] {}
+    if ($null -ne $attributes -and $attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Battery $Code }
+  }
+  return $full
+}
+
 function Test-SameBatteryPath([string]$Left, [string]$Right) {
   try {
     return [string]::Equals(
@@ -813,6 +832,10 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
       [IO.Path]::GetFullPath((Join-Path $controller $ResultPath))
     }
     $artifactRoot = [IO.Path]::GetFullPath((Join-Path $runtime "artifacts")).TrimEnd("\", "/")
+    # Every existing ancestor through artifacts is refused if it is a reparse
+    # point, before and after the root is created; the reparse-free root is then
+    # the canonical root every later result and evidence path is checked against.
+    $artifactRoot = Assert-BatteryArtifactPath $artifactRoot $artifactRoot "BATTERY_RESULT_PATH_INVALID"
     $rawPath = [IO.Path]::ChangeExtension($resolvedResult, ".log")
     if ((Split-Path -Parent $resolvedResult).TrimEnd("\", "/") -cne $artifactRoot -or
         (Test-SameBatteryPath $resolvedResult $rawPath) -or
@@ -827,6 +850,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
       }
     }
     New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+    [void](Assert-BatteryArtifactPath $artifactRoot $artifactRoot "BATTERY_RESULT_PATH_INVALID")
   } catch {
     Stop-Battery "BATTERY_RESULT_PATH_INVALID"
   }
@@ -972,8 +996,8 @@ $baselineCreated = $false
 # from its result row. Retention is evidence only; classification never reads it.
 $baselineEvidenceRoot = $null
 $baselineEvidenceCount = 0
-function Save-BatteryBaselineEvidence([string]$Directory, [string]$Name, [string]$Text) {
-  $evidencePath = Join-Path $Directory $Name
+function Save-BatteryBaselineEvidence([string]$Directory, [string]$Name, [string]$Text, [string]$Identity) {
+  $evidencePath = Assert-BatteryArtifactPath $artifactRoot (Join-Path $Directory $Name) "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$Identity"
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
   # CreateNew: retained evidence is never truncated or overwritten.
   $stream = [IO.FileStream]::new($evidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -1018,19 +1042,24 @@ function Invoke-BatteryBaselineClassification($Failed, $Item) {
       }
       $script:baselineEvidenceCount++
       $itemDirectory = Join-Path $script:baselineEvidenceRoot ("{0:D3}-{1}" -f $script:baselineEvidenceCount, ($Failed.identity -creplace '[^A-Za-z0-9._-]', '-'))
+      # The root may have been swapped for a link since validation: recheck the
+      # whole chain before the directory is created and again before any file.
+      $evidenceCode = "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$($Failed.identity)"
+      $itemDirectory = Assert-BatteryArtifactPath $artifactRoot $itemDirectory $evidenceCode
       if (Test-Path -LiteralPath $itemDirectory) { throw "BATTERY_BASELINE_EVIDENCE_EXISTS:$($Failed.identity)" }
       [void][IO.Directory]::CreateDirectory($itemDirectory)
+      [void](Assert-BatteryArtifactPath $artifactRoot $itemDirectory $evidenceCode)
       # Native stderr lines arrive as ErrorRecords; each stream is kept in order,
       # one LF between lines, apart from the merged text the signature reads.
       $stdoutText = @($baselineRecords | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ }) -join "`n"
       $stderrText = @($baselineRecords | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"
       $evidence = [ordered]@{
         kind = "baseline-streams"
-        stdout = Save-BatteryBaselineEvidence $itemDirectory "stdout.txt" $stdoutText
-        stderr = Save-BatteryBaselineEvidence $itemDirectory "stderr.txt" $stderrText
-        exitCode = Save-BatteryBaselineEvidence $itemDirectory "exit-code.txt" ([string]$baselineExit)
-        candidateSignature = Save-BatteryBaselineEvidence $itemDirectory "candidate-signature.txt" $candidateSignature
-        baselineSignature = Save-BatteryBaselineEvidence $itemDirectory "baseline-signature.txt" $baselineSignature
+        stdout = Save-BatteryBaselineEvidence $itemDirectory "stdout.txt" $stdoutText $Failed.identity
+        stderr = Save-BatteryBaselineEvidence $itemDirectory "stderr.txt" $stderrText $Failed.identity
+        exitCode = Save-BatteryBaselineEvidence $itemDirectory "exit-code.txt" ([string]$baselineExit) $Failed.identity
+        candidateSignature = Save-BatteryBaselineEvidence $itemDirectory "candidate-signature.txt" $candidateSignature $Failed.identity
+        baselineSignature = Save-BatteryBaselineEvidence $itemDirectory "baseline-signature.txt" $baselineSignature $Failed.identity
       }
     }
   }
@@ -1209,6 +1238,10 @@ try {
       "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=$($_.fleetLoad) startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)$baselineField`n$($_.output)"
     }) -join "`n"
     $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($batteryHostLog + "`n" + $rawText + "`n")
+    # A link placed under the root during the run refuses every output write.
+    foreach ($outputPath in @($rawPath, $resolvedResult, [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt"))) {
+      [void](Assert-BatteryArtifactPath $artifactRoot $outputPath "BATTERY_RESULT_PATH_INVALID")
+    }
     [IO.File]::WriteAllBytes($rawPath, $rawBytes)
     $rawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes))).ToLowerInvariant()
     $resultRecord = [ordered]@{
