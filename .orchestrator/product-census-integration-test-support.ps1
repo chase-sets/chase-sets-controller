@@ -1,7 +1,7 @@
 . (Join-Path $PSScriptRoot 'product-census-test-support.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
 
-function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0) {
+function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0,[switch]$DeterministicMeter) {
   Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object Extension -In @('.ps1','.psm1','.cjs','.cs') |
     Copy-Item -Destination $Fixture.runtime
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'contracts') -Destination $Fixture.runtime -Recurse
@@ -14,7 +14,7 @@ function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0) {
     $text = $text.Replace("-ceq 'chase-sets/chase-sets'", "-ceq '$SyntheticIntegrationRepository'")
     [IO.File]::WriteAllText($path,$text)
   }
-  Install-CensusDeterministicBudgetMeter $Fixture $CensusLatencyMs
+  if($DeterministicMeter){Install-CensusDeterministicBudgetMeter $Fixture $CensusLatencyMs}
 }
 
 # Install the R3 single-anchor census meter in the copied runtime. The copied
@@ -43,7 +43,14 @@ $deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name WaitForPro
     if($exit.IsCompleted-or@(0,1|Where-Object{$Reads[$_].IsCompletedSuccessfully-and$Reads[$_].Result-eq$Bounds[$_]}).Count){break}
     [void][Threading.Tasks.Task]::WaitAny($pending)
   }
-  if(-not$Process.HasExited){$Process.Kill();$Process.WaitForExit()}
+  if(-not$Process.HasExited){
+    $rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)
+    $tree=@($rows|Where-Object ProcessId -EQ $Process.Id)
+    for($i=0;$i-lt$tree.Count;$i++){$tree+=@($rows|Where-Object{$_.ParentProcessId-eq$tree[$i].ProcessId-and$_.CreationDate-gt$tree[$i].CreationDate})}
+    $descendants=@(foreach($row in @($tree|Select-Object -Skip 1)){$member=Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue;if($member){[void]$member.Handle;$member}})
+    $Process.Kill();foreach($member in $descendants){$member.Kill()}
+    $Process.WaitForExit();foreach($member in $descendants){$member.WaitForExit();$member.Dispose()}
+  }
   $this.processWaits++
   $Process.HasExited
 }
@@ -51,9 +58,9 @@ $deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name WaitForPro
   [IO.File]::WriteAllText($path,$meterCode+"`n"+$metered,[Text.UTF8Encoding]::new($false))
 }
 
-function New-CensusIntegrationFixture([string]$Parent,[int]$CensusLatencyMs=0) {
+function New-CensusIntegrationFixture([string]$Parent,[int]$CensusLatencyMs=0,[switch]$DeterministicMeter) {
   $f = New-CensusFixture $Parent
-  Copy-CensusController $f $CensusLatencyMs
+  Copy-CensusController $f $CensusLatencyMs -DeterministicMeter:$DeterministicMeter
   [void](New-CensusFixtureOwner $f)
   Publish-SyntheticIntegrationRemote $f.main (Join-Path $Parent 'synthetic-product.git')
   $head = Invoke-CensusFixtureGit $f.product @('rev-parse','HEAD')
@@ -210,7 +217,7 @@ function Test-PlatformSeatNativePublication {
   foreach ($mode in @('candidate','publication','prelaunch','reducer-reads-register')) {
     $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
     try {
-      $f = New-CensusIntegrationFixture $parent
+      $f = New-CensusIntegrationFixture $parent -DeterministicMeter
       $label = 'synthetic-8185-native'
       $request = [ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);
         repository=$SyntheticIntegrationRepository;pr=908185L;landedPr=908184L;landedHead=('a'*40);
@@ -258,7 +265,7 @@ function Test-PlatformSeatNativePublication {
   }
   $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
   try {
-    $f = New-CensusIntegrationFixture $parent 6000
+    $f = New-CensusIntegrationFixture $parent 6000 -DeterministicMeter
     $label = 'synthetic-8185-native-latency'
     $request = [ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('d'*64);
       repository=$SyntheticIntegrationRepository;pr=908185L;landedPr=908184L;landedHead=('a'*40);
