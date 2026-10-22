@@ -2131,6 +2131,36 @@ function Assert-8102([bool]$Condition,[string]$Test,[string]$Name,$Leg) {
   Write-Output "PROOF 8102 $Test $Name"
 }
 
+function Test-8076MeasuredReuseIsLauncherOnly {
+  $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+  Assert-True (-not$errors.Count) '8076 reuse control support parses'
+  $definitions=@($ast.FindAll({param($node) $node-is[Management.Automation.Language.FunctionDefinitionAst]-and$node.Name-ceq'Test-8076LauncherReuse'},$true))
+  Assert-True ($definitions.Count-eq1) '8076 reuse control has one classifier'
+  $definition=$definitions[0].Extent.Text
+  $needle='$_.role-ceq''launcher''-and'
+  Assert-True ([regex]::Matches($definition,[regex]::Escape($needle)).Count-eq1) '8076 reuse control has one launcher-only seam'
+  $old=$definition.Replace($needle,'')
+  foreach($case in @(
+    @{launcher='exact';child='reuse-or-ambiguous';expected=$false},
+    @{launcher='absent';child='reuse-or-ambiguous';expected=$false},
+    @{launcher='reuse-or-ambiguous';child='exact';expected=$true},
+    @{launcher='exact';child='absent';expected=$false}
+  )){
+    $observation=@{roots=@(@{role='launcher';state=$case.launcher},@{role='child';state=$case.child})}
+    $candidate=& { . ([scriptblock]::Create($definition)); Test-8076LauncherReuse $observation }
+    $baseline=& { . ([scriptblock]::Create($old)); Test-8076LauncherReuse $observation }
+    Assert-True ($candidate-eq$case.expected) "8076 reuse candidate launcher=$($case.launcher) child=$($case.child) expected=$($case.expected)"
+    if($case.child-ceq'reuse-or-ambiguous'){
+      Assert-True ($baseline-ne$case.expected) "8076 old all-root reuse rule is RED for launcher=$($case.launcher) with a reused child"
+    }else{
+      Assert-True ($baseline-eq$case.expected) '8076 launcher reuse and non-reuse cases retain their verdicts'
+    }
+  }
+  Write-Output 'CONTROL 8076 measured-reuse-launcher-only old-rule=RED candidate=GREEN reused-child=dead-by-identity launcher-reuse=MEASURED_REUSE'
+}
+
 # #9531: predeclare a 31 s delay immediately before the complete wait-omitted
 # invocation. The restored arm-before-omission mutant must lose its live-root
 # refusal at the derived site, not fail at some unrelated classifier stage.
@@ -2142,7 +2172,7 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   }
   $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
   $delayNeedle='          & { . $block; Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label } | Out-Null'
-  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n          if(Test-Path -LiteralPath `$record.hold.armPath){[IO.File]::WriteAllText(`$record.hold.expirePath,(@{pid=`$record.hold.pid;startIdentity=`$record.hold.startIdentity;expiredAt=([datetimeoffset]$record.hold.armedReceipt.armedAt).AddSeconds(30)}|ConvertTo-Json -Compress))} # SYNTHETIC_9531_EXPIRE`n"+$delayNeedle
+  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n          if(Test-Path -LiteralPath `$record.hold.armPath){[IO.File]::WriteAllText(`$record.hold.expirePath,(@{pid=`$record.hold.pid;startIdentity=`$record.hold.startIdentity;expiredAt=([datetimeoffset]`$record.hold.armedReceipt.armedAt).AddSeconds(30)}|ConvertTo-Json -Compress));`$Seed.holder8076.WaitForExit()} # SYNTHETIC_9531_EXPIRE`n"+$delayNeedle
   # This new proof arm ends only after the complete native omission/release pair.
   # It is not a carrier PASS; the existing unmodified whole carrier runs below.
   $controlNeedle='      $binding=MeasuredResume8076 $w $seed $o $runtime $label $runControl8076'
@@ -2159,6 +2189,10 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   $old=Invoke-8102DispatchLeg $test '9531-delayed-old-order' $oldOrder $false
   $site=(Get-8076GuardSites (Join-Path $old.copy.runtime 'landed-integration-evidence.psm1')).refusal
   Assert-8102 ($old.exit-eq1-and$old.measured.Count-eq0-and-not$old.finished-and$old.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$site")) $test 'restored old order loses the exact live-root omission refusal after the fixed delay' $old
+  $oldPairs=@(Get-ChildItem -LiteralPath (Split-Path -Parent $old.run.stdoutPath) -File -Filter '*.wait-omitted-pair.json')
+  Assert-8102 ($oldPairs.Count-eq1) $test 'one retained old-order omission pair' $old
+  $oldPair=Get-Content -LiteralPath $oldPairs[0].FullName|ConvertFrom-Json -DateKind String
+  Assert-8102 ($oldPair.rootLiveAtRefusal-eq$false-and$oldPair.mutantError-cne'You cannot call a method on a null-valued expression.') $test 'old-order RED observes the expired holder dead, not a null-method error' $old
   $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$delay),@($controlNeedle,$controlEnd))}
   $candidate=Invoke-8102DispatchLeg $test '9531-delayed-candidate' $candidateEdits $false
   Assert-8102 ($candidate.exit-eq0-and$candidate.measured.Count-eq0-and-not$candidate.finished-and$candidate.text.Contains('CONTROL 9531 native omission/release pair complete')) $test 'unarmed omission survives the fixed delay and the native pair completes, without claiming whole-carrier PASS' $candidate
@@ -2361,6 +2395,7 @@ function Test-TreeDeathOmissionStillRefuses {
 Test-ReusedPidRootIsDeadByIdentity
 Test-TreeDeathOmissionStillRefuses
 
+Test-8076MeasuredReuseIsLauncherOnly
 Test-ArmAfterOmissionSurvivesPreArmDelay
 Test-TimedFixtureUnderFleetLoadMeasuresLoad
 Test-RegressionUnderLoadIsNotMasked
