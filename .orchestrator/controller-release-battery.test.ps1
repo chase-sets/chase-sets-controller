@@ -2159,6 +2159,8 @@ function Test-BatteryBaselineAlsoFails {
   Write-Host "MUTANT 98 outcome-to-FAIL_PREEXISTING_ONLY KILLED failures=$($outcomeFailures.Count): $($outcomeFailures -join '; ')"
   Write-Output 'PASS 98 battery baseline-also-fails truth table, outcome, retention and mutants'
   Test-BatteryArtifactReparseRefusal
+  Test-BatteryArtifactJunctionAbove
+  Test-BatteryArtifactWriteWindowDetection
 }
 
 # ---- #98 review: a junction at or above .orchestrator/artifacts refuses every
@@ -2244,6 +2246,150 @@ function Test-BatteryArtifactReparseRefusal {
   Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike 'artifacts-junction: wrote outside*' }).Count -gt 0 -and
     @($mutantFailures | Where-Object { $_ -clike 'mid-run-swap: wrote outside*' }).Count -gt 0) "reparse-check-removed mutant SURVIVED: $($mutantFailures -join '; ')"
   Write-Host "MUTANT 98 reparse-check-removed KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+}
+
+# ---- #98 round 2: a junction ABOVE .orchestrator/artifacts is a supported setup.
+# The fixture's .orchestrator is a junction to a physical directory elsewhere.
+# (A whole-worktree junction is refused earlier by the heavy verifier, which
+# requires the canonical Git worktree root; Git reads a .orchestrator junction as
+# a plain directory.) Leg pass: the run passes and writes inside the physical
+# artifact directory. Leg evidence: retained evidence resolves under it.
+$candidate98AllPass = @{
+  'unequal.test.ps1' = New-Baseline98Script 'PASS unequal candidate' '' 0
+  'empty-signature.test.ps1' = New-Baseline98Script 'PASS empty candidate' '' 0
+  'preexisting-equal.test.ps1' = New-Baseline98Script 'PASS preexisting candidate' '' 0
+  'regression-baseline-pass.test.ps1' = New-Baseline98Script 'PASS regression candidate' '' 0
+}
+# On a fresh fixture: unequal alone fails, with another symptom than its baseline.
+$candidate98AloneFresh = @{ 'unequal.test.ps1' = $candidate98Files['truth-table']['unequal.test.ps1'] }
+foreach ($name in $candidate98Files['outcome-alone'].Keys) { $candidate98AloneFresh[$name] = $candidate98Files['outcome-alone'][$name] }
+
+function Invoke-JunctionAbove98Leg($Fixture, [hashtable]$Files, [string]$Label, $Junctions) {
+  $candidate = Save-BatteryFixtureCommit $Fixture $Files "98 junction-above $Label"
+  $runtimeLink = Join-Path $Fixture.root '.orchestrator'
+  $physicalRuntime = Join-Path $testRoot ('orchestrator-physical-' + [guid]::NewGuid().ToString('N'))
+  [IO.Directory]::Move($runtimeLink, $physicalRuntime)
+  $Junctions.Add($runtimeLink)
+  New-Reparse98Junction $runtimeLink $physicalRuntime
+  $run = Invoke-BatteryProcess (Join-Path $runtimeLink 'controller-release-battery.ps1') $candidate @('-ResultPath', (Join-Path $runtimeLink "artifacts/98-above-$Label.json"), '-BaselineHead', $Fixture.head, '-Scope', 'full')
+  Write-Host "CONTROL 98 junction-above $Label exit=$($run.exitCode)"
+  $physicalArtifacts = Join-Path $physicalRuntime 'artifacts'
+  $resultFile = Join-Path $physicalArtifacts "98-above-$Label.json"
+  $record = if (Test-Path -LiteralPath $resultFile -PathType Leaf) { Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json -DateKind String } else { $null }
+  return [pscustomobject]@{ run = $run; physicalArtifacts = $physicalArtifacts; resultFile = $resultFile; rawFile = [IO.Path]::ChangeExtension($resultFile, '.log'); record = $record }
+}
+
+function Get-JunctionAbove98Failures([string]$BatterySource = '') {
+  $failures = [Collections.Generic.List[string]]::new()
+  $junctions = [Collections.Generic.List[string]]::new()
+  try {
+    $pass = Invoke-JunctionAbove98Leg (New-Baseline98Fixture $BatterySource) $candidate98AllPass 'pass' $junctions
+    if ($pass.run.exitCode -ne 0 -or $pass.run.output -cnotmatch '(?m)^PASS controller release battery ') {
+      $failures.Add("pass: the run did not PASS through a junction above artifacts: exit=$($pass.run.exitCode) $($pass.run.output)")
+    }
+    if ($null -eq $pass.record -or $pass.record.execution.outcome -cne 'PASS' -or -not (Test-Path -LiteralPath $pass.rawFile -PathType Leaf)) {
+      $failures.Add('pass: result or raw log missing from the physical artifact directory')
+    }
+    if (@($pass.run.output -split '\r?\n' | Where-Object { $_ -ceq "BATTERY_RESULT path=$($pass.resultFile) raw=$($pass.rawFile)" }).Count -ne 1) {
+      $failures.Add('pass: BATTERY_RESULT does not name the physical artifact paths')
+    }
+
+    $evidence = Invoke-JunctionAbove98Leg (New-Baseline98Fixture $BatterySource) $candidate98AloneFresh 'evidence' $junctions
+    $row = @($evidence.record.results | Where-Object { $_.identity -ceq 'test:unequal.test.ps1' })
+    if ($evidence.run.exitCode -ne 1 -or $evidence.record.execution.outcome -cne 'FAIL_BASELINE_ALSO_FAILS_ONLY' -or $row.Count -ne 1) {
+      $failures.Add("evidence: the run did not end FAIL_BASELINE_ALSO_FAILS_ONLY through a junction above artifacts: exit=$($evidence.run.exitCode) $($evidence.run.output)")
+    } else {
+      foreach ($field in @('stdout', 'stderr', 'exitCode', 'candidateSignature', 'baselineSignature')) {
+        $entry = $row[0].baseline.evidence.$field
+        $file = if ($entry -and [string]$entry.relativePath -clike '.orchestrator/artifacts/98-above-evidence.baseline-*') { Join-Path $evidence.physicalArtifacts ([string]$entry.relativePath).Substring('.orchestrator/artifacts/'.Length) } else { $null }
+        if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            $entry.sha256 -cne ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($file)))).ToLowerInvariant()) {
+          $failures.Add("evidence: $field does not resolve under the physical artifact directory: $($entry.relativePath)")
+        }
+      }
+    }
+  } finally {
+    foreach ($junction in $junctions) { Remove-Reparse98Junction $junction }
+  }
+  return ,$failures
+}
+
+function Test-BatteryArtifactJunctionAbove {
+  Assert-Baseline98 'artifact-root-junction-above' (Get-JunctionAbove98Failures)
+
+  # Revert control: the bca3676 rule (logical root, every ancestor to the volume
+  # root refused) must turn the supported junction-above setup red.
+  $source = [IO.File]::ReadAllText($battery)
+  $revert = Replace-BatteryFixtureSource $source '    if ([string]::Equals($cursor, $Root, [StringComparison]::OrdinalIgnoreCase)) { break }' '    # walk continues to the volume root'
+  $revert = Replace-BatteryFixtureSource $revert '    $artifactRoot = Join-Path (Resolve-BatteryPhysicalPath $runtime) "artifacts"' '    $artifactRoot = [IO.Path]::GetFullPath((Join-Path $runtime "artifacts")).TrimEnd("\", "/")'
+  $revertFailures = Get-JunctionAbove98Failures $revert
+  Assert-BatteryTest (@($revertFailures | Where-Object { $_ -clike 'pass: the run did not PASS*' }).Count -gt 0) "ancestor-walk revert control SURVIVED: $($revertFailures -join '; ')"
+  Write-Host "MUTANT 98 ancestor-walk-revert KILLED failures=$($revertFailures.Count): $($revertFailures -join '; ')"
+  $relative = Replace-BatteryFixtureSource $source '    relativePath = ".orchestrator/artifacts/" + [IO.Path]::GetRelativePath($artifactRoot, $evidencePath).Replace("\", "/")' '    relativePath = [IO.Path]::GetRelativePath($controller, $evidencePath).Replace("\", "/")'
+  $relativeFailures = Get-JunctionAbove98Failures $relative
+  Assert-BatteryTest (@($relativeFailures | Where-Object { $_ -clike 'evidence: *' }).Count -gt 0) "controller-relative-evidence mutant SURVIVED: $($relativeFailures -join '; ')"
+  Write-Host "MUTANT 98 controller-relative-evidence KILLED failures=$($relativeFailures.Count): $($relativeFailures -join '; ')"
+}
+
+# ---- #98 round 2: detect, not prevent. The write seam swaps artifacts for a
+# junction after validation and just before one named write; that write lands
+# outside, and the post-write recheck must turn the run into a loud refusal with
+# the write's refusal code, never a PASS or a silent result.
+function New-WriteWindow98Source([string]$Source, [string]$Leaf, [string]$Outside) {
+  $seam = @(
+    'function Invoke-BatteryArtifactWriteSeam([string]$Path) {',
+    "  if ([IO.Path]::GetFileName(`$Path) -cne '$Leaf') { return }",
+    '  $artifacts = Join-Path $runtime "artifacts"',
+    '  if ((Get-Item -LiteralPath $artifacts -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return }',
+    '  Rename-Item -LiteralPath $artifacts -NewName "artifacts-before-swap"',
+    "  New-Item -ItemType Junction -Path `$artifacts -Target '$($Outside.Replace("'", "''"))' | Out-Null",
+    '  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))',
+    '}'
+  ) -join "`n"
+  return Replace-BatteryFixtureSource $Source 'function Invoke-BatteryArtifactWriteSeam([string]$Path) {}' $seam
+}
+
+function Get-WriteWindow98LegFailures([string]$Source, [string]$Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  $outside = New-Reparse98Outside
+  $legs = @{
+    'evidence' = @{ leaf = 'baseline-signature.txt'; files = $candidate98AloneFresh; code = 'BATTERY_BASELINE_EVIDENCE_PATH_INVALID:test:unequal.test.ps1' }
+    'raw-log' = @{ leaf = '98-window.log'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID' }
+    'result' = @{ leaf = '98-window.json'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID' }
+    'timing' = @{ leaf = '98-window.timing.txt'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID' }
+  }
+  $spec = $legs[$Leg]
+  $fixture = New-Baseline98Fixture (New-WriteWindow98Source $Source $spec.leaf $outside)
+  $artifacts = Join-Path $fixture.root '.orchestrator/artifacts'
+  try {
+    $candidate = Save-BatteryFixtureCommit $fixture $spec.files "98 write-window $Leg"
+    $run = Invoke-BatteryProcess (Join-Path $fixture.root '.orchestrator/controller-release-battery.ps1') $candidate @('-ResultPath', (Join-Path $artifacts '98-window.json'), '-BaselineHead', $fixture.head, '-Scope', 'full')
+    Write-Host "CONTROL 98 write-window $Leg exit=$($run.exitCode)"
+    # The seam fired: the named write landed outside before detection.
+    if (@(Get-ChildItem -LiteralPath $outside -Recurse -File -Filter $spec.leaf -ErrorAction SilentlyContinue).Count -ne 1) {
+      $failures.Add("$($Leg): the seam did not swap the root before the $($spec.leaf) write")
+    }
+    if ($run.exitCode -ne 1 -or -not $run.output.Contains("FAIL controller-release-battery: $($spec.code)")) {
+      $failures.Add("$($Leg): not refused with $($spec.code) after the write: exit=$($run.exitCode)")
+    }
+    if ($run.output -cmatch '(?m)^PASS controller release battery ' -or $run.output -cmatch '(?m)^BATTERY_RESULT path=') {
+      $failures.Add("$($Leg): printed PASS or a written result after an escaped write")
+    }
+  } finally {
+    Remove-Reparse98Junction $artifacts
+  }
+  return ,$failures
+}
+
+function Test-BatteryArtifactWriteWindowDetection {
+  $source = [IO.File]::ReadAllText($battery)
+  $mutant = Replace-BatteryFixtureSource $source '  [void](Assert-BatteryArtifactPath $Root $Path $Code)' '  # post-write recheck removed'
+  foreach ($leg in @('evidence', 'raw-log', 'result', 'timing')) {
+    Assert-Baseline98 "artifact-write-window-$leg" (Get-WriteWindow98LegFailures $source $leg)
+    $mutantFailures = Get-WriteWindow98LegFailures $mutant $leg
+    Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike "$($leg): not refused*" }).Count -gt 0) "post-write-recheck-removed mutant SURVIVED $($leg): $($mutantFailures -join '; ')"
+    Write-Host "MUTANT 98 post-write-recheck-removed $leg KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+  }
 }
 
 try {
