@@ -2339,7 +2339,7 @@ function New-WriteWindow98Source([string]$Source, [string]$Leaf, [string]$Outsid
   $seam = @(
     'function Invoke-BatteryArtifactWriteSeam([string]$Path) {',
     "  if ([IO.Path]::GetFileName(`$Path) -cne '$Leaf') { return }",
-    '  $artifacts = Join-Path $runtime "artifacts"',
+    '  $artifacts = Join-Path (Resolve-BatteryPhysicalPath $runtime) "artifacts"',
     '  if ((Get-Item -LiteralPath $artifacts -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return }',
     '  Rename-Item -LiteralPath $artifacts -NewName "artifacts-before-swap"',
     "  New-Item -ItemType Junction -Path `$artifacts -Target '$($Outside.Replace("'", "''"))' | Out-Null",
