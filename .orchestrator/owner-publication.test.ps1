@@ -280,7 +280,7 @@ function Invoke-ReaderInventory {
     'install-controller-skills.test.ps1'=@(208,225,230,319,340,354)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(309,627,1104,1148,1160,1209,1213,1224,1249,1331,1768,1848,1858,1872,2166,2171,2190,2196,2423,2430,2442,2445,2455,2466,2488,2493,2505,2510,2527,2541)
+    'invoke-heavy-verifier.test.ps1'=@(313,631,1108,1152,1164,1213,1217,1228,1253,1335,1772,1852,1862,1876,2170,2175,2194,2200,2427,2434,2446,2449,2459,2470,2492,2497,2509,2514,2531,2545)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
     'interrupted-integration-test-support.ps1'=@(898)

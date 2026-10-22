@@ -247,13 +247,13 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
         $actual = Get-CimInstance Win32_Process -Filter "ProcessId = $($identities[$stage].pid)"
         Assert-True ($actual.ParentProcessId -eq $identities[$stage+1].pid) 'real exact Windows tree parent'
       }
-      # Synthetic ownership boundary deliberately straddles the real relay and
-      # deepest worker, discriminating breadth-first versus one-hop traversal.
+      # Native ownership records the real root identity; a separate walk-only
+      # boundary straddles the relay and worker to discriminate full traversal.
       $record = Read-NativeJson ((@{
         schemaVersion=6;lockId=('d'*32);owner='synthetic';lane='synthetic';branch='codex/synthetic';head=('a'*40)
         worktree=$caseRoot;identityMode='branch';pid=$identities[3].pid;processStartUtc=$identities[3].start
-        startedUtc=$boundary.UtcDateTime.ToString('o');gate='verify:test-db';commandIdentity=('e'*64);state='started'
-        childPid=$identities[2].pid;childProcessStartUtc=$boundary.AddTicks(1).UtcDateTime.ToString('o')
+        startedUtc=$identities[2].start;gate='verify:test-db';commandIdentity=('e'*64);state='started'
+        childPid=$identities[2].pid;childProcessStartUtc=$identities[2].start
         native=@{profile='reconciliation-pg16/v1';request=@{path=(Join-Path $caseRoot '.orchestrator/artifacts/request.json');digest=('f'*64)};root=('/srv/chase-sets-pg-probe/native-db-'+('d'*32));linux=$tuple}
       }) | ConvertTo-Json -Depth 16 -Compress) 16384
       Assert-True (Test-OwnerShape $record) 'closed schema6 with maximum Linux tuple'
@@ -273,13 +273,17 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
         Assert-True (-not (Test-OwnerShape $record)) 'schema6 rejects date-only instant'
         $record.$key=$saved
       }
+      $walkRecord = $record.PSObject.Copy(); $walkRecord.startedUtc=$boundary.UtcDateTime.ToString('o')
       Stop-NativeFixture $identities[2]
       if ($mode -ceq 'later') { Stop-NativeFixture $identities[3] }
-      Assert-True ((Test-PossibleOwnedChild $record -GuardedRootOnly) -eq $true) 'full guarded-root BFS finds real deepest grandchild'
+      Assert-True ((Test-PossibleOwnedChild $walkRecord -GuardedRootOnly) -eq $true) 'full guarded-root BFS finds real deepest grandchild'
       $eligible = if ($mode -ceq 'normal') { Test-NativeNormalRelease $record } else { Test-ReclaimableOwner $record }
       Assert-True (-not $eligible) "$mode schema6 refuses real deepest grandchild"
       Stop-NativeFixture $identities[0]
-      Wait-NativeFixture { (Test-PossibleOwnedChild $record -GuardedRootOnly) -eq $false } 'deepest exact absence'
+      Wait-NativeFixture { (Test-PossibleOwnedChild $walkRecord -GuardedRootOnly) -eq $false } 'deepest exact absence'
+      $eligible = if ($mode -ceq 'normal') { Test-NativeNormalRelease $record } else { Test-ReclaimableOwner $record }
+      Assert-True (-not $eligible) "$mode schema6 still protects genuine older relay after deepest death"
+      Stop-NativeFixture $identities[1] # Native ownership also protects the genuine older relay.
       $eligible = if ($mode -ceq 'normal') { Test-NativeNormalRelease $record } else { Test-ReclaimableOwner $record }
       Assert-True $eligible "$mode schema6 Windows prerequisite after deepest death"
       if ($mode -ceq 'normal') {
