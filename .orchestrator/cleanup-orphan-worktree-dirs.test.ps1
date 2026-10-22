@@ -533,13 +533,20 @@ try {
   $scaleCpuStart=(Get-CimInstance Win32_Processor|Measure-Object LoadPercentage -Average).Average
   Write-Output "SCALE_START cpu=$scaleCpuStart root=$scaleRoot"
   $construction=[Diagnostics.Stopwatch]::StartNew()
+  # Authority records stay sequential in tree order. Four writers create the
+  # same 200 x 2000 real files inside this clock; each checks the 12-minute
+  # bound before its tree, and any writer failure stops the rest and fails here.
+  $scaleTrees=[Collections.Generic.List[string]]::new()
   for($tree=0;$tree-lt200;$tree++){
-    if($construction.Elapsed.TotalMinutes-ge12){throw 'scale fixture construction exceeded 12 minute safety bound'}
-    $path=Join-Path $scaleRoot ('tree-{0:d3}'-f$tree);[void][IO.Directory]::CreateDirectory($path)
-    for($file=0;$file-lt2000;$file++){[IO.File]::WriteAllText([IO.Path]::Combine($path,('{0:d4}.txt'-f$file)),'synthetic')}
+    $path=Join-Path $scaleRoot ('tree-{0:d3}'-f$tree);$scaleTrees.Add($path)
     $branch="codex/900001-scale-$tree";$script:worktrees+=@{path=$path;head=('a'*40);branch=$branch;detached=$false;locked=$false}
     $script:branches+=@{branch=$branch;head=('a'*40)}
     if($tree%4-eq0){$dispatchRows.Add((@{worktree=$path;branch=$branch;attemptId='900001-scale'}|ConvertTo-Json -Compress))}
+  }
+  $scaleTrees|ForEach-Object -ThrottleLimit 4 -Parallel {
+    if(($using:construction).Elapsed.TotalMinutes-ge12){throw 'scale fixture construction exceeded 12 minute safety bound'}
+    [void][IO.Directory]::CreateDirectory($_)
+    for($file=0;$file-lt2000;$file++){[IO.File]::WriteAllText([IO.Path]::Combine($_,('{0:d4}.txt'-f$file)),'synthetic')}
   }
   Write-Fixture (Join-Path $root 'dispatch-log.jsonl') (($dispatchRows-join"`n")+"`n")
   $construction.Stop()
