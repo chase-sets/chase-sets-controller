@@ -75,6 +75,8 @@ param(
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryPriorResultPath = "",
   # Per-item reuse stop (#9373), forwarded verbatim as one argument.
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryNoReuseIdentity = "",
+  # Concurrent battery items (#120), forwarded verbatim as one argument.
+  [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryConcurrentIdentity = "",
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][ValidateSet("stop", "all")][string]$ControllerBatteryOnFailure = "stop",
   # Guard-evidence precursor producers are a closed production surface. The
   # selected value resolves to one tracked script and one fixed grammar below.
@@ -1326,6 +1328,7 @@ $arguments = if ($isAttachedAdmission) {
     "-Scope", $ControllerBatteryScope,
     "-PriorResultPath", $ControllerBatteryPriorResultPath,
     "-NoReuseIdentity", $ControllerBatteryNoReuseIdentity,
+    "-ConcurrentIdentity", $ControllerBatteryConcurrentIdentity,
     "-OnFailure", $ControllerBatteryOnFailure,
     "-AdmissionOwned"
   )

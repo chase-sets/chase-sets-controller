@@ -1323,14 +1323,14 @@ function Test-NativeRoleAdmission {
   [IO.File]::WriteAllText((Join-Path $nativeTree 'pnpm-lock.yaml'), "lockfileVersion: '9.0'`n`nsettings:`n  autoInstallPeers: true`n  excludeLinksFromLockfile: false`n`nimporters:`n`n  .: {}`n")
   [IO.File]::WriteAllText((Join-Path $nativeTree 'role-body.cjs'),("require('node:fs').writeFileSync(" + ($body|ConvertTo-Json -Compress) + ", 'forbidden');"))
   $batteryFixture = Join-Path $nativeTree '.orchestrator/controller-release-battery.ps1'
-  # #9373: the fake records the -NoReuseIdentity value and any unbound argument.
+  # #9373/#120: the fake records -NoReuseIdentity, -ConcurrentIdentity and any unbound argument.
   $noReuseReceipt = Join-Path $root 'no-reuse-identity.json'
-  $noReuseList = 'test:synthetic-a-9373.test.ps1;test:synthetic-b-9373.test.ps1'
+  $noReuseList = 'test:synthetic-a-9373.test.ps1;test:synthetic-b-9373.test.ps1'; $concurrentList = 'test:synthetic-a-120.test.ps1;test:synthetic-b-120.test.ps1'
   [IO.File]::WriteAllText($batteryFixture, @"
-param(`$ControllerRoot,`$ExpectedControllerHead,`$EvidenceReceiptPath,`$ResultPath,`$BaselineHead,`$RepairIssue,`$RepairHistoryPath,`$Scope,`$PriorResultPath,`$NoReuseIdentity,`$OnFailure,[switch]`$AdmissionOwned)
+param(`$ControllerRoot,`$ExpectedControllerHead,`$EvidenceReceiptPath,`$ResultPath,`$BaselineHead,`$RepairIssue,`$RepairHistoryPath,`$Scope,`$PriorResultPath,`$NoReuseIdentity,`$ConcurrentIdentity,`$OnFailure,[switch]`$AdmissionOwned)
 `$owner=Get-Content -LiteralPath '$((Join-Path $orchestrator 'controller-verify-lock.d/owner.json').Replace("'","''"))' -Raw | ConvertFrom-Json
 if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID){throw 'fixture battery requires exact singleton owner'}
-[IO.File]::WriteAllText('$noReuseReceipt',(@{value=`$NoReuseIdentity;unbound=@(`$args).Count} | ConvertTo-Json -Compress))
+[IO.File]::WriteAllText('$noReuseReceipt',(@{value=`$NoReuseIdentity;concurrent=`$ConcurrentIdentity;unbound=@(`$args).Count} | ConvertTo-Json -Compress))
 [IO.File]::WriteAllText('$body','allowed')
 "@)
   # #9627: the inert fixture-equivalence stand-in records its body at $body.
@@ -1362,18 +1362,18 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   $declaredModes=@($modeAst.ParamBlock.Parameters.Attributes.NamedArguments | Where-Object ArgumentName -CEQ 'ParameterSetName' | ForEach-Object {$_.Argument.Value} | Sort-Object -Unique)
   Assert-True (($declaredModes -join ',') -ceq ((@($modes.Keys | Sort-Object)) -join ',')) 'matrix covers every declared wrapper mode'
   foreach($mode in @('Gate','ControllerBattery')) {
-    # ControllerBattery runs with -ControllerBatteryNoReuseIdentity omitted, whose
-    # '' default the admitted child must still receive, and then with the list.
-    $cases=if($mode -eq 'ControllerBattery'){@(@{},@{ControllerBatteryNoReuseIdentity=$noReuseList})}else{@(@{})}
+    # ControllerBattery runs with both lists omitted, whose '' defaults the admitted
+    # child must still receive, then with each list (#9373 -NoReuseIdentity, #120 -ConcurrentIdentity).
+    $cases=if($mode -eq 'ControllerBattery'){@(@{},@{ControllerBatteryNoReuseIdentity=$noReuseList},@{ControllerBatteryConcurrentIdentity=$concurrentList})}else{@(@{})}
     foreach($case in $cases) {
       $parameters=$base + $modes[$mode] + $case + @{CommandPath=(Join-Path $PSHOME 'pwsh.exe');CommandArgumentList=@('-NoProfile','-Command',"[IO.File]::WriteAllText('$body','allowed')")}
       $result=Invoke-RoleWrapper $parameters; $output=$result.Output; $code=$result.Code
       Assert-True ($code -eq 0 -and (Test-Path $body)) "standalone $mode executes under ownership (exit=$code $($output -join ' '))"
       if($mode -eq 'ControllerBattery') {
-        $expected=if($case.Count){$noReuseList}else{''}
+        $expected=if($case.ContainsKey('ControllerBatteryNoReuseIdentity')){$noReuseList}else{''}; $expectedConcurrent=if($case.ContainsKey('ControllerBatteryConcurrentIdentity')){$concurrentList}else{''}
         $received=[IO.File]::ReadAllText($noReuseReceipt)
         $observed=$received | ConvertFrom-Json
-        Assert-True ($observed.value -is [string] -and $observed.value -ceq $expected -and $observed.unbound -eq 0) "admitted battery child receives -NoReuseIdentity '$expected' as one argument: $received"
+        Assert-True ($observed.value -is [string] -and $observed.value -ceq $expected -and $observed.concurrent -is [string] -and $observed.concurrent -ceq $expectedConcurrent -and $observed.unbound -eq 0) "admitted battery child receives -NoReuseIdentity '$expected' and -ConcurrentIdentity '$expectedConcurrent' each as one argument: $received"
         Remove-Item -LiteralPath $noReuseReceipt
       }
       Remove-Item -LiteralPath $body

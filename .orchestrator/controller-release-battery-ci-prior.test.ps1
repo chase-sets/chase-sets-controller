@@ -17,12 +17,16 @@ $reuseSource = $source.Substring($reuseStart, $reuseEnd - $reuseStart)
 $reuseBlock = [scriptblock]::Create($reuseSource)
 $mergeStart = $source.IndexOf('$timingLines =', [StringComparison]::Ordinal)
 $mergeEnd = $source.IndexOf('function Write-BatteryRecap', [StringComparison]::Ordinal)
-$mergeBlock = [scriptblock]::Create($source.Substring($mergeStart, $mergeEnd - $mergeStart))
+$mergeSource = $source.Substring($mergeStart, $mergeEnd - $mergeStart)
+$mergeBlock = [scriptblock]::Create($mergeSource)
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('battery-ci-prior-' + [guid]::NewGuid().ToString('N'))
 $controller = Join-Path $testRoot 'controller'
 $runtime = Join-Path $controller '.orchestrator'
 $artifacts = Join-Path $runtime 'artifacts'
 [void][IO.Directory]::CreateDirectory($artifacts)
+# The merge block's #98 write checks need the canonical artifact root that the
+# battery derives before execution; the fixture binds the same derivation.
+$artifactRoot = Join-Path (Resolve-BatteryPhysicalPath $runtime) 'artifacts'
 $assertions = 0
 function Assert-Test([bool]$Value, [string]$Message) {
   $script:assertions++
@@ -51,6 +55,19 @@ function Save-BatteryCiArtifact([string]$ArtifactId, [string]$Path) {
   [IO.File]::Copy($script:zipPath, $Path, $true)
 }
 function Get-BatteryFleetLoad { return 'none' }
+# #120: a concurrent start records its identity and runs the fixture body; the
+# next checkpoint reads that exit back. Every other concurrent step is production.
+$concurrentStarts = [Collections.Generic.List[string]]::new()
+function Start-BatteryConcurrentItem($Item, $Children) {
+  $script:concurrentStarts.Add($Item.identity)
+  $records = @(& $Item.executable @($Item.arguments))
+  $handle = [pscustomobject]@{ item = $Item; process = $null; processId = 0; startTicks = 0L; fleetLoad = 'none'
+    startedUtc = [DateTime]::UtcNow.ToString('o'); startError = $null; collected = $false
+    completion = [pscustomobject]@{ exitCode = $LASTEXITCODE; output = ($records -join "`n"); finishedUtc = [DateTime]::UtcNow.ToString('o'); elapsedMs = 1L } }
+  $Children.Add($handle)
+  return $handle
+}
+function Read-BatteryConcurrentExit($Handle, [switch]$Wait) { return $Handle.completion }
 function Invoke-FixtureItem {
   param([string]$Identity)
   $script:executions.Add($Identity)
@@ -346,6 +363,37 @@ try {
     'controllerHead,execution,fleetLoad,hostIdentity,inventory,rawLog,results,schemaVersion,scope') 'unchanged top-level result schema'
   Assert-Test (($merged.results[0].PSObject.Properties.Name | Sort-Object) -join ',' -ceq
     'elapsedMs,exitCode,finishedUtc,fleetLoad,identity,provenance,result,startedUtc') 'unchanged per-item result schema'
+
+  # #120 -ConcurrentIdentity under a CI prior: a listed item with a fresh ci:
+  # PASS row keeps its reuse row and is never started; a listed item also named
+  # in -NoReuseIdentity executes concurrently. The reuse-ignored mutant starts both.
+  function Invoke-ConcurrentMerge([scriptblock]$Block) {
+    [void]$noReuseIdentities.Add('test:controller-release-battery.test.ps1')
+    $script:reusable = (Invoke-Reuse).reusable
+    $noReuseIdentities.Clear()
+    $script:concurrentIdentities = [Collections.Generic.List[string]]::new()
+    $script:concurrentIdentities.Add('test:pass.test.ps1'); $script:concurrentIdentities.Add('test:controller-release-battery.test.ps1')
+    $script:results = [Collections.Generic.List[object]]::new(); $script:executions = [Collections.Generic.List[string]]::new(); $script:concurrentStarts.Clear()
+    $script:executionStarted = $false; $script:batteryClock = [Diagnostics.Stopwatch]::StartNew(); $script:batteryFailure = $null
+    try { $null = . $Block } finally { $script:concurrentIdentities = $null }
+    return (Get-Content $resolvedResult -Raw | ConvertFrom-Json -DateKind String)
+  }
+  $concurrentMerged = Invoke-ConcurrentMerge $mergeBlock
+  $passRow = @($concurrentMerged.results | Where-Object identity -CEQ 'test:pass.test.ps1')
+  $selfRow = @($concurrentMerged.results | Where-Object identity -CEQ 'test:controller-release-battery.test.ps1')
+  Assert-Test (($concurrentStarts -join ',') -ceq 'test:controller-release-battery.test.ps1' -and $executions -cnotcontains 'test:pass.test.ps1') 'listed CI-reused item is not started; listed -NoReuseIdentity item is'
+  Assert-Test ($passRow.Count -eq 1 -and $passRow[0].provenance.kind -ceq 'receipt-reuse' -and $passRow[0].provenance.source -ceq 'ci:12345') 'listed CI-reused item keeps its ci: reuse row'
+  Assert-Test ($selfRow.Count -eq 1 -and $selfRow[0].provenance.kind -ceq 'execution' -and $selfRow[0].result -ceq 'PASS') 'listed -NoReuseIdentity item executed'
+  Assert-Test ($concurrentMerged.execution.mode -ceq 'foreground-file-serial-with-concurrent' -and
+    (@($concurrentMerged.execution.concurrentIdentities) -join ',') -ceq 'test:controller-release-battery.test.ps1') 'concurrent mode records only the started item'
+  Assert-Test ($concurrentMerged.execution.outcome -ceq 'PASS' -and $concurrentMerged.execution.executedCount -eq 8 -and
+    $concurrentMerged.execution.reusedCount -eq 1 -and $concurrentMerged.execution.satisfiedCount -eq 9) 'concurrent merge counts'
+  $reuseIgnoredTerm = ' -or $reusable.ContainsKey($item.identity)) { continue }'
+  Assert-Test (([regex]::Matches($mergeSource, [regex]::Escape($reuseIgnoredTerm))).Count -eq 1) 'reuse-ignored mutant term is unique'
+  $null = Invoke-ConcurrentMerge ([scriptblock]::Create($mergeSource.Replace($reuseIgnoredTerm, ') { continue }')))
+  Assert-Test ($concurrentStarts -ccontains 'test:pass.test.ps1') 'concurrent-reuse-ignored mutant red: it starts the CI-reused item'
+  Write-Output 'PASS CI prior -ConcurrentIdentity reuses a listed ci: PASS item and executes a listed -NoReuseIdentity item'
+  $reusable = $selection.reusable
 
   # A complete same-head CI result executes only the guards and LOCAL_ONLY, then
   # only the guards when no host-only item exists; every run writes a receipt.

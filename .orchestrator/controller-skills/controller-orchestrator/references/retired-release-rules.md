@@ -91,6 +91,29 @@ same identity/Bug; duplicates count once. Closure does not undo termination;
 only a new Todd ruling reinstates it. This rule lasts until #189's exit gate
 makes the hosted battery the native governing proof.
 
+Concurrent items (#120): `-ConcurrentIdentity` takes one `;`-separated string
+of at most two distinct `test:*` identities the battery knows at `-Scope full`,
+such as `'test:dispatch-lane.test.ps1;test:lane-stall-watchdog.test.ps1'`; `''`
+keeps every item serial. A malformed list refuses
+`BATTERY_CONCURRENT_IDENTITY_EMPTY_SEGMENT`, `_LIMIT`, `_NOT_TEST`, `_UNKNOWN`
+or `_DUPLICATE` before any item runs. Each listed item that is selected and not
+reused starts as a child process at loop start; every other item runs serially
+in order. A listed identity outside an impact selection prints
+`CONCURRENT_SKIP`, a reused listed item keeps its reuse row, and a listed
+`-NoReuseIdentity` item executes concurrently. A failed start is a FAIL row
+with exit code -1 and `BATTERY_CONCURRENT_START_FAILED`. Before each serial
+item the battery collects exited children. A child FAIL with `-BaselineHead`
+pauses serial items until every child drains, then classifies it: PREEXISTING
+or BASELINE_ALSO_FAILS resumes, anything else follows `-OnFailure` (`stop` ends
+new serial items; running children are awaited and recorded, never killed).
+Result rows and RESULT, CHILD and timing lines follow inventory order, not
+completion order. An abort kills only the process trees the battery started,
+matched by PID and start time, and records them not run. The result records
+`execution.mode = foreground-file-serial-with-concurrent` and
+`execution.concurrentIdentities` (the items actually started); without a list
+the mode stays `foreground-file-serial`. A writer-lock timeout between the pair
+is a defect, never a reason to serialize.
+
 The author-iteration battery runs the impact scope: the smoke set (policy pin,
 contract enforcement, installer, battery self-test, landing preflight), the changed
 tests, the guard discriminators, and every test that reads a changed file,

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ConcurrentIdentity")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -469,7 +469,7 @@ function Invoke-ScopeControl {
   foreach ($pair in @(
       @('-ControllerBatteryScope $Scope', '"-Scope", $ControllerBatteryScope'),
       @('-ControllerBatteryPriorResultPath $PriorResultPath', '"-PriorResultPath", $ControllerBatteryPriorResultPath'),
-      @('-ControllerBatteryNoReuseIdentity $NoReuseIdentity', '"-NoReuseIdentity", $ControllerBatteryNoReuseIdentity'),
+      @('-ControllerBatteryNoReuseIdentity $NoReuseIdentity', '"-NoReuseIdentity", $ControllerBatteryNoReuseIdentity'), @('-ControllerBatteryConcurrentIdentity $ConcurrentIdentity', '"-ConcurrentIdentity", $ControllerBatteryConcurrentIdentity'),
       @('-ControllerBatteryOnFailure $OnFailure', '"-OnFailure", $ControllerBatteryOnFailure')
     )) {
     Assert-BatteryTest ($batterySource -match [regex]::Escape($pair[0]) -and $verifierSource -match [regex]::Escape($pair[1])) "scope or prior result is dropped before the admitted child: $($pair[1])"
@@ -2391,8 +2391,498 @@ function Test-BatteryArtifactWriteWindowDetection {
     Write-Host "MUTANT 98 post-write-recheck-removed $leg KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
   }
 }
+# ---- #120 concurrent items. Synthetic cc-* items record their own start and
+# exit instants in a per-fixture log directory outside the fixture tree, so a
+# baseline rerun in the temporary baseline worktree is recorded as well.
+$concurrent120Pair = 'test:cc-a.test.ps1;test:cc-b.test.ps1'
+$concurrent120Quick = @{ 'cc-a' = @{ body = '' }; 'cc-b' = @{ body = '' }; 'cc-c' = @{ body = '' }; 'cc-d' = @{ body = '' } }
+# cc-a: records its PID, waits for cc-c's go marker, then fails.
+$concurrent120WaitGo = @'
+[IO.File]::WriteAllText('{LOG}\a.pid', "$PID $((Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks)")
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+while (-not (Test-Path -LiteralPath '{LOG}\go') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+Write-Output 'ASSERTION FAILED: cc-a deliberate concurrent failure'
+[IO.File]::WriteAllText('{LOG}\a.done', 'done')
+'@
+# cc-c: releases cc-a, then returns only after cc-a's process has exited, so the
+# checkpoint before the next serial item always observes cc-a's FAIL.
+$concurrent120GoThenWaitA = @'
+[IO.File]::WriteAllText('{LOG}\go', 'go')
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+while (-not (Test-Path -LiteralPath '{LOG}\a.done') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+$aPid = [int](([IO.File]::ReadAllText('{LOG}\a.pid')).Split(' ')[0])
+$gone = [DateTime]::UtcNow.AddSeconds(5)
+while ((Get-Process -Id $aPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $gone) { Start-Sleep -Milliseconds 50 }
+Start-Sleep -Milliseconds 300
+'@
+# cc-a for the abort controls: a grandchild carrying the control token, then wait.
+$concurrent120Spawn = @'
+$g = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120 # {TOKEN}') -WindowStyle Hidden -PassThru
+[IO.File]::WriteAllText('{LOG}\g.pid', "$($g.Id) $($g.StartTime.ToUniversalTime().Ticks)")
+[IO.File]::WriteAllText('{LOG}\a.pid', "$PID $((Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks)")
+Start-Sleep -Seconds 30
+'@
+$concurrent120WaitSpawn = @'
+$deadline = [DateTime]::UtcNow.AddSeconds(60)
+while (-not (Test-Path -LiteralPath '{LOG}\a.pid') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+'@
+
+function New-Concurrent120Script([string]$Log, [string]$Name, [string]$Body, [int]$Exit, [string]$Token) {
+  $lines = @(
+    '$ccStart = [DateTime]::UtcNow.Ticks'
+    "[IO.File]::WriteAllText((Join-Path '$Log' ('$Name-' + `$PID + '.start')), [string]`$ccStart)"
+    $Body.Replace('{LOG}', $Log).Replace('{TOKEN}', $Token)
+    "[IO.File]::WriteAllText((Join-Path '$Log' ('$Name-' + `$PID + '-' + `$ccStart + '.json')), (@{ name = '$Name'; start = `$ccStart; exit = [DateTime]::UtcNow.Ticks; root = `$PSScriptRoot } | ConvertTo-Json -Compress))"
+    "exit $Exit"
+  )
+  return ($lines -join "`n") + "`n"
+}
+
+# Scripts maps a cc-* name to @{ body; exit }. -Baseline installs the fixture
+# head as the synthetic baseline, as the #98 fixtures do.
+function New-Concurrent120Fixture([hashtable]$Scripts, [string]$BatterySource = '', [switch]$Baseline) {
+  $log = Join-Path $testRoot ('cc120-log-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($log)
+  $token = 'cc120-' + [guid]::NewGuid().ToString('N')
+  $files = @{}
+  foreach ($name in $Scripts.Keys) {
+    $exit = if ($Scripts[$name].ContainsKey('exit')) { [int]$Scripts[$name].exit } else { 0 }
+    $files["$name.test.ps1"] = New-Concurrent120Script $log $name ([string]$Scripts[$name].body) $exit $token
+  }
+  if ($BatterySource) { $files['controller-release-battery.ps1'] = $BatterySource }
+  $fixture = New-AdmissionFixture $files 'cc120-'
+  if ($Baseline) { Set-SyntheticBatterySkillsRoot $fixture (Join-Path $testRoot ('skills-' + [guid]::NewGuid().ToString('N'))) }
+  return [pscustomobject]@{ root = $fixture.root; head = $fixture.head; receipt = $fixture.receipt; log = $log; token = $token }
+}
+
+function Save-Concurrent120Commit($Fixture, [string]$Name, [string]$Body, [int]$Exit = 0) {
+  $next = Save-BatteryFixtureCommit $Fixture @{ "$Name.test.ps1" = (New-Concurrent120Script $Fixture.log $Name $Body $Exit $Fixture.token) } "120 $Name"
+  return [pscustomobject]@{ root = $next.root; head = $next.head; receipt = $next.receipt; log = $Fixture.log; token = $Fixture.token }
+}
+
+# A bounded fixture battery run (the process is killed and the control fails on
+# timeout, so a pipe deadlock cannot hang the suite).
+function Invoke-Concurrent120Leg($Fixture, [string]$Label, [string[]]$ExtraArguments = @(), [int]$Seconds = 240) {
+  $resultPath = Join-Path $Fixture.root ".orchestrator/artifacts/120-$Label.json"
+  $start = New-BatteryChildStartInfo $Fixture.root
+  Set-NonAdmittedBatteryChildEnvironment $start
+  foreach ($argument in @(
+      '-NoProfile', '-NonInteractive', '-File', (Join-Path $Fixture.root '.orchestrator/controller-release-battery.ps1'),
+      '-ControllerRoot', $Fixture.root, '-ExpectedControllerHead', $Fixture.head,
+      '-EvidenceReceiptPath', $Fixture.receipt, '-ResultPath', $resultPath
+    ) + $ExtraArguments) { [void]$start.ArgumentList.Add($argument) }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $run = Complete-BatteryFixtureProcess ([Diagnostics.Process]::Start($start)) $Seconds
+  $record = if (Test-Path -LiteralPath $resultPath -PathType Leaf) { Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -DateKind String } else { $null }
+  $raw = if ($null -ne $record) { [IO.File]::ReadAllText((Join-Path $Fixture.root $record.rawLog.relativePath)) } else { '' }
+  $timingPath = [IO.Path]::ChangeExtension($resultPath, '.timing.txt')
+  $timing = if (Test-Path -LiteralPath $timingPath -PathType Leaf) { @([IO.File]::ReadAllLines($timingPath)) } else { @() }
+  $records = @(Get-ChildItem -LiteralPath $Fixture.log -Filter '*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+  Write-Host "CONTROL 120 $Label exit=$($run.exitCode) outcome=$(if ($record) { $record.execution.outcome } else { 'NO_RECORD' }) elapsedMs=$($clock.ElapsedMilliseconds)"
+  return [pscustomobject]@{
+    label = $Label; fixture = $Fixture; run = $run; record = $record; resultPath = $resultPath; timing = $timing; records = $records
+    lines = @($run.output -split '\r?\n'); rawLines = @($raw -split '\r?\n')
+  }
+}
+
+# The cc-* runs of the candidate tree, or (-Baseline) of the baseline worktree.
+function Select-Concurrent120Run($Leg, [string]$Name, [switch]$Baseline) {
+  $runtime = [IO.Path]::GetFullPath((Join-Path $Leg.fixture.root '.orchestrator')).TrimEnd('\', '/')
+  return @($Leg.records | Where-Object {
+      $_.name -ceq $Name -and (([IO.Path]::GetFullPath([string]$_.root).TrimEnd('\', '/') -ieq $runtime) -ne [bool]$Baseline)
+    } | Sort-Object -Property { [long]$_.start })
+}
+
+function Test-Concurrent120Overlap($Left, $Right) { return [long]$Left.start -lt [long]$Right.exit -and [long]$Right.start -lt [long]$Left.exit }
+
+function Assert-Concurrent120([string]$Test, $Failures) {
+  Assert-BatteryTest (@($Failures).Count -eq 0) "${Test}: $(@($Failures) -join '; ')"
+  Write-Host "PASS 120 $Test"
+}
+
+# AC1 overlap: listed A and B overlap each other and serial C; serial C and D
+# never overlap. With no list nothing overlaps and the record stays serial.
+function Get-Concurrent120OverlapFailures($Leg, [bool]$Concurrent) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record -or $Leg.run.exitCode -ne 0 -or $Leg.record.execution.outcome -cne 'PASS') {
+    $failures.Add("run did not PASS: exit=$($Leg.run.exitCode) $($Leg.run.output)"); return ,$failures
+  }
+  $runs = @{}
+  foreach ($name in @('cc-a', 'cc-b', 'cc-c', 'cc-d')) {
+    $found = Select-Concurrent120Run $Leg $name
+    if ($found.Count -ne 1) { $failures.Add("${name}: expected one run, found $($found.Count)") } else { $runs[$name] = $found[0] }
+  }
+  if ($failures.Count -gt 0) { return ,$failures }
+  $mustOverlap = @('cc-a:cc-b', 'cc-a:cc-c', 'cc-b:cc-c')
+  foreach ($pair in @('cc-a:cc-b', 'cc-a:cc-c', 'cc-b:cc-c', 'cc-c:cc-d', 'cc-a:cc-d', 'cc-b:cc-d')) {
+    $names = $pair.Split(':')
+    $overlap = Test-Concurrent120Overlap $runs[$names[0]] $runs[$names[1]]
+    if ($Concurrent -and $pair -ceq 'cc-c:cc-d' -and $overlap) { $failures.Add('serial cc-c and cc-d overlapped') }
+    if ($Concurrent -and $mustOverlap -ccontains $pair -and -not $overlap) { $failures.Add("$pair did not overlap") }
+    if (-not $Concurrent -and $overlap) { $failures.Add("$pair overlapped with no list") }
+  }
+  $mode = if ($Concurrent) { 'foreground-file-serial-with-concurrent' } else { 'foreground-file-serial' }
+  if ($Leg.record.execution.mode -cne $mode) { $failures.Add("mode is $($Leg.record.execution.mode), not $mode") }
+  $hasStarted = $null -ne $Leg.record.execution.PSObject.Properties['concurrentIdentities']
+  if ($Concurrent -and (-not $hasStarted -or (@($Leg.record.execution.concurrentIdentities) -join ';') -cne $concurrent120Pair)) { $failures.Add('concurrentIdentities does not list both started items') }
+  if (-not $Concurrent -and $hasStarted) { $failures.Add('a serial record carries concurrentIdentities') }
+  return ,$failures
+}
+
+# AC3 order: results, stdout RESULT, raw-log RESULT and timing ITEM lines all
+# follow inventory order, whatever the completion order.
+function Get-Concurrent120OrderFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record) { $failures.Add('result record missing'); return ,$failures }
+  $executed = @($Leg.record.results.identity)
+  $expected = (@($Leg.record.inventory.identity | Where-Object { $executed -ccontains $_ }) -join ',')
+  $observed = [ordered]@{
+    results = $executed -join ','
+    stdout = @($Leg.lines | Where-Object { $_ -clike 'RESULT identity=*' } | ForEach-Object { ($_ -split ' ')[1].Substring('identity='.Length) }) -join ','
+    raw = @($Leg.rawLines | Where-Object { $_ -clike 'RESULT identity=*' } | ForEach-Object { ($_ -split ' ')[1].Substring('identity='.Length) }) -join ','
+    timing = @($Leg.timing | Where-Object { $_ -clike 'ITEM *' } | ForEach-Object { ($_ -split ' ')[1] }) -join ','
+  }
+  foreach ($name in $observed.Keys) {
+    if ($observed[$name] -cne $expected) { $failures.Add("$name order [$($observed[$name])] is not inventory order [$expected]") }
+  }
+  return ,$failures
+}
+
+function Get-Concurrent120CaptureFailures($Leg, [string]$Identity) {
+  $failures = [Collections.Generic.List[string]]::new()
+  foreach ($stream in @('OUT', 'ERR')) {
+    $raw = @($Leg.rawLines | Where-Object { $_ -cmatch "^$stream-\d{5}-x{990}$" }).Count
+    $child = @($Leg.lines | Where-Object { $_ -cmatch "^CHILD identity=$([regex]::Escape($Identity)) $stream-\d{5}-x{990}$" }).Count
+    if ($raw -ne 5000 -or $child -ne 5000) { $failures.Add("$stream lines captured raw=$raw child=$child of 5000") }
+  }
+  return ,$failures
+}
+
+function Get-Concurrent120Source { return [IO.File]::ReadAllText($battery).Replace("`r`n", "`n") }
+
+function Test-BatteryConcurrentOverlapAndOrder {
+  $scripts = @{
+    'cc-a' = @{ body = 'Start-Sleep -Milliseconds 4000' }; 'cc-b' = @{ body = 'Start-Sleep -Milliseconds 4000' }
+    'cc-c' = @{ body = 'Start-Sleep -Milliseconds 700' }; 'cc-d' = @{ body = 'Start-Sleep -Milliseconds 700' }
+  }
+  $concurrent = Invoke-Concurrent120Leg (New-Concurrent120Fixture $scripts) 'overlap' @('-ConcurrentIdentity', $concurrent120Pair)
+  Assert-Concurrent120 'overlap concurrent' (Get-Concurrent120OverlapFailures $concurrent $true)
+  $serial = Invoke-Concurrent120Leg (New-Concurrent120Fixture $scripts) 'overlap-empty'
+  Assert-Concurrent120 'overlap empty-list' (Get-Concurrent120OverlapFailures $serial $false)
+  Assert-BatteryResultTiming $serial
+
+  # AC3: A slow while B writes 5 MB to each stream, then B slow on the same
+  # fixture, whose second run also reorders serial items by the first timings.
+  $bigOutput = '$pad = "x" * 990; for ($i = 0; $i -lt 5000; $i++) { [Console]::Out.WriteLine(("OUT-{0:D5}-" -f $i) + $pad); [Console]::Error.WriteLine(("ERR-{0:D5}-" -f $i) + $pad) }'
+  $orderScripts = @{ 'cc-a' = @{ body = 'Start-Sleep -Milliseconds 3000' }; 'cc-b' = @{ body = $bigOutput }; 'cc-c' = @{ body = '' }; 'cc-d' = @{ body = '' } }
+  $fixture = New-Concurrent120Fixture $orderScripts
+  $aSlow = Invoke-Concurrent120Leg $fixture 'a-slow' @('-ConcurrentIdentity', $concurrent120Pair)
+  $aRun = Select-Concurrent120Run $aSlow 'cc-a'; $bRun = Select-Concurrent120Run $aSlow 'cc-b'
+  Assert-BatteryTest ($aSlow.run.exitCode -eq 0 -and $aRun.Count -eq 1 -and $bRun.Count -eq 1 -and [long]$aRun[0].exit -gt [long]$bRun[0].exit) 'a-slow control did not PASS with A finishing after B'
+  Assert-Concurrent120 'stable-output a-slow' (Get-Concurrent120OrderFailures $aSlow)
+  Assert-Concurrent120 'stable-output 5MB-stdout-and-stderr captured whole' (Get-Concurrent120CaptureFailures $aSlow 'test:cc-b.test.ps1')
+  $next = Save-Concurrent120Commit $fixture 'cc-a' ''
+  $next = Save-Concurrent120Commit $next 'cc-b' 'Start-Sleep -Milliseconds 3000'
+  $bSlow = Invoke-Concurrent120Leg $next 'b-slow' @('-ConcurrentIdentity', $concurrent120Pair)
+  $aRun = @(Select-Concurrent120Run $bSlow 'cc-a')[-1]; $bRun = @(Select-Concurrent120Run $bSlow 'cc-b')[-1]
+  Assert-BatteryTest ($bSlow.run.exitCode -eq 0 -and [long]$bRun.exit -gt [long]$aRun.exit) 'b-slow control did not PASS with B finishing after A'
+  Assert-Concurrent120 'stable-output b-slow' (Get-Concurrent120OrderFailures $bSlow)
+
+  # Named mutant: results and deferred lines in completion order.
+  $mutant = Replace-BatteryFixtureSource (Get-Concurrent120Source) 'if ($inventoryIndex.ContainsKey($_.identity)) { $inventoryIndex[$_.identity] } else { [int]::MaxValue }' '$_.finishedUtc'
+  $mutant = Replace-BatteryFixtureSource $mutant '  foreach ($inventoryItem in $requiredItems) {' '  foreach ($inventoryItem in @($results)) {'
+  $mutantLeg = Invoke-Concurrent120Leg (New-Concurrent120Fixture $orderScripts $mutant) 'mutant-completion-order' @('-ConcurrentIdentity', $concurrent120Pair)
+  $mutantFailures = Get-Concurrent120OrderFailures $mutantLeg
+  Assert-BatteryTest ($mutantFailures.Count -gt 0) 'concurrent-emit-in-completion-order mutant SURVIVED'
+  Write-Host "MUTANT 120 concurrent-emit-in-completion-order KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+}
+
+# AC2: each malformed list refuses with its code before any item starts and
+# writes no result.
+function Test-BatteryConcurrentValidation {
+  $fixture = New-Concurrent120Fixture $concurrent120Quick
+  foreach ($case in @(
+      @{ name = 'unknown'; value = 'test:cc-unknown.test.ps1'; code = 'BATTERY_CONCURRENT_IDENTITY_UNKNOWN:test:cc-unknown.test.ps1' },
+      @{ name = 'not-test'; value = 'discriminator:issue-6254'; code = 'BATTERY_CONCURRENT_IDENTITY_NOT_TEST:discriminator:issue-6254' },
+      @{ name = 'duplicate'; value = 'test:cc-a.test.ps1;test:cc-a.test.ps1'; code = 'BATTERY_CONCURRENT_IDENTITY_DUPLICATE:test:cc-a.test.ps1' },
+      @{ name = 'three-entries'; value = 'test:cc-a.test.ps1;test:cc-b.test.ps1;test:cc-c.test.ps1'; code = 'BATTERY_CONCURRENT_IDENTITY_LIMIT' },
+      @{ name = 'empty-segment'; value = 'test:cc-a.test.ps1;'; code = 'BATTERY_CONCURRENT_IDENTITY_EMPTY_SEGMENT' }
+    )) {
+    $leg = Invoke-Concurrent120Leg $fixture "refuse-$($case.name)" @('-ConcurrentIdentity', $case.value)
+    $started = @(Get-ChildItem -LiteralPath $fixture.log -Filter '*.start' -File).Count
+    Assert-BatteryTest ($leg.run.exitCode -eq 1 -and $leg.run.output.Contains("FAIL controller-release-battery: $($case.code)") -and
+      @($leg.lines | Where-Object { $_ -clike 'RESULT *' }).Count -eq 0 -and $started -eq 0 -and
+      -not (Test-Path -LiteralPath $leg.resultPath) -and -not (Test-Path -LiteralPath (Join-Path $fixture.root '.orchestrator/artifacts'))) `
+      "validation $($case.name) did not refuse $($case.code) before any item: exit=$($leg.run.exitCode) started=$started $($leg.run.output)"
+    Write-Host "PASS 120 validation-refuses $($case.name) code=$($case.code) started=0 result=none"
+  }
+  $batteryPath = Join-Path $fixture.root '.orchestrator/controller-release-battery.ps1'
+  foreach ($accepted in @('', $concurrent120Pair, 'test:cc-d.test.ps1')) {
+    $plan = & $batteryPath -ControllerRoot $fixture.root -ExpectedControllerHead $fixture.head -EvidenceReceiptPath $fixture.receipt -ConcurrentIdentity $accepted -ValidatePlanOnly 2>&1 | Out-String
+    Assert-BatteryTest ($plan -match 'BATTERY_PLAN_END') "-ConcurrentIdentity '$accepted' was refused: $plan"
+  }
+  foreach ($refused in @(';test:cc-a.test.ps1', 'test:cc-a.test.ps1;;test:cc-b.test.ps1', ' test:cc-a.test.ps1', 'TEST:cc-a.test.ps1')) {
+    $observed = ''
+    try { & $batteryPath -ControllerRoot $fixture.root -ExpectedControllerHead $fixture.head -EvidenceReceiptPath $fixture.receipt -ConcurrentIdentity $refused -ValidatePlanOnly 2>&1 | Out-Null }
+    catch { $observed = $_.Exception.Message }
+    Assert-BatteryTest ($observed -match 'BATTERY_CONCURRENT_IDENTITY_(EMPTY_SEGMENT|NOT_TEST)') "-ConcurrentIdentity '$refused' did not refuse: $observed"
+  }
+  # Named mutant: without the limit, a three-entry list plans silently.
+  $mutantPath = Join-Path $testRoot 'concurrent-limit-removed-mutant.ps1'
+  [IO.File]::WriteAllText($mutantPath, (Replace-BatteryFixtureSource (Get-Concurrent120Source) "  if (`$concurrentSegments.Count -gt 2) { Stop-Battery 'BATTERY_CONCURRENT_IDENTITY_LIMIT' }" ''), [Text.UTF8Encoding]::new($false))
+  $mutantObserved = ''; $mutantPlan = ''
+  try { $mutantPlan = & $mutantPath -ControllerRoot $fixture.root -ExpectedControllerHead $fixture.head -EvidenceReceiptPath $fixture.receipt -ConcurrentIdentity 'test:cc-a.test.ps1;test:cc-b.test.ps1;test:cc-c.test.ps1' -ValidatePlanOnly 2>&1 | Out-String }
+  catch { $mutantObserved = $_.Exception.Message }
+  Assert-BatteryTest ($mutantObserved -notmatch 'BATTERY_CONCURRENT_IDENTITY_LIMIT' -and $mutantPlan -match 'BATTERY_PLAN_END') "concurrent-limit-removed mutant SURVIVED: $mutantObserved"
+  Write-Host 'MUTANT 120 concurrent-limit-removed KILLED: a three-entry list planned'
+}
+
+# AC4: a concurrent FAIL under stop ends new serial items; the running child is
+# awaited and recorded. Under -OnFailure all every item runs.
+function Get-Concurrent120StopFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record) { $failures.Add('result record missing'); return ,$failures }
+  $expectedNotRun = @($Leg.record.inventory.identity | Where-Object { $_ -cnotin @('direct:fail-closed-guard-evidence', 'test:cc-a.test.ps1', 'test:cc-b.test.ps1', 'test:cc-c.test.ps1') })
+  if ((@($Leg.record.execution.notRun) -join ',') -cne ($expectedNotRun -join ',')) { $failures.Add("notRun [$(@($Leg.record.execution.notRun) -join ',')] is not the later serial items [$($expectedNotRun -join ',')]") }
+  if (@($Leg.lines | Where-Object { $_ -ceq "NOT_RUN count=$($expectedNotRun.Count) after=test:cc-a.test.ps1 identities=$($expectedNotRun -join ',')" }).Count -ne 1) { $failures.Add('NOT_RUN line does not name cc-a and the later serial items') }
+  if ($Leg.run.exitCode -ne 1 -or $Leg.record.failureCode -cne 'BATTERY_CHILD_FAILED:test:cc-a.test.ps1') { $failures.Add("failure is not cc-a: exit=$($Leg.run.exitCode) code=$($Leg.record.failureCode)") }
+  $b = @($Leg.record.results | Where-Object { $_.identity -ceq 'test:cc-b.test.ps1' })
+  $aRun = Select-Concurrent120Run $Leg 'cc-a'; $bRun = Select-Concurrent120Run $Leg 'cc-b'
+  if ($b.Count -ne 1 -or $b[0].result -cne 'PASS' -or $aRun.Count -ne 1 -or $bRun.Count -ne 1 -or [long]$bRun[0].exit -le [long]$aRun[0].exit) { $failures.Add('the concurrent item still running at the stop was not awaited and recorded PASS') }
+  if ((Select-Concurrent120Run $Leg 'cc-d').Count -ne 0) { $failures.Add('serial cc-d started after the concurrent failure') }
+  return ,$failures
+}
+
+function Test-BatteryConcurrentFailure {
+  $scripts = @{ 'cc-a' = @{ body = $concurrent120WaitGo; exit = 9 }; 'cc-b' = @{ body = 'Start-Sleep -Milliseconds 4000' }; 'cc-c' = @{ body = $concurrent120GoThenWaitA }; 'cc-d' = @{ body = '' } }
+  $stop = Invoke-Concurrent120Leg (New-Concurrent120Fixture $scripts) 'fail-stops-serial' @('-ConcurrentIdentity', $concurrent120Pair)
+  Assert-Concurrent120 'concurrent-fail-stops-serial' (Get-Concurrent120StopFailures $stop)
+  $all = Invoke-Concurrent120Leg (New-Concurrent120Fixture $scripts) 'fail-all' @('-ConcurrentIdentity', $concurrent120Pair, '-OnFailure', 'all')
+  Assert-BatteryTest ($all.run.exitCode -eq 1 -and $all.record.results.Count -eq $all.record.inventory.Count -and @($all.record.execution.notRun).Count -eq 0 -and
+    $all.record.failureCode -ceq 'BATTERY_CHILD_FAILED:test:cc-a.test.ps1' -and (Select-Concurrent120Run $all 'cc-d').Count -eq 1) "concurrent-fail-all did not run every item: $($all.run.output)"
+  Write-Host 'PASS 120 concurrent-fail-all'
+  $mutant = Replace-BatteryFixtureSource (Get-Concurrent120Source) '  if ($OnFailure -ceq "stop" -and $stopping.Count -gt 0) { return $stopping[0].item.identity }' ''
+  $mutantFailures = Get-Concurrent120StopFailures (Invoke-Concurrent120Leg (New-Concurrent120Fixture $scripts $mutant) 'mutant-ignore-failure' @('-ConcurrentIdentity', $concurrent120Pair))
+  Assert-BatteryTest ($mutantFailures.Count -gt 0) 'concurrent-ignore-failure mutant SURVIVED'
+  Write-Host "MUTANT 120 concurrent-ignore-failure KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+}
+
+# AC5: a concurrent FAIL with -BaselineHead pauses serial items until both
+# children drain, then classifies; PREEXISTING resumes the remaining items.
+function Get-Concurrent120ClassifyFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  $a = Select-Concurrent120Run $Leg 'cc-a'; $b = Select-Concurrent120Run $Leg 'cc-b'; $d = Select-Concurrent120Run $Leg 'cc-d'
+  $baseline = Select-Concurrent120Run $Leg 'cc-a' -Baseline
+  if ($a.Count -ne 1 -or $b.Count -ne 1 -or $baseline.Count -ne 1) { $failures.Add("runs a=$($a.Count) b=$($b.Count) baseline-a=$($baseline.Count)"); return ,$failures }
+  if ([long]$baseline[0].start -lt [long]$a[0].exit -or [long]$baseline[0].start -lt [long]$b[0].exit) { $failures.Add('classification started before both children exited') }
+  $between = @($Leg.records | Where-Object { $_.name -cnotin @('cc-a', 'cc-b') -and [long]$_.start -gt [long]$a[0].exit -and [long]$_.start -lt [long]$baseline[0].start })
+  if ($between.Count -gt 0) { $failures.Add("serial item started between the FAIL and its classification: $(@($between.name) -join ',')") }
+  if ($d.Count -eq 1 -and [long]$d[0].start -lt [long]$baseline[0].exit) { $failures.Add('serial cc-d started before classification finished') }
+  return ,$failures
+}
+
+function Get-Concurrent120ResumeFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record) { $failures.Add('result record missing'); return ,$failures }
+  $row = @($Leg.record.results | Where-Object { $_.identity -ceq 'test:cc-a.test.ps1' })
+  if ($row.Count -ne 1 -or $row[0].baseline.classification -cne 'PREEXISTING') { $failures.Add('cc-a is not PREEXISTING') }
+  elseif ($row[0].baseline.evidence.kind -cne 'baseline-streams' -or -not (Test-Path -LiteralPath (Join-Path $Leg.fixture.root $row[0].baseline.evidence.stdout.relativePath) -PathType Leaf)) { $failures.Add('baseline streams were not retained under the artifact root') }
+  if (@($Leg.lines | Where-Object { $_ -clike 'BASELINE identity=test:cc-a.test.ps1 classification=PREEXISTING *' }).Count -ne 1) { $failures.Add('BASELINE line missing') }
+  if (@($Leg.record.execution.notRun).Count -ne 0 -or $Leg.record.results.Count -ne $Leg.record.inventory.Count -or (Select-Concurrent120Run $Leg 'cc-d').Count -ne 1) { $failures.Add("remaining serial items did not run: notRun=$(@($Leg.record.execution.notRun) -join ',')") }
+  if ($Leg.run.exitCode -ne 1 -or $Leg.record.execution.outcome -cne 'FAIL_PREEXISTING_ONLY' -or $Leg.record.failureCode -cne 'BATTERY_PREEXISTING_ONLY:test:cc-a.test.ps1') { $failures.Add("outcome is not FAIL_PREEXISTING_ONLY: exit=$($Leg.run.exitCode) outcome=$($Leg.record.execution.outcome) code=$($Leg.record.failureCode)") }
+  return ,$failures
+}
+
+function Invoke-Concurrent120ClassifyLeg([string]$Label, [string]$BatterySource = '') {
+  $scripts = @{ 'cc-a' = @{ body = $concurrent120WaitGo; exit = 9 }; 'cc-b' = @{ body = 'Start-Sleep -Milliseconds 4000' }; 'cc-c' = @{ body = $concurrent120GoThenWaitA }; 'cc-d' = @{ body = '' } }
+  $fixture = New-Concurrent120Fixture $scripts $BatterySource -Baseline
+  $candidate = Save-Concurrent120Commit $fixture 'cc-d' '# candidate change'
+  return Invoke-Concurrent120Leg $candidate $Label @('-ConcurrentIdentity', $concurrent120Pair, '-BaselineHead', $fixture.head, '-Scope', 'full')
+}
+
+function Test-BatteryConcurrentClassification {
+  $leg = Invoke-Concurrent120ClassifyLeg 'classify'
+  Assert-Concurrent120 'concurrent-classify-after-drain' (Get-Concurrent120ClassifyFailures $leg)
+  Assert-Concurrent120 'concurrent-preexisting-resumes' (Get-Concurrent120ResumeFailures $leg)
+  Assert-BatteryTest (@(Get-ChildItem -LiteralPath $testRoot -Directory -Filter '*-battery-baseline-*').Count -eq 0) 'baseline worktree was not removed'
+  $noDrain = Replace-BatteryFixtureSource (Get-Concurrent120Source) "      `$received = Receive-BatteryConcurrentItem `$handle -Wait`n" "      `$received = Receive-BatteryConcurrentItem `$handle -Wait:`$false`n"
+  $noDrainFailures = Get-Concurrent120ClassifyFailures (Invoke-Concurrent120ClassifyLeg 'mutant-classify-no-drain' $noDrain)
+  Assert-BatteryTest ($noDrainFailures.Count -gt 0) 'concurrent-classify-no-drain mutant SURVIVED'
+  Write-Host "MUTANT 120 concurrent-classify-no-drain KILLED failures=$($noDrainFailures.Count): $($noDrainFailures -join '; ')"
+  $stops = Replace-BatteryFixtureSource (Get-Concurrent120Source) '$_.result.baseline.classification -cin @("PREEXISTING", "BASELINE_ALSO_FAILS")' '$_.result.baseline.classification -cin @()'
+  $stopsFailures = Get-Concurrent120ResumeFailures (Invoke-Concurrent120ClassifyLeg 'mutant-preexisting-stops' $stops)
+  Assert-BatteryTest ($stopsFailures.Count -gt 0) 'concurrent-preexisting-stops mutant SURVIVED'
+  Write-Host "MUTANT 120 concurrent-preexisting-stops KILLED failures=$($stopsFailures.Count): $($stopsFailures -join '; ')"
+}
+
+function Get-Concurrent120PidTuple([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  $parts = ([IO.File]::ReadAllText($Path)).Trim().Split(' ')
+  return [pscustomobject]@{ processId = [int]$parts[0]; startTicks = [long]$parts[1] }
+}
+
+function Test-Concurrent120Alive($Tuple) {
+  if ($null -eq $Tuple) { return $false }
+  $process = Get-Process -Id $Tuple.processId -ErrorAction SilentlyContinue
+  return $null -ne $process -and $process.StartTime.ToUniversalTime().Ticks -eq $Tuple.startTicks
+}
+
+# Control-owned cleanup: only the exact (PID, start time) the control recorded.
+function Stop-Concurrent120Owned($Tuple) {
+  if (Test-Concurrent120Alive $Tuple) { try { (Get-Process -Id $Tuple.processId -ErrorAction Stop).Kill() } catch {} }
+}
+
+# AC6 abort: Stop-Battery before serial cc-d while listed cc-a and its
+# grandchild run. Only that tree dies; a foreign pwsh this control starts with
+# the same token survives. Every process the control started is cleaned up.
+function Get-Concurrent120AbortFailures([string]$Label, [string]$BatterySource, [string]$ExpectedWalk) {
+  $failures = [Collections.Generic.List[string]]::new()
+  $scripts = @{ 'cc-a' = @{ body = $concurrent120Spawn }; 'cc-b' = @{ body = '' }; 'cc-c' = @{ body = $concurrent120WaitSpawn }; 'cc-d' = @{ body = '' } }
+  $fixture = New-Concurrent120Fixture $scripts $BatterySource
+  $foreign = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', "Start-Sleep -Seconds 120 # $($fixture.token)") -WindowStyle Hidden -PassThru
+  $foreignTuple = [pscustomobject]@{ processId = $foreign.Id; startTicks = $foreign.StartTime.ToUniversalTime().Ticks }
+  $child = $null; $grandchild = $null
+  try {
+    $leg = Invoke-Concurrent120Leg $fixture $Label @('-ConcurrentIdentity', $concurrent120Pair)
+    $child = Get-Concurrent120PidTuple (Join-Path $fixture.log 'a.pid')
+    $grandchild = Get-Concurrent120PidTuple (Join-Path $fixture.log 'g.pid')
+    Start-Sleep -Milliseconds 500
+    if ($null -eq $child -or $null -eq $grandchild) { $failures.Add('cc-a did not record its tree'); return ,$failures }
+    if (Test-Concurrent120Alive $child) { $failures.Add('listed child survived the abort') }
+    if ($ExpectedWalk -ceq 'ok' -and (Test-Concurrent120Alive $grandchild)) { $failures.Add('grandchild survived the abort') }
+    if (-not (Test-Concurrent120Alive $foreignTuple)) { $failures.Add('foreign pwsh started by the test was killed') }
+    $abortLines = @($leg.lines | Where-Object { $_ -clike 'CONCURRENT_ABORT *' })
+    if ($abortLines.Count -ne 1 -or $abortLines[0] -cnotlike "CONCURRENT_ABORT identity=test:cc-a.test.ps1 pid=$($child.processId) walk=$ExpectedWalk *") { $failures.Add("cleanup did not run once for cc-a with walk=${ExpectedWalk}: $($abortLines -join ' | ')") }
+    elseif ($ExpectedWalk -ceq 'ok' -and $abortLines[0] -cnotmatch "killed=.*\b$($grandchild.processId)@$($grandchild.startTicks)\b.*\b$($child.processId)@$($child.startTicks)$") { $failures.Add("abort did not kill the grandchild before the child: $($abortLines[0])") }
+    if ($null -eq $leg.record -or $leg.run.exitCode -ne 1 -or $leg.record.execution.outcome -cne 'FAIL' -or $leg.record.failureCode -cne 'SYNTHETIC_CONCURRENT_ABORT' -or
+        @($leg.record.execution.notRun) -cnotcontains 'test:cc-a.test.ps1' -or $leg.run.output -cmatch '(?m)^PASS controller release battery ') {
+      $failures.Add("aborted battery is not FAIL with cc-a not run: exit=$($leg.run.exitCode) $($leg.run.output)")
+    }
+  } finally {
+    Stop-Concurrent120Owned $grandchild
+    Stop-Concurrent120Owned $child
+    Stop-Concurrent120Owned $foreignTuple
+  }
+  return ,$failures
+}
+
+# Unit control on the production functions: a recorded child or descendant
+# whose PID now has another start time is never killed; the exact tuple is.
+$concurrent120PidReuseScript = @'
+param([string]$Battery, [string]$Out)
+$ErrorActionPreference = 'Stop'
+$errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($Battery), [ref]$null, [ref]$errors)
+foreach ($definition in @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] })) { . ([scriptblock]::Create($definition.Extent.Text)) }
+$self = (Get-Process -Id $PID).Path
+function Start-Sleeper { $p = Start-Process -FilePath $self -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 60') -WindowStyle Hidden -PassThru; [pscustomobject]@{ process = $p; processId = $p.Id; startTicks = $p.StartTime.ToUniversalTime().Ticks } }
+function Test-Alive($S) { $p = Get-Process -Id $S.processId -ErrorAction SilentlyContinue; $null -ne $p -and $p.StartTime.ToUniversalTime().Ticks -eq $S.startTicks }
+$root = Start-Sleeper; $descendant = Start-Sleeper
+try {
+  $changedRoot = Stop-BatteryConcurrentTree ([pscustomobject]@{ processId = $root.processId; startTicks = $root.startTicks + 1 })
+  $changedDescendant = Stop-BatteryProcessTuple $descendant.processId ($descendant.startTicks + 1)
+  Start-Sleep -Milliseconds 300
+  $observed = [ordered]@{
+    changedRootWalk = $changedRoot.walk; changedRootKilled = @($changedRoot.killed).Count; changedRootAlive = Test-Alive $root
+    changedDescendantKilled = $changedDescendant; changedDescendantAlive = Test-Alive $descendant
+  }
+  $exactRoot = Stop-BatteryConcurrentTree ([pscustomobject]@{ processId = $root.processId; startTicks = $root.startTicks })
+  $exactDescendant = Stop-BatteryProcessTuple $descendant.processId $descendant.startTicks
+  [void]$root.process.WaitForExit(5000); [void]$descendant.process.WaitForExit(5000)
+  $observed.exactRootKilled = @($exactRoot.killed) -ccontains "$($root.processId)@$($root.startTicks)"; $observed.exactRootAlive = Test-Alive $root
+  $observed.exactDescendantKilled = $exactDescendant; $observed.exactDescendantAlive = Test-Alive $descendant
+  [IO.File]::WriteAllText($Out, ($observed | ConvertTo-Json -Compress))
+} finally {
+  foreach ($s in @($root, $descendant)) { if (Test-Alive $s) { $s.process.Kill() } }
+}
+'@
+
+function Get-Concurrent120PidReuseFailures([string]$BatterySource) {
+  $failures = [Collections.Generic.List[string]]::new()
+  $directory = Join-Path $testRoot ('cc120-pid-reuse-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($directory)
+  $batteryPath = Join-Path $directory 'battery.ps1'; $scriptPath = Join-Path $directory 'pid-reuse.ps1'; $out = Join-Path $directory 'observed.json'
+  [IO.File]::WriteAllText($batteryPath, $BatterySource, [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($scriptPath, $concurrent120PidReuseScript, [Text.UTF8Encoding]::new($false))
+  $start = New-BatteryChildStartInfo $directory
+  foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $scriptPath, '-Battery', $batteryPath, '-Out', $out)) { [void]$start.ArgumentList.Add($argument) }
+  $run = Complete-BatteryFixtureProcess ([Diagnostics.Process]::Start($start)) 60
+  if ($run.exitCode -ne 0 -or -not (Test-Path -LiteralPath $out)) { $failures.Add("pid-reuse probe failed: $($run.output)"); return ,$failures }
+  $o = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+  if ($o.changedRootWalk -cne 'not-owned' -or $o.changedRootKilled -ne 0 -or -not $o.changedRootAlive) { $failures.Add('a child PID with a changed start time was killed or walked') }
+  if ($o.changedDescendantKilled -or -not $o.changedDescendantAlive) { $failures.Add('a descendant PID with a changed start time was killed') }
+  if (-not $o.exactRootKilled -or $o.exactRootAlive -or -not $o.exactDescendantKilled -or $o.exactDescendantAlive) { $failures.Add('exact tuples were not killed (revert control)') }
+  return ,$failures
+}
+
+function Test-BatteryConcurrentAbort {
+  $source = Get-Concurrent120Source
+  $abort = Replace-BatteryFixtureSource $source '    $itemFleetLoad = Get-BatteryFleetLoad' ("    if (`$item.identity -ceq 'test:cc-d.test.ps1') { Stop-Battery 'SYNTHETIC_CONCURRENT_ABORT' }`n    `$itemFleetLoad = Get-BatteryFleetLoad")
+  Assert-Concurrent120 'concurrent-abort-kills-own-tree' (Get-Concurrent120AbortFailures 'abort-own-tree' $abort 'ok')
+  # Named mutant: kill by image name. It matches only pwsh processes carrying a
+  # cc120- control token and this control's sleep, so nothing outside the suite.
+  $byName = Replace-BatteryFixtureSource $abort '  $liveTicks = Get-BatteryProcessStartTicks $Handle.processId' (
+    "  Get-CimInstance Win32_Process -Filter `"Name = 'pwsh.exe'`" | Where-Object { `$_.CommandLine -like '*# cc120-*' -and `$_.CommandLine -like '*Start-Sleep -Seconds 120*' } | ForEach-Object { Stop-Process -Id `$_.ProcessId -Force -ErrorAction SilentlyContinue }`n" +
+    '  $liveTicks = Get-BatteryProcessStartTicks $Handle.processId')
+  $byNameFailures = Get-Concurrent120AbortFailures 'mutant-kill-by-name' $byName 'ok'
+  Assert-BatteryTest (@($byNameFailures | Where-Object { $_ -clike 'foreign pwsh*' }).Count -gt 0) "concurrent-kill-by-name mutant SURVIVED: $($byNameFailures -join '; ')"
+  Write-Host "MUTANT 120 concurrent-kill-by-name KILLED failures=$($byNameFailures.Count): $($byNameFailures -join '; ')"
+
+  Assert-Concurrent120 'concurrent-abort-pid-reuse' (Get-Concurrent120PidReuseFailures $source)
+  $noCheck = Replace-BatteryFixtureSource $source '    if ($process.StartTime.ToUniversalTime().Ticks -ne $StartTicks) { return $false }' ''
+  $noCheckFailures = Get-Concurrent120PidReuseFailures $noCheck
+  Assert-BatteryTest (@($noCheckFailures | Where-Object { $_ -clike 'a descendant PID*' }).Count -gt 0) "concurrent-kill-without-start-check mutant SURVIVED: $($noCheckFailures -join '; ')"
+  Write-Host "MUTANT 120 concurrent-kill-without-start-check KILLED failures=$($noCheckFailures.Count): $($noCheckFailures -join '; ')"
+
+  $walkThrows = Replace-BatteryFixtureSource $abort '  $snapshot = @(Get-CimInstance -ClassName Win32_Process' "  throw 'SYNTHETIC_WALK_THROW'`n  `$snapshot = @(Get-CimInstance -ClassName Win32_Process"
+  Assert-Concurrent120 'concurrent-abort-walk-throws' (Get-Concurrent120AbortFailures 'abort-walk-throws' $walkThrows 'error:SYNTHETIC_WALK_THROW')
+  # Named mutant: the walk exception escapes, so the child itself is never killed.
+  $uncaught = Replace-BatteryFixtureSource $walkThrows '  catch { $outcome.walk = "error:" + ($_.Exception.Message -creplace ''\s+'', ''_'') }' '  catch { throw }'
+  $uncaughtFailures = Get-Concurrent120AbortFailures 'mutant-walk-uncaught' $uncaught 'error:SYNTHETIC_WALK_THROW'
+  Assert-BatteryTest (@($uncaughtFailures | Where-Object { $_ -clike 'listed child survived*' -or $_ -clike 'cleanup did not run once*' }).Count -gt 0) "concurrent-walk-uncaught mutant SURVIVED: $($uncaughtFailures -join '; ')"
+  Write-Host "MUTANT 120 concurrent-walk-uncaught KILLED failures=$($uncaughtFailures.Count): $($uncaughtFailures -join '; ')"
+}
+
+# AC7 (battery half): a listed identity outside the impact selection is skipped
+# and never started; the same identity at -Scope full starts (revert control).
+# A failed start is a FAIL row with exit -1 and BATTERY_CONCURRENT_START_FAILED.
+function Test-BatteryConcurrentImpactAndStart {
+  $fixture = New-Concurrent120Fixture $concurrent120Quick -Baseline
+  $candidate = Save-Concurrent120Commit $fixture 'cc-c' '# impact change'
+  $impact = Invoke-Concurrent120Leg $candidate 'impact-not-selected' @('-ConcurrentIdentity', 'test:cc-a.test.ps1', '-BaselineHead', $fixture.head)
+  Assert-BatteryTest ($impact.run.exitCode -eq 0 -and $impact.run.output -cmatch '(?m)^BATTERY_SCOPE scope=impact ' -and
+    @($impact.lines | Where-Object { $_ -ceq 'CONCURRENT_SKIP identity=test:cc-a.test.ps1 reason=not-selected' }).Count -eq 1 -and
+    @($impact.lines | Where-Object { $_ -clike 'CONCURRENT_START *' }).Count -eq 0 -and (Select-Concurrent120Run $impact 'cc-a').Count -eq 0 -and
+    $impact.record.execution.mode -ceq 'foreground-file-serial-with-concurrent' -and @($impact.record.execution.concurrentIdentities).Count -eq 0) `
+    "concurrent-impact-not-selected: $($impact.run.output)"
+  $full = Invoke-Concurrent120Leg $candidate 'impact-full-revert' @('-ConcurrentIdentity', 'test:cc-a.test.ps1', '-BaselineHead', $fixture.head, '-Scope', 'full')
+  Assert-BatteryTest ($full.run.exitCode -eq 0 -and @($full.lines | Where-Object { $_ -clike 'CONCURRENT_START identity=test:cc-a.test.ps1 *' }).Count -eq 1 -and
+    (Select-Concurrent120Run $full 'cc-a').Count -eq 1 -and (@($full.record.execution.concurrentIdentities) -join ';') -ceq 'test:cc-a.test.ps1') "impact revert control did not start cc-a at full scope: $($full.run.output)"
+  Write-Host 'PASS 120 concurrent-impact-not-selected skip=1 started=0 full-scope-revert started=1'
+
+  $startFails = Replace-BatteryFixtureSource (Get-Concurrent120Source) '  $start.FileName = $Item.executable' "  `$start.FileName = Join-Path `$controller 'missing-concurrent-120.exe'"
+  $failed = Invoke-Concurrent120Leg (New-Concurrent120Fixture $concurrent120Quick $startFails) 'start-failed' @('-ConcurrentIdentity', 'test:cc-a.test.ps1')
+  $row = @($failed.record.results | Where-Object { $_.identity -ceq 'test:cc-a.test.ps1' })
+  Assert-BatteryTest ($failed.run.exitCode -eq 1 -and $row.Count -eq 1 -and $row[0].exitCode -eq -1 -and $row[0].result -ceq 'FAIL' -and
+    @($failed.lines | Where-Object { $_ -clike 'CHILD identity=test:cc-a.test.ps1 BATTERY_CONCURRENT_START_FAILED: *' }).Count -eq 1 -and
+    @($failed.rawLines | Where-Object { $_ -clike 'BATTERY_CONCURRENT_START_FAILED: *' }).Count -eq 1 -and
+    $failed.record.failureCode -ceq 'BATTERY_CHILD_FAILED:test:cc-a.test.ps1' -and @($failed.record.execution.concurrentIdentities).Count -eq 0 -and
+    (Select-Concurrent120Run $failed 'cc-a').Count -eq 0) "concurrent start failure was not a FAIL row with exit -1: $($failed.run.output)"
+  Write-Host 'PASS 120 concurrent-start-failed exit=-1 BATTERY_CONCURRENT_START_FAILED'
+}
+
+function Test-BatteryConcurrentIdentity {
+  Test-BatteryConcurrentValidation
+  Test-BatteryConcurrentOverlapAndOrder
+  Test-BatteryConcurrentFailure
+  Test-BatteryConcurrentClassification
+  Test-BatteryConcurrentAbort
+  Test-BatteryConcurrentImpactAndStart
+  Write-Output 'PASS 120 battery concurrent items: validation, overlap, stable output, failure stop, classification, abort, impact and start failure'
+}
 
 try {
+
   Assert-BatteryTest ($batteryManifest.Count -eq 2) "battery manifest count is not 2"
   if ($ValidatePlanOnly) {
     Invoke-PlanControl
@@ -2422,6 +2912,7 @@ try {
     Test-RenameImpactAndReuse
     Test-FailingBatteryResultWriteOmission
     Test-BatteryIncompleteUnderMeasuredLoad
+    Test-BatteryConcurrentIdentity
     Write-Output "PASS controller release battery tests All"
   } elseif ($Scenario -ceq "Admission") {
     Invoke-AdmissionSuite
@@ -2439,6 +2930,8 @@ try {
     Test-BatteryReuseAndBaseline
   } elseif ($Scenario -ceq 'BaselineAlsoFails') {
     Test-BatteryBaselineAlsoFails
+  } elseif ($Scenario -ceq 'ConcurrentIdentity') {
+    Test-BatteryConcurrentIdentity
   } else {
     Write-BatterySuiteResult $ExpectedControllerHead $SuiteResultOut
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"

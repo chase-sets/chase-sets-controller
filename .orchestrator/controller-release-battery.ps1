@@ -42,6 +42,13 @@ param(
   # BATTERY_NO_REUSE_IDENTITY_UNKNOWN before any item runs.
   [string]$NoReuseIdentity = "",
 
+  # Concurrent items (#120): one ';'-separated string of at most two distinct
+  # test:* identities the battery knows at -Scope full. Each listed item that is
+  # selected and not reused starts as a child process at loop start; every other
+  # item stays serial and in order. '' (the default) runs every item serially.
+  # A malformed list refuses BATTERY_CONCURRENT_IDENTITY_* before any item runs.
+  [string]$ConcurrentIdentity = "",
+
   # stop (default): end at the first failure that is neither PREEXISTING nor
   # BASELINE_ALSO_FAILS; the remaining items are recorded as not run. all: run
   # every item regardless.
@@ -628,6 +635,7 @@ if (-not $ValidatePlanOnly) {
       -ControllerBatteryScope $Scope `
       -ControllerBatteryPriorResultPath $PriorResultPath `
       -ControllerBatteryNoReuseIdentity $NoReuseIdentity `
+      -ControllerBatteryConcurrentIdentity $ConcurrentIdentity `
       -ControllerBatteryOnFailure $OnFailure
     exit $LASTEXITCODE
   }
@@ -821,6 +829,24 @@ if ($NoReuseIdentity.Length -gt 0) {
   foreach ($noReuse in $NoReuseIdentity.Split(';')) {
     if (-not $identitySet.Contains($noReuse)) { Stop-Battery "BATTERY_NO_REUSE_IDENTITY_UNKNOWN:$noReuse" }
     [void]$noReuseIdentities.Add($noReuse)
+  }
+}
+# Concurrent items (#120). An entry must be a distinct test:* identity of a test
+# file this battery knows at -Scope full; impact selection is applied at run time.
+$concurrentIdentities = [Collections.Generic.List[string]]::new()
+if ($ConcurrentIdentity.Length -gt 0) {
+  $concurrentKnown = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach ($path in $tracked) {
+    if ($path -cmatch '^\.orchestrator/.+\.test\.ps1$') { [void]$concurrentKnown.Add('test:' + $path.Substring('.orchestrator/'.Length)) }
+  }
+  $concurrentSegments = $ConcurrentIdentity.Split(';')
+  if (@($concurrentSegments | Where-Object { $_.Length -eq 0 }).Count -gt 0) { Stop-Battery 'BATTERY_CONCURRENT_IDENTITY_EMPTY_SEGMENT' }
+  if ($concurrentSegments.Count -gt 2) { Stop-Battery 'BATTERY_CONCURRENT_IDENTITY_LIMIT' }
+  foreach ($segment in $concurrentSegments) {
+    if ($segment -cnotlike 'test:*') { Stop-Battery "BATTERY_CONCURRENT_IDENTITY_NOT_TEST:$segment" }
+    if (-not $concurrentKnown.Contains($segment)) { Stop-Battery "BATTERY_CONCURRENT_IDENTITY_UNKNOWN:$segment" }
+    if ($concurrentIdentities.Contains($segment)) { Stop-Battery "BATTERY_CONCURRENT_IDENTITY_DUPLICATE:$segment" }
+    $concurrentIdentities.Add($segment)
   }
 }
 
@@ -1109,11 +1135,309 @@ function Invoke-BatteryBaselineClassification($Failed, $Item) {
   $evidenceField = if ($null -ne $evidence) { " evidence=" + (Split-Path -Parent $evidence.stdout.relativePath).Replace("\", "/") } else { "" }
   Write-Output "BASELINE identity=$($Failed.identity) classification=$classification baseline=$BaselineHead baselineExit=$baselineExit$evidenceField"
 }
+
+# Concurrent items (#120). A listed item starts as a child with the serial
+# path's executable, arguments, environment and working directory; priority is
+# inherited, stdin is closed and both streams are read asynchronously to
+# completion, so a child writing megabytes to either stream never blocks on a
+# full pipe. Each child's PID and start time are recorded at start so an abort
+# kills only trees this battery started. Children never take an admission slot.
+function Start-BatteryConcurrentItem($Item, $Children) {
+  $handle = [pscustomobject]@{
+    item = $Item; process = $null; processId = 0; startTicks = 0L; stdout = $null; stderr = $null
+    fleetLoad = Get-BatteryFleetLoad; startedUtc = [DateTime]::UtcNow.ToString("o")
+    clock = [Diagnostics.Stopwatch]::StartNew(); startError = $null; collected = $false
+  }
+  $Children.Add($handle)
+  $start = [Diagnostics.ProcessStartInfo]::new()
+  $start.FileName = $Item.executable
+  foreach ($argument in @($Item.arguments)) { $start.ArgumentList.Add([string]$argument) }
+  $start.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardInput = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::new()
+  $process.StartInfo = $start
+  try {
+    [void]$process.Start()
+  } catch {
+    $handle.clock.Stop()
+    $startException = $_.Exception
+    while ($null -ne $startException.InnerException) { $startException = $startException.InnerException }
+    $handle.startError = $startException.Message
+    $process.Dispose()
+    return $handle
+  }
+  $handle.process = $process
+  $handle.processId = $process.Id
+  $handle.startTicks = $process.StartTime.ToUniversalTime().Ticks
+  $handle.stdout = $process.StandardOutput.ReadToEndAsync()
+  $handle.stderr = $process.StandardError.ReadToEndAsync()
+  $process.StandardInput.Close()
+  return $handle
+}
+
+# $null while the child runs (unless -Wait); otherwise its exit code, whole
+# stdout then stderr, and the OS-recorded exit instant and duration.
+function Read-BatteryConcurrentExit($Handle, [switch]$Wait) {
+  if (-not $Wait -and -not $Handle.process.HasExited) { return $null }
+  $stdout = $Handle.stdout.GetAwaiter().GetResult()
+  $stderr = $Handle.stderr.GetAwaiter().GetResult()
+  $Handle.process.WaitForExit()
+  $exitTime = $Handle.process.ExitTime.ToUniversalTime()
+  return [pscustomobject]@{
+    exitCode = $Handle.process.ExitCode
+    output = @(@($stdout, $stderr) | Where-Object { -not [string]::IsNullOrEmpty($_) }) -join "`n"
+    finishedUtc = $exitTime.ToString("o")
+    elapsedMs = [long][Math]::Max(0, [Math]::Round(($exitTime - $Handle.process.StartTime.ToUniversalTime()).TotalMilliseconds))
+  }
+}
+
+# Records a finished (or, with -Wait, drained) child exactly once as a result row
+# under the serial result rules. A failed start is a FAIL row with exit code -1.
+function Receive-BatteryConcurrentItem($Handle, [switch]$Wait) {
+  if ($Handle.collected) { return }
+  $item = $Handle.item
+  if ($null -ne $Handle.startError) {
+    $exit = [pscustomobject]@{
+      exitCode = -1; output = "BATTERY_CONCURRENT_START_FAILED: $($Handle.startError)"
+      finishedUtc = [DateTime]::UtcNow.ToString("o"); elapsedMs = $Handle.clock.ElapsedMilliseconds
+    }
+  } else {
+    $exit = Read-BatteryConcurrentExit $Handle -Wait:$Wait
+    if ($null -eq $exit) { return }
+  }
+  $Handle.collected = $true
+  $measuredLoad = ($exit.exitCode -eq 75) -and ($exit.output -cmatch '(?m)^MEASURED_LOAD ')
+  $result = [pscustomobject][ordered]@{
+    identity = $item.identity
+    command = $item.command
+    exitCode = $exit.exitCode
+    result = if ($exit.exitCode -eq 0) { "PASS" } elseif ($measuredLoad) { "MEASURED_LOAD" } else { "FAIL" }
+    fleetLoad = $Handle.fleetLoad
+    startedUtc = $Handle.startedUtc
+    finishedUtc = $exit.finishedUtc
+    elapsedMs = [long]$exit.elapsedMs
+    output = ([string]$exit.output).Trim()
+    provenance = [ordered]@{kind='execution';command=$item.command;attempt='local-battery';source='local'}
+  }
+  $results.Add($result)
+  Add-BatteryTimingLines $result.identity @("ITEM $($result.identity) elapsedMs=$($result.elapsedMs) concurrent=1")
+  $lines = [Collections.Generic.List[string]]::new()
+  $lines.Add("RESULT identity=$($result.identity) exitCode=$($result.exitCode) result=$($result.result) fleetLoad=$($result.fleetLoad) startedUtc=$($result.startedUtc) finishedUtc=$($result.finishedUtc) elapsedMs=$($result.elapsedMs)")
+  if ($result.output) {
+    foreach ($line in @($result.output -split "\r?\n")) { $lines.Add("CHILD identity=$($result.identity) $line") }
+  }
+  Write-BatteryItemLines $result.identity $lines
+  return [pscustomobject]@{ result = $result; item = $item; startFailed = $null -ne $Handle.startError }
+}
+
+# Collects exited children (every child with -Drain). A child FAIL with a
+# baseline pauses: no serial item starts, every child drains, then each failed
+# child is classified in inventory order. Returns the identity that stops new
+# serial items (the first stopping failure in inventory order), or $null.
+function Invoke-BatteryConcurrentCheckpoint([switch]$Drain, [bool]$Stopped) {
+  $failed = [Collections.Generic.List[object]]::new()
+  foreach ($handle in @($concurrentChildren)) {
+    $received = Receive-BatteryConcurrentItem $handle -Wait:$Drain
+    if ($null -ne $received -and $received.result.result -ceq "FAIL") { $failed.Add($received) }
+  }
+  if ($failed.Count -eq 0) { return $null }
+  $byInventory = @{ Expression = { $inventoryIndex[$_.item.identity] } }
+  if ($BaselineHead -and $RepairIssue -eq 0 -and -not $Stopped) {
+    foreach ($handle in @($concurrentChildren)) {
+      $received = Receive-BatteryConcurrentItem $handle -Wait
+      if ($null -ne $received -and $received.result.result -ceq "FAIL") { $failed.Add($received) }
+    }
+    foreach ($received in @($failed | Sort-Object -Stable -Property $byInventory)) {
+      if ($received.startFailed) { continue }
+      Write-BatteryItemLines $received.item.identity @(Invoke-BatteryBaselineClassification $received.result $received.item)
+    }
+  }
+  $stopping = @($failed | Where-Object {
+      -not ($null -ne $_.result.PSObject.Properties["baseline"] -and $_.result.baseline.classification -cin @("PREEXISTING", "BASELINE_ALSO_FAILS"))
+    } | Sort-Object -Stable -Property $byInventory)
+  if ($OnFailure -ceq "stop" -and $stopping.Count -gt 0) { return $stopping[0].item.identity }
+  return $null
+}
+
+function Get-BatteryProcessStartTicks([int]$ProcessId) {
+  try { return [Diagnostics.Process]::GetProcessById($ProcessId).StartTime.ToUniversalTime().Ticks } catch { return $null }
+}
+
+# One Win32_Process snapshot followed by ParentProcessId from the child, keeping
+# only descendants created at or after their parent, so a recycled parent id is
+# never followed. Each kept descendant is recorded as (PID, start ticks).
+function Get-BatteryConcurrentDescendants([int]$RootId) {
+  $snapshot = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, CreationDate -ErrorAction Stop)
+  $byParent = @{}
+  $created = @{}
+  foreach ($entry in $snapshot) {
+    $created[[int]$entry.ProcessId] = $entry.CreationDate
+    $parentId = [int]$entry.ParentProcessId
+    if (-not $byParent.ContainsKey($parentId)) { $byParent[$parentId] = [Collections.Generic.List[object]]::new() }
+    $byParent[$parentId].Add($entry)
+  }
+  $tuples = [Collections.Generic.List[object]]::new()
+  if (-not $created.ContainsKey($RootId)) { return }
+  $seen = [Collections.Generic.HashSet[int]]::new()
+  [void]$seen.Add($RootId)
+  $queue = [Collections.Generic.Queue[object]]::new()
+  $queue.Enqueue([pscustomobject]@{ processId = $RootId; depth = 0 })
+  while ($queue.Count -gt 0) {
+    $parent = $queue.Dequeue()
+    if (-not $byParent.ContainsKey($parent.processId)) { continue }
+    $parentCreated = $created[$parent.processId]
+    foreach ($entry in $byParent[$parent.processId]) {
+      $childId = [int]$entry.ProcessId
+      if ($null -eq $parentCreated -or $null -eq $entry.CreationDate -or $entry.CreationDate -lt $parentCreated) { continue }
+      if (-not $seen.Add($childId)) { continue }
+      $ticks = Get-BatteryProcessStartTicks $childId
+      if ($null -eq $ticks) { continue }
+      $tuple = [pscustomobject]@{ processId = $childId; startTicks = [long]$ticks; depth = $parent.depth + 1 }
+      $tuples.Add($tuple)
+      $queue.Enqueue($tuple)
+    }
+  }
+  return $tuples
+}
+
+# Re-reads the tuple immediately before its kill; another start time is another
+# process and is skipped. A process that exits meanwhile is not an error.
+function Stop-BatteryProcessTuple([int]$ProcessId, [long]$StartTicks) {
+  try {
+    $process = [Diagnostics.Process]::GetProcessById($ProcessId)
+    if ($process.StartTime.ToUniversalTime().Ticks -ne $StartTicks) { return $false }
+    $process.Kill()
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+# Kills one started child's tree, deepest first, then the child. A child whose
+# PID now has another start time is not this battery's: nothing is killed for
+# it. A failed walk still kills the child itself.
+function Stop-BatteryConcurrentTree($Handle) {
+  $outcome = [pscustomobject]@{ killed = [Collections.Generic.List[string]]::new(); walk = "ok" }
+  $liveTicks = Get-BatteryProcessStartTicks $Handle.processId
+  if ($null -eq $liveTicks -or $liveTicks -ne $Handle.startTicks) { $outcome.walk = "not-owned"; return $outcome }
+  $descendants = @()
+  try { $descendants = @(Get-BatteryConcurrentDescendants $Handle.processId) }
+  catch { $outcome.walk = "error:" + ($_.Exception.Message -creplace '\s+', '_') }
+  foreach ($tuple in @($descendants | Sort-Object -Property depth -Descending -Stable)) {
+    if (Stop-BatteryProcessTuple $tuple.processId $tuple.startTicks) { $outcome.killed.Add("$($tuple.processId)@$($tuple.startTicks)") }
+  }
+  if (Stop-BatteryProcessTuple $Handle.processId $Handle.startTicks) { $outcome.killed.Add("$($Handle.processId)@$($Handle.startTicks)") }
+  return $outcome
+}
+
+# Abort cleanup, at most once per run: each child still running is killed with
+# its own tree and goes to NOT_RUN; a child that already exited is recorded.
+# Returns the CONCURRENT_ABORT lines; kills happen before any output.
+function Stop-BatteryConcurrentChildren {
+  $lines = [Collections.Generic.List[string]]::new()
+  if ($concurrentState.cleanupRan) { return ,$lines }
+  $concurrentState.cleanupRan = $true
+  foreach ($handle in @($concurrentChildren)) {
+    if ($handle.collected) { continue }
+    if ($null -ne $handle.startError -or ($handle.process.HasExited -and $handle.stdout.IsCompleted -and $handle.stderr.IsCompleted)) {
+      [void](Receive-BatteryConcurrentItem $handle -Wait)
+      continue
+    }
+    $handle.collected = $true
+    $outcome = if ($handle.process.HasExited) {
+      [pscustomobject]@{ killed = @(); walk = "exited" }
+    } else { Stop-BatteryConcurrentTree $handle }
+    $notRun.Add($handle.item.identity)
+    $concurrentState.aborted = $true
+    $lines.Add("CONCURRENT_ABORT identity=$($handle.item.identity) pid=$($handle.processId) walk=$($outcome.walk) killed=$(@($outcome.killed) -join ',')")
+  }
+  return ,$lines
+}
+
+# Serial mode writes item lines at once; concurrent mode defers them per item.
+function Write-BatteryItemLines([string]$Identity, $Lines) {
+  if ($null -eq $deferredItemLines) {
+    foreach ($line in @($Lines)) { Write-Output $line }
+    return
+  }
+  if (-not $deferredItemLines.ContainsKey($Identity)) { $deferredItemLines[$Identity] = [Collections.Generic.List[string]]::new() }
+  foreach ($line in @($Lines)) { $deferredItemLines[$Identity].Add([string]$line) }
+}
+
+function Add-BatteryTimingLines([string]$Identity, $Lines) {
+  if ($null -eq $deferredTimingLines) {
+    foreach ($line in @($Lines)) { $timingLines.Add([string]$line) }
+    return
+  }
+  if (-not $deferredTimingLines.ContainsKey($Identity)) { $deferredTimingLines[$Identity] = [Collections.Generic.List[string]]::new() }
+  foreach ($line in @($Lines)) { $deferredTimingLines[$Identity].Add([string]$line) }
+}
+
+# After every child has drained: results, RESULT/CHILD/BASELINE lines and
+# timing lines in inventory order, independent of completion order.
+function Write-BatteryDeferredLines {
+  if ($null -eq $deferredItemLines) { return }
+  $ordered = @($results | Sort-Object -Stable -Property @{ Expression = {
+        if ($inventoryIndex.ContainsKey($_.identity)) { $inventoryIndex[$_.identity] } else { [int]::MaxValue } } })
+  $results.Clear()
+  foreach ($result in $ordered) { $results.Add($result) }
+  foreach ($inventoryItem in $requiredItems) {
+    if ($deferredTimingLines.ContainsKey($inventoryItem.identity)) {
+      foreach ($line in $deferredTimingLines[$inventoryItem.identity]) { $timingLines.Add($line) }
+    }
+    if ($deferredItemLines.ContainsKey($inventoryItem.identity)) {
+      foreach ($line in $deferredItemLines[$inventoryItem.identity]) { Write-Output $line }
+    }
+  }
+  $deferredTimingLines.Clear()
+  $deferredItemLines.Clear()
+}
+
 $timingLines = [Collections.Generic.List[string]]::new()
 $stoppedAt = $null
 $notRun = [Collections.Generic.List[string]]::new()
+$concurrentMode = $null -ne $concurrentIdentities -and $concurrentIdentities.Count -gt 0
+$concurrentChildren = [Collections.Generic.List[object]]::new()
+$concurrentStarted = [Collections.Generic.List[string]]::new()
+$concurrentState = [pscustomobject]@{ cleanupRan = $false; aborted = $false }
+$concurrentAbortLines = @()
+$deferredItemLines = $null
+$deferredTimingLines = $null
+$inventoryIndex = @{}
+if ($concurrentMode) {
+  $deferredItemLines = [Collections.Generic.Dictionary[string, Collections.Generic.List[string]]]::new([StringComparer]::Ordinal)
+  $deferredTimingLines = [Collections.Generic.Dictionary[string, Collections.Generic.List[string]]]::new([StringComparer]::Ordinal)
+  for ($index = 0; $index -lt $requiredItems.Count; $index++) { $inventoryIndex[$requiredItems[$index].identity] = $index }
+}
 try {
+  if ($concurrentMode) {
+    $executionIdentities = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($item in $executionItems) { [void]$executionIdentities.Add($item.identity) }
+    foreach ($identity in $concurrentIdentities) {
+      if (-not $executionIdentities.Contains($identity)) { Write-Output "CONCURRENT_SKIP identity=$identity reason=not-selected" }
+    }
+    # Listed items start at loop start. A reused listed item keeps its reuse row
+    # in the serial loop and is never started.
+    foreach ($item in $executionItems) {
+      if (-not $concurrentIdentities.Contains($item.identity) -or $reusable.ContainsKey($item.identity)) { continue }
+      $executionStarted = $true
+      $handle = Start-BatteryConcurrentItem $item $concurrentChildren
+      if ($null -eq $handle.startError) {
+        $concurrentStarted.Add($item.identity)
+        Write-Output "CONCURRENT_START identity=$($item.identity) pid=$($handle.processId) startedUtc=$($handle.startedUtc) fleetLoad=$($handle.fleetLoad)"
+      }
+    }
+  }
   foreach ($item in $executionItems) {
+    if (@($concurrentChildren | Where-Object { $_.item.identity -ceq $item.identity }).Count -gt 0) { continue }
+    if ($concurrentChildren.Count -gt 0 -and $null -eq $stoppedAt) {
+      $concurrentStop = Invoke-BatteryConcurrentCheckpoint -Stopped $false
+      if ($null -ne $concurrentStop) { $stoppedAt = $concurrentStop }
+    }
     if ($null -ne $stoppedAt) { $notRun.Add($item.identity); continue }
     if ($reusable.ContainsKey($item.identity)) {
       $reuse = $reusable[$item.identity]
@@ -1133,7 +1457,7 @@ try {
       if ($null -ne $reuse.ciImport) { $result.provenance.ci = $reuse.ciImport }
       elseif ($null -ne $reuse.row.provenance.ci) { $result.provenance.ci = $reuse.row.provenance.ci }
       $results.Add($result)
-      Write-Output "RESULT identity=$($result.identity) exitCode=0 result=PASS fleetLoad=$($result.fleetLoad) startedUtc=$($result.startedUtc) finishedUtc=$($result.finishedUtc) elapsedMs=$($result.elapsedMs) provenance=receipt-reuse prior=$($reuse.priorHead)"
+      Write-BatteryItemLines $result.identity @("RESULT identity=$($result.identity) exitCode=0 result=PASS fleetLoad=$($result.fleetLoad) startedUtc=$($result.startedUtc) finishedUtc=$($result.finishedUtc) elapsedMs=$($result.elapsedMs) provenance=receipt-reuse prior=$($reuse.priorHead)")
       continue
     }
     $itemFleetLoad = Get-BatteryFleetLoad
@@ -1170,23 +1494,30 @@ try {
       output = $childOutput.Trim()
       provenance = $provenance
     }
-    $timingLines.Add("ITEM $($item.identity) elapsedMs=$($itemClock.ElapsedMilliseconds)")
-    foreach ($timingLine in $childTiming) { $timingLines.Add($timingLine) }
+    Add-BatteryTimingLines $item.identity (@("ITEM $($item.identity) elapsedMs=$($itemClock.ElapsedMilliseconds)") + @($childTiming))
     $results.Add($result)
-    Write-Output "RESULT identity=$($result.identity) exitCode=$exitCode result=$($result.result) fleetLoad=$($result.fleetLoad) startedUtc=$startedUtc finishedUtc=$finishedUtc elapsedMs=$($result.elapsedMs)"
+    $itemLines = [Collections.Generic.List[string]]::new()
+    $itemLines.Add("RESULT identity=$($result.identity) exitCode=$exitCode result=$($result.result) fleetLoad=$($result.fleetLoad) startedUtc=$startedUtc finishedUtc=$finishedUtc elapsedMs=$($result.elapsedMs)")
     if ($result.output) {
       foreach ($line in @($result.output -split "\r?\n")) {
-        Write-Output "CHILD identity=$($result.identity) $line"
+        $itemLines.Add("CHILD identity=$($result.identity) $line")
       }
     }
+    Write-BatteryItemLines $result.identity $itemLines
     if ($result.result -ceq "FAIL") {
       if ($item.identity -clike "test:*" -and $BaselineHead -and $RepairIssue -eq 0) {
-        Invoke-BatteryBaselineClassification $result $item
+        Write-BatteryItemLines $item.identity @(Invoke-BatteryBaselineClassification $result $item)
       }
       $baselineAlsoFailed = $null -ne $result.PSObject.Properties["baseline"] -and $result.baseline.classification -cin @("PREEXISTING", "BASELINE_ALSO_FAILS")
       if (-not $baselineAlsoFailed -and $OnFailure -ceq "stop") { $stoppedAt = $item.identity }
     }
   }
+  if ($concurrentChildren.Count -gt 0) {
+    # Drain: running children are awaited and recorded, never killed.
+    $concurrentStop = Invoke-BatteryConcurrentCheckpoint -Drain -Stopped ($null -ne $stoppedAt)
+    if ($null -eq $stoppedAt -and $null -ne $concurrentStop) { $stoppedAt = $concurrentStop }
+  }
+  Write-BatteryDeferredLines
 
   if ($null -ne $stoppedAt) {
     Write-Output "NOT_RUN count=$($notRun.Count) after=$stoppedAt identities=$($notRun -join ',')"
@@ -1264,9 +1595,18 @@ try {
   $failureCode = $_.Exception.Message -creplace '^FAIL controller-release-battery: ', ''
   if ($batteryOutcome -cnotin @("FAIL_PREEXISTING_ONLY", "FAIL_BASELINE_ALSO_FAILS_ONLY")) { $batteryOutcome = "FAIL" }
 } finally {
+  # An abort (Stop-Battery or an exception) kills only the trees it started.
+  if ($concurrentChildren.Count -gt 0) { $concurrentAbortLines = Stop-BatteryConcurrentChildren }
   $batteryClock.Stop()
   $batteryFinishedUtc = [DateTime]::UtcNow.ToString("o")
   if ($baselineCreated) { & git -C $controller worktree remove --force $baselineRoot 2>&1 | Out-Null }
+}
+foreach ($line in @($concurrentAbortLines)) { Write-Output $line }
+Write-BatteryDeferredLines
+if ($concurrentState.aborted -and $null -eq $batteryFailure) {
+  $failureCode = "BATTERY_CONCURRENT_ABORTED"
+  $batteryFailure = "FAIL controller-release-battery: $failureCode"
+  $batteryOutcome = "FAIL"
 }
 $measuredLoadItems = @($results | Where-Object { $_.result -ceq "MEASURED_LOAD" } | ForEach-Object { $_.identity })
 
@@ -1293,7 +1633,7 @@ try {
       fleetLoad = $admissionFleetLoad
       scope = [ordered]@{ kind = $batteryScope; reason = $scopeReason; baselineHead = $BaselineHead; changedCount = $changedPaths.Count }
       execution = [ordered]@{
-        mode = "foreground-file-serial"
+        mode = if ($concurrentMode) { "foreground-file-serial-with-concurrent" } else { "foreground-file-serial" }
         outcome = $batteryOutcome
         startedUtc = $batteryStartedUtc
         finishedUtc = $batteryFinishedUtc
@@ -1324,6 +1664,7 @@ try {
         sha256 = $rawHash
       }
     }
+    if ($concurrentMode) { $resultRecord.execution.concurrentIdentities = @($concurrentStarted) }
     if ($null -ne $batteryFailure) { $resultRecord.failureCode = $failureCode }
     $resultBytes = [Text.UTF8Encoding]::new($false).GetBytes(($resultRecord | ConvertTo-Json -Compress -Depth 20) + "`n")
     Invoke-BatteryArtifactWriteSeam $resolvedResult
