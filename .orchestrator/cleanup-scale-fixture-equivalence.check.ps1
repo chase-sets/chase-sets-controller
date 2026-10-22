@@ -135,19 +135,20 @@ function Get-Regions([string]$Text,[string]$Name){
 }
 # B link: the helpers that write fixture files, construction through the scale
 # PASS receipt, and the finally region.
-function Get-FunctionText([string]$Text,[string]$Name){
-  $found=@((Get-Ast $Text 'B link').FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq$Name},$false))
-  if($found.Count-ne1){Stop-Check "B link function $Name occurs $($found.Count) times"};$found[0].Extent.Text
+function Get-FunctionText([string]$Text,[string]$Name,[string]$Side){
+  $found=@((Get-Ast $Text $Side).FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq$Name},$false))
+  if($found.Count-ne1){Stop-Check "$Side function $Name occurs $($found.Count) times"};$found[0].Extent.Text
 }
 function Get-ScaleSpan([string]$Text,[string]$Name){
   $lines=Get-Lines $Text;$start=Get-OnlyIndex $lines $ConstructionStart "$Name construction-start"
   $hits=@(for($i=0;$i-lt$lines.Count;$i++){if($lines[$i].StartsWith($ScaleReceipt)){$i}})
-  if($hits.Count-ne1-or$hits[0]-lt$start){Stop-Check "$Name scale receipt anchor occurs $($hits.Count) times"}
+  if($hits.Count-ne1){Stop-Check "$Name scale receipt anchor occurs $($hits.Count) times"}
+  if($hits[0]-lt$start){Stop-Check "$Name scale receipt precedes construction"}
   ,@($lines[$start..$hits[0]])
 }
 function Test-BRegions([string]$B,[string]$Baseline){
   foreach($name in 'Write-Fixture','Write-Register'){
-    if((Get-FunctionText $B $name)-cne(Get-FunctionText $Baseline $name)){Stop-Check "baseline fixture region differs from B: $name"}
+    if((Get-FunctionText $B $name 'B')-cne(Get-FunctionText $Baseline $name 'baseline')){Stop-Check "baseline fixture region differs from B: $name"}
   }
   if(((Get-ScaleSpan $B 'B')-join"`n")-cne((Get-ScaleSpan $Baseline 'baseline')-join"`n")){Stop-Check 'baseline fixture region differs from B: scale'}
   if(((Get-Regions $B 'B').teardown-join"`n")-cne((Get-Regions $Baseline 'baseline').teardown-join"`n")){Stop-Check 'baseline fixture region differs from B: teardown'}
@@ -227,12 +228,17 @@ if('static'-cin$steps){
   Write-Output "PASS static union assertions=$($s.assertions) receipts=$($s.receipts) mutants=$($s.mutants-join',') outside-lines=$($s.outsideLines) teardown-lines=$($s.teardownLines) unchanged"
   $scaleAssert='  Assert-Cleanup (@($script:scaleResult.rows|Where-Object{$_.reasonCode-ceq''identity-unrecognized''}).Count-eq150'
   $scaleAssertLine=@((Get-Lines $candidateText)|Where-Object{$_.StartsWith($scaleAssert)})[0]
+  $bReceiptLine=@((Get-Lines $bText)|Where-Object{$_.StartsWith($ScaleReceipt)})[0]
   $static=[ordered]@{
     'provenance-missing'=@('provenance object missing',{Get-PinnedSource ('0'*40) $TestPath $Pins["${BaselineHead}:$TestPath"]})
     'provenance-unpinned'=@('provenance unpinned',{Get-PinnedSource $BaselineHead '.orchestrator/cleanup-orphan-worktree-dirs.test.ps1.unpinned'})
     'provenance-mismatch'=@('provenance blob mismatch',{Get-PinnedSource $BaselineHead $TestPath $Pins["${BaselineHead}:$ProductionPath"]})
     'provenance-content'=@('provenance content mismatch',{Test-BlobBytes ([Text.Encoding]::UTF8.GetBytes($baselineText.Replace("`n","`r`n"))) $Pins["${BaselineHead}:$TestPath"] 'baseline'})
+    'b-writer-region'=@('baseline fixture region differs from B: Write-Fixture',{Test-BRegions (Edit-Once $bText '[Text.UTF8Encoding]::new($false))}' '[Text.UTF8Encoding]::new($true))}') $baselineText})
     'b-helper-region'=@('baseline fixture region differs from B: Write-Register',{Test-BRegions (Edit-Once $bText '(Synthetic platform)' '(Synthetic platform B)') $baselineText})
+    'b-function-missing'=@('B function Write-Fixture occurs 0 times',{Test-BRegions (Edit-Once $bText 'function Write-Fixture(' 'function Write-FixtureRenamed(') $baselineText})
+    'b-receipt-missing'=@('B scale receipt anchor occurs 0 times',{Test-BRegions (Remove-OnlyLine $bText $ScaleReceipt) $baselineText})
+    'b-receipt-order'=@('B scale receipt precedes construction',{Test-BRegions (Edit-Once (Remove-OnlyLine $bText $ScaleReceipt) "`n$ConstructionStart`n" "`n$bReceiptLine`n$ConstructionStart`n") $baselineText})
     'b-scale-region'=@('baseline fixture region differs from B: scale',{Test-BRegions (Edit-Once $bText "'{0:d4}.txt'" "'{0:d5}.txt'") $baselineText})
     'b-teardown-region'=@('baseline fixture region differs from B: teardown',{Test-BRegions (Edit-Once $bText "`n$Removal`n" "`n$($Removal.Replace(' -Force}','}'))`n") $baselineText})
     'production-policy'=@('production reclamation policy changed',{Test-Production (Write-SourceFile 'control-production' ([IO.File]::ReadAllText((Join-Path $repo $ProductionPath))+"# control`n"))})
