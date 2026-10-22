@@ -3004,9 +3004,19 @@ function Complete-Fleet99Leg($Leg, [int]$Seconds = 240) {
 
 # AC1: start the battery, let the quiet item start, enter a synthetic holder,
 # wait for an in-flight FLEET_SAMPLE that records it, remove the holder, then
-# let the item finish.
-function Invoke-Fleet99MidItemLeg([string]$Label, [string]$BatterySource = '', [string[]]$ExtraArguments = @()) {
-  $fixture = New-Fleet99Fixture 'quiet-holder' $fleet99QuietBody $BatterySource
+# let the item finish. The fixture copy caps the in-flight interval at 4 s
+# (production stays 60 s): the 20 s sample wait spans five intervals however
+# late the item becomes ready, and 62 in-flight samples (about 4 min) outlast
+# the 180 s ready bound plus that wait, so the holder is sampled before any
+# truncation. -ReadyDelaySeconds delays only the item's ready signal.
+function Get-Fleet99CadenceSource([string]$Source) {
+  return Replace-BatteryFixtureSource $Source 'cap = 64; firstMs = 250; maxMs = 60000' 'cap = 64; firstMs = 250; maxMs = 4000'
+}
+
+function Invoke-Fleet99MidItemLeg([string]$Label, [string]$BatterySource = '', [string[]]$ExtraArguments = @(), [int]$ReadyDelaySeconds = 0) {
+  $source = Get-Fleet99CadenceSource $(if ($BatterySource) { $BatterySource } else { Get-Fleet99Source })
+  $body = if ($ReadyDelaySeconds -gt 0) { "Start-Sleep -Seconds $ReadyDelaySeconds`n" + $fleet99QuietBody } else { $fleet99QuietBody }
+  $fixture = New-Fleet99Fixture 'quiet-holder' $body $source
   $leg = Start-Fleet99Leg $fixture $Label $ExtraArguments
   $holder = $null
   $sampleLine = $null
@@ -3090,6 +3100,10 @@ function Test-BatteryFleetMidItemHolder {
   $serial = Invoke-Fleet99MidItemLeg 'mid-item-serial'
   Assert-Fleet99 "$test serial" (Get-Fleet99MidItemFailures $serial)
   Assert-BatteryResultTiming $serial
+  # Regression control: an item ready after the production cadence would have
+  # backed off past the sample wait is still sampled mid-item.
+  $delayed = Invoke-Fleet99MidItemLeg 'mid-item-delayed-ready' -ReadyDelaySeconds 35
+  Assert-Fleet99 "$test delayed-ready" (Get-Fleet99MidItemFailures $delayed)
   $concurrent = Invoke-Fleet99MidItemLeg 'mid-item-concurrent' '' @('-ConcurrentIdentity', $fleet99Item)
   Assert-Fleet99 "$test concurrent" (Get-Fleet99MidItemFailures $concurrent)
   Assert-BatteryTest (@($concurrent.lines | Where-Object { $_ -clike "CONCURRENT_START identity=$fleet99Item * fleetLoad=none" }).Count -eq 1) "$($test): the quiet item did not start concurrently"
@@ -3102,7 +3116,7 @@ function Test-BatteryFleetMidItemHolder {
     Assert-BatteryTest ($null -ne $leg.holder -and $leg.run.exitCode -eq 0 -and $failures.Count -gt 0) "$test $($mutant.name) mutant SURVIVED: exit=$($leg.run.exitCode) $($failures -join '; ')"
     Write-Host "MUTANT 99 $test $($mutant.name) KILLED: $($failures -join '; ')"
   }
-  Write-Output "PASS 99 $test serial and concurrent; start-only and output-only mutants KILLED"
+  Write-Output "PASS 99 $test serial, delayed-ready and concurrent; start-only and output-only mutants KILLED"
 }
 
 # AC3: an item whose holder changes far more often than the cap. The sampling

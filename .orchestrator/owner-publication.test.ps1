@@ -271,7 +271,7 @@ function Invoke-ReaderInventory {
   # inspect fixture-owned retained records; they do not define live publication.
   $fixtures=@{
     # 3212: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
-    'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3212)
+    'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3226)
     'heavy-admission-preload.test.ps1'=@(82,582,611,980,986,1076,1133,1280,1326,1845,1849)
     'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
     # install-controller-skills.ps1 reads the installed release record, not heavy
