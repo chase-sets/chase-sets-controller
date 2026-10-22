@@ -1280,20 +1280,14 @@ exit $LASTEXITCODE
   # --- forced termination: the next inert dispatch reclaims only exact dead ---
   $longChild = Join-Path $testRoot "long-child.ps1"
   @'
-if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
-  while (-not (Test-Path -LiteralPath $env:DISPATCH_LONG_EXIT_REQUEST)) {
-    Start-Sleep -Milliseconds 20
-  }
-  Start-Sleep -Seconds 11
-} else {
-  Start-Sleep -Seconds 300
+while (-not (Test-Path -LiteralPath $env:DISPATCH_LONG_EXIT_REQUEST)) {
+  Start-Sleep -Milliseconds 20
 }
+Start-Sleep -Seconds 11
 '@ | Set-Content -LiteralPath $longChild
   $longRunner = Join-Path $testRoot "long-runner.ps1"
   @'
-if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
-  Start-Sleep -Seconds 16
-}
+Start-Sleep -Seconds 16
 & $env:DISPATCH_CLEANUP_LAUNCHER -Harness codex -Model gpt-6.1-sol -Effort high `
   -PromptFile $env:DISPATCH_CLEANUP_PROMPT -Worktree $env:DISPATCH_CLEANUP_WORKTREE `
   -Label $env:DISPATCH_LONG_LABEL -ExecutablePath (Join-Path $PSHOME "pwsh.exe") `
@@ -1332,7 +1326,6 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
     DISPATCH_CLEANUP_WORKTREE = $worktree
     DISPATCH_LONG_LABEL = $longLabel
     DISPATCH_LONG_CHILD = $longChild
-    DISPATCH_FILE_LATENCY_INJECTION = "1"
     DISPATCH_LONG_EXIT_REQUEST = $longExitRequest
     DISPATCH_TEST_RUNTIME_ROOT = $ownershipRoot
     DISPATCH_TEST_TEMP_ROOT = $providerTempRoot
@@ -1340,9 +1333,13 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
   $forcedLauncherProcess = Start-Process -FilePath (Join-Path $PSHOME "pwsh.exe") `
     -ArgumentList @("-NoProfile", "-NonInteractive", "-File", $longRunner) `
     -Environment $longEnvironment -WindowStyle Hidden -PassThru
+  $forcedRecordFirstSeenAt = $null
   do {
     Start-Sleep -Milliseconds 100
     $forcedRecords = @(Get-ChildItem -LiteralPath $ownershipRoot -Filter "dispatch-launch-*.json" -File)
+    if ($forcedRecords.Count -gt 0 -and $null -eq $forcedRecordFirstSeenAt) {
+      $forcedRecordFirstSeenAt = [datetimeoffset]::UtcNow
+    }
     $forcedRecord = if ($forcedRecords.Count -eq 1) {
       Get-ValidatedDispatchOwnershipRecord $forcedRecords[0].FullName $ownershipRoot $providerTempRoot
     } else {
@@ -1351,6 +1348,8 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
     if($forcedLauncherProcess.HasExited){break}
   } while ($null -eq $forcedRecord -or $forcedRecord.state -ne "started")
   Assert-True ($null -ne $forcedRecord -and $forcedRecord.state -eq "started") "long-lived inert launch publishes an exact child identity"
+  $recordPublicationDelaySeconds = ($forcedRecordFirstSeenAt - [datetimeoffset]$forcedLauncherProcess.StartTime.ToUniversalTime()).TotalSeconds
+  Assert-True ($recordPublicationDelaySeconds -ge 16) "record first seen at least 16 seconds after launch (measured=$recordPublicationDelaySeconds)"
   Assert-True ($forcedRecord.schemaVersion -eq 4 -and
     $forcedRecord.worktree -eq [IO.Path]::GetFullPath($worktree).TrimEnd("\", "/") -and
     $forcedRecord.lane -eq "lane-99" -and
@@ -1385,18 +1384,17 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
 
   Stop-Process -Id $forcedLauncherProcess.Id -Force
   $forcedLauncherProcess.WaitForExit()
-  if ($longEnvironment.DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
-    [IO.File]::WriteAllText($longExitRequest, "exit owned delayed child")
-  } elseif ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live") {
-    Stop-Process -Id $forcedChildPid -Force
-  }
+  $childExitRequestedAt = [datetimeoffset]::UtcNow
+  [IO.File]::WriteAllText($longExitRequest, "exit owned delayed child")
   $forcedChildProcess.WaitForExit()
+  $childExitDelaySeconds = ([datetimeoffset]$forcedChildProcess.ExitTime.ToUniversalTime() - $childExitRequestedAt).TotalSeconds
+  Assert-True ($childExitDelaySeconds -ge 11) "child exits at least 11 seconds after the request (measured=$childExitDelaySeconds)"
   $forcedChildProcess.Dispose()
   $forcedLauncherProcess.WaitForExit()
   $launcherGone = (Get-DispatchProcessIdentityState $forcedRecord.launcherPid $forcedRecord.launcherStartIdentity) -ceq 'dead'
   $childGone = (Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -ceq 'dead'
   Assert-True ($launcherGone -and $childGone) "forced-launch record has recorded launcher and child identities dead"
-  Write-Output "CONTROL dispatch-lane-file-latency-injection PASS recordPublicationDelaySeconds=16 childExitDelaySeconds=11 signalDriven=TRUE oldRecordBoundSeconds=15 oldExitBoundSeconds=10"
+  Write-Output "CONTROL dispatch-lane-file-latency-injection PASS recordPublicationDelaySeconds=$recordPublicationDelaySeconds childExitDelaySeconds=$childExitDelaySeconds signalDriven=TRUE oldRecordBoundSeconds=15 oldRecord=RED oldExitBoundSeconds=10 oldExit=RED candidate=GREEN"
 
   Invoke-InertRecoveryDispatch
   Assert-True (-not (Test-Path -LiteralPath $forcedRecordPath)) "next real inert dispatch reclaims terminated launch record"
