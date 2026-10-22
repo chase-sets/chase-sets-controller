@@ -87,8 +87,8 @@ try {
   $initializer = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq 'Initialize-BatteryArtifactNative' })[0].Extent.Text
   foreach ($mutant in @($false, $true)) {
     $variant = if ($mutant) { 'ArtifactUnpinned' } else { 'ArtifactPinned' }
-    $native = $initializer.Replace('BatteryArtifactWriter', $variant)
-    $native = $native.Replace('        handles.Add(parent);' + "`r`n" + '        for (int i=0;', '        handles.Add(parent);' + "`r`n" + '        try { Directory.Move(root, root + "-moved"); throw new Exception("PIN_REMOVED"); } catch (IOException) {}' + "`r`n" + '        for (int i=0;')
+    $native = $initializer.Replace('BatteryArtifactWriter', $variant).Replace("`r`n", "`n")
+    $native = $native.Replace('        handles.Add(parent);' + "`n" + '        for (int i=0;', '        handles.Add(parent);' + "`n" + '        try { Directory.Move(root, root + "-moved"); throw new Exception("PIN_REMOVED"); } catch (IOException) {}' + "`n" + '        for (int i=0;')
     if ($mutant) {
       $native = $native.Replace('directory ? 1u : 0u', 'directory ? 7u : 0u').Replace('CreateFileW(nativeParent, 0x100081, 1,', 'CreateFileW(nativeParent, 0x100081, 7,')
     }
