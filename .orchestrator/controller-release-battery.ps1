@@ -1327,6 +1327,11 @@ function Stop-BatteryConcurrentTree($Handle) {
   $descendants = @()
   try { $descendants = @(Get-BatteryConcurrentDescendants $Handle.processId) }
   catch { $outcome.walk = "error:" + ($_.Exception.Message -creplace '\s+', '_') }
+  # The child may have exited and its PID been reused between the check above and
+  # the snapshot, so the walk may have collected a foreign tree. A live child with
+  # the recorded start time now proves the snapshot saw this battery's child.
+  $afterTicks = Get-BatteryProcessStartTicks $Handle.processId
+  if ($null -eq $afterTicks -or $afterTicks -ne $Handle.startTicks) { $outcome.walk = "not-owned-after-walk"; return $outcome }
   foreach ($tuple in @($descendants | Sort-Object -Property depth -Descending -Stable)) {
     if (Stop-BatteryProcessTuple $tuple.processId $tuple.startTicks) { $outcome.killed.Add("$($tuple.processId)@$($tuple.startTicks)") }
   }

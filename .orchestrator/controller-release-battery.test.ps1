@@ -2415,6 +2415,14 @@ $gone = [DateTime]::UtcNow.AddSeconds(5)
 while ((Get-Process -Id $aPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $gone) { Start-Sleep -Milliseconds 50 }
 Start-Sleep -Milliseconds 300
 '@
+# cc-b for the classification controls: stays alive until a second cc-a run (the
+# baseline rerun) has started, or 20 s. Correct code drains cc-b before it
+# classifies, so it waits out the deadline; a no-drain mutant starts the baseline
+# while cc-b is alive under any host load, and the overlap is caught.
+$concurrent120WaitBaselineA = @'
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+while (@(Get-ChildItem -LiteralPath '{LOG}' -Filter 'cc-a-*.start' -File).Count -lt 2 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+'@
 # cc-a for the abort controls: a grandchild carrying the control token, then wait.
 $concurrent120Spawn = @'
 $g = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120 # {TOKEN}') -WindowStyle Hidden -PassThru
@@ -2694,7 +2702,7 @@ function Get-Concurrent120ResumeFailures($Leg) {
 }
 
 function Invoke-Concurrent120ClassifyLeg([string]$Label, [string]$BatterySource = '') {
-  $scripts = @{ 'cc-a' = @{ body = $concurrent120WaitGo; exit = 9 }; 'cc-b' = @{ body = 'Start-Sleep -Milliseconds 4000' }; 'cc-c' = @{ body = $concurrent120GoThenWaitA }; 'cc-d' = @{ body = '' } }
+  $scripts = @{ 'cc-a' = @{ body = $concurrent120WaitGo; exit = 9 }; 'cc-b' = @{ body = $concurrent120WaitBaselineA }; 'cc-c' = @{ body = $concurrent120GoThenWaitA }; 'cc-d' = @{ body = '' } }
   $fixture = New-Concurrent120Fixture $scripts $BatterySource -Baseline
   $candidate = Save-Concurrent120Commit $fixture 'cc-d' '# candidate change'
   return Invoke-Concurrent120Leg $candidate $Label @('-ConcurrentIdentity', $concurrent120Pair, '-BaselineHead', $fixture.head, '-Scope', 'full')
@@ -2791,9 +2799,23 @@ try {
   [void]$root.process.WaitForExit(5000); [void]$descendant.process.WaitForExit(5000)
   $observed.exactRootKilled = @($exactRoot.killed) -ccontains "$($root.processId)@$($root.startTicks)"; $observed.exactRootAlive = Test-Alive $root
   $observed.exactDescendantKilled = $exactDescendant; $observed.exactDescendantAlive = Test-Alive $descendant
+  # Root PID reused between the first check and the snapshot: the first read of
+  # the root sees the recorded start time, every later read another one, and the
+  # walk returns a live foreign process. Nothing may be killed.
+  $reusedRoot = Start-Sleeper; $foreign = Start-Sleeper
+  $script:reusedRootReads = 0
+  $realStartTicks = ${function:Get-BatteryProcessStartTicks}
+  function Get-BatteryProcessStartTicks([int]$ProcessId) {
+    if ($ProcessId -eq $reusedRoot.processId) { $script:reusedRootReads++; if ($script:reusedRootReads -gt 1) { return $reusedRoot.startTicks + 1 } }
+    return (& $realStartTicks $ProcessId)
+  }
+  function Get-BatteryConcurrentDescendants([int]$RootId) { return ,@([pscustomobject]@{ processId = $foreign.processId; startTicks = $foreign.startTicks; depth = 1 }) }
+  $reused = Stop-BatteryConcurrentTree ([pscustomobject]@{ processId = $reusedRoot.processId; startTicks = $reusedRoot.startTicks })
+  Start-Sleep -Milliseconds 300
+  $observed.reusedWalk = $reused.walk; $observed.reusedKilled = @($reused.killed).Count; $observed.reusedForeignAlive = Test-Alive $foreign
   [IO.File]::WriteAllText($Out, ($observed | ConvertTo-Json -Compress))
 } finally {
-  foreach ($s in @($root, $descendant)) { if (Test-Alive $s) { $s.process.Kill() } }
+  foreach ($s in @($root, $descendant, $reusedRoot, $foreign)) { if ($null -ne $s -and (Test-Alive $s)) { $s.process.Kill() } }
 }
 '@
 
@@ -2812,6 +2834,7 @@ function Get-Concurrent120PidReuseFailures([string]$BatterySource) {
   if ($o.changedRootWalk -cne 'not-owned' -or $o.changedRootKilled -ne 0 -or -not $o.changedRootAlive) { $failures.Add('a child PID with a changed start time was killed or walked') }
   if ($o.changedDescendantKilled -or -not $o.changedDescendantAlive) { $failures.Add('a descendant PID with a changed start time was killed') }
   if (-not $o.exactRootKilled -or $o.exactRootAlive -or -not $o.exactDescendantKilled -or $o.exactDescendantAlive) { $failures.Add('exact tuples were not killed (revert control)') }
+  if ($o.reusedWalk -cne 'not-owned-after-walk' -or $o.reusedKilled -ne 0 -or -not $o.reusedForeignAlive) { $failures.Add("a descendant collected after root PID reuse was killed: walk=$($o.reusedWalk) killed=$($o.reusedKilled)") }
   return ,$failures
 }
 
@@ -2833,6 +2856,12 @@ function Test-BatteryConcurrentAbort {
   $noCheckFailures = Get-Concurrent120PidReuseFailures $noCheck
   Assert-BatteryTest (@($noCheckFailures | Where-Object { $_ -clike 'a descendant PID*' }).Count -gt 0) "concurrent-kill-without-start-check mutant SURVIVED: $($noCheckFailures -join '; ')"
   Write-Host "MUTANT 120 concurrent-kill-without-start-check KILLED failures=$($noCheckFailures.Count): $($noCheckFailures -join '; ')"
+  # Named mutant: no root recheck after the snapshot, so a tree collected from a
+  # reused root PID is killed.
+  $noRecheck = Replace-BatteryFixtureSource $source '  if ($null -eq $afterTicks -or $afterTicks -ne $Handle.startTicks) { $outcome.walk = "not-owned-after-walk"; return $outcome }' ''
+  $noRecheckFailures = Get-Concurrent120PidReuseFailures $noRecheck
+  Assert-BatteryTest (@($noRecheckFailures | Where-Object { $_ -clike 'a descendant collected after root PID reuse*' }).Count -gt 0) "concurrent-walk-without-root-recheck mutant SURVIVED: $($noRecheckFailures -join '; ')"
+  Write-Host "MUTANT 120 concurrent-walk-without-root-recheck KILLED failures=$($noRecheckFailures.Count): $($noRecheckFailures -join '; ')"
 
   $walkThrows = Replace-BatteryFixtureSource $abort '  $snapshot = @(Get-CimInstance -ClassName Win32_Process' "  throw 'SYNTHETIC_WALK_THROW'`n  `$snapshot = @(Get-CimInstance -ClassName Win32_Process"
   Assert-Concurrent120 'concurrent-abort-walk-throws' (Get-Concurrent120AbortFailures 'abort-walk-throws' $walkThrows 'error:SYNTHETIC_WALK_THROW')
