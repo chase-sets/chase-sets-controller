@@ -2126,7 +2126,8 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   }
   $source=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
   $delayNeedle='          & { . $block; Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label } | Out-Null'
-  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n"+$delayNeedle
+  $delay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n          [IO.File]::WriteAllText(`$record.hold.expirePath,(@{pid=`$record.hold.pid;startIdentity=`$record.hold.startIdentity;expiredAt=([datetimeoffset]::UtcNow).ToString('o')}|ConvertTo-Json -Compress)) # SYNTHETIC_9531_EXPIRE`n"+$delayNeedle
+  $candidateDelay="          [Threading.Thread]::Sleep(31000) # SYNTHETIC_9531_PRE_ARM_DELAY`n"+$delayNeedle
   # This new proof arm ends only after the complete native omission/release pair.
   # It is not a carrier PASS; the existing unmodified whole carrier runs below.
   $controlNeedle='      $binding=MeasuredResume8076 $w $seed $o $runtime $label $runControl8076'
@@ -2143,7 +2144,7 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
   $old=Invoke-8102DispatchLeg $test '9531-delayed-old-order' $oldOrder $false
   $site=(Get-8076GuardSites (Join-Path $old.copy.runtime 'landed-integration-evidence.psm1')).refusal
   Assert-8102 ($old.exit-eq1-and$old.measured.Count-eq0-and-not$old.finished-and$old.text.Contains("8076 AC3 NOT_CONSTRUCTIBLE: held wait-omitted mutant did not refuse at psm1:$site")) $test 'restored old order loses the exact live-root omission refusal after the fixed delay' $old
-  $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$delay),@($controlNeedle,$controlEnd))}
+  $candidateEdits=@{'interrupted-integration-test-support.ps1'=@(@($delayNeedle,$candidateDelay),@($controlNeedle,$controlEnd))}
   $candidate=Invoke-8102DispatchLeg $test '9531-delayed-candidate' $candidateEdits $false
   Assert-8102 ($candidate.exit-eq0-and$candidate.measured.Count-eq0-and-not$candidate.finished-and$candidate.text.Contains('CONTROL 9531 native omission/release pair complete')) $test 'unarmed omission survives the fixed delay and the native pair completes, without claiming whole-carrier PASS' $candidate
   $pairs=@(Get-ChildItem -LiteralPath (Split-Path -Parent $candidate.run.stdoutPath) -File -Filter '*.wait-omitted-pair.json')
