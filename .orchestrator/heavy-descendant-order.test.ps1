@@ -79,6 +79,14 @@ foreach ($rootState in @('dead', 'reused')) {
     Write-Output "PASS descendant ordering root=$rootId state=$rootState; foreign subtrees skipped, genuine relays and tick ties retained"
   }
 }
+# A root identity keeps 100 ns while CIM creation is whole microseconds: a
+# child in the root's own microsecond stays eligible, an earlier one does not.
+$rootState = 'dead'
+$record.childProcessStartUtc = $instant.AddTicks(15).ToString('o')
+$table = @((New-Candidate 300 200 10), (New-Candidate 400 300 110))
+Assert-True ((Test-PossibleOwnedChild $record -GuardedRootOnly) -ceq $true) 'child in the root microsecond stays eligible'
+$table = @((New-Candidate 300 200 0), (New-Candidate 400 300 110))
+Assert-True ((Test-PossibleOwnedChild $record -GuardedRootOnly) -ceq $false) 'child in an earlier microsecond is excluded'
 # This edge predates the root but is itself newer than startedUtc: filtering
 # must happen before the immediate possible-worker return as well as enqueue.
 $record.childProcessStartUtc = $instant.AddTicks(120).ToString('o')
