@@ -1663,10 +1663,10 @@ function Test-PossibleOwnedChild($Record, [switch]$GuardedRootOnly) {
         $createdAt = & $getCreationUtc $candidate
         if (-not (& $testExactCimIdentity $candidatePid $createdAt.Ticks)) { return $null }
         $parentCreationTicks = if ($null -eq $parent.CreationTicks) {
-          [DateTimeOffset]::Parse($parent.StartIdentity).ToUniversalTime().Ticks
+          $rootTicks = [DateTimeOffset]::Parse($parent.StartIdentity).ToUniversalTime().Ticks; $rootTicks - ($rootTicks % 10)
         } else { [long]$parent.CreationTicks }
-        # Earlier creation belongs to a previous parent PID incarnation. Equal
-        # ticks remain eligible at the existing CIM/start-identity precision.
+        # Earlier creation belongs to a previous parent PID incarnation. Roots are
+        # cut to CIM's whole microseconds first; equal ticks stay eligible.
         if ($createdAt.Ticks -lt $parentCreationTicks) { continue }
         if ($createdAt.Ticks -ge $recordedAt.Ticks) { return $true }
         # Older processes cannot be owned workers themselves, but their

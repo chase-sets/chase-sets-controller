@@ -278,7 +278,7 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
       if ($mode -ceq 'later') { Stop-NativeFixture $identities[3] }
       Assert-True ((Test-PossibleOwnedChild $walkRecord -GuardedRootOnly) -eq $true) 'full guarded-root BFS finds real deepest grandchild'
       $eligible = if ($mode -ceq 'normal') { Test-NativeNormalRelease $record } else { Test-ReclaimableOwner $record }
-      Assert-True (-not $eligible) "$mode schema6 refuses real deepest grandchild"
+      Assert-True (-not $eligible) "$mode schema6 refuses live relay and deepest grandchild"
       Stop-NativeFixture $identities[0]
       Wait-NativeFixture { (Test-PossibleOwnedChild $walkRecord -GuardedRootOnly) -eq $false } 'deepest exact absence'
       $eligible = if ($mode -ceq 'normal') { Test-NativeNormalRelease $record } else { Test-ReclaimableOwner $record }
