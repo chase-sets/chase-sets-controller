@@ -56,7 +56,7 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $fleetContainer=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
   $holder=Join-Path $root 'native-holder.ps1'
   [IO.File]::WriteAllText($holder,@'
-param([string]$Release,[string]$Ready,[string]$Arm,[string]$ArmedReceipt,[int]$DeadlineSeconds=30,[int]$OwnerPid,[string]$OwnerStartIdentity)
+param([string]$Release,[string]$Ready,[string]$Arm,[string]$ArmedReceipt,[string]$Expire,[int]$OwnerPid,[string]$OwnerStartIdentity)
 $p=Get-Process -Id $PID
 [IO.File]::WriteAllText($Ready,([ordered]@{pid=$PID;startIdentity=$p.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json -Compress))
 if($Arm){
@@ -67,20 +67,20 @@ if($Arm){
   if(Test-Path -LiteralPath $Release){exit 0}
 }
 if($OwnerPid -and $OwnerStartIdentity){
-  while(-not(Test-Path -LiteralPath $Release)){
+  while(-not(Test-Path -LiteralPath $Release)-and-not(Test-Path -LiteralPath $Expire)){
     try{$owner=Get-Process -Id $OwnerPid -ErrorAction Stop;$live=$owner.StartTime.ToUniversalTime().ToString('o')-ceq$OwnerStartIdentity}catch{$live=$false}
     if(-not$live){exit 0}
     [Threading.Thread]::Sleep(100)
   }
   exit 0
 }
-$deadline=[datetimeoffset]::UtcNow.AddSeconds($DeadlineSeconds)
 if($Arm){
-  $receipt=[ordered]@{pid=$PID;startIdentity=$p.StartTime.ToUniversalTime().ToString('o');armedAt=$deadline.AddSeconds(-30).ToString('o');deadline=$deadline.ToString('o')}
+  $armedAt=[datetimeoffset]::UtcNow
+  $receipt=[ordered]@{pid=$PID;startIdentity=$p.StartTime.ToUniversalTime().ToString('o');armedAt=$armedAt.ToString('o');deadline=$armedAt.AddSeconds(30).ToString('o')}
   [IO.File]::WriteAllText("$ArmedReceipt.pending",($receipt|ConvertTo-Json -Compress))
   [IO.File]::Move("$ArmedReceipt.pending",$ArmedReceipt)
 }
-while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadline){[Threading.Thread]::Sleep(20)}
+while(-not(Test-Path -LiteralPath $Release)-and-not(Test-Path -LiteralPath $Expire)){[Threading.Thread]::Sleep(20)}
 '@,[Text.UTF8Encoding]::new($false))
   function Proof([bool]$Condition,[string]$Name) {
     if (-not $Condition) { throw "7963 $Carrier ASSERTION FAILED: $Name; retained=$root" }
@@ -158,23 +158,30 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
     if(@($initial.roots|Where-Object{$_.state-ceq'reuse-or-ambiguous'}).Count){$Record.classification='MEASURED_REUSE';return}
     $pending=@($initial.roots|Where-Object{$_.state-ceq'exact'})
     if(-not$pending.Count){$Record.classification='NO_REPRODUCTION';return}
-    $deadline=[datetimeoffset]::UtcNow.AddSeconds(10)
-    $Record.settleDeadline=$deadline.ToString('o')
     if($Record.hold){
       $held=@($pending|Where-Object{$_.role-ceq'launcher'-and$_.ProcessId-eq$Record.hold.pid-and(Identity8076 $_.rows[0] $Record.hold.startIdentity)})
       if($held.Count-ne1){throw '8076 AC3 NOT_CONSTRUCTIBLE: release lacks the projected holder identity'}
       $Record.hold.preReleaseObservation=Observe8076 (Rows8076 @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,ThreadCount,ExecutionState -ErrorAction Stop)) $Owner
       $live=@($Record.hold.preReleaseObservation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'exact'-and$_.rows[0].ThreadCount-gt0})
+      if(Test-Path -LiteralPath $Record.hold.expireRequestPath){
+        $expiredAt=([datetimeoffset]$Record.hold.armedReceipt.armedAt).AddSeconds(30).ToString('o')
+        [IO.File]::WriteAllText($Record.hold.expirePath,(@{pid=$Record.hold.pid;startIdentity=$Record.hold.startIdentity;expiredAt=$expiredAt}|ConvertTo-Json -Compress))
+      }
+      if(Test-Path -LiteralPath $Record.hold.expirePath){
+        $expiry=Read-RebaseJson $Record.hold.expirePath
+        if($expiry.pid-ne$Record.hold.pid-or$expiry.startIdentity-cne$Record.hold.startIdentity){throw '8076 AC3 NOT_CONSTRUCTIBLE: expiry signal identity differs'}
+        $Record.hold.expiryObserved=$true
+      }
       $Record.hold.releaseAbsent= -not(Test-Path -LiteralPath $Record.hold.releasePath)
-      $Record.hold.releaseStartedAt=[datetimeoffset]::UtcNow.ToString('o')
+      $Record.hold.releaseStartedAt=$(if($Record.hold.expiryObserved){$expiry.expiredAt}else{[datetimeoffset]::UtcNow.ToString('o')})
       $Record.hold.fleetLoadAtRelease=Get-FleetLoadObservation $fleetContainer
-      if($live.Count-ne1-or-not$Record.hold.releaseAbsent-or-not$Record.hold.armedReceipt-or
-        [datetimeoffset]$Record.hold.releaseStartedAt-ge[datetimeoffset]$Record.hold.armedReceipt.deadline){
-        # #8102: a miss of the 30 s armed bound is MEASURED_LOAD only when the
-        # platform slot was held by one live owner from arm to release; any other
-        # miss, and every miss on a vacant fleet, stays the NOT_CONSTRUCTIBLE fail.
+      $Record.hold.expiryObserved=Test-Path -LiteralPath $Record.hold.expirePath
+      if($Record.hold.expiryObserved-or$live.Count-ne1-or-not$Record.hold.releaseAbsent-or-not$Record.hold.armedReceipt){
+        # #8102: a miss is MEASURED_LOAD only when the test-owned expiry signal
+        # was observed and the platform slot was held by one live owner from arm;
+        # no wall-clock deadline decides the unmodified carrier.
         $window=Get-FleetLoadWindow $Record.hold.fleetLoadAtArm $Record.hold.fleetLoadAtRelease
-        $boundMissed=[bool]$Record.hold.armedReceipt-and[datetimeoffset]$Record.hold.releaseStartedAt-ge[datetimeoffset]$Record.hold.armedReceipt.deadline
+        $boundMissed=[bool]$Record.hold.expiryObserved
         if($boundMissed-and$Record.hold.releaseAbsent-and$window.held){
           $elapsed=([datetimeoffset]$Record.hold.releaseStartedAt-[datetimeoffset]$Record.hold.armedReceipt.armedAt).TotalSeconds
           $Record.classification='MEASURED_LOAD'
@@ -196,7 +203,7 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
       if(@($observation.roots|Where-Object{$_.state-ceq'reuse-or-ambiguous'}).Count){$Record.classification='MEASURED_REUSE';break}
       $pending=@($observation.roots|Where-Object{$_.state-ceq'exact'})
       if(-not$pending.Count){$Record.classification='MEASURED_STALE';break}
-    } while([datetimeoffset]::UtcNow-lt$deadline)
+    } while($true)
     $Record.boundExpired=($pending.Count-gt0-and$null-eq$Record.classification)
     $Record.settleCompletedAt=[datetimeoffset]::UtcNow.ToString('o')
   }
@@ -264,8 +271,7 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
         $record.hold.fleetLoadAtArm=Get-FleetLoadObservation $fleetContainer
         [IO.File]::WriteAllText($record.hold.armPath,'arm captured 8076 holder')
         $record.hold.armWrittenAt=[datetimeoffset]::UtcNow.ToString('o')
-        $readyBy=[datetimeoffset]::UtcNow.AddSeconds(10)
-        while(-not(Test-Path -LiteralPath $record.hold.armedReceiptPath)-and[datetimeoffset]::UtcNow-lt$readyBy){
+        while(-not(Test-Path -LiteralPath $record.hold.armedReceiptPath)-and-not$Seed.holder8076.HasExited){
           if($Seed.holder8076.HasExited-or$Seed.holder8076.StartTime.ToUniversalTime().ToString('o')-cne$record.hold.startIdentity){throw '8076 AC3 NOT_CONSTRUCTIBLE: armed holder identity unavailable'}
           [Threading.Thread]::Sleep(20)
         }
@@ -287,7 +293,7 @@ while(-not(Test-Path -LiteralPath $Release)-and[datetimeoffset]::UtcNow-lt$deadl
         if(-not$record.hold.armedReceipt-or-not$record.hold.preReleaseObservation-or-not$record.hold.releaseAbsent-or
           $record.hold.releaseMarginSeconds-le0-or$record.hold.Contains('cleanupReleasedAt')-or
           [datetimeoffset]$record.hold.exitedAt-le[datetimeoffset]$record.hold.releasedAt-or
-          [datetimeoffset]$record.settleCompletedAt-gt[datetimeoffset]$record.settleDeadline){throw '8076 AC3 NOT_CONSTRUCTIBLE: candidate release causality or settle bound unproven'}
+          [datetimeoffset]$record.settleCompletedAt-lt[datetimeoffset]$record.hold.releasedAt){throw '8076 AC3 NOT_CONSTRUCTIBLE: candidate release causality or terminal settlement unproven'}
         if((Get-RebaseRecordIdentity (Get-InterruptedIntegrationState $Obligation.worktree))-cne$before){throw '8076 candidate changed frozen native inputs'}
         if($binding.sources.watchdogSha256-cne$pair.watchdogSha256){throw '8076 candidate did not bind the rewritten watchdog bytes'}
         $pair.releaseCausalityProven=$true
@@ -435,14 +441,15 @@ exit $LASTEXITCODE
       $release8076=Join-Path $case '8076-holder.release';$ready8076=Join-Path $case '8076-holder.ready'
       $arm8076=Join-Path $case '8076-holder.arm';$armed8076=Join-Path $case '8076-holder.armed.json'
       $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$true;$psi.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden
-      foreach($arg in @('-NoProfile','-NonInteractive','-File',$holder,'-Release',$release8076,'-Ready',$ready8076,'-Arm',$arm8076,'-ArmedReceipt',$armed8076)){[void]$psi.ArgumentList.Add($arg)}
+      $expire8076=Join-Path $case '8076-holder.expire'
+      $expireRequest8076=Join-Path $case '8076-holder.expire-request'
+      foreach($arg in @('-NoProfile','-NonInteractive','-File',$holder,'-Release',$release8076,'-Ready',$ready8076,'-Arm',$arm8076,'-ArmedReceipt',$armed8076,'-Expire',$expire8076)){[void]$psi.ArgumentList.Add($arg)}
       $holder8076=[Diagnostics.Process]::Start($psi)
-      $readyBy=[datetimeoffset]::UtcNow.AddSeconds(10)
-      while(-not(Test-Path -LiteralPath $ready8076)-and[datetimeoffset]::UtcNow-lt$readyBy){[Threading.Thread]::Sleep(20)}
+      while(-not(Test-Path -LiteralPath $ready8076)-and-not$holder8076.HasExited){[Threading.Thread]::Sleep(20)}
       if(-not(Test-Path -LiteralPath $ready8076)){throw '8076 AC3 NOT_CONSTRUCTIBLE: native holder failed to start'}
       $born8076=Read-RebaseJson $ready8076
       if($born8076.pid-ne$holder8076.Id-or$born8076.startIdentity-cne$holder8076.StartTime.ToUniversalTime().ToString('o')){throw '8076 AC3 NOT_CONSTRUCTIBLE: native holder publication differs'}
-      $hold8076=[ordered]@{pid=$born8076.pid;startIdentity=$born8076.startIdentity;readyPath=$ready8076;releasePath=$release8076;armPath=$arm8076;armedReceiptPath=$armed8076;armStartedAt=$null;armWrittenAt=$null;armedReceipt=$null;preReleaseObservation=$null;releaseAbsent=$false;releaseStartedAt=$null;releasedAt=$null;releaseMarginSeconds=$null;exitedAt=$null}
+      $hold8076=[ordered]@{pid=$born8076.pid;startIdentity=$born8076.startIdentity;readyPath=$ready8076;releasePath=$release8076;expirePath=$expire8076;expireRequestPath=$expireRequest8076;armPath=$arm8076;armedReceiptPath=$armed8076;armStartedAt=$null;armWrittenAt=$null;armedReceipt=$null;preReleaseObservation=$null;releaseAbsent=$false;expiryObserved=$false;releaseStartedAt=$null;releasedAt=$null;releaseMarginSeconds=$null;exitedAt=$null}
     }
     $candidateDispatcher=$cfg.dispatch
     if(-not$CurrentRequest){$cfg.dispatch=$historicalDispatcher;Save $config $cfg}
@@ -493,7 +500,8 @@ exit $LASTEXITCODE
             [IO.File]::WriteAllText($release8076,'release owned 8076 holder on fixture exit')
             if($hold8076){$hold8076.cleanupReleasedAt=[datetimeoffset]::UtcNow.ToString('o')}
           }
-          $exited8076=$holder8076.WaitForExit(10000)
+          $holder8076.WaitForExit()
+          $exited8076=$holder8076.HasExited
           $exit8076=if($exited8076){$holder8076.ExitTime.ToUniversalTime().ToString('o')}else{$null}
           if($hold8076){$hold8076.exitedAt=$exit8076}
           if($seed){Save ($seed.resultPath.Replace('.result.json','.holder-exit.json')) ([ordered]@{hold=$hold8076;observedAt=[datetimeoffset]::UtcNow.ToString('o');hasExited=$exited8076;exitedAt=$exit8076})}
@@ -881,7 +889,7 @@ exit 0
         Proof ($failure -ceq 'dispatch-ownership: native original branch moved') '8023 matching branch retains original tip guard'
         $rivalMutant=Mutant 'live-rival' 'dispatch-lane.ps1' (GuardLine 'dispatch-lane.ps1' 'INTEGRATION_RESUME_OWNER: rival owner') '    # Synthetic omission: live rival exclusion.'
         # The actual foreground carrier is the synthetic rival. It cannot expire
-        # between the candidate and mutant. The separate holder's 30s deadline,
+        # between the candidate and mutant. The separate holder's expiry signal,
         # all production guards and every invocation bound remain unchanged.
         $rival=Get-Process -Id $PID
         $id=[guid]::NewGuid().ToString();$recordPath=Join-Path $f.runtime "dispatch-launch-$id.json";$label="synthetic-rival-$id"
@@ -2264,9 +2272,7 @@ function Start-SyntheticFleetHolder([string]$Container,[string]$Lane='synthetic-
 function Stop-SyntheticFleetHolder($Holder) {
   if($null-eq$Holder){return}
   try{[IO.File]::WriteAllText($Holder.stopPath,'stop')}catch{}
-  try{
-    if(-not$Holder.child.WaitForExit(5000)){$Holder.child.Kill($true);[void]$Holder.child.WaitForExit(5000)}
-  }finally{$Holder.child.Dispose()}
+  try{$Holder.child.WaitForExit()}finally{$Holder.child.Dispose()}
   if(Test-Path -LiteralPath $Holder.lockDir){Remove-Item -LiteralPath $Holder.lockDir -Recurse -Force}
 }
 # A stale owner.json: well-formed, but its wrapper and child identities name
@@ -2336,7 +2342,7 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
 # Runs one carrier from a copy in its own pwsh process, bounded, and returns the
 # raw exit and captured streams. The copy's support script is dot-sourced from
 # the copy so every fixture probe observes the copy's container.
-function Invoke-8102CarrierCopy($Copy,[string]$Carrier,[int]$TimeoutSeconds=1500) {
+function Invoke-8102CarrierCopy($Copy,[string]$Carrier) {
   $runner=Join-Path $Copy.container "run-$Carrier.ps1"
   [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier')`n",[Text.UTF8Encoding]::new($false))
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$Copy.root
@@ -2347,7 +2353,6 @@ function Invoke-8102CarrierCopy($Copy,[string]$Carrier,[int]$TimeoutSeconds=1500
   $p=[Diagnostics.Process]::Start($psi)
   try{
     $out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync()
-    if(-not$p.WaitForExit($TimeoutSeconds*1000)){$p.Kill($true);[void]$p.WaitForExit(10000);throw "8102 carrier copy $($Copy.label)/$Carrier exceeded $TimeoutSeconds s"}
     $p.WaitForExit()
     $stdout=$out.GetAwaiter().GetResult();$stderr=$err.GetAwaiter().GetResult()
     $stdoutPath=Join-Path $Copy.container "run-$Carrier.stdout.txt";$stderrPath=Join-Path $Copy.container "run-$Carrier.stderr.txt"

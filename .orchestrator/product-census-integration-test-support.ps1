@@ -1,7 +1,7 @@
 . (Join-Path $PSScriptRoot 'product-census-test-support.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
 
-function Copy-CensusController($Fixture) {
+function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0) {
   Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object Extension -In @('.ps1','.psm1','.cjs','.cs') |
     Copy-Item -Destination $Fixture.runtime
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'contracts') -Destination $Fixture.runtime -Recurse
@@ -14,11 +14,46 @@ function Copy-CensusController($Fixture) {
     $text = $text.Replace("-ceq 'chase-sets/chase-sets'", "-ceq '$SyntheticIntegrationRepository'")
     [IO.File]::WriteAllText($path,$text)
   }
+  Install-CensusDeterministicBudgetMeter $Fixture $CensusLatencyMs
 }
 
-function New-CensusIntegrationFixture([string]$Parent) {
+# Install the R3 single-anchor census meter in the copied runtime. The copied
+# dispatcher is the subject under test: its two budget clocks and one process
+# wait are replaced, while the production checkout and its real Stopwatch stay
+# untouched. A latency value is a test-only control which delays each fresh
+# evaluation before the unchanged evaluator runs.
+function Install-CensusDeterministicBudgetMeter($Fixture,[int]$LatencyMs=0) {
+  $path=Join-Path $Fixture.runtime 'dispatch-ownership.ps1'
+  $source=[IO.File]::ReadAllText($path)
+  $metered=ConvertTo-DeterministicBudgetSubject $source
+  if($LatencyMs -gt 0){
+    $anchor='function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budget) {'
+    if([regex]::Matches($metered,[regex]::Escape($anchor)).Count-ne1){throw 'census latency installer anchor is not unique'}
+    $metered=$metered.Replace($anchor,$anchor+"`n    [Threading.Thread]::Sleep($LatencyMs) # SYNTHETIC_DISPATCH_CENSUS_LATENCY")
+  }
+  $meterCode=@'
+$deterministicBudgetMeter = [pscustomobject]@{ processWaits=0 }
+$deterministicBudgetMeter | Add-Member -MemberType ScriptProperty -Name ElapsedMilliseconds -Value { 0L }
+$deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name Restart -Value { }
+$deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name WaitForProcess -Value {
+  param($Process,$Reads,$Bounds)
+  $exit=$Process.WaitForExitAsync()
+  while($true){
+    $pending=[Threading.Tasks.Task[]]@(@($exit)+@($Reads|Where-Object{-not$_.IsCompleted}))
+    if($exit.IsCompleted-or@(0,1|Where-Object{$Reads[$_].IsCompletedSuccessfully-and$Reads[$_].Result-eq$Bounds[$_]}).Count){break}
+    [void][Threading.Tasks.Task]::WaitAny($pending)
+  }
+  if(-not$Process.HasExited){$Process.Kill();$Process.WaitForExit()}
+  $this.processWaits++
+  $Process.HasExited
+}
+'@
+  [IO.File]::WriteAllText($path,$meterCode+"`n"+$metered,[Text.UTF8Encoding]::new($false))
+}
+
+function New-CensusIntegrationFixture([string]$Parent,[int]$CensusLatencyMs=0) {
   $f = New-CensusFixture $Parent
-  Copy-CensusController $f
+  Copy-CensusController $f $CensusLatencyMs
   [void](New-CensusFixtureOwner $f)
   Publish-SyntheticIntegrationRemote $f.main (Join-Path $Parent 'synthetic-product.git')
   $head = Invoke-CensusFixtureGit $f.product @('rev-parse','HEAD')
@@ -221,6 +256,36 @@ function Test-PlatformSeatNativePublication {
       }
     } finally { Remove-CensusFixture $parent }
   }
+  $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
+  try {
+    $f = New-CensusIntegrationFixture $parent 6000
+    $label = 'synthetic-8185-native-latency'
+    $request = [ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('d'*64);
+      repository=$SyntheticIntegrationRepository;pr=908185L;landedPr=908184L;landedHead=('a'*40);
+      head=$f.head;newBase=$f.head;branch='synthetic/product';worktree=$f.product;label=$label;
+      sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$f.runtime;historyPath=$f.history}
+    $requestPath = Join-Path $f.runtime "integration-request-$label.json"
+    [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Compress))
+    $owed = Join-Path $f.runtime 'integration-owed-908185-aaaaaaaaaaaa.json'
+    [IO.File]::WriteAllText($owed,(@{schemaVersion='landed-integration-owed/v1';landedPr=908184L;landedHead=('a'*40);
+      pr=908185L;targetHead=$f.head;newBase=$f.head;branch='synthetic/product';worktree=$f.product;
+      integrationLane='integration-908184-908185-aaaaaaaa'} | ConvertTo-Json -Compress))
+    $prompt = Join-Path $f.runtime "$label.prompt.txt"; [IO.File]::WriteAllText($prompt,'Synthetic native publication latency')
+    $marker = Join-Path $parent 'entered.txt'; $child = Join-Path $parent 'inert-child.ps1'
+    [IO.File]::WriteAllText($child,'param($Marker); [void][Console]::In.ReadToEnd(); [IO.File]::WriteAllText($Marker,''entered''); ''{"type":"turn.completed"}''')
+    New-Item -ItemType Directory (Join-Path $f.runtime 'platform-handoff.md') | Out-Null
+    $parameters = @{Harness='codex';Model='gpt-6.1-sol';Effort='high';Row=7;Placement='provisional';LaneRole='implementation';
+      PromptFile=$prompt;Worktree=$f.product;Label=$label;IntegrationTargetPath=$requestPath;IntegrationAuthorityFixturePath=$f.api;
+      StartRequestIdentity=('d'*64);StartAcknowledgementPath=(Join-Path $f.runtime "dispatch-start-$('d'*64).json");
+      ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$f.runtime;TestTempRoot=$f.temp;
+      TestArgumentList=@('-NoProfile','-NonInteractive','-File',$child,$marker)}
+    $config = Join-Path $parent 'launch.json'; [IO.File]::WriteAllText($config,(@{launcher=(Join-Path $f.runtime 'dispatch-lane.ps1');parameters=$parameters} | ConvertTo-Json -Depth 8))
+    $runner = Join-Path $parent 'launch.ps1'; [IO.File]::WriteAllText($runner,'param($Config); $c=Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json -AsHashtable; $p=$c.parameters; & $c.launcher @p; exit $LASTEXITCODE')
+    $output = @(& pwsh -NoProfile -NonInteractive -File $runner $config 2>&1); $code = $LASTEXITCODE
+    Assert-CensusFixture ($code -eq 0 -and (Test-Path $marker) -and
+      @(Get-ChildItem $f.runtime -Filter 'integration-rebase-prelaunch-*.json').Count -eq 1) "native publication latency injection remains green: $($output -join ' ')"
+    Write-Output 'CONTROL dispatch-census-latency-injection PASS realDelayMs=6000 meteredBudgetMs=5000 nativePublication=green'
+  } finally { Remove-CensusFixture $parent }
 }
 
 function Test-PlatformSeatLiveProductOwner {

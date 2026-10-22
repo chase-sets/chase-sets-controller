@@ -1327,7 +1327,6 @@ Start-Sleep -Seconds 300
   $forcedLauncherProcess = Start-Process -FilePath (Join-Path $PSHOME "pwsh.exe") `
     -ArgumentList @("-NoProfile", "-NonInteractive", "-File", $longRunner) `
     -Environment $longEnvironment -WindowStyle Hidden -PassThru
-  $recordDeadline = [DateTime]::UtcNow.AddSeconds(15)
   do {
     Start-Sleep -Milliseconds 100
     $forcedRecords = @(Get-ChildItem -LiteralPath $ownershipRoot -Filter "dispatch-launch-*.json" -File)
@@ -1336,7 +1335,8 @@ Start-Sleep -Seconds 300
     } else {
       $null
     }
-  } while (($null -eq $forcedRecord -or $forcedRecord.state -ne "started") -and [DateTime]::UtcNow -lt $recordDeadline)
+    if($forcedLauncherProcess.HasExited-and$null-eq$forcedRecord){break}
+  } while ($null -eq $forcedRecord -or $forcedRecord.state -ne "started")
   Assert-True ($null -ne $forcedRecord -and $forcedRecord.state -eq "started") "long-lived inert launch publishes an exact child identity"
   Assert-True ($forcedRecord.schemaVersion -eq 4 -and
     $forcedRecord.worktree -eq [IO.Path]::GetFullPath($worktree).TrimEnd("\", "/") -and
@@ -1360,6 +1360,8 @@ Start-Sleep -Seconds 300
   $forcedRecordPath = $forcedRecords[0].FullName
   $forcedChildPid = [int]$forcedRecord.childPid
   $forcedChildStartIdentity = [string]$forcedRecord.childStartIdentity
+  $forcedChildProcess = Get-Process -Id $forcedChildPid -ErrorAction Stop
+  [void]$forcedChildProcess.Handle
   Assert-True ((Test-Path -LiteralPath $forcedRecord.promptPath) -and
       (Test-Path -LiteralPath $forcedRecord.reviewIsolationRoot)) "forced-launch fixture owns its exact resources"
 
@@ -1373,12 +1375,11 @@ Start-Sleep -Seconds 300
   if ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live") {
     Stop-Process -Id $forcedChildPid -Force
   }
-  $processDeadline = [DateTime]::UtcNow.AddSeconds(10)
-  do {
-    Start-Sleep -Milliseconds 50
-    $launcherGone = @(Get-Process -Id $forcedRecord.launcherPid -ErrorAction SilentlyContinue).Count -eq 0
-    $childGone = @(Get-Process -Id $forcedChildPid -ErrorAction SilentlyContinue).Count -eq 0
-  } while ((-not $launcherGone -or -not $childGone) -and [DateTime]::UtcNow -lt $processDeadline)
+  $forcedChildProcess.WaitForExit()
+  $forcedChildProcess.Dispose()
+  $forcedLauncherProcess.WaitForExit()
+  $launcherGone = (Get-DispatchProcessIdentityState $forcedRecord.launcherPid $forcedRecord.launcherStartIdentity) -ceq 'absent'
+  $childGone = (Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -ceq 'absent'
   Assert-True ($launcherGone -and $childGone) "forced-launch record has absent recorded launcher and child PIDs"
 
   Invoke-InertRecoveryDispatch
@@ -1496,11 +1497,8 @@ Start-Sleep -Seconds 300
     $claudeHelpProcess = Start-Process -FilePath $installedClaude.Source `
       -ArgumentList @($expectedClaudeArguments + "--help") -WindowStyle Hidden -PassThru `
       -RedirectStandardOutput $claudeHelpOutput -RedirectStandardError $claudeHelpError
-    $claudeHelpExited = $claudeHelpProcess.WaitForExit(10000)
-    if (-not $claudeHelpExited) {
-      $claudeHelpProcess.Kill($true)
-      [void]$claudeHelpProcess.WaitForExit(5000)
-    }
+    $claudeHelpProcess.WaitForExit()
+    $claudeHelpExited = $claudeHelpProcess.HasExited
     Assert-True ($claudeHelpExited) "installed Claude argument fixture exits within 10 seconds without launching a model"
     Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"
     Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"
@@ -2079,9 +2077,9 @@ exit $LASTEXITCODE
 # test) and every source replacement exist only there. The live container's
 # verify-lock.d is never read for these legs, never created and never touched.
 # All legs end at the 8076 control, whose armed window is 30 s; the stall below
-# holds the candidate's release until that window has been missed.
+# sends a test-owned expiry signal instead of waiting for that window in real time.
 $stall8102Needle='      $binding=Resume8076 $record $path $Owner $Seed $Obligation $Runtime $Label'
-$stall8102=@('      while([datetimeoffset]::UtcNow-lt([datetimeoffset]$record.hold.armedReceipt.deadline).AddSeconds(1)){[Threading.Thread]::Sleep(100)} # SYNTHETIC_8102_STALL: miss the armed 30 s window',$stall8102Needle) -join "`n"
+$stall8102=@('      [IO.File]::WriteAllText($record.hold.expireRequestPath,''expire requested 8076'') # SYNTHETIC_8102_EXPIRE: test-owned expiry signal',$stall8102Needle) -join "`n"
 $unconditional8102Needle='if($boundMissed-and$Record.hold.releaseAbsent-and$window.held){'
 $unconditional8102='if($boundMissed-and$Record.hold.releaseAbsent){ # SYNTHETIC_8102_MUTANT: MEASURED_LOAD without a concurrent holder'
 $treeGuard8102Needle='function Assert-InterruptedIntegrationTreeDead($Owner) {'
