@@ -42,8 +42,9 @@ param(
   # BATTERY_NO_REUSE_IDENTITY_UNKNOWN before any item runs.
   [string]$NoReuseIdentity = "",
 
-  # stop (default): end at the first failure that is not PREEXISTING; the
-  # remaining items are recorded as not run. all: run every item regardless.
+  # stop (default): end at the first failure that is neither PREEXISTING nor
+  # BASELINE_ALSO_FAILS; the remaining items are recorded as not run. all: run
+  # every item regardless.
   [ValidateSet("stop", "all")][string]$OnFailure = "stop",
 
   [switch]$ValidatePlanOnly,
@@ -956,16 +957,37 @@ $executionStarted = $false
 $batteryFailure = $null
 $failureCode = $null
 $batteryOutcome = "FAIL"
-# Baseline classification (#8207). A failed test item is re-run once on the
+# Baseline classification (#8207, #98). A failed test item is re-run once on the
 # installed baseline in a temporary detached worktree, as soon as it fails. The
-# same exit code and the same normalized failure lines make it PREEXISTING and
-# the run continues; anything else is a REGRESSION. Repair baselines are
+# same exit code and the same nonempty normalized failure lines make it
+# PREEXISTING. Any other nonzero baseline exit is BASELINE_ALSO_FAILS: evidence
+# for the host's decision row, never PASS, PREEXISTING or installable by itself.
+# A baseline pass or an item absent at the baseline is a REGRESSION. The run
+# continues past PREEXISTING and BASELINE_ALSO_FAILS. Repair baselines are
 # unreviewed candidates and are never used.
 $baselineRoot = $null
 $baselineCreated = $false
+# With a result path, each item the baseline actually ran keeps its baseline
+# stdout, stderr, exit code and both normalized signatures as files referenced
+# from its result row. Retention is evidence only; classification never reads it.
+$baselineEvidenceRoot = $null
+$baselineEvidenceCount = 0
+function Save-BatteryBaselineEvidence([string]$Directory, [string]$Name, [string]$Text) {
+  $evidencePath = Join-Path $Directory $Name
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
+  # CreateNew: retained evidence is never truncated or overwritten.
+  $stream = [IO.FileStream]::new($evidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+  return [ordered]@{
+    relativePath = [IO.Path]::GetRelativePath($controller, $evidencePath).Replace("\", "/")
+    byteLength = $bytes.Length
+    sha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()
+  }
+}
 function Invoke-BatteryBaselineClassification($Failed, $Item) {
   $classification = "REGRESSION"
   $baselineExit = $null
+  $evidence = $null
   if (-not $script:baselineRoot) {
     $script:baselineRoot = Join-Path (Split-Path -Parent $controller) ("{0}-battery-baseline-{1}-{2}" -f [DateTime]::UtcNow.ToString("yyyyMMdd"), $BaselineHead.Substring(0, 12), $PID)
     & git -C $controller worktree add --detach --quiet $script:baselineRoot $BaselineHead 2>&1 | Out-Null
@@ -980,18 +1002,43 @@ function Invoke-BatteryBaselineClassification($Failed, $Item) {
         elseif ($_ -is [string] -and $_.StartsWith($controller, [StringComparison]::OrdinalIgnoreCase)) { $script:baselineRoot + $_.Substring($controller.Length) }
         else { $_ }
       })
-    $baselineOutput = & $Item.executable @baselineArguments 2>&1 | Out-String
+    $baselineRecords = @(& $Item.executable @baselineArguments 2>&1)
     $baselineExit = $LASTEXITCODE
+    $baselineOutput = $baselineRecords | Out-String
     $candidateSignature = Get-BatteryFailureSignature $Failed.output $controller
     $baselineSignature = Get-BatteryFailureSignature $baselineOutput $script:baselineRoot
     if ($baselineExit -eq $Failed.exitCode -and $candidateSignature -and $candidateSignature -ceq $baselineSignature) {
       $classification = "PREEXISTING"
+    } elseif ($null -ne $baselineExit -and $baselineExit -ne 0) {
+      $classification = "BASELINE_ALSO_FAILS"
+    }
+    if ($resolvedResult) {
+      if (-not $script:baselineEvidenceRoot) {
+        $script:baselineEvidenceRoot = Join-Path $artifactRoot ("{0}.baseline-{1}" -f [IO.Path]::GetFileNameWithoutExtension($resolvedResult), [guid]::NewGuid().ToString("N").Substring(0, 12))
+      }
+      $script:baselineEvidenceCount++
+      $itemDirectory = Join-Path $script:baselineEvidenceRoot ("{0:D3}-{1}" -f $script:baselineEvidenceCount, ($Failed.identity -creplace '[^A-Za-z0-9._-]', '-'))
+      if (Test-Path -LiteralPath $itemDirectory) { throw "BATTERY_BASELINE_EVIDENCE_EXISTS:$($Failed.identity)" }
+      [void][IO.Directory]::CreateDirectory($itemDirectory)
+      # Native stderr lines arrive as ErrorRecords; each stream is kept in order,
+      # one LF between lines, apart from the merged text the signature reads.
+      $stdoutText = @($baselineRecords | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ }) -join "`n"
+      $stderrText = @($baselineRecords | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"
+      $evidence = [ordered]@{
+        kind = "baseline-streams"
+        stdout = Save-BatteryBaselineEvidence $itemDirectory "stdout.txt" $stdoutText
+        stderr = Save-BatteryBaselineEvidence $itemDirectory "stderr.txt" $stderrText
+        exitCode = Save-BatteryBaselineEvidence $itemDirectory "exit-code.txt" ([string]$baselineExit)
+        candidateSignature = Save-BatteryBaselineEvidence $itemDirectory "candidate-signature.txt" $candidateSignature
+        baselineSignature = Save-BatteryBaselineEvidence $itemDirectory "baseline-signature.txt" $baselineSignature
+      }
     }
   }
-  $Failed | Add-Member -NotePropertyName baseline -NotePropertyValue ([ordered]@{
-      head = $BaselineHead; classification = $classification; exitCode = $baselineExit
-    })
-  Write-Output "BASELINE identity=$($Failed.identity) classification=$classification baseline=$BaselineHead baselineExit=$baselineExit"
+  $baselineRow = [ordered]@{ head = $BaselineHead; classification = $classification; exitCode = $baselineExit }
+  if ($null -ne $evidence) { $baselineRow.evidence = $evidence }
+  $Failed | Add-Member -NotePropertyName baseline -NotePropertyValue $baselineRow
+  $evidenceField = if ($null -ne $evidence) { " evidence=" + (Split-Path -Parent $evidence.stdout.relativePath).Replace("\", "/") } else { "" }
+  Write-Output "BASELINE identity=$($Failed.identity) classification=$classification baseline=$BaselineHead baselineExit=$baselineExit$evidenceField"
 }
 $timingLines = [Collections.Generic.List[string]]::new()
 $stoppedAt = $null
@@ -1067,8 +1114,8 @@ try {
       if ($item.identity -clike "test:*" -and $BaselineHead -and $RepairIssue -eq 0) {
         Invoke-BatteryBaselineClassification $result $item
       }
-      $preexisting = $null -ne $result.PSObject.Properties["baseline"] -and $result.baseline.classification -ceq "PREEXISTING"
-      if (-not $preexisting -and $OnFailure -ceq "stop") { $stoppedAt = $item.identity }
+      $baselineAlsoFailed = $null -ne $result.PSObject.Properties["baseline"] -and $result.baseline.classification -cin @("PREEXISTING", "BASELINE_ALSO_FAILS")
+      if (-not $baselineAlsoFailed -and $OnFailure -ceq "stop") { $stoppedAt = $item.identity }
     }
   }
 
@@ -1102,10 +1149,15 @@ try {
     }
   }
   $preexistingItems = @()
+  $baselineAlsoFailsItems = @()
   foreach ($result in $results) {
     if ($result.exitCode -ne 0 -and $result.result -cne "MEASURED_LOAD") {
       if ($null -ne $result.PSObject.Properties["baseline"] -and $result.baseline.classification -ceq "PREEXISTING") {
         $preexistingItems += $result.identity
+        continue
+      }
+      if ($null -ne $result.PSObject.Properties["baseline"] -and $result.baseline.classification -ceq "BASELINE_ALSO_FAILS") {
+        $baselineAlsoFailsItems += $result.identity
         continue
       }
       Stop-Battery "BATTERY_CHILD_FAILED:$($result.identity)"
@@ -1113,6 +1165,16 @@ try {
   }
   if ($results.Count -ne $requiredItems.Count) {
     Stop-Battery "BATTERY_RESULT_COUNT_MISMATCH"
+  }
+  # Only BASELINE_ALSO_FAILS failures remain, alone or with PREEXISTING ones:
+  # never PASS, exit 1 and never installable. The baseline also fails but with
+  # another exit or signature; the host judges each item in a decision row
+  # (Todd 4388/6167918688 item 1). Unequal signatures are never PREEXISTING here.
+  if ($baselineAlsoFailsItems.Count -gt 0) {
+    $failureCode = "BATTERY_BASELINE_ALSO_FAILS_ONLY:" + ($baselineAlsoFailsItems -join ",")
+    $batteryFailure = "FAIL controller-release-battery: $failureCode"
+    $batteryOutcome = "FAIL_BASELINE_ALSO_FAILS_ONLY"
+    throw $batteryFailure
   }
   # Only PREEXISTING failures remain: never PASS and still exit 1, but a
   # distinct outcome the governing review may accept when each item has an
@@ -1131,7 +1193,7 @@ try {
 } catch {
   $batteryFailure = $_
   $failureCode = $_.Exception.Message -creplace '^FAIL controller-release-battery: ', ''
-  if ($batteryOutcome -cne "FAIL_PREEXISTING_ONLY") { $batteryOutcome = "FAIL" }
+  if ($batteryOutcome -cnotin @("FAIL_PREEXISTING_ONLY", "FAIL_BASELINE_ALSO_FAILS_ONLY")) { $batteryOutcome = "FAIL" }
 } finally {
   $batteryClock.Stop()
   $batteryFinishedUtc = [DateTime]::UtcNow.ToString("o")
@@ -1142,7 +1204,9 @@ $measuredLoadItems = @($results | Where-Object { $_.result -ceq "MEASURED_LOAD" 
 try {
   if (($executionStarted -or $results.Count -gt 0) -and $resolvedResult) {
     $rawText = @($results | ForEach-Object {
-      "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=$($_.fleetLoad) startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)`n$($_.output)"
+      # A baseline-classified row names its label; the result field stays FAIL.
+      $baselineField = if ($null -ne $_.PSObject.Properties["baseline"]) { " baseline=$($_.baseline.classification)" } else { "" }
+      "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=$($_.fleetLoad) startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)$baselineField`n$($_.output)"
     }) -join "`n"
     $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($batteryHostLog + "`n" + $rawText + "`n")
     [IO.File]::WriteAllBytes($rawPath, $rawBytes)
@@ -1207,6 +1271,9 @@ function Write-BatteryRecap {
 if ($null -ne $batteryFailure) {
   if ($batteryOutcome -ceq "FAIL_PREEXISTING_ONLY") {
     Write-Output "FAIL_PREEXISTING_ONLY controller release battery head=$ExpectedControllerHead baseline=$BaselineHead preexisting=$($preexistingItems -join ',')"
+  }
+  if ($batteryOutcome -ceq "FAIL_BASELINE_ALSO_FAILS_ONLY") {
+    Write-Output "FAIL_BASELINE_ALSO_FAILS_ONLY controller release battery head=$ExpectedControllerHead baseline=$BaselineHead baselineAlsoFails=$($baselineAlsoFailsItems -join ',') preexisting=$($preexistingItems -join ',')"
   }
   Write-BatteryRecap
   throw $batteryFailure

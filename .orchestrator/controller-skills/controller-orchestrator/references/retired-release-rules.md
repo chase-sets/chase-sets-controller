@@ -100,12 +100,16 @@ reads runs the full battery; a battery change adds its full self-test. In an
 impact run a guard-omission mutant or #8102 classifier leg runs only when its
 guarded file or the carrier support changed; candidate arms always run. Tests
 run fastest first and the battery stops at the first failure that is not
-PREEXISTING, naming the rest not run (`-OnFailure all` runs all). A rerun
+PREEXISTING or BASELINE_ALSO_FAILS, naming the rest not run (`-OnFailure all` runs all). A rerun
 passes `-PriorResultPath` and reuses passing tests the fix cannot reach;
 guard items always run. A failure that reproduces identically on
 the installed baseline ends `FAIL_PREEXISTING_ONLY`, which never prints PASS;
 the governing review accepts it once each named item has an open issue, and
-nothing waits on that issue. The host runs the full battery on the installed
+nothing waits on that issue. A failure the baseline also fails with another
+exit code or signature is `BASELINE_ALSO_FAILS` and keeps its baseline streams
+and both signatures; alone or with PREEXISTING it ends
+`FAIL_BASELINE_ALSO_FAILS_ONLY`, never PASS or installable, and the host judges
+each item in a decision row. The host runs the full battery on the installed
 head at most weekly, hidden and never blocking a release; a failure there
 files an issue. The selected battery runs once per candidate head, by the author lane,
 with its log bound to the exact head; the governing review verifies that log
