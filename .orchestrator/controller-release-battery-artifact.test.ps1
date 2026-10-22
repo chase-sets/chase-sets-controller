@@ -90,7 +90,7 @@ try {
     $native = $initializer.Replace('BatteryArtifactWriter', $variant).Replace("`r`n", "`n")
     $native = $native.Replace('        handles.Add(parent);' + "`n" + '        for (int i=0;', '        handles.Add(parent);' + "`n" + '        try { Directory.Move(root, root + "-moved"); throw new Exception("PIN_REMOVED"); } catch (IOException) {}' + "`n" + '        for (int i=0;')
     if ($mutant) {
-      $native = $native.Replace('directory ? 1u : 0u', 'directory ? 7u : 0u').Replace('CreateFileW(nativeParent, 0x100081, 1,', 'CreateFileW(nativeParent, 0x100081, 7,')
+      $native = $native.Replace('directory || disposition != 2u ? 1u : 0u', '7u').Replace('CreateFileW(nativeParent, 0x100081, 1,', 'CreateFileW(nativeParent, 0x100081, 7,')
     }
     . ([scriptblock]::Create($native))
     Initialize-BatteryArtifactNative

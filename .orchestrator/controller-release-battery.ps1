@@ -175,6 +175,7 @@ namespace ChaseSets {
       if (!GetFileInformationByHandle(handle, out var info)) throw new Win32Exception(Marshal.GetLastWin32Error());
       if ((info.Attributes & 0x400) != 0 || ((info.Attributes & 0x10) != 0) != directory)
         throw new IOException("Artifact handle is a reparse point or has the wrong type");
+      if (!directory && info.Links != 1) throw new IOException("Artifact file has multiple hard links");
     }
     static SafeFileHandle Open(SafeFileHandle parent, string name, bool directory, uint disposition) {
       // Exactly one component. Never allow NT object names, ADS, or traversal.
@@ -187,10 +188,11 @@ namespace ChaseSets {
         Marshal.StructureToPtr(text, unicode, false);
         var attributes = new ObjectAttributes { Length=Marshal.SizeOf<ObjectAttributes>(), RootDirectory=parent.DangerousGetHandle(), ObjectName=unicode, Attributes=0x40 };
         // SYNCHRONIZE | FILE_READ_ATTRIBUTES | (LIST_DIRECTORY or GENERIC_WRITE).
-        // Directory share Read only pins both the name and reparse data against
-        // rename/delete/write while descendants are opened and written.
+        // Directory share Read pins names against rename/delete. Reparse data
+        // can still change, but NTFS refuses relative opens through a handle
+        // converted to a reparse point (0xC0000280).
         int status = NtCreateFile(out var handle, directory ? 0x100081u : 0x40100080u,
-          ref attributes, out _, IntPtr.Zero, 0, directory ? 1u : 0u, disposition,
+          ref attributes, out _, IntPtr.Zero, 0, directory || disposition != 2u ? 1u : 0u, disposition,
           0x200020u | (directory ? 1u : 0x40u), IntPtr.Zero, 0);
         if (status < 0) { handle?.Dispose(); throw new Win32Exception((int)RtlNtStatusToDosError(status)); }
         try { Check(handle, directory); return handle; } catch { handle.Dispose(); throw; }
@@ -245,7 +247,10 @@ function Write-BatteryArtifact([string]$Root, [string]$Path, [string]$Code, [byt
   try {
     Initialize-BatteryArtifactNative
     [ChaseSets.BatteryArtifactWriter]::Write($Root, $Path, $Bytes, $Directory.IsPresent, $CreateNew.IsPresent)
-  } catch { Stop-Battery $Code }
+  } catch {
+    Write-Warning "artifact write refused ($Path): $($_.Exception.Message)"
+    Stop-Battery $Code
+  }
 }
 
 function Test-SameBatteryPath([string]$Left, [string]$Right) {
@@ -828,14 +833,17 @@ function Import-BatteryCiPrior($Prior, [byte[]]$ReceiptBytes) {
   if ([string]$artifact.id -cnotmatch '^[1-9][0-9]*$' -or $artifact.expired -ne $false -or
       [string]$artifact.workflow_run.id -cne $runId -or $artifact.workflow_run.head_sha -cne $run.head_sha -or
       [string]$artifact.digest -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'CI_ARTIFACT_INVALID' }
-  $importRoot = Join-Path $runtime 'artifacts'
-  [void][IO.Directory]::CreateDirectory($importRoot)
+  $importRoot = Join-Path (Resolve-BatteryPhysicalPath $runtime) 'artifacts'
+  $importRoot = Assert-BatteryArtifactPath $importRoot $importRoot 'CI_ARTIFACT_PATH_INVALID'
   $archivePath = Join-Path $importRoot ("controller-ci-$runId-$($artifact.id)-" + [guid]::NewGuid().ToString('N') + '.zip')
+  $downloadPath = [IO.Path]::GetTempFileName()
   try {
-    Save-BatteryCiArtifact ([string]$artifact.id) $archivePath
-    $digest = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($downloadPath.StartsWith($importRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'CI_TEMP_PATH_INVALID' }
+    Save-BatteryCiArtifact ([string]$artifact.id) $downloadPath
+    $archiveBytes = [IO.File]::ReadAllBytes($downloadPath)
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($archiveBytes)).ToLowerInvariant()
     if (('sha256:' + $digest) -cne $artifact.digest) { throw 'CI_DIGEST_MISMATCH' }
-    $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    $archive = [IO.Compression.ZipArchive]::new([IO.MemoryStream]::new($archiveBytes, $false), [IO.Compression.ZipArchiveMode]::Read)
     try {
       # Do not extract untrusted paths. Compare the exact receipt bytes, not a
       # caller-editable imported JSON envelope or just its self-reported hash.
@@ -874,12 +882,18 @@ function Import-BatteryCiPrior($Prior, [byte[]]$ReceiptBytes) {
       importedUtc=[DateTime]::UtcNow.ToString('o')
     }
     $importPath = [IO.Path]::ChangeExtension($archivePath, '.import.json')
-    [IO.File]::WriteAllText($importPath, ($import | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    [void](Assert-BatteryArtifactPath $importRoot $archivePath 'CI_ARTIFACT_PATH_INVALID')
+    Invoke-BatteryArtifactWriteSeam $archivePath
+    Write-BatteryArtifact $importRoot $archivePath 'CI_ARTIFACT_PATH_INVALID' $archiveBytes -CreateNew
+    Confirm-BatteryArtifactWrite $importRoot $archivePath 'CI_ARTIFACT_PATH_INVALID'
+    [void](Assert-BatteryArtifactPath $importRoot $importPath 'CI_ARTIFACT_PATH_INVALID')
+    Invoke-BatteryArtifactWriteSeam $importPath
+    Write-BatteryArtifact $importRoot $importPath 'CI_ARTIFACT_PATH_INVALID' ([Text.UTF8Encoding]::new($false).GetBytes(($import | ConvertTo-Json -Compress))) -CreateNew
+    Confirm-BatteryArtifactWrite $importRoot $importPath 'CI_ARTIFACT_PATH_INVALID'
     return [pscustomobject]$import
-  } catch {
-    # Delete only this attempt's generated archive, never caller-supplied paths.
-    if (Test-Path -LiteralPath $archivePath -PathType Leaf) { Remove-Item -LiteralPath $archivePath -Force }
-    throw
+  } finally {
+    # Never delete through artifact paths that could have been swapped.
+    [IO.File]::Delete($downloadPath)
   }
 }
 
@@ -1188,7 +1202,7 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
         [IO.Path]::GetFileName($resolvedResult).IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0) {
       Stop-Battery "BATTERY_RESULT_PATH_INVALID"
     }
-    foreach ($outputPath in @($resolvedResult, $rawPath)) {
+    foreach ($outputPath in @($resolvedResult, $rawPath, [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt"))) {
       if ((Test-Path -LiteralPath $outputPath) -and
           ((Get-Item -LiteralPath $outputPath -Force).PSIsContainer -or
            (Get-Item -LiteralPath $outputPath -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint))) {
@@ -1967,15 +1981,15 @@ try {
     if ($concurrentMode) { $resultRecord.execution.concurrentIdentities = @($concurrentStarted) }
     if ($null -ne $batteryFailure) { $resultRecord.failureCode = $failureCode }
     $resultBytes = [Text.UTF8Encoding]::new($false).GetBytes(($resultRecord | ConvertTo-Json -Compress -Depth 20) + "`n")
-    Invoke-BatteryArtifactWriteSeam $resolvedResult
-    Write-BatteryArtifact $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID" $resultBytes
-    Confirm-BatteryArtifactWrite $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID"
     # Diagnostic per-line child timing; not bound by the result record.
     $timingPath = [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt")
     Invoke-BatteryArtifactWriteSeam $timingPath
     $timingBytes = [Text.UTF8Encoding]::new($false).GetBytes(((@($timingLines) -join [Environment]::NewLine) + $(if ($timingLines.Count) { [Environment]::NewLine } else { '' })))
     Write-BatteryArtifact $artifactRoot $timingPath "BATTERY_RESULT_PATH_INVALID" $timingBytes
     Confirm-BatteryArtifactWrite $artifactRoot $timingPath "BATTERY_RESULT_PATH_INVALID"
+    Invoke-BatteryArtifactWriteSeam $resolvedResult
+    Write-BatteryArtifact $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID" $resultBytes
+    Confirm-BatteryArtifactWrite $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID"
     Write-Output "BATTERY_RESULT path=$resolvedResult raw=$rawPath"
   }
 } catch {
