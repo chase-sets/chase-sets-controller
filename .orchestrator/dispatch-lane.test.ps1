@@ -1281,6 +1281,9 @@ exit $LASTEXITCODE
   $longChild = Join-Path $testRoot "long-child.ps1"
   @'
 if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
+  while (-not (Test-Path -LiteralPath $env:DISPATCH_LONG_EXIT_REQUEST)) {
+    Start-Sleep -Milliseconds 20
+  }
   Start-Sleep -Seconds 11
 } else {
   Start-Sleep -Seconds 300
@@ -1320,6 +1323,7 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
   }
 
   $longLabel = "test-forced-$([guid]::NewGuid())"
+  $longExitRequest = Join-Path $testRoot "long-child-exit.request"
   $launcherOutputFiles += Join-Path $ownershipRoot "$longLabel.jsonl"
   $launcherOutputFiles += Join-Path $ownershipRoot "$longLabel.err.log"
   $longEnvironment = @{
@@ -1329,6 +1333,7 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
     DISPATCH_LONG_LABEL = $longLabel
     DISPATCH_LONG_CHILD = $longChild
     DISPATCH_FILE_LATENCY_INJECTION = "1"
+    DISPATCH_LONG_EXIT_REQUEST = $longExitRequest
     DISPATCH_TEST_RUNTIME_ROOT = $ownershipRoot
     DISPATCH_TEST_TEMP_ROOT = $providerTempRoot
   }
@@ -1380,8 +1385,9 @@ if ($env:DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
 
   Stop-Process -Id $forcedLauncherProcess.Id -Force
   $forcedLauncherProcess.WaitForExit()
-  if ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live" -and
-      $longEnvironment.DISPATCH_FILE_LATENCY_INJECTION -ne "1") {
+  if ($longEnvironment.DISPATCH_FILE_LATENCY_INJECTION -eq "1") {
+    [IO.File]::WriteAllText($longExitRequest, "exit owned delayed child")
+  } elseif ((Get-DispatchProcessIdentityState $forcedChildPid $forcedChildStartIdentity) -eq "live") {
     Stop-Process -Id $forcedChildPid -Force
   }
   $forcedChildProcess.WaitForExit()
