@@ -122,15 +122,130 @@ function Assert-BatteryArtifactPath([string]$Root, [string]$Path, [string]$Code)
 # body in a copied battery to swap the artifact root between validation and a write.
 function Invoke-BatteryArtifactWriteSeam([string]$Path) {}
 
-# Detect, not prevent (#98): each check above runs before its write, but the root
-# can still be swapped for a link between that check and the open, so a write may
-# land outside the artifact root before this recheck notices. The recheck runs the
-# same at-or-below and beneath-root checks on the written path and stops the
-# battery with the same refusal code, so a swap is a loud refusal, never a silent
-# escape. Preventing the write itself (handle-anchored no-follow opens) is tracked
-# separately.
+# Defense in depth (#98): retain the path recheck after the handle-anchored write.
 function Confirm-BatteryArtifactWrite([string]$Root, [string]$Path, [string]$Code) {
   [void](Assert-BatteryArtifactPath $Root $Path $Code)
+}
+
+# Keep this implementation in the battery: copied-battery controls and release
+# hosts must use the same primitive without loading a helper through a swapped path.
+function Initialize-BatteryArtifactNative {
+  if ('ChaseSets.BatteryArtifactWriter' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace ChaseSets {
+  public static class BatteryArtifactWriter {
+    [StructLayout(LayoutKind.Sequential)] struct UnicodeString {
+      public ushort Length, MaximumLength;
+      public IntPtr Buffer;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct ObjectAttributes {
+      public int Length;
+      public IntPtr RootDirectory, ObjectName;
+      public uint Attributes;
+      public IntPtr SecurityDescriptor, SecurityQualityOfService;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct IoStatus {
+      public IntPtr Status, Information;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct FileInfo {
+      public uint Attributes;
+      public System.Runtime.InteropServices.ComTypes.FILETIME Creation, Access, Write;
+      public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+    [DllImport("ntdll.dll")] static extern int NtCreateFile(out SafeFileHandle handle,
+      uint access, ref ObjectAttributes attributes, out IoStatus status, IntPtr size,
+      uint fileAttributes, uint share, uint disposition, uint options, IntPtr ea, uint eaLength);
+    [DllImport("ntdll.dll")] static extern uint RtlNtStatusToDosError(int status);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
+      IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInfo info);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+
+    static void Check(SafeFileHandle handle, bool directory) {
+      if (!GetFileInformationByHandle(handle, out var info)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      if ((info.Attributes & 0x400) != 0 || ((info.Attributes & 0x10) != 0) != directory)
+        throw new IOException("Artifact handle is a reparse point or has the wrong type");
+    }
+    static SafeFileHandle Open(SafeFileHandle parent, string name, bool directory, uint disposition) {
+      // Exactly one component. Never allow NT object names, ADS, or traversal.
+      if (name.Length == 0 || name == "." || name == ".." || name.IndexOfAny(new[]{'\\','/',':','\0'}) >= 0)
+        throw new IOException("Invalid artifact component");
+      IntPtr buffer = Marshal.StringToHGlobalUni(name);
+      IntPtr unicode = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>());
+      try {
+        var text = new UnicodeString { Length=checked((ushort)(name.Length*2)), MaximumLength=checked((ushort)(name.Length*2)), Buffer=buffer };
+        Marshal.StructureToPtr(text, unicode, false);
+        var attributes = new ObjectAttributes { Length=Marshal.SizeOf<ObjectAttributes>(), RootDirectory=parent.DangerousGetHandle(), ObjectName=unicode, Attributes=0x40 };
+        // SYNCHRONIZE | FILE_READ_ATTRIBUTES | (LIST_DIRECTORY or GENERIC_WRITE).
+        // Directory share Read only pins both the name and reparse data against
+        // rename/delete/write while descendants are opened and written.
+        int status = NtCreateFile(out var handle, directory ? 0x100081u : 0x40100080u,
+          ref attributes, out _, IntPtr.Zero, 0, directory ? 1u : 0u, disposition,
+          0x200020u | (directory ? 1u : 0x40u), IntPtr.Zero, 0);
+        if (status < 0) { handle?.Dispose(); throw new Win32Exception((int)RtlNtStatusToDosError(status)); }
+        try { Check(handle, directory); return handle; } catch { handle.Dispose(); throw; }
+      } finally { Marshal.FreeHGlobal(unicode); Marshal.FreeHGlobal(buffer); }
+    }
+    public static void Write(string root, string path, byte[] bytes, bool directory, bool createNew) {
+      if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Artifact writes require Windows no-follow handles");
+      root = Path.GetFullPath(root).TrimEnd('\\', '/');
+      path = Path.GetFullPath(path).TrimEnd('\\', '/');
+      if (!path.Equals(root, StringComparison.OrdinalIgnoreCase) && !path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        throw new IOException("Artifact path escapes root");
+      var handles = new List<SafeFileHandle>();
+      try {
+        // Only ancestors ABOVE artifacts may have been resolved through links.
+        // The canonical parent already exists; never create it through a path.
+        string parentPath = Path.GetDirectoryName(root);
+        string nativeParent = parentPath.StartsWith("\\\\") ? "\\\\?\\UNC\\" + parentPath.Substring(2) : "\\\\?\\" + parentPath;
+        var parent = CreateFileW(nativeParent, 0x100081, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        handles.Add(parent);
+        if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        Check(parent, true);
+        var finalPath = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandleW(parent, finalPath, (uint)finalPath.Capacity, 0);
+        if (length == 0 || length >= finalPath.Capacity || !finalPath.ToString().Equals(nativeParent, StringComparison.OrdinalIgnoreCase))
+          throw new IOException("Artifact parent handle is not the canonical parent");
+        var parts = path.Equals(root, StringComparison.OrdinalIgnoreCase) ? Array.Empty<string>() : Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar);
+        parent = Open(parent, Path.GetFileName(root), true, 3); // FILE_OPEN_IF
+        handles.Add(parent);
+        for (int i=0; i<parts.Length; i++) {
+          bool isDirectory = directory || i < parts.Length-1;
+          // FILE_CREATE preserves CreateNew evidence; existing output files are
+          // opened without truncation, checked on-handle, then truncated below.
+          var child = Open(parent, parts[i], isDirectory, isDirectory ? 3u : (createNew ? 2u : 3u));
+          handles.Add(child);
+          parent = child;
+        }
+        if (!directory) {
+          if (parts.Length == 0) throw new IOException("Artifact file cannot be the root");
+          using (var stream = new FileStream(parent, FileAccess.Write)) {
+            stream.SetLength(0);
+            stream.Write(bytes, 0, bytes.Length);
+          }
+        }
+      } finally { for (int i=handles.Count-1; i>=0; i--) handles[i].Dispose(); }
+    }
+  }
+}
+'@
+}
+
+function Write-BatteryArtifact([string]$Root, [string]$Path, [string]$Code, [byte[]]$Bytes = @(), [switch]$Directory, [switch]$CreateNew) {
+  try {
+    Initialize-BatteryArtifactNative
+    [ChaseSets.BatteryArtifactWriter]::Write($Root, $Path, $Bytes, $Directory.IsPresent, $CreateNew.IsPresent)
+  } catch { Stop-Battery $Code }
 }
 
 function Test-SameBatteryPath([string]$Left, [string]$Right) {
@@ -1080,7 +1195,8 @@ if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
         Stop-Battery "BATTERY_RESULT_PATH_INVALID"
       }
     }
-    New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+    Invoke-BatteryArtifactWriteSeam $artifactRoot
+    Write-BatteryArtifact $artifactRoot $artifactRoot "BATTERY_RESULT_PATH_INVALID" -Directory
     [void](Assert-BatteryArtifactPath $artifactRoot $artifactRoot "BATTERY_RESULT_PATH_INVALID")
   } catch {
     Stop-Battery "BATTERY_RESULT_PATH_INVALID"
@@ -1232,8 +1348,7 @@ function Save-BatteryBaselineEvidence([string]$Directory, [string]$Name, [string
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text)
   Invoke-BatteryArtifactWriteSeam $evidencePath
   # CreateNew: retained evidence is never truncated or overwritten.
-  $stream = [IO.FileStream]::new($evidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-  try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+  Write-BatteryArtifact $artifactRoot $evidencePath "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$Identity" $bytes -CreateNew
   Confirm-BatteryArtifactWrite $artifactRoot $evidencePath "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$Identity"
   return [ordered]@{
     # Relative to the canonical root, which may differ from the controller path.
@@ -1281,7 +1396,8 @@ function Invoke-BatteryBaselineClassification($Failed, $Item) {
       $evidenceCode = "BATTERY_BASELINE_EVIDENCE_PATH_INVALID:$($Failed.identity)"
       $itemDirectory = Assert-BatteryArtifactPath $artifactRoot $itemDirectory $evidenceCode
       if (Test-Path -LiteralPath $itemDirectory) { throw "BATTERY_BASELINE_EVIDENCE_EXISTS:$($Failed.identity)" }
-      [void][IO.Directory]::CreateDirectory($itemDirectory)
+      Invoke-BatteryArtifactWriteSeam $itemDirectory
+      Write-BatteryArtifact $artifactRoot $itemDirectory $evidenceCode -Directory
       [void](Assert-BatteryArtifactPath $artifactRoot $itemDirectory $evidenceCode)
       # Native stderr lines arrive as ErrorRecords; each stream is kept in order,
       # one LF between lines, apart from the merged text the signature reads.
@@ -1806,7 +1922,7 @@ try {
       [void](Assert-BatteryArtifactPath $artifactRoot $outputPath "BATTERY_RESULT_PATH_INVALID")
     }
     Invoke-BatteryArtifactWriteSeam $rawPath
-    [IO.File]::WriteAllBytes($rawPath, $rawBytes)
+    Write-BatteryArtifact $artifactRoot $rawPath "BATTERY_RESULT_PATH_INVALID" $rawBytes
     Confirm-BatteryArtifactWrite $artifactRoot $rawPath "BATTERY_RESULT_PATH_INVALID"
     $rawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes))).ToLowerInvariant()
     $resultRecord = [ordered]@{
@@ -1852,12 +1968,13 @@ try {
     if ($null -ne $batteryFailure) { $resultRecord.failureCode = $failureCode }
     $resultBytes = [Text.UTF8Encoding]::new($false).GetBytes(($resultRecord | ConvertTo-Json -Compress -Depth 20) + "`n")
     Invoke-BatteryArtifactWriteSeam $resolvedResult
-    [IO.File]::WriteAllBytes($resolvedResult, $resultBytes)
+    Write-BatteryArtifact $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID" $resultBytes
     Confirm-BatteryArtifactWrite $artifactRoot $resolvedResult "BATTERY_RESULT_PATH_INVALID"
     # Diagnostic per-line child timing; not bound by the result record.
     $timingPath = [IO.Path]::ChangeExtension($resolvedResult, ".timing.txt")
     Invoke-BatteryArtifactWriteSeam $timingPath
-    try { [IO.File]::WriteAllLines($timingPath, [string[]]@($timingLines)) } catch {}
+    $timingBytes = [Text.UTF8Encoding]::new($false).GetBytes(((@($timingLines) -join [Environment]::NewLine) + $(if ($timingLines.Count) { [Environment]::NewLine } else { '' })))
+    Write-BatteryArtifact $artifactRoot $timingPath "BATTERY_RESULT_PATH_INVALID" $timingBytes
     Confirm-BatteryArtifactWrite $artifactRoot $timingPath "BATTERY_RESULT_PATH_INVALID"
     Write-Output "BATTERY_RESULT path=$resolvedResult raw=$rawPath"
   }
