@@ -1,5 +1,6 @@
 [CmdletBinding()]param([string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)
 $ErrorActionPreference='Stop'
+$suiteClock=[Diagnostics.Stopwatch]::StartNew()
 [Diagnostics.Process]::GetCurrentProcess().PriorityClass='BelowNormal'
 . (Join-Path $PSScriptRoot 'cleanup-orphan-worktree-dirs.ps1')
 $sourcePath=Join-Path $PSScriptRoot 'cleanup-orphan-worktree-dirs.ps1'
@@ -597,8 +598,10 @@ try {
   Assert-Cleanup ($skill.Contains('cleanup-orphan-worktree-dirs.ps1 -Remove -ReportPath')-and$skill.Contains('worktree-reclamation-<yyyyMMddTHHmmssZ>.json')-and$skill.Contains('2026-10-04 directive')) 'cycle and directive contract'
   Write-Output 'PASS cleanup-orphan-worktree-dirs all focused controls'
 }finally{
+  $teardown=[Diagnostics.Stopwatch]::StartNew()
   $resolved=[IO.Path]::GetFullPath($root);$evidence=[IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\','/')
   if((Split-Path -Parent $resolved).TrimEnd('\','/')-ne$evidence-or(Split-Path -Leaf $resolved)-notlike'cleanup-orphan-test-*'){throw 'unsafe cleanup test root'}
   if($KeepEvidence){Write-Output "EVIDENCE_ROOT $resolved"}
   elseif(Test-Path -LiteralPath $resolved){Remove-Item -LiteralPath $resolved -Recurse -Force}
+  $teardown.Stop();Write-Output "PHASE reclamation-scale constructionMs=$($construction.Elapsed.TotalMilliseconds) reportMs=$($wall.TotalMilliseconds) teardownMs=$($teardown.Elapsed.TotalMilliseconds) fullItemMs=$($suiteClock.Elapsed.TotalMilliseconds)"
 }
