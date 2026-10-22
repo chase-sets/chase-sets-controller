@@ -2158,6 +2158,92 @@ function Test-BatteryBaselineAlsoFails {
   Assert-BatteryTest ($outcomeFailures.Count -gt 0) 'outcome-to-FAIL_PREEXISTING_ONLY mutant SURVIVED'
   Write-Host "MUTANT 98 outcome-to-FAIL_PREEXISTING_ONLY KILLED failures=$($outcomeFailures.Count): $($outcomeFailures -join '; ')"
   Write-Output 'PASS 98 battery baseline-also-fails truth table, outcome, retention and mutants'
+  Test-BatteryArtifactReparseRefusal
+}
+
+# ---- #98 review: a junction at or above .orchestrator/artifacts refuses every
+# result and baseline-evidence write; nothing lands outside the artifact root.
+function New-Reparse98Junction([string]$Path, [string]$Target) {
+  New-Item -ItemType Junction -Path $Path -Target $Target | Out-Null
+  Assert-BatteryTest ((Get-Item -LiteralPath $Path -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) "junction fixture not created: $Path"
+}
+
+function Remove-Reparse98Junction([string]$Path) {
+  # Deletes the link itself by literal path; never recurses through it.
+  $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+  if ($null -ne $item -and $item.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { [IO.Directory]::Delete($item.FullName, $false) }
+}
+
+function New-Reparse98Outside {
+  $outside = Join-Path $testRoot ('outside-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $outside | Out-Null
+  return $outside
+}
+
+function Get-Reparse98Failures([string]$Leg, $Run, [string]$Code, [string]$Outside) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($Run.exitCode -ne 1 -or -not $Run.output.Contains($Code)) { $failures.Add("${Leg}: not refused with ${Code}: exit=$($Run.exitCode)") }
+  $written = @(Get-ChildItem -LiteralPath $Outside -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($Outside.Length) })
+  if ($written.Count -ne 0) { $failures.Add("${Leg}: wrote outside the artifact root: $($written -join ',')") }
+  if ($Run.output -cmatch '(?m)^BATTERY_RESULT path=') { $failures.Add("${Leg}: printed a written result") }
+  return ,$failures
+}
+
+# Leg artifacts-junction: the root is a junction before the run and is refused
+# before any item starts. Leg mid-run-swap: the failing item replaces the root
+# with a junction, so its baseline evidence and the final result are refused.
+function Get-Reparse98LegFailures([string]$BatterySource = '') {
+  $failures = [Collections.Generic.List[string]]::new()
+  $junctions = [Collections.Generic.List[string]]::new()
+  try {
+    $fixture = New-Baseline98Fixture $BatterySource
+    $outside = New-Reparse98Outside
+    $artifacts = Join-Path $fixture.root '.orchestrator/artifacts'
+    $junctions.Add($artifacts)
+    New-Reparse98Junction $artifacts $outside
+    $candidate = Save-BatteryFixtureCommit $fixture $candidate98Files['outcome-alone'] '98 reparse artifacts-junction'
+    $run = Invoke-BatteryProcess (Join-Path $fixture.root '.orchestrator/controller-release-battery.ps1') $candidate @('-ResultPath', (Join-Path $artifacts '98-reparse.json'), '-BaselineHead', $fixture.head, '-Scope', 'full')
+    Write-Host "CONTROL 98 reparse artifacts-junction exit=$($run.exitCode)"
+    foreach ($failure in (Get-Reparse98Failures 'artifacts-junction' $run 'BATTERY_RESULT_PATH_INVALID' $outside)) { $failures.Add($failure) }
+    if ($run.output -cmatch '(?m)^RESULT ') { $failures.Add('artifacts-junction: an item started before refusal') }
+
+    $fixture = New-Baseline98Fixture $BatterySource
+    $outside = New-Reparse98Outside
+    $artifacts = Join-Path $fixture.root '.orchestrator/artifacts'
+    $junctions.Add($artifacts)
+    $swap = @(
+      '$artifacts = Join-Path $PSScriptRoot "artifacts"',
+      'Rename-Item -LiteralPath $artifacts -NewName "artifacts-before-swap"',
+      "New-Item -ItemType Junction -Path `$artifacts -Target '$($outside.Replace("'", "''"))' | Out-Null",
+      '[Console]::Error.WriteLine("ASSERTION FAILED: swapped symptom")',
+      'exit 3'
+    ) -join "`n"
+    $files = @{}
+    foreach ($name in $candidate98Files['outcome-alone'].Keys) { $files[$name] = $candidate98Files['outcome-alone'][$name] }
+    $files['unequal.test.ps1'] = $swap + "`n"
+    $candidate = Save-BatteryFixtureCommit $fixture $files '98 reparse mid-run-swap'
+    $run = Invoke-BatteryProcess (Join-Path $fixture.root '.orchestrator/controller-release-battery.ps1') $candidate @('-ResultPath', (Join-Path $artifacts '98-reparse.json'), '-BaselineHead', $fixture.head, '-Scope', 'full')
+    Write-Host "CONTROL 98 reparse mid-run-swap exit=$($run.exitCode)"
+    $swapped = Get-Item -LiteralPath $artifacts -Force -ErrorAction SilentlyContinue
+    if ($null -eq $swapped -or -not $swapped.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+      $failures.Add('mid-run-swap: the failing item did not swap the root for a junction')
+    }
+    foreach ($failure in (Get-Reparse98Failures 'mid-run-swap' $run 'BATTERY_BASELINE_EVIDENCE_PATH_INVALID:test:unequal.test.ps1' $outside)) { $failures.Add($failure) }
+  } finally {
+    foreach ($junction in $junctions) { Remove-Reparse98Junction $junction }
+  }
+  return ,$failures
+}
+
+function Test-BatteryArtifactReparseRefusal {
+  Assert-Baseline98 'artifact-root-reparse-refusal' (Get-Reparse98LegFailures)
+
+  $source = [IO.File]::ReadAllText($battery)
+  $mutant = Replace-BatteryFixtureSource $source '    if ($null -ne $attributes -and $attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Battery $Code }' '    # reparse check removed'
+  $mutantFailures = Get-Reparse98LegFailures $mutant
+  Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike 'artifacts-junction: wrote outside*' }).Count -gt 0 -and
+    @($mutantFailures | Where-Object { $_ -clike 'mid-run-swap: wrote outside*' }).Count -gt 0) "reparse-check-removed mutant SURVIVED: $($mutantFailures -join '; ')"
+  Write-Host "MUTANT 98 reparse-check-removed KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
 }
 
 try {
