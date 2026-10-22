@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -1941,6 +1941,225 @@ function Test-BatteryHostEntry {
   Assert-BatteryTest ($script:hostFailures.Count -eq 0) ($script:hostFailures -join "`n")
 }
 
+# ---- #98 named tests: baseline-also-fails-unequal, baseline-also-fails-empty-signature,
+# preexisting-equal, regression-baseline-pass, outcome-baseline-also-fails-only and
+# baseline-stream-retention. Each leg commits a candidate over one synthetic
+# baseline and runs the battery against that baseline at full scope.
+function New-Baseline98Script([string]$Stdout = '', [string]$Stderr = '', [int]$Exit = 0) {
+  $lines = @()
+  foreach ($line in @($Stdout -split "`n" | Where-Object { $_ })) { $lines += '[Console]::Out.WriteLine("' + $line + '")' }
+  foreach ($line in @($Stderr -split "`n" | Where-Object { $_ })) { $lines += '[Console]::Error.WriteLine("' + $line + '")' }
+  $lines += "exit $Exit"
+  return ($lines -join "`n") + "`n"
+}
+$baseline98Files = @{
+  'unequal.test.ps1' = New-Baseline98Script "baseline stdout unequal one`nbaseline stdout unequal two" 'ASSERTION FAILED: baseline symptom' 3
+  'empty-signature.test.ps1' = New-Baseline98Script 'quiet baseline' '' 4
+  'preexisting-equal.test.ps1' = New-Baseline98Script 'same stdout' 'ASSERTION FAILED: same symptom' 5
+  'regression-baseline-pass.test.ps1' = New-Baseline98Script 'PASS regression baseline' '' 0
+}
+$candidate98Files = @{
+  'truth-table' = @{
+    'unequal.test.ps1' = New-Baseline98Script 'candidate stdout unequal' 'ASSERTION FAILED: candidate symptom' 3
+    'empty-signature.test.ps1' = New-Baseline98Script 'quiet candidate' '' 4
+    'regression-baseline-pass.test.ps1' = New-Baseline98Script '' 'ASSERTION FAILED: regression symptom' 6
+  }
+  'outcome-with-preexisting' = @{
+    'unequal.test.ps1' = New-Baseline98Script 'candidate stdout unequal' 'ASSERTION FAILED: candidate symptom' 3
+    'empty-signature.test.ps1' = New-Baseline98Script 'quiet candidate' '' 4
+    'regression-baseline-pass.test.ps1' = New-Baseline98Script 'PASS regression candidate' '' 0
+  }
+  'outcome-alone' = @{
+    'empty-signature.test.ps1' = New-Baseline98Script 'PASS empty candidate' '' 0
+    'preexisting-equal.test.ps1' = New-Baseline98Script 'PASS preexisting candidate' '' 0
+  }
+  'outcome-all-preexisting' = @{
+    'unequal.test.ps1' = New-Baseline98Script 'PASS unequal candidate' '' 0
+    'preexisting-equal.test.ps1' = $baseline98Files['preexisting-equal.test.ps1']
+  }
+}
+
+function New-Baseline98Fixture([string]$BatterySource = '') {
+  $files = @{}
+  foreach ($name in $baseline98Files.Keys) { $files[$name] = $baseline98Files[$name] }
+  if ($BatterySource) { $files['controller-release-battery.ps1'] = $BatterySource }
+  $fixture = New-AdmissionFixture $files 'baseline98-'
+  Set-SyntheticBatterySkillsRoot $fixture (Join-Path $testRoot ('skills-' + [guid]::NewGuid().ToString('N')))
+  return $fixture
+}
+
+function Invoke-Baseline98Leg($Fixture, [string]$Label, [string[]]$ExtraArguments = @()) {
+  $candidate = Save-BatteryFixtureCommit $Fixture $candidate98Files[$Label] "98 $Label"
+  $resultPath = Join-Path $Fixture.root ".orchestrator/artifacts/98-$Label.json"
+  $run = Invoke-BatteryProcess (Join-Path $Fixture.root '.orchestrator/controller-release-battery.ps1') $candidate (@('-ResultPath', $resultPath, '-BaselineHead', $Fixture.head, '-Scope', 'full') + $ExtraArguments)
+  $record = if (Test-Path -LiteralPath $resultPath -PathType Leaf) { Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -DateKind String } else { $null }
+  $raw = if ($null -ne $record) { [IO.File]::ReadAllText((Join-Path $Fixture.root $record.rawLog.relativePath)) } else { '' }
+  Write-Host "CONTROL 98 $Label exit=$($run.exitCode) outcome=$(if ($record) { $record.execution.outcome } else { 'NO_RECORD' })"
+  return [pscustomobject]@{
+    label = $Label; fixture = $Fixture; candidate = $candidate; run = $run; record = $record
+    lines = @($run.output -split '\r?\n'); rawLines = @($raw -split '\r?\n')
+  }
+}
+
+function Get-Baseline98Row($Leg, [string]$Name) { @($Leg.record.results | Where-Object { $_.identity -ceq "test:$Name" }) }
+
+# AC1 truth table. Returns failures instead of throwing so mutants can be judged.
+function Get-Baseline98TruthTableFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record) { $failures.Add('result record missing'); return ,$failures }
+  $cases = [ordered]@{
+    'unequal.test.ps1' = @{ test = 'baseline-also-fails-unequal'; label = 'BASELINE_ALSO_FAILS'; exit = 3; baselineExit = 3 }
+    'empty-signature.test.ps1' = @{ test = 'baseline-also-fails-empty-signature'; label = 'BASELINE_ALSO_FAILS'; exit = 4; baselineExit = 4 }
+    'preexisting-equal.test.ps1' = @{ test = 'preexisting-equal'; label = 'PREEXISTING'; exit = 5; baselineExit = 5 }
+    'regression-baseline-pass.test.ps1' = @{ test = 'regression-baseline-pass'; label = 'REGRESSION'; exit = 6; baselineExit = 0 }
+  }
+  foreach ($name in $cases.Keys) {
+    $case = $cases[$name]
+    $row = Get-Baseline98Row $Leg $name
+    if ($row.Count -ne 1 -or $row[0].result -cne 'FAIL' -or $row[0].exitCode -ne $case.exit -or
+        $row[0].baseline.classification -cne $case.label -or $row[0].baseline.exitCode -ne $case.baselineExit) {
+      $failures.Add("$($case.test): JSON row is not result=FAIL classification=$($case.label) baselineExit=$($case.baselineExit): $($row | ConvertTo-Json -Compress -Depth 8)")
+    }
+    if (@($Leg.lines | Where-Object { $_ -clike "BASELINE identity=test:$name classification=$($case.label) baseline=$($Leg.fixture.head) baselineExit=$($case.baselineExit) evidence=.orchestrator/artifacts/*" }).Count -ne 1) {
+      $failures.Add("$($case.test): BASELINE line does not carry $($case.label)")
+    }
+    if (@($Leg.lines | Where-Object { $_ -clike "RESULT identity=test:$name exitCode=$($case.exit) result=FAIL *" }).Count -ne 1) {
+      $failures.Add("$($case.test): stdout RESULT line is not result=FAIL")
+    }
+    if (@($Leg.rawLines | Where-Object { $_ -clike "RESULT identity=test:$name exitCode=$($case.exit) result=FAIL * baseline=$($case.label)" }).Count -ne 1) {
+      $failures.Add("$($case.test): raw-log RESULT line does not end baseline=$($case.label)")
+    }
+  }
+  if ($Leg.run.exitCode -ne 1 -or $Leg.record.execution.outcome -cne 'FAIL' -or
+      $Leg.record.failureCode -cne 'BATTERY_CHILD_FAILED:test:regression-baseline-pass.test.ps1') {
+    $failures.Add("regression-baseline-pass: a REGRESSION did not keep the ordinary FAIL: exit=$($Leg.run.exitCode) outcome=$($Leg.record.execution.outcome) code=$($Leg.record.failureCode)")
+  }
+  if (@($Leg.lines | Where-Object { $_ -clike 'PASS controller release battery*' -or $_ -clike 'FAIL_*_ONLY controller release battery*' }).Count -ne 0) {
+    $failures.Add('truth table printed PASS or a baseline-only outcome')
+  }
+  return ,$failures
+}
+
+# AC2 outcome. Every non-PASS item is BASELINE_ALSO_FAILS or PREEXISTING.
+function Get-Baseline98OutcomeFailures($Leg, [string[]]$BaselineAlsoFails, [string[]]$Preexisting) {
+  $failures = [Collections.Generic.List[string]]::new()
+  if ($null -eq $Leg.record) { $failures.Add('result record missing'); return ,$failures }
+  $labelled = @($Leg.record.results | Where-Object { $_.result -cne 'PASS' })
+  $observedAlso = @($labelled | Where-Object { $_.baseline.classification -ceq 'BASELINE_ALSO_FAILS' } | ForEach-Object { $_.identity })
+  $observedPre = @($labelled | Where-Object { $_.baseline.classification -ceq 'PREEXISTING' } | ForEach-Object { $_.identity })
+  if ((@($observedAlso | Sort-Object) -join ',') -cne (@($BaselineAlsoFails | Sort-Object) -join ',') -or
+      (@($observedPre | Sort-Object) -join ',') -cne (@($Preexisting | Sort-Object) -join ',') -or
+      $labelled.Count -ne ($BaselineAlsoFails.Count + $Preexisting.Count)) {
+    $failures.Add("labelled items differ: also=$($observedAlso -join ',') pre=$($observedPre -join ',') nonPass=$($labelled.Count)")
+  }
+  $head = $Leg.candidate.head; $baseline = $Leg.fixture.head
+  if ($Leg.run.exitCode -ne 1 -or $Leg.record.execution.outcome -cne 'FAIL_BASELINE_ALSO_FAILS_ONLY' -or
+      $Leg.record.failureCode -cne ('BATTERY_BASELINE_ALSO_FAILS_ONLY:' + ($observedAlso -join ','))) {
+    $failures.Add("outcome is not FAIL_BASELINE_ALSO_FAILS_ONLY exit 1: exit=$($Leg.run.exitCode) outcome=$($Leg.record.execution.outcome) code=$($Leg.record.failureCode)")
+  }
+  if (@($Leg.lines | Where-Object { $_ -ceq "FAIL_BASELINE_ALSO_FAILS_ONLY controller release battery head=$head baseline=$baseline baselineAlsoFails=$($observedAlso -join ',') preexisting=$($observedPre -join ',')" }).Count -ne 1) {
+    $failures.Add('FAIL_BASELINE_ALSO_FAILS_ONLY terminal line missing')
+  }
+  if (@($Leg.lines | Where-Object { $_ -clike 'PASS controller release battery*' -or $_ -clike 'FAIL_PREEXISTING_ONLY*' }).Count -ne 0 -or
+      $Leg.run.output.Contains('BATTERY_CHILD_FAILED')) {
+    $failures.Add('baseline-also-fails run printed PASS, FAIL_PREEXISTING_ONLY or a child failure')
+  }
+  if (@($Leg.record.execution.notRun).Count -ne 0 -or $Leg.record.execution.satisfiedCount -ne $Leg.record.execution.requiredCount) {
+    $failures.Add("default stop mode did not continue past baseline-also-failing items: notRun=$(@($Leg.record.execution.notRun) -join ',')")
+  }
+  return ,$failures
+}
+
+# AC3 retention: file bytes of every baseline-run item against the known child output.
+function Get-Baseline98RetentionFailures($Leg) {
+  $failures = [Collections.Generic.List[string]]::new()
+  $expected = @{
+    'unequal.test.ps1' = @{ stdout = "baseline stdout unequal one`nbaseline stdout unequal two"; stderr = 'ASSERTION FAILED: baseline symptom'; exitCode = '3'
+      candidateSignature = 'ASSERTION FAILED: candidate symptom'; baselineSignature = 'ASSERTION FAILED: baseline symptom' }
+    'empty-signature.test.ps1' = @{ stdout = 'quiet baseline'; stderr = ''; exitCode = '4'; candidateSignature = ''; baselineSignature = '' }
+    'preexisting-equal.test.ps1' = @{ stdout = 'same stdout'; stderr = 'ASSERTION FAILED: same symptom'; exitCode = '5'
+      candidateSignature = 'ASSERTION FAILED: same symptom'; baselineSignature = 'ASSERTION FAILED: same symptom' }
+    'regression-baseline-pass.test.ps1' = @{ stdout = 'PASS regression baseline'; stderr = ''; exitCode = '0'
+      candidateSignature = 'ASSERTION FAILED: regression symptom'; baselineSignature = '' }
+  }
+  $directories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in $expected.Keys) {
+    $row = Get-Baseline98Row $Leg $name
+    $evidence = if ($row.Count -eq 1 -and $null -ne $row[0].baseline) { $row[0].baseline.evidence } else { $null }
+    if ($null -eq $evidence -or $evidence.kind -cne 'baseline-streams') { $failures.Add("${name}: baseline evidence missing"); continue }
+    foreach ($field in @('stdout', 'stderr', 'exitCode', 'candidateSignature', 'baselineSignature')) {
+      $entry = $evidence.$field
+      $file = if ($entry -and [string]$entry.relativePath -clike ".orchestrator/artifacts/98-$($Leg.label).baseline-*") { Join-Path $Leg.fixture.root $entry.relativePath } else { $null }
+      if (-not $file -or -not (Test-Path -LiteralPath $file -PathType Leaf)) { $failures.Add("${name}: $field file missing: $($entry.relativePath)"); continue }
+      [void]$directories.Add((Split-Path -Parent $file))
+      $bytes = [IO.File]::ReadAllBytes($file)
+      $want = [Text.UTF8Encoding]::new($false).GetBytes($expected[$name][$field])
+      if ([Convert]::ToHexString($bytes) -cne [Convert]::ToHexString($want) -or $entry.byteLength -ne $bytes.Length -or
+          $entry.sha256 -cne ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToLowerInvariant()) {
+        $failures.Add("${name}: $field bytes [$([Text.Encoding]::UTF8.GetString($bytes))] differ from [$($expected[$name][$field])] or from their JSON binding")
+      }
+    }
+    if ($row[0].result -cne 'FAIL') { $failures.Add("${name}: retention changed the FAIL result") }
+  }
+  if ($directories.Count -ne $expected.Count) { $failures.Add("items did not get distinct evidence directories: $($directories.Count)") }
+  $unequal = Get-Baseline98Row $Leg 'unequal.test.ps1'
+  $equal = Get-Baseline98Row $Leg 'preexisting-equal.test.ps1'
+  if ($unequal.Count -eq 1 -and $equal.Count -eq 1 -and $unequal[0].baseline.evidence -and $equal[0].baseline.evidence) {
+    $read = { param($e) [IO.File]::ReadAllText((Join-Path $Leg.fixture.root $e.relativePath)) }
+    if ((& $read $unequal[0].baseline.evidence.candidateSignature) -ceq (& $read $unequal[0].baseline.evidence.baselineSignature)) { $failures.Add('unequal control retained equal signatures') }
+    if ((& $read $equal[0].baseline.evidence.candidateSignature) -cne (& $read $equal[0].baseline.evidence.baselineSignature)) { $failures.Add('equal control retained unequal signatures') }
+  }
+  foreach ($row in @($Leg.record.results | Where-Object { $_.result -ceq 'PASS' })) {
+    if ($null -ne $row.PSObject.Properties['baseline']) { $failures.Add("$($row.identity): a non-baseline row carries baseline evidence") }
+  }
+  return ,$failures
+}
+
+function Assert-Baseline98([string]$Test, $Failures) {
+  Assert-BatteryTest (@($Failures).Count -eq 0) "${Test}: $(@($Failures) -join '; ')"
+  Write-Host "PASS 98 $Test"
+}
+
+function Test-BatteryBaselineAlsoFails {
+  $fixture = New-Baseline98Fixture
+  $truth = Invoke-Baseline98Leg $fixture 'truth-table' @('-OnFailure', 'all')
+  $truthFailures = Get-Baseline98TruthTableFailures $truth
+  foreach ($test in @('baseline-also-fails-unequal', 'baseline-also-fails-empty-signature', 'preexisting-equal', 'regression-baseline-pass')) {
+    Assert-Baseline98 $test @($truthFailures | Where-Object { $_ -clike "${test}:*" })
+  }
+  Assert-BatteryTest ($truthFailures.Count -eq 0) "truth table: $($truthFailures -join '; ')"
+  Assert-Baseline98 'baseline-stream-retention' (Get-Baseline98RetentionFailures $truth)
+
+  $withPreexisting = Invoke-Baseline98Leg $fixture 'outcome-with-preexisting'
+  Assert-Baseline98 'outcome-baseline-also-fails-only with-preexisting' (Get-Baseline98OutcomeFailures $withPreexisting @('test:unequal.test.ps1', 'test:empty-signature.test.ps1') @('test:preexisting-equal.test.ps1'))
+  $alone = Invoke-Baseline98Leg $fixture 'outcome-alone'
+  Assert-Baseline98 'outcome-baseline-also-fails-only alone' (Get-Baseline98OutcomeFailures $alone @('test:unequal.test.ps1') @())
+  $allPreexisting = Invoke-Baseline98Leg $fixture 'outcome-all-preexisting'
+  $preRow = Get-Baseline98Row $allPreexisting 'preexisting-equal.test.ps1'
+  Assert-BatteryTest ($allPreexisting.run.exitCode -eq 1 -and $allPreexisting.record.execution.outcome -ceq 'FAIL_PREEXISTING_ONLY' -and
+    $allPreexisting.record.failureCode -ceq 'BATTERY_PREEXISTING_ONLY:test:preexisting-equal.test.ps1' -and
+    $preRow.Count -eq 1 -and $preRow[0].baseline.classification -ceq 'PREEXISTING' -and
+    @($allPreexisting.lines | Where-Object { $_ -clike 'PASS controller release battery*' -or $_ -clike 'FAIL_BASELINE_ALSO_FAILS_ONLY*' }).Count -eq 0) `
+    "outcome-baseline-also-fails-only: all-PREEXISTING no longer ends FAIL_PREEXISTING_ONLY: $($allPreexisting.run.output)"
+  Write-Host 'PASS 98 outcome-baseline-also-fails-only all-preexisting=FAIL_PREEXISTING_ONLY'
+  Assert-BatteryTest (@(Get-ChildItem -LiteralPath $testRoot -Directory -Filter '*-battery-baseline-*').Count -eq 0) 'baseline worktree was not removed'
+
+  # Mutants: each must turn its named test red.
+  $source = [IO.File]::ReadAllText($battery)
+  $labelMutant = Replace-BatteryFixtureSource $source '      $classification = "BASELINE_ALSO_FAILS"' '      $classification = "REGRESSION"'
+  $labelLeg = Invoke-Baseline98Leg (New-Baseline98Fixture $labelMutant) 'truth-table' @('-OnFailure', 'all')
+  $labelFailures = Get-Baseline98TruthTableFailures $labelLeg
+  Assert-BatteryTest (@($labelFailures | Where-Object { $_ -clike 'baseline-also-fails-unequal:*' }).Count -gt 0 -and
+    @($labelFailures | Where-Object { $_ -clike 'baseline-also-fails-empty-signature:*' }).Count -gt 0) 'label-collapse mutant SURVIVED'
+  Write-Host "MUTANT 98 label-collapse-to-REGRESSION KILLED failures=$($labelFailures.Count): $($labelFailures -join '; ')"
+  $outcomeMutant = Replace-BatteryFixtureSource $source '    $batteryOutcome = "FAIL_BASELINE_ALSO_FAILS_ONLY"' '    $batteryOutcome = "FAIL_PREEXISTING_ONLY"'
+  $outcomeLeg = Invoke-Baseline98Leg (New-Baseline98Fixture $outcomeMutant) 'outcome-with-preexisting'
+  $outcomeFailures = Get-Baseline98OutcomeFailures $outcomeLeg @('test:unequal.test.ps1', 'test:empty-signature.test.ps1') @('test:preexisting-equal.test.ps1')
+  Assert-BatteryTest ($outcomeFailures.Count -gt 0) 'outcome-to-FAIL_PREEXISTING_ONLY mutant SURVIVED'
+  Write-Host "MUTANT 98 outcome-to-FAIL_PREEXISTING_ONLY KILLED failures=$($outcomeFailures.Count): $($outcomeFailures -join '; ')"
+  Write-Output 'PASS 98 battery baseline-also-fails truth table, outcome, retention and mutants'
+}
+
 try {
   Assert-BatteryTest ($batteryManifest.Count -eq 2) "battery manifest count is not 2"
   if ($ValidatePlanOnly) {
@@ -1967,6 +2186,7 @@ try {
     Invoke-ImpactControl
     Test-BatteryTimingAndTerminalResults
     Test-BatteryReuseAndBaseline
+    Test-BatteryBaselineAlsoFails
     Test-RenameImpactAndReuse
     Test-FailingBatteryResultWriteOmission
     Test-BatteryIncompleteUnderMeasuredLoad
@@ -1985,6 +2205,8 @@ try {
     Test-RenameImpactAndReuse
   } elseif ($Scenario -ceq 'ReuseBaseline') {
     Test-BatteryReuseAndBaseline
+  } elseif ($Scenario -ceq 'BaselineAlsoFails') {
+    Test-BatteryBaselineAlsoFails
   } else {
     Write-BatterySuiteResult $ExpectedControllerHead $SuiteResultOut
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"
