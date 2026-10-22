@@ -885,9 +885,9 @@ function Assert-InterruptedIntegrationReplay($Obligation,$State) {
   $temporary = Join-Path ([IO.Path]::GetTempPath()) ('integration-resume-proof-'+[guid]::NewGuid().ToString('N'))
   $source = $Obligation.worktree
   try {
-    # #128: clone -c writes the same scratch identity into the new repository's
-    # config that two later `git config` processes used to write.
-    [void](Get-InterruptedIntegrationGitBytes $source @('clone','--shared','--no-checkout','-c','user.name=Interrupted integration scratch proof','-c','user.email=integration-proof@example.invalid','--',$source,$temporary))
+    [void](Get-InterruptedIntegrationGitBytes $source @('clone','--shared','--no-checkout','--',$source,$temporary))
+    [void](Get-InterruptedIntegrationGitBytes $temporary @('config','user.name','Interrupted integration scratch proof'))
+    [void](Get-InterruptedIntegrationGitBytes $temporary @('config','user.email','integration-proof@example.invalid'))
     [void](Get-InterruptedIntegrationGitBytes $temporary @('checkout','-B',$Obligation.branch,$Obligation.targetHead))
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName='git';$psi.WorkingDirectory=$temporary;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true
