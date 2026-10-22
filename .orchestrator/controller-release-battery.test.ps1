@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ConcurrentIdentity", "FleetSampling")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ArtifactWrites", "ConcurrentIdentity", "FleetSampling")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -2243,9 +2243,7 @@ function Test-BatteryArtifactReparseRefusal {
   $source = [IO.File]::ReadAllText($battery)
   $mutant = Replace-BatteryFixtureSource $source '    if ($null -ne $attributes -and $attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { Stop-Battery $Code }' '    # reparse check removed'
   $mutantFailures = Get-Reparse98LegFailures $mutant
-  Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike 'artifacts-junction: wrote outside*' }).Count -gt 0 -and
-    @($mutantFailures | Where-Object { $_ -clike 'mid-run-swap: wrote outside*' }).Count -gt 0) "reparse-check-removed mutant SURVIVED: $($mutantFailures -join '; ')"
-  Write-Host "MUTANT 98 reparse-check-removed KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+  Assert-Baseline98 'native-backstop-with-path-reparse-check-removed' $mutantFailures
 }
 
 # ---- #98 round 2: a junction ABOVE .orchestrator/artifacts is a supported setup.
@@ -2331,19 +2329,20 @@ function Test-BatteryArtifactJunctionAbove {
   Write-Host "MUTANT 98 controller-relative-evidence KILLED failures=$($relativeFailures.Count): $($relativeFailures -join '; ')"
 }
 
-# ---- #98 round 2: detect, not prevent. The write seam swaps artifacts for a
-# junction after validation and just before one named write; that write lands
-# outside, and the post-write recheck must turn the run into a loud refusal with
-# the write's refusal code, never a PASS or a silent result.
+# ---- Handle-anchored prevention: the seam swaps artifacts after validation and
+# before the open. The attacker prepares evidence parents only for file legs;
+# directory legs must not create even a directory outside. No timing decides it.
 function New-WriteWindow98Source([string]$Source, [string]$Leaf, [string]$Outside) {
   $seam = @(
     'function Invoke-BatteryArtifactWriteSeam([string]$Path) {',
     "  if ([IO.Path]::GetFileName(`$Path) -cne '$Leaf') { return }",
     '  $artifacts = Join-Path (Resolve-BatteryPhysicalPath $runtime) "artifacts"',
-    '  if ((Get-Item -LiteralPath $artifacts -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return }',
-    '  Rename-Item -LiteralPath $artifacts -NewName "artifacts-before-swap"',
+    '  if (Test-Path -LiteralPath $artifacts) {',
+    '    if ((Get-Item -LiteralPath $artifacts -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { return }',
+    '    Rename-Item -LiteralPath $artifacts -NewName "artifacts-before-swap"',
+    '  }',
     "  New-Item -ItemType Junction -Path `$artifacts -Target '$($Outside.Replace("'", "''"))' | Out-Null",
-    '  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))',
+    '  if ([IO.Path]::HasExtension($Path) -and [IO.Path]::GetFileName($Path) -cne "001-test-unequal.test.ps1") { [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path)) }',
     '}'
   ) -join "`n"
   return Replace-BatteryFixtureSource $Source 'function Invoke-BatteryArtifactWriteSeam([string]$Path) {}' $seam
@@ -2353,6 +2352,8 @@ function Get-WriteWindow98LegFailures([string]$Source, [string]$Leg) {
   $failures = [Collections.Generic.List[string]]::new()
   $outside = New-Reparse98Outside
   $legs = @{
+    'root-create' = @{ leaf = 'artifacts'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID'; directory = $true }
+    'evidence-directory' = @{ leaf = '001-test-unequal.test.ps1'; files = $candidate98AloneFresh; code = 'BATTERY_BASELINE_EVIDENCE_PATH_INVALID:test:unequal.test.ps1'; directory = $true }
     'evidence' = @{ leaf = 'baseline-signature.txt'; files = $candidate98AloneFresh; code = 'BATTERY_BASELINE_EVIDENCE_PATH_INVALID:test:unequal.test.ps1' }
     'raw-log' = @{ leaf = '98-window.log'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID' }
     'result' = @{ leaf = '98-window.json'; files = $candidate98AllPass; code = 'BATTERY_RESULT_PATH_INVALID' }
@@ -2365,12 +2366,16 @@ function Get-WriteWindow98LegFailures([string]$Source, [string]$Leg) {
     $candidate = Save-BatteryFixtureCommit $fixture $spec.files "98 write-window $Leg"
     $run = Invoke-BatteryProcess (Join-Path $fixture.root '.orchestrator/controller-release-battery.ps1') $candidate @('-ResultPath', (Join-Path $artifacts '98-window.json'), '-BaselineHead', $fixture.head, '-Scope', 'full')
     Write-Host "CONTROL 98 write-window $Leg exit=$($run.exitCode)"
-    # The seam fired: the named write landed outside before detection.
-    if (@(Get-ChildItem -LiteralPath $outside -Recurse -File -Filter $spec.leaf -ErrorAction SilentlyContinue).Count -ne 1) {
-      $failures.Add("$($Leg): the seam did not swap the root before the $($spec.leaf) write")
+    $swapped = Get-Item -LiteralPath $artifacts -Force -ErrorAction SilentlyContinue
+    if ($null -eq $swapped -or -not $swapped.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+      $failures.Add("$($Leg): the seam did not swap the root before the $($spec.leaf) open")
+    }
+    $escaped = @(Get-ChildItem -LiteralPath $outside -Recurse -Force | Where-Object { $spec.directory -or -not $_.PSIsContainer })
+    if ($escaped.Count) {
+      $failures.Add("$($Leg): wrote outside the artifact root: $($escaped.Name -join ',')")
     }
     if ($run.exitCode -ne 1 -or -not $run.output.Contains("FAIL controller-release-battery: $($spec.code)")) {
-      $failures.Add("$($Leg): not refused with $($spec.code) after the write: exit=$($run.exitCode)")
+      $failures.Add("$($Leg): not refused with $($spec.code) at the open: exit=$($run.exitCode)")
     }
     if ($run.output -cmatch '(?m)^PASS controller release battery ' -or $run.output -cmatch '(?m)^BATTERY_RESULT path=') {
       $failures.Add("$($Leg): printed PASS or a written result after an escaped write")
@@ -2383,12 +2388,23 @@ function Get-WriteWindow98LegFailures([string]$Source, [string]$Leg) {
 
 function Test-BatteryArtifactWriteWindowDetection {
   $source = [IO.File]::ReadAllText($battery)
-  $mutant = Replace-BatteryFixtureSource $source '  [void](Assert-BatteryArtifactPath $Root $Path $Code)' '  # post-write recheck removed'
-  foreach ($leg in @('evidence', 'raw-log', 'result', 'timing')) {
+  $unsafe = @'
+    if ($Directory) { [void][IO.Directory]::CreateDirectory($Path) }
+    elseif ($CreateNew) {
+      $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+      try { $stream.Write($Bytes, 0, $Bytes.Length) } finally { $stream.Dispose() }
+    } else { [IO.File]::WriteAllBytes($Path, $Bytes) }
+'@
+  $mutant = Replace-BatteryFixtureSource $source '    [ChaseSets.BatteryArtifactWriter]::Write($Root, $Path, $Bytes, $Directory.IsPresent, $CreateNew.IsPresent)' $unsafe
+  foreach ($leg in @('root-create', 'evidence-directory', 'evidence', 'raw-log', 'result', 'timing')) {
     Assert-Baseline98 "artifact-write-window-$leg" (Get-WriteWindow98LegFailures $source $leg)
     $mutantFailures = Get-WriteWindow98LegFailures $mutant $leg
-    Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike "$($leg): not refused*" }).Count -gt 0) "post-write-recheck-removed mutant SURVIVED $($leg): $($mutantFailures -join '; ')"
-    Write-Host "MUTANT 98 post-write-recheck-removed $leg KILLED failures=$($mutantFailures.Count): $($mutantFailures -join '; ')"
+    # Root creation opens the attacker's existing directory rather than creating
+    # a child. The refusal must still hold, but only child writes can escape.
+    if ($leg -ne 'root-create') {
+      Assert-BatteryTest (@($mutantFailures | Where-Object { $_ -clike "$($leg): wrote outside*" }).Count -gt 0) "prevention-removed mutant SURVIVED $($leg): $($mutantFailures -join '; ')"
+      Write-Host "MUTANT 211 prevention-removed $leg RED: $($mutantFailures -join '; ')"
+    }
   }
 }
 # ---- #120 concurrent items. Synthetic cc-* items record their own start and
@@ -3461,6 +3477,10 @@ try {
     Test-BatteryReuseAndBaseline
   } elseif ($Scenario -ceq 'BaselineAlsoFails') {
     Test-BatteryBaselineAlsoFails
+  } elseif ($Scenario -ceq 'ArtifactWrites') {
+    Test-BatteryArtifactReparseRefusal
+    Test-BatteryArtifactJunctionAbove
+    Test-BatteryArtifactWriteWindowDetection
   } elseif ($Scenario -ceq 'ConcurrentIdentity') {
     Test-BatteryConcurrentIdentity
   } elseif ($Scenario -ceq 'FleetSampling') {
