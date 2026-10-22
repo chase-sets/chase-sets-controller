@@ -1,4 +1,4 @@
-param([ValidateSet('All','AC1','AC2','AC3','AC4','AC8186','mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal')][string]$Only='All', [switch]$BeforeFix)
+param([ValidateSet('All','AC1','AC2','AC3','AC4','AC8186','mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','terminal-sibling','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal')][string]$Only='All', [switch]$BeforeFix)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -348,20 +348,23 @@ try{
       Write-Output 'PASS AC4 defaults / multiple-lanes / steady-monitoring / session-growth / expiry-only / membership-rearm / all-terminal / no-surviving-helpers'
     }
   }
-  $named8186=@('mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal')
+  $named8186=@('mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','terminal-sibling','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal')
   if($Only-in(@('All','AC8186')+$named8186)){
     $run8186=if($Only-in@('All','AC8186')){$named8186}else{@($Only)}
     # 8186: actual dispatch-lane producers for every watched role. Planning/review lanes
     # live in dispatch-lane's own envelope (row 0-15, empty or placed; detached only for review).
     $implDead=New-Producer 'synthetic-impl-dead' dead
-    $planningDead=New-Producer 'synthetic-planning-dead' dead -Role planning -Row 8 -Placement 'override-Todd'
-    $reviewDetached=New-Producer 'synthetic-review-detached' dead -Role review -Row 11 -Placement 'override-Todd' -Detached
-    $reviewRow0=New-Producer 'synthetic-review-row0' dead -Role review -Row 0 -Placement ''
-    foreach($pair in @(@($planningDead,'planning',8,'override-Todd','synthetic/8136'),@($reviewDetached,'review',11,'override-Todd',''),@($reviewRow0,'review',0,'',"synthetic/8136"))){
-      $s=Get-Content $pair[0].spec -Raw|ConvertFrom-Json -DateKind String
-      Check ($s.laneRole-ceq$pair[1]-and$s.row-eq$pair[2]-and$s.placement-ceq$pair[3]-and$s.branch-ceq$pair[4]-and$s.state-ceq'exited'-and$s.exitCode-eq17) "8186 real $($pair[1]) producer envelope: $($pair[0].label)"
-    }
-    $roleCases=@($planningDead,$reviewDetached,$reviewRow0);$A=$implDead;$B=$terminal
+    if($Only-ne'terminal-sibling'){
+      $planningDead=New-Producer 'synthetic-planning-dead' dead -Role planning -Row 8 -Placement 'override-Todd'
+      $reviewDetached=New-Producer 'synthetic-review-detached' dead -Role review -Row 11 -Placement 'override-Todd' -Detached
+      $reviewRow0=New-Producer 'synthetic-review-row0' dead -Role review -Row 0 -Placement ''
+      foreach($pair in @(@($planningDead,'planning',8,'override-Todd','synthetic/8136'),@($reviewDetached,'review',11,'override-Todd',''),@($reviewRow0,'review',0,'',"synthetic/8136"))){
+        $s=Get-Content $pair[0].spec -Raw|ConvertFrom-Json -DateKind String
+        Check ($s.laneRole-ceq$pair[1]-and$s.row-eq$pair[2]-and$s.placement-ceq$pair[3]-and$s.branch-ceq$pair[4]-and$s.state-ceq'exited'-and$s.exitCode-eq17) "8186 real $($pair[1]) producer envelope: $($pair[0].label)"
+      }
+      $roleCases=@($planningDead,$reviewDetached,$reviewRow0)
+    }else{$roleCases=@()}
+    $A=$implDead;$B=$terminal
     function Events($Result,[string]$Event,[string]$Label=''){return @($Result.events|Where-Object{$_.event-ceq$Event-and(-not$Label-or$_.label-ceq$Label)})}
     function Snapshot([string]$Dir){$m=@{};foreach($f in Get-ChildItem -LiteralPath $Dir -File -Recurse){$m[$f.FullName]=(Get-FileHash -LiteralPath $f.FullName).Hash};return $m}
     function Same-Snapshot([hashtable]$Before,[string]$Dir,[string]$Message){
@@ -488,15 +491,35 @@ try{
         Check ($m.exit-eq0-and$m.events[-1].unresolvedReducerFailures-eq0-and@(Events $m PROGRESS $A.label).Count-ge1) '8186 growth mutant must launder the error through growth'
         Reject-Mutant 'clear-error-on-growth' {& $growthOracle $m '8186 growth oracle'}
       }finally{[IO.File]::WriteAllBytes($A.transcript,$transcriptBackup)}
-      # A terminal sibling never masks an unresolved error; a recovered lane can still reach ALL_TERMINAL.
-      $n='AC8186-terminal-sibling';$s=Seq-Stub $n $A.label @($fail19)
-      $r=Batch @((Lane $A),(Lane $B)) $n @('-ReducerScript',$s) $entry 4
-      Reducer-Failure $r 'REDUCER_EXIT' '8186 terminal sibling: unresolved error still exits nonzero at expiry' 'WINDOW_EXPIRED' $A.label
-      Check (@(Events $r OBSERVATION $B.label|Where-Object status -ceq TERMINAL_SUCCESS).Count-eq1-and@(Events $r REDUCER_FAILURE $A.label).Count-ge2) '8186 terminal sibling observed once while the error lane kept failing'
+      # A recovered lane can still reach ALL_TERMINAL.
       $n='AC8186-all-terminal-after-recovery';$s=Seq-Stub $n $A.label @($fail19,(Obs TERMINAL_SUCCESS))
       $r=Batch @((Lane $A),(Lane $B)) $n @('-ReducerScript',$s) $entry 30
       Check ($r.exit-eq0-and$r.events[-1].reason-ceq'ALL_TERMINAL'-and$r.events[-1].unresolvedReducerFailures-eq0-and@(Events $r REDUCER_FAILURE $A.label).Count-eq1-and@(Events $r OBSERVATION|Where-Object status -ceq TERMINAL_SUCCESS).Count-eq2) '8186 recovered error lane reaches ALL_TERMINAL with zero exit'
-      Write-Output 'PASS 8186 day-after-error-and-observation two-cycles / error-valid-error / recovered / error-then-duplicate / growth-without-recovery / terminal-sibling / all-terminal'
+      Write-Output 'PASS 8186 day-after-error-and-observation two-cycles / error-valid-error / recovered / error-then-duplicate / growth-without-recovery / all-terminal'
+    }
+    if('terminal-sibling'-in$run8186-or'day-after-error-and-observation'-in$run8186){
+      # The invariant is unchanged by how many reductions fit the four-second
+      # window: A fails before B terminates, never recovers, and stays unresolved
+      # at nonzero expiry. Repeated failures are covered by the two-cycles case.
+      $terminalSiblingOracle={param($r)
+        Reducer-Failure $r 'REDUCER_EXIT' '8186 terminal sibling: unresolved error still exits nonzero at expiry' 'WINDOW_EXPIRED' $A.label
+        $failures=@(Events $r REDUCER_FAILURE $A.label)
+        $observations=@(Events $r OBSERVATION $B.label)
+        Check ($observations.Count-eq1-and$observations[0].status-ceq'TERMINAL_SUCCESS'-and@(Events $r OBSERVATION $A.label).Count-eq0-and
+          [array]::IndexOf($r.events,$failures[0])-lt[array]::IndexOf($r.events,$observations[0])) '8186 terminal sibling observed once after the error, with no error-lane recovery'
+      }
+      $n='AC8186-terminal-sibling';$s=Seq-Stub $n $A.label @($fail19)
+      $r=Batch @((Lane $A),(Lane $B)) $n @('-ReducerScript',$s) $entry 4
+      & $terminalSiblingOracle $r
+      # Mask the unresolved error at expiry whenever a terminal sibling exists.
+      # This must be rejected even when the host fits just one reducer cycle.
+      $anchor='$unresolved=@(@($lanes)|Where-Object{$null-ne$_-and$_.unresolved}).Count'
+      $mutant=Mutate 'terminal-sibling-masks-error' $anchor ($anchor+';if(@($lanes|Where-Object terminal).Count-gt0){$unresolved=0}')
+      $m=Batch @((Lane $A),(Lane $B)) 'AC8186-terminal-sibling-mutant' @('-ReducerScript',$s) $mutant 4
+      Check ($m.exit-eq0-and$m.events[-1].reason-ceq'WINDOW_EXPIRED'-and$m.events[-1].unresolvedReducerFailures-eq0-and
+        @(Events $m REDUCER_FAILURE $A.label).Count-ge1-and@(Events $m OBSERVATION $B.label|Where-Object status -ceq TERMINAL_SUCCESS).Count-eq1) '8186 terminal sibling mutant must mask the unresolved error at expiry'
+      Reject-Mutant 'terminal-sibling-masks-error' {& $terminalSiblingOracle $m}
+      Write-Output 'PASS 8186 terminal-sibling unresolved error survives sibling terminal success through expiry'
     }
     if('launch-status-observed'-in$run8186){
       $n='AC8186-launch-status';$s=Seq-Stub $n $A.label @((Obs LAUNCH_PENDING),((Touch $n)+(Obs LAUNCH_FAILED)))
