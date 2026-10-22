@@ -1069,10 +1069,10 @@ exit 0
     Assert-ExactParent $childIdentity $wrapperIdentity "wrapper -> tracked child topology is exact"
     Assert-ExactParent $relayIdentity $childIdentity "tracked child -> relay topology is exact"
 
-  # Put the inert relay just before a valid ownership boundary and its worker
-  # just after it. Once the exact tracked child is killed, its shifted stored
-  # timestamp is intentionally uncertain: a one-hop scan ignores the older
-  # relay, while a full walk must reach and preserve the later worker.
+  # Put the inert relay just before a valid attached ownership boundary and its
+  # worker just after it. Keep the exact tracked child's real start identity:
+  # a one-hop scan ignores the older relay, while a full walk must reach and
+  # preserve the later worker after the tracked child is killed.
   Start-Sleep -Milliseconds 25
   $discriminatorStartedAt = [DateTimeOffset]::UtcNow
   Assert-True (
@@ -1080,7 +1080,7 @@ exit 0
       $discriminatorStartedAt.Ticks
   ) "relay predates the discriminator ownership boundary"
   $published.startedUtc = $discriminatorStartedAt.ToString("o")
-  $published.childProcessStartUtc = $discriminatorStartedAt.AddTicks(1).ToString("o")
+  $published.state = 'attached'
   $grandchildOwnerRaw = $published | ConvertTo-Json -Compress
   [IO.File]::WriteAllText($ownerPath, $grandchildOwnerRaw, [Text.UTF8Encoding]::new($false))
   [IO.File]::WriteAllText($spawnSignalPath, "spawn", [Text.UTF8Encoding]::new($false))
