@@ -542,6 +542,41 @@ function Get-InterruptedIntegrationGitBytes([string]$Worktree,[string[]]$Argumen
   } finally { $bytes.Dispose(); $process.Dispose() }
 }
 
+function Get-InterruptedIntegrationGitPaths([string]$Worktree,[string[]]$Names) {
+  # #128: `rev-parse --git-path` prints exactly one line per name, so one call
+  # equals one Get-RebaseGitPath per name. Any other output returns $null and
+  # the caller re-reads each name, keeping every original refusal.
+  $arguments = @('rev-parse'); foreach ($name in $Names) { $arguments += @('--git-path',$name) }
+  try { $text = Invoke-RebaseEvidenceGit $Worktree $arguments } catch { return $null }
+  $lines = @($text -split "`n")
+  if ($lines.Count -ne $Names.Count) { return $null }
+  $paths = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+  for ($i = 0; $i -lt $Names.Count; $i++) {
+    $path = $lines[$i].Trim()
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    if (-not [IO.Path]::IsPathFullyQualified($path)) { $path = Join-Path $Worktree $path }
+    $paths[$Names[$i]] = [IO.Path]::GetFullPath($path)
+  }
+  return ,$paths
+}
+
+function Get-InterruptedIntegrationPickCommits([string]$Worktree,[object[]]$Lines) {
+  # #128: one native rev-parse of every canonical pick equals one per line when
+  # it prints exactly one object name per pick. Any noncanonical line or other
+  # output returns $null and the caller's per-line loop keeps its refusals.
+  if ($Lines.Count -lt 1) { return $null }
+  $arguments = @('rev-parse')
+  foreach ($line in $Lines) {
+    if ($line -cnotmatch '^pick ([a-f0-9]{7,40}) .+$') { return $null }
+    $arguments += "$($Matches[1])^{commit}"
+  }
+  try { $text = Invoke-RebaseEvidenceGit $Worktree $arguments } catch { return $null }
+  $commits = @($text -split "`n")
+  if ($commits.Count -ne $Lines.Count) { return $null }
+  foreach ($commit in $commits) { if ($commit -cnotmatch '^(?:[a-f0-9]{40}|[a-f0-9]{64})$') { return $null } }
+  return ,$commits
+}
+
 function Get-InterruptedIntegrationState([string]$Worktree) {
   $identity = Get-DispatchGitIdentity $Worktree
   if ($identity.status -cne 'ok' -or $identity.branch -or -not (Test-DispatchSameCanonicalPath $identity.worktree $Worktree)) {
@@ -549,10 +584,13 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
   }
   $branch = Get-DispatchRebaseBranch $Worktree
   if (-not $branch) { throw 'INTEGRATION_RESUME_OPERATION: native rebase required' }
+  # #128: one native read resolves the seven Git paths this state read uses.
+  # $null (any unexpected output) keeps the original per-name reads below.
+  $gitPaths = Get-InterruptedIntegrationGitPaths $Worktree @('rebase-apply','MERGE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','sequencer','rebase-merge','index')
   foreach ($other in @('rebase-apply','MERGE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','sequencer')) {
-    if (Test-Path -LiteralPath (Get-RebaseGitPath $Worktree $other)) { throw 'INTEGRATION_RESUME_OPERATION: conflicting operation' }
+    if (Test-Path -LiteralPath $(if ($null -ne $gitPaths) { $gitPaths[$other] } else { Get-RebaseGitPath $Worktree $other })) { throw 'INTEGRATION_RESUME_OPERATION: conflicting operation' }
   }
-  $directory = Get-RebaseGitPath $Worktree 'rebase-merge'
+  $directory = if ($null -ne $gitPaths) { $gitPaths['rebase-merge'] } else { Get-RebaseGitPath $Worktree 'rebase-merge' }
   $metadata = [ordered]@{}
   foreach ($file in @(Get-ChildItem -LiteralPath $directory -Force -Recurse -File | Sort-Object FullName)) {
     if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'INTEGRATION_RESUME_OPERATION: linked metadata' }
@@ -572,7 +610,12 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
   $done = @($native.done -split "`r?`n" | Where-Object { $_ -and -not $_.StartsWith('#') })
   $todo = @($native['git-rebase-todo'] -split "`r?`n" | Where-Object { $_ -and -not $_.StartsWith('#') })
   $sequence = @()
-  foreach ($line in @($done) + @($todo)) {
+  $lines = @($done) + @($todo)
+  # #128: one native read resolves every pick when all lines are canonical.
+  # $null (any other line or output) keeps the original per-line loop.
+  $resolved = Get-InterruptedIntegrationPickCommits $Worktree $lines
+  if ($null -ne $resolved) { $sequence = $resolved; $lines = @() }
+  foreach ($line in $lines) {
     if ($line -cnotmatch '^pick ([a-f0-9]{7,40}) .+$') { throw 'INTEGRATION_RESUME_OPERATION: noncanonical todo' }
     $sequence += Invoke-RebaseEvidenceGit $Worktree @('rev-parse',"$($Matches[1])^{commit}")
   }
@@ -600,7 +643,7 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
     branch=$branch; originalHead=$native['orig-head']; onto=$native.onto
     stoppedHead=$identity.head; stoppedCommit=$rebaseHead; oldBase=$oldBase
     metadataSha256=(Get-RebaseRecordIdentity $metadata)
-    indexSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((Get-RebaseGitPath $Worktree 'index'))))
+    indexSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($(if ($null -ne $gitPaths) { $gitPaths['index'] } else { Get-RebaseGitPath $Worktree 'index' }))))
     stagesSha256=(Get-RebaseHash $stages); dirtySha256=(Get-RebaseRecordIdentity $dirty)
     stagedSha256=(Get-RebaseHash (Get-InterruptedIntegrationGitBytes $Worktree @('diff','--cached','--binary','--full-index','--no-ext-diff','HEAD')))
     unstagedSha256=(Get-RebaseHash (Get-InterruptedIntegrationGitBytes $Worktree @('diff','--binary','--full-index','--no-ext-diff')))
@@ -842,9 +885,9 @@ function Assert-InterruptedIntegrationReplay($Obligation,$State) {
   $temporary = Join-Path ([IO.Path]::GetTempPath()) ('integration-resume-proof-'+[guid]::NewGuid().ToString('N'))
   $source = $Obligation.worktree
   try {
-    [void](Get-InterruptedIntegrationGitBytes $source @('clone','--shared','--no-checkout','--',$source,$temporary))
-    [void](Get-InterruptedIntegrationGitBytes $temporary @('config','user.name','Interrupted integration scratch proof'))
-    [void](Get-InterruptedIntegrationGitBytes $temporary @('config','user.email','integration-proof@example.invalid'))
+    # #128: clone -c writes the same scratch identity into the new repository's
+    # config that two later `git config` processes used to write.
+    [void](Get-InterruptedIntegrationGitBytes $source @('clone','--shared','--no-checkout','-c','user.name=Interrupted integration scratch proof','-c','user.email=integration-proof@example.invalid','--',$source,$temporary))
     [void](Get-InterruptedIntegrationGitBytes $temporary @('checkout','-B',$Obligation.branch,$Obligation.targetHead))
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName='git';$psi.WorkingDirectory=$temporary;$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true
