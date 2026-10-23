@@ -544,6 +544,44 @@ function Invoke-ReaderMatrix {
   $installed=Get-PreRepairSource $candidate -ReaderOnly
   Assert-DistinctSources $installed $candidate 'invoke-heavy-verifier.ps1'
   $sourcesByVariant=@{installed=$installed;candidate=$candidate}
+  $otherException=[Exception]::new('not an IO denial')
+  [Exception].GetProperty('HResult').SetValue($otherException,5)
+  $policyCases=@(
+    @{name='Windows IO access denial';windows=$true;error=[IO.IOException]::new('denied',5);attempt=1;elapsed=0;stop=$false},
+    @{name='Windows unauthorized';windows=$true;error=[UnauthorizedAccessException]::new('denied');attempt=1;elapsed=0;stop=$false},
+    @{name='Windows sharing violation';windows=$true;error=[IO.IOException]::new('sharing',32);attempt=1;elapsed=0;stop=$false},
+    @{name='non-Windows IO denial';windows=$false;error=[IO.IOException]::new('denied',5);attempt=1;elapsed=0;stop=$true},
+    @{name='non-Windows unauthorized';windows=$false;error=[UnauthorizedAccessException]::new('denied');attempt=1;elapsed=0;stop=$true},
+    @{name='non-Windows sharing';windows=$false;error=[IO.IOException]::new('sharing',32);attempt=1;elapsed=0;stop=$true},
+    @{name='absent';windows=$true;error=[IO.IOException]::new('absent',2);attempt=1;elapsed=0;stop=$true},
+    @{name='wrong exception type';windows=$true;error=$otherException;attempt=1;elapsed=0;stop=$true},
+    @{name='attempt cap';windows=$true;error=[UnauthorizedAccessException]::new('denied');attempt=8;elapsed=0;stop=$true},
+    @{name='time cap';windows=$true;error=[UnauthorizedAccessException]::new('denied');attempt=1;elapsed=1000;stop=$true}
+  )
+  foreach($site in @(
+    @('invoke-heavy-verifier.ps1','Get-OwnerSnapshot'),
+    @('controller-release-battery.ps1','Get-BatteryFleetLoad'),
+    @('controller-release-battery.ps1','Assert-BatteryAdmission'),
+    @('landed-integration-evidence.psm1','Get-FleetLoadObservation'),
+    @('controller-install-lock.psm1','Get-ControllerInstallOwnerSnapshot')
+  )) {
+    $body=Get-Definition (Read-Source $site[0]) $site[1]
+    $ast=[Management.Automation.Language.Parser]::ParseInput($body,[ref]$null,[ref]$null)
+    $predicates=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text.Contains('$errorCode -notin @(5, 32)')},$true))
+    Assert-Owner ($predicates.Count-eq1) "one retry predicate for $($site[1])"
+    $decision=$predicates[0].Clauses[0].Item1.Extent.Text.Replace('$IsWindows','$windows')
+    foreach($policyCase in $policyCases) {
+      $stops=& {
+        param($Decision,$Case)
+        $windows=$Case.windows; $exception=$Case.error; $errorCode=[int]$exception.HResult-band 0xffff
+        $openAttempt=$Case.attempt; $openDeadline=[pscustomobject]@{ElapsedMilliseconds=$Case.elapsed}
+        & ([scriptblock]::Create($Decision))
+      } $decision $policyCase
+      Assert-Owner ($stops-eq$policyCase.stop) "$($site[1]) retry predicate: $($policyCase.name)"
+      $results.Add(@{test='owner-open-policy';site=$site[1];case=$policyCase.name;stops=$stops})
+    }
+  }
+  Write-Output 'PASS PowerShell owner open policy: all five sites, Windows-only denial codes, exception types, attempt/time caps'
   $readerSites=@(
     @('controller-release-battery.ps1','Get-BatteryFleetLoad'),
     @('controller-release-battery.ps1','Assert-BatteryAdmission'),

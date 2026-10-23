@@ -232,7 +232,7 @@ function Get-ControllerInstallOwnerSnapshot([string]$LockPath) {
       } catch {
         $exception = $_.Exception.GetBaseException()
         $errorCode = [int]$exception.HResult -band 0xffff
-        if (-not $IsWindows -or $exception -isnot [IO.IOException] -and $exception -isnot [UnauthorizedAccessException] -or
+        if (-not $IsWindows -or ($exception -isnot [IO.IOException] -and $exception -isnot [UnauthorizedAccessException]) -or
             $errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 1000) { throw }
         [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 1000 - $openDeadline.ElapsedMilliseconds)))
         if ($openDeadline.ElapsedMilliseconds -ge 1000) { throw }
