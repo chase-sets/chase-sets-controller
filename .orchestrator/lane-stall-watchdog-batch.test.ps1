@@ -400,6 +400,19 @@ try{
       $body+='default{& '''+$reducer.Replace("'","''")+''' @PSBoundParameters;exit $LASTEXITCODE}'+"`n}"
       return Stub $Name $body
     }
+    function Poll-Clock([string]$Name,[int]$Polls,[string]$Subject=$entry){
+      # Inject a clock into a test-only copy. Expiry follows complete polls,
+      # never the wall time spent starting/reducing each lane in those polls.
+      $text=[IO.File]::ReadAllText($Subject)
+      $clock='$clock=[Diagnostics.Stopwatch]::StartNew()'
+      $loop='while($clock.Elapsed.TotalSeconds-lt$WindowSeconds){'
+      foreach($anchor in @($clock,$loop)){
+        Check (([regex]::Matches($text,[regex]::Escape($anchor))).Count-eq1) "poll clock anchor $Name"
+      }
+      $text=$text.Replace($clock,('$testClockStep=$WindowSeconds/'+$Polls+';$clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalSeconds=-$testClockStep}}'))
+      $text=$text.Replace($loop,($loop+"`r`n"+'    $clock.Elapsed.TotalSeconds+=$testClockStep'))
+      $path=Join-Path $root "$Name.clock.ps1";[IO.File]::WriteAllText($path,$text);return $path
+    }
     if('mixed-role-isolation'-in$run8186){
       $calls8186=Join-Path $root 'stub-dispatches-8186.txt';$dispatch8186=Join-Path $root 'safe-dispatch-8186.ps1'
       [IO.File]::WriteAllText($dispatch8186,'[IO.File]::AppendAllText('''+$calls8186.Replace("'","''")+''',"stub dispatch`n");exit 19')
@@ -426,17 +439,28 @@ try{
       $isolation={param($r,[string]$name)
         Reducer-Failure $r 'REDUCER_EXIT' "8186 $name`: bad lane is a contained REDUCER_EXIT" 'WINDOW_EXPIRED' $A.label
         $failures=Events $r REDUCER_FAILURE;$first=[array]::IndexOf($r.events,$failures[0])
-        Check ($failures.Count-ge2-and@($r.events|Select-Object -Skip ($first+1)|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'LIVE_SLOW'-and$_.label-ceq$live8186.label}).Count-ge1) "8186 $name`: live sibling not observed after the first failure, or no later sweep"
+        $after=@($r.events|Select-Object -Skip ($first+1))
+        Check (@($after|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'LIVE_SLOW'-and$_.label-ceq$live8186.label}).Count-ge1-and
+          @($after|Where-Object{$_.event-ceq'UNCHANGED'-and$_.label-ceq$A.label}).Count-ge1) "8186 $name`: live sibling not observed after the first failure, or no later sweep"
         Check (@(Events $r OBSERVATION $B.label|Where-Object status -ceq TERMINAL_SUCCESS).Count-eq1-and@(Events $r OBSERVATION $A.label).Count-eq0-and@($r.events|Where-Object relaunch -eq $true).Count-eq0) "8186 $name`: terminal sibling observed once; bad lane never became health"
       }
+      $cycleEntry=Poll-Clock 'AC8186-isolation' 2
       foreach($name in @('first','middle','last')){
-        $r=Batch $orders[$name] "AC8186-isolation-$name" @('-ReducerScript',$badStub) $entry 10
+        $r=Batch $orders[$name] "AC8186-isolation-$name" @('-ReducerScript',$badStub) $cycleEntry 10
         & $isolation $r $name;Cadence $r 1;Same-Worker $liveSpec8186
       }
       $mutant=Mutate 'batch-abort-on-reducer-error' "`$reducerFailureCodes=@('REDUCER_EXIT','RESULT_INVALID','WATCHDOG_RELAUNCH_WINDOW_EXPIRED')" '$reducerFailureCodes=@()'
+      $mutant=Poll-Clock 'AC8186-isolation-abort-mutant' 2 $mutant
       $m=Batch $orders['first'] 'AC8186-isolation-mutant' @('-ReducerScript',$badStub) $mutant 10
       Check ($m.exit-ne0-and@(Events $m TRANSPORT_FAILURE).Count-eq1-and@(Events $m OBSERVATION).Count-eq0) '8186 abort mutant must reach the batch-wide abort, not an unrelated failure'
       Reject-Mutant 'batch-abort-on-reducer-error' {& $isolation $m 'mutant'}
+      $anchor='if(@($lanes|Where-Object{-not$_.terminal}).Count-eq0)'
+      $mutant=Mutate 'expire-after-first-sweep' $anchor ('$clock.Elapsed.TotalSeconds=$WindowSeconds;'+$anchor)
+      $mutant=Poll-Clock 'AC8186-isolation-one-sweep-mutant' 2 $mutant
+      $m=Batch $orders['first'] 'AC8186-isolation-one-sweep-mutant' @('-ReducerScript',$badStub) $mutant 10
+      Reducer-Failure $m 'REDUCER_EXIT' '8186 one-sweep mutant reaches unresolved expiry' 'WINDOW_EXPIRED' $A.label
+      Check (@(Events $m UNCHANGED $A.label).Count-eq1-and@(Events $m OBSERVATION $live8186.label|Where-Object status -ceq LIVE_SLOW).Count-eq1) '8186 one-sweep mutant must observe the live sibling but suppress the later sweep'
+      Reject-Mutant 'expire-after-first-sweep' {& $isolation $m 'one-sweep mutant'}
       Same-Worker $liveSpec8186
       [IO.File]::WriteAllText($live8186.release,'release');$done=End-Native $live8186.handle;Check ($done.exit-eq0) '8186 cooperative live worker completion'
       Write-Output 'PASS 8186 reducer-failure-isolation bad lane first/middle/last with live+terminal siblings'
@@ -444,11 +468,13 @@ try{
     if('day-after-error-and-observation'-in$run8186){
       $P=$planningDead
       $dayStub=Stub 'day-error-lane' ('if($Label-ceq'''+$A.label+'''){'+$fail19+'}'+"`n"+'& '''+$reducer.Replace("'","''")+''' @PSBoundParameters;exit $LASTEXITCODE')
-      $r=Batch @((Lane $A),(Lane $P)) 'AC8186-two-cycles' @('-ReducerScript',$dayStub) $entry 8 2
+      $cycleEntry=Poll-Clock 'AC8186-two-cycles' 4
+      $r=Batch @((Lane $A),(Lane $P)) 'AC8186-two-cycles' @('-ReducerScript',$dayStub) $cycleEntry 8 2
       Reducer-Failure $r 'REDUCER_EXIT' '8186 two cycles: error lane stays a contained, unresolved REDUCER_EXIT' 'WINDOW_EXPIRED' $A.label
       Check (@(Events $r REDUCER_FAILURE $A.label).Count-ge2-and@(Events $r OBSERVATION $P.label|Where-Object status -ceq OBSERVATION_ONLY).Count-ge2-and@(Events $r OBSERVATION $P.label|Where-Object status -cne OBSERVATION_ONLY).Count-eq0-and@(Events $r OBSERVATION $A.label).Count-eq0) '8186 two cycles: error and observation-only lanes both stayed watched into a second cycle'
       Cadence $r 2
       $mutant=Mutate 'mark-observation-terminal' "`$lane.terminal=`$result.status-cin@('TERMINAL_SUCCESS','TERMINAL_AUTHORITY_STOP')" "`$lane.terminal=`$result.status-cin@('TERMINAL_SUCCESS','TERMINAL_AUTHORITY_STOP','OBSERVATION_ONLY')"
+      $mutant=Poll-Clock 'AC8186-two-cycles-terminal-mutant' 4 $mutant
       $m=Batch @((Lane $A),(Lane $P)) 'AC8186-terminal-mutant' @('-ReducerScript',$dayStub) $mutant 8 2
       Check (@(Events $m OBSERVATION $P.label).Count-eq1-and@(Events $m REDUCER_FAILURE $A.label).Count-ge2) '8186 terminal mutant must stop watching the planning lane after one observation'
       Reject-Mutant 'mark-observation-terminal' {Check (@(Events $m OBSERVATION $P.label|Where-Object status -ceq OBSERVATION_ONLY).Count-ge2) '8186 observation-only lane must stay watched'}
