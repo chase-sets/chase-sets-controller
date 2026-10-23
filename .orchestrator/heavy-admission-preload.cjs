@@ -484,11 +484,30 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   };
   const guardNativeSpawn = (owner, label) => {
     const nativeSpawn = owner.spawn;
-    owner.spawn = function guardedNativeSpawn(options) {
-      if (options === null || typeof options !== "object") refuseChildLaunch(`${label} options were not an object`);
-      const snapshot = Object.assign(Object.create(null), options);
-      snapshot.envPairs = checkEnvironmentPairs(snapshot.envPairs);
-      return nativeSpawn.call(this, snapshot);
+    owner.spawn = function guardedNativeSpawn(...argumentsList) {
+      // spawn_sync and older Node 24 process_wrap take one options object.
+      if (argumentsList.length === 1) {
+        const options = argumentsList[0];
+        if (options === null || typeof options !== "object") refuseChildLaunch(`${label} options were not an object`);
+        if (Array.isArray(options)) refuseChildLaunch(`${label} options were an array`);
+        const snapshot = Object.assign(Object.create(null), options);
+        snapshot.envPairs = checkEnvironmentPairs(snapshot.envPairs);
+        return nativeSpawn.call(this, snapshot);
+      }
+      // Newer Node 24 process_wrap takes (file, args, cwd, envPairs, stdio,
+      // flags, uid, gid). Never infer an environment slot from an unknown ABI.
+      const optionalString = (value) => value === undefined || value === null || typeof value === "string";
+      const uint32 = (value) => Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+      const optionalId = (value) => value === undefined || value === null || uint32(value);
+      if (label === "process_wrap" && argumentsList.length === 8 &&
+          typeof argumentsList[0] === "string" &&
+          (argumentsList[1] === undefined || Array.isArray(argumentsList[1])) &&
+          optionalString(argumentsList[2]) && Array.isArray(argumentsList[4]) &&
+          uint32(argumentsList[5]) && optionalId(argumentsList[6]) && optionalId(argumentsList[7])) {
+        argumentsList[3] = checkEnvironmentPairs(argumentsList[3]);
+        return nativeSpawn.apply(this, argumentsList);
+      }
+      refuseChildLaunch(`${label} call shape was not recognized`);
     };
   };
   guardNativeSpawn(originalBinding.call(process, "process_wrap").Process.prototype, "process_wrap");

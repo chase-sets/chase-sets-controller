@@ -1,4 +1,4 @@
-param([switch]$ClassifierOnly, [switch]$IdentityOnly, [switch]$DerivedOnly, [switch]$LaneEvolutionOnly, [switch]$E2eGateOnly, [switch]$AcceptAnyHeadMutant, [string]$GuardRevision = '')
+param([switch]$ClassifierOnly, [switch]$IdentityOnly, [switch]$DerivedOnly, [switch]$LaneEvolutionOnly, [switch]$E2eGateOnly, [switch]$AcceptAnyHeadMutant, [string]$GuardRevision = '', [switch]$NativeSpawnOnly, [switch]$PassUnknownSpawnShapeMutant)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
@@ -1310,7 +1310,7 @@ fs.writeFileSync(process.env.ADMISSION_MARKER, 'body-ran');
 }
 
 try {
-  Assert-DisposableRoot
+  Assert-DisposableRoot; if ($NativeSpawnOnly) { return }
   Assert-FreshChildEnvironmentBoundary
   if ($AcceptAnyHeadMutant) {
     $source = [IO.File]::ReadAllText($guard)
@@ -2009,4 +2009,110 @@ for (const [name, before, after, expectedFailure] of [
     Remove-Item -LiteralPath $root -Recurse -Force
   }
 }
-} finally { Exit-RoutingDataTestScope $routingTestScope }
+} finally {
+  try {
+    # Exercise the actual native guard with inert endpoints, including ABIs this
+    # Node cannot execute. Unknown shapes must never reach even the stub.
+    $nativeGuardProbe = @'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(process.env.ADMISSION_PRELOAD, 'utf8');
+const start = '  const originalBinding = process.binding;';
+const end = '  if (typeof process.execve === "function")';
+assert.equal(source.split(start).length, 2, 'unique native guard start');
+assert.equal(source.split(end).length, 2, 'unique native guard end');
+let guard = source.slice(source.indexOf(start), source.indexOf(end));
+if (process.env.ADMISSION_PASS_UNKNOWN_SHAPE === '1') {
+  const from = 'refuseChildLaunch(`${label} call shape was not recognized`);';
+  assert.equal(guard.split(from).length, 2, 'unique pass-through mutation seam');
+  guard = guard.replace(from, 'return nativeSpawn.apply(this, argumentsList);');
+}
+const calls = [];
+const endpoint = function (...args) { calls.push({ receiver: this, args }); return 42; };
+const wrap = { spawn: endpoint };
+const sync = { spawn: endpoint };
+const requiredNodeOptions = '--require=diagnostic-preload.cjs';
+const encodedConfiguration = 'bound-configuration';
+vm.runInNewContext(guard, {
+  process: { binding(name) { return name === 'process_wrap' ? { Process: { prototype: wrap } } : sync; } },
+  requiredNodeOptions, encodedConfiguration,
+  refuseChildLaunch(reason) { throw Object.assign(new Error(reason), { code: 'ERR_HEAVY_DIAGNOSTIC_CHILD_REFUSED' }); },
+});
+const pairs = ['NODE_OPTIONS=' + requiredNodeOptions, 'CHASE_SETS_HEAVY_ADMISSION_CONFIG=' + encodedConfiguration];
+const positional = (envPairs = pairs) => ['node.exe', ['node.exe', '-e', ''], undefined, envPairs, [{ type: 'ignore' }], 2, undefined, undefined];
+const object = (envPairs = pairs) => [{ file: 'node.exe', args: ['node.exe'], envPairs }];
+let refusals = 0;
+const refused = (name, owner, args, reason) => {
+  const before = calls.length;
+  assert.throws(() => owner.spawn(...args), (error) =>
+    error.code === 'ERR_HEAVY_DIAGNOSTIC_CHILD_REFUSED' && error.message.includes(reason), name);
+  assert.equal(calls.length, before, name + ' never reached native spawn');
+  refusals++;
+};
+for (const [owner, build] of [[wrap, object], [sync, object], [wrap, positional]]) {
+  const args = build();
+  assert.equal(owner.spawn(...args), 42);
+  const call = calls.at(-1);
+  assert.equal(call.receiver, owner);
+  assert.equal(call.args.length, args.length);
+  const actualPairs = args.length === 1 ? call.args[0].envPairs : call.args[3];
+  assert.notEqual(actualPairs, pairs, 'native receives the checked copy');
+  assert.deepEqual(Array.from(actualPairs), pairs);
+  if (args.length === 1) {
+    assert.notEqual(call.args[0], args[0]);
+    assert.equal(Object.getPrototypeOf(call.args[0]), null);
+  } else {
+    for (const index of [0, 1, 2, 4, 5, 6, 7]) assert.equal(call.args[index], args[index]);
+  }
+  for (const name of ['NODE_OPTIONS', 'CHASE_SETS_HEAVY_ADMISSION_CONFIG']) {
+    const required = pairs.find((pair) => pair.startsWith(name + '='));
+    const other = pairs.filter((pair) => pair !== required);
+    const reason = name === 'NODE_OPTIONS' ? 'NODE_OPTIONS lacks' : 'configuration was not inherited';
+    refused('missing ' + name, owner, build(other), reason);
+    refused('modified ' + name, owner, build([...other, name + '=changed']), reason);
+    refused('duplicate ' + name, owner, build([...pairs, required]), 'more than once');
+    refused('case duplicate ' + name, owner, build([...pairs, name.toLowerCase() + '=changed']), 'more than once');
+  }
+  refused('non-array environment', owner, build({}), 'environment block was not an array');
+  let reads = 0;
+  const changing = [...pairs];
+  Object.defineProperty(changing, 0, { get() { reads++; return reads === 1 ? pairs[0] : 'NODE_OPTIONS=changed'; } });
+  owner.spawn(...build(changing));
+  const pinned = calls.at(-1).args;
+  assert.equal((pinned.length === 1 ? pinned[0].envPairs : pinned[3])[0], pairs[0]);
+  assert.equal(reads, 1, 'environment pair getter is read once');
+}
+for (const owner of [wrap, sync]) {
+  for (const value of [null, undefined, 1, 'node.exe', () => {}]) {
+    refused('non-object options', owner, [value], 'options were not an object');
+  }
+  refused('array options', owner, [pairs], 'options were an array');
+  for (const args of [[], [...object(), 'extra'], positional().slice(0, 7), [...positional(), 'extra']]) {
+    refused('unknown arity', owner, args, 'call shape was not recognized');
+  }
+}
+refused('positional ABI is not spawn_sync', sync, positional(), 'call shape was not recognized');
+for (const [index, value] of [[0, {}], [1, {}], [2, 1], [4, {}], [5, '2'], [5, -1], [6, {}], [7, {}]]) {
+  const args = positional(); args[index] = value;
+  refused('unknown positional slot ' + index, wrap, args, 'call shape was not recognized');
+}
+console.log(`PASS native-spawn guard object=process_wrap,spawn_sync positional=process_wrap refusals=${refusals} copied-once=3 unknown-shape=refused`);
+'@
+    $nativeGuardStart = [Diagnostics.ProcessStartInfo]::new()
+    $nativeGuardStart.FileName = $node
+    $nativeGuardStart.UseShellExecute = $false; $nativeGuardStart.CreateNoWindow = $true
+    $nativeGuardStart.RedirectStandardOutput = $true; $nativeGuardStart.RedirectStandardError = $true
+    Set-CleanAdmissionEnvironment $nativeGuardStart
+    $nativeGuardStart.ArgumentList.Add('-e'); $nativeGuardStart.ArgumentList.Add($nativeGuardProbe)
+    $nativeGuardStart.Environment['ADMISSION_PRELOAD'] = $preloadSource
+    $nativeGuardStart.Environment['ADMISSION_PASS_UNKNOWN_SHAPE'] = $(if ($PassUnknownSpawnShapeMutant) { '1' } else { '0' })
+    $nativeGuardProcess = [Diagnostics.Process]::Start($nativeGuardStart)
+    $nativeGuardStdout = $nativeGuardProcess.StandardOutput.ReadToEndAsync()
+    $nativeGuardStderr = $nativeGuardProcess.StandardError.ReadToEndAsync()
+    $nativeGuardProcess.WaitForExit()
+    Write-Output $nativeGuardStdout.GetAwaiter().GetResult()
+    [Console]::Error.Write($nativeGuardStderr.GetAwaiter().GetResult())
+    Assert-True ($nativeGuardProcess.ExitCode -eq 0) "native spawn shape/refusal control exits 0 (actual=$($nativeGuardProcess.ExitCode))"
+  } finally { Exit-RoutingDataTestScope $routingTestScope }
+}
