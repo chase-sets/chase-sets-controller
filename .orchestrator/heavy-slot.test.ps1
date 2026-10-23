@@ -434,6 +434,17 @@ function Start-RefusedAttachedFixture($GuardedIdentity, [string]$AdmissionRoot) 
   return $entry
 }
 function Start-GateWrapper([string]$Gate, [string]$Script, [hashtable]$ExtraEnvironment = @{}, [switch]$ImmutableHead, [int]$PublicationDelay = 0) {
+  $launchGuard=$guard
+  if ($PublicationDelay) {
+    # Measure the existing Process.Start-to-publication delay from its own
+    # boundary, not from Node's later module startup. No wait is added.
+    $launchGuard=Join-Path $orchestrator ('publication-clock-'+[guid]::NewGuid().ToString('N')+'.ps1')
+    $source=[IO.File]::ReadAllText($guard)
+    $launch='$child = [Diagnostics.Process]::Start($start)'
+    Assert-True ([regex]::Matches($source,[regex]::Escape($launch)).Count -eq 1) 'publication clock has one guarded launch'
+    $source=$source.Replace($launch,('$start.Environment["SLOT_PUBLICATION_STARTED_MS"] = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString(); ' + $launch))
+    [IO.File]::WriteAllText($launchGuard,$source)
+  }
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = $pwsh
   $start.WorkingDirectory = $worktree
@@ -442,7 +453,7 @@ function Start-GateWrapper([string]$Gate, [string]$Script, [hashtable]$ExtraEnvi
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   foreach ($argument in @(
-      "-NoProfile", "-NonInteractive", "-File", $guard,
+      "-NoProfile", "-NonInteractive", "-File", $launchGuard,
       "-Gate", $Gate,
       "-Worktree", $worktree,
       "-Lane", $laneName,
@@ -1441,7 +1452,7 @@ if (process.env.SLOT_LAUNCHER_NODE_OPTIONS) {
 if (process.env.SLOT_LAUNCHER_ADMISSION_CONFIG) {
   process.env.CHASE_SETS_HEAVY_ADMISSION_CONFIG = process.env.SLOT_LAUNCHER_ADMISSION_CONFIG;
 }
-const acquireStarted = Date.now();
+const acquireStarted = process.env.SLOT_PUBLICATION_STARTED_MS ? Number(process.env.SLOT_PUBLICATION_STARTED_MS) : Date.now();
 if (process.env.SLOT_ROOT_KIND) {
   acquireHeavySlot(process.env.SLOT_ROOT_KIND);
 } else {
