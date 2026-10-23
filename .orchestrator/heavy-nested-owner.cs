@@ -1036,10 +1036,11 @@ namespace ChaseSets.HeavyAdmission
                 {
                     stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 }
-                catch (Exception error) when ((error is IOException || error is UnauthorizedAccessException) &&
+                catch (Exception error) when (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && (error is IOException || error is UnauthorizedAccessException) &&
                     (error.HResult & 0xffff) is 5 or 32 && attempt < 8 && watch.ElapsedMilliseconds < 250)
                 {
                     Thread.Sleep((int)Math.Min(10, Math.Max(1, 250 - watch.ElapsedMilliseconds)));
+                    if (watch.ElapsedMilliseconds >= 250) throw;
                 }
             }
             using (stream)

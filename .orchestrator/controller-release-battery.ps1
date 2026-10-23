@@ -300,8 +300,10 @@ function Get-BatteryFleetLoad([switch]$Holder) {
       } catch {
         $exception = $_.Exception.GetBaseException()
         $errorCode = [int]$exception.HResult -band 0xffff
-        if ($errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
+        if (-not $IsWindows -or $exception -isnot [IO.IOException] -and $exception -isnot [UnauthorizedAccessException] -or
+            $errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
         [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 250 - $openDeadline.ElapsedMilliseconds)))
+        if ($openDeadline.ElapsedMilliseconds -ge 250) { throw }
       }
     }
     try {
@@ -517,8 +519,10 @@ function Assert-BatteryAdmission {
           } catch {
             $exception = $_.Exception.GetBaseException()
             $errorCode = [int]$exception.HResult -band 0xffff
-            if ($errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
+            if (-not $IsWindows -or $exception -isnot [IO.IOException] -and $exception -isnot [UnauthorizedAccessException] -or
+                $errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
             [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 250 - $openDeadline.ElapsedMilliseconds)))
+            if ($openDeadline.ElapsedMilliseconds -ge 250) { throw }
           }
         }
         try {

@@ -74,16 +74,21 @@ const ownerOpenRetryAttempts = 8;
 const ownerOpenRetryBudgetMilliseconds = 250;
 
 function readOwnerText(ownerPath) {
-  const deadline = Date.now() + ownerOpenRetryBudgetMilliseconds;
+  // Windows can transiently deny a name-based open during owner publication.
+  // Reopen only, never retry parsing or substitute previously accepted bytes.
+  const elapsedMilliseconds = (started) => Number(process.hrtime.bigint() - started) / 1e6;
+  const started = process.hrtime.bigint();
   for (let attempt = 1; ; attempt += 1) {
     try {
       return fs.readFileSync(ownerPath, "utf8");
     } catch (error) {
       const transient =
+        process.platform === "win32" &&
         (error?.code === "EPERM" || error?.code === "EACCES") &&
         error?.syscall === "open";
-      if (!transient || attempt >= ownerOpenRetryAttempts || Date.now() >= deadline) throw error;
-      sleep(Math.min(10, Math.max(1, deadline - Date.now())));
+      if (!transient || attempt >= ownerOpenRetryAttempts || elapsedMilliseconds(started) >= ownerOpenRetryBudgetMilliseconds) throw error;
+      sleep(Math.max(0, Math.min(10, ownerOpenRetryBudgetMilliseconds - elapsedMilliseconds(started))));
+      if (elapsedMilliseconds(started) >= ownerOpenRetryBudgetMilliseconds) throw error;
     }
   }
 }

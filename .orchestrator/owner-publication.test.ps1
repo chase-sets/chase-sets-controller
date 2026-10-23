@@ -230,18 +230,9 @@ function Invoke-ContinuousPublication {
   [IO.File]::WriteAllText($poller, @'
 const fs = require('node:fs');
 const path = require('node:path');
-const [owner, ready, stop, result] = process.argv.slice(2);
-const retryAttempts = 8, retryBudgetMilliseconds = 250;
-function readOwnerText(pathname) {
-  const deadline = Date.now() + retryBudgetMilliseconds;
-  for (let attempt = 1; ; attempt += 1) {
-    try { return fs.readFileSync(pathname, 'utf8'); }
-    catch (error) {
-      if (!((error.code === 'EPERM' || error.code === 'EACCES') && error.syscall === 'open') || attempt >= retryAttempts || Date.now() >= deadline) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(10, Math.max(1, deadline - Date.now())));
-    }
-  }
-}
+const [owner, ready, stop, result, sourcePath] = process.argv.slice(2);
+const source = fs.readFileSync(sourcePath, 'utf8');
+const { readOwnerText } = new Function('require', 'module', '__dirname', source + '\nreturn { readOwnerText };')(require, { exports: {} }, path.dirname(sourcePath));
 let absent = 0, failures = 0, polls = 0, maxEntries = 0; const errors = [];
 fs.writeFileSync(ready, 'ready');
 while (!fs.existsSync(stop)) {
@@ -251,31 +242,42 @@ while (!fs.existsSync(stop)) {
     const entries = fs.readdirSync(path.dirname(owner));
     maxEntries = Math.max(maxEntries, entries.length);
     if (entries.some(n => n !== 'owner.json' && !/^owner\.transition\.[a-f0-9]{32}\.tmp$/.test(n))) failures++;
-  } catch (e) { if (e.code === 'ENOENT') absent++; else { failures++; if (errors.length < 3) errors.push(String(e)); } }
+  } catch (e) {
+    if (e.code === 'ENOENT') absent++; else failures++;
+    if (errors.length < 20) errors.push({code:e.code, errno:e.errno, syscall:e.syscall, message:e.message});
+  }
   polls++;
 }
 fs.writeFileSync(result, JSON.stringify({absent, failures, polls, maxEntries, errors}));
 '@)
   $managedPoller = Join-Path $temporaryRoot 'continuous.ps1'
   [IO.File]::WriteAllText($managedPoller, @'
-param($Owner, $Ready, $Stop, $Result)
-$absent=0; $failures=0; $polls=0
+param($Owner, $Ready, $Stop, $Result, $OpenSource)
+$absent=0; $failures=0; $polls=0; $errors=[Collections.Generic.List[object]]::new()
+$RecordPath=$Owner
+$openOwner=[scriptblock]::Create([IO.File]::ReadAllText($OpenSource))
 [IO.File]::WriteAllText($Ready,'ready')
 while (-not [IO.File]::Exists($Stop)) {
   try {
-    $openDeadline=[Diagnostics.Stopwatch]::StartNew();$stream=$null
-    for($openAttempt=1;$null-eq$stream;$openAttempt++){
-      try{$stream=[IO.File]::Open($Owner,'Open','Read',([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))}
-      catch{$exception=$_.Exception.GetBaseException();$errorCode=[int]$exception.HResult-band 0xffff;if($errorCode-notin@(5,32)-or$openAttempt-ge8-or$openDeadline.ElapsedMilliseconds-ge250){throw};[Threading.Thread]::Sleep([int][Math]::Min(10,[Math]::Max(1,250-$openDeadline.ElapsedMilliseconds)))}
-    }
+    . $openOwner
     try { $reader=[IO.StreamReader]::new($stream); try { $null=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() } } finally { $stream.Dispose() }
-  } catch { if (-not [IO.File]::Exists($Owner)) { $absent++ } else { $failures++ } }
+  } catch {
+    $exception=$_.Exception.GetBaseException()
+    if($errors.Count-lt20){$errors.Add(@{type=$exception.GetType().FullName;code=($exception.HResult-band 0xffff);hresult=$exception.HResult;message=$exception.Message})}
+    if (-not [IO.File]::Exists($Owner)) { $absent++ } else { $failures++ }
+  }
   $polls++
 }
-[IO.File]::WriteAllText($Result,(@{absent=$absent;failures=$failures;polls=$polls}|ConvertTo-Json -Compress))
+[IO.File]::WriteAllText($Result,(@{absent=$absent;failures=$failures;polls=$polls;errors=@($errors)}|ConvertTo-Json -Compress -Depth 6))
 '@)
+  $snapshot=Get-Definition $source 'Get-OwnerSnapshot'
+  $openStart=$snapshot.IndexOf('$openDeadline =')
+  $openEnd=$snapshot.IndexOf('$buffer =', $openStart)
+  Assert-Owner ($openStart-ge0 -and $openEnd-gt$openStart) 'continuous reader executes the production Get-OwnerSnapshot opener'
+  $openSource=Join-Path $temporaryRoot 'open-owner.ps1'
+  [IO.File]::WriteAllText($openSource,$snapshot.Substring($openStart,$openEnd-$openStart))
   foreach ($variant in $variants.Keys) {
-    $copy = $variants[$variant]
+    $copy = $variants[$variant].Replace('ChaseSets.HeavyAdmission', "ChaseSets.Continuous$($variant.Replace('-',''))")
     if ($variant -cne 'candidate') { Assert-DistinctSources $copy $source "owner-rename-continuous/$variant" }
     Import-GuardFunctions $copy
     foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
@@ -295,6 +297,7 @@ while (-not [IO.File]::Exists($Stop)) {
         $start.UseShellExecute=$false; $start.CreateNoWindow=$true
         $arguments = if ($readerKind -ceq 'node') { @($poller) } else { @('-NoProfile','-File',$managedPoller) }
         foreach ($argument in @($arguments) + @($ownerPath,$signal.ready,$signal.stop,$signal.result)) { $start.ArgumentList.Add($argument) }
+        $start.ArgumentList.Add($(if($readerKind-ceq'node'){Join-Path $PSScriptRoot 'heavy-slot.cjs'}else{$openSource}))
         $processes += [Diagnostics.Process]::Start($start)
       }
       $writerFailures=0; $writerErrors=@()
@@ -424,7 +427,7 @@ function Invoke-ReaderInventory {
     $mutant=$sources.Clone(); $mutant['heavy-nested-owner.cs']=$mutant['heavy-nested-owner.cs'].Replace($expression,$expression.Replace('ReadOwnerBytes','File.ReadAllBytes'))
     Assert-Owner ((Test-ReaderContract $mutant).Count-gt0) "revert C# $expression mutant is RED"
   }
-  foreach($line in @(80)) {$table.Add(@{site="heavy-slot.cjs:$line";api='readOwnerText / fs.readFileSync';shareBefore=7;shareAfter=7;decoder='UTF8 / JSON.parse or parseClosedJson';callers='liveOwnerMatchesToken / readNestedOwner';owner='#220 bounded transient-open retry'})}
+  foreach($line in @(83)) {$table.Add(@{site="heavy-slot.cjs:$line";api='readOwnerText / fs.readFileSync';shareBefore=7;shareAfter=7;decoder='UTF8 / JSON.parse or parseClosedJson';callers='liveOwnerMatchesToken / readNestedOwner';owner='bounded transient-open retry'})}
   # Each fixture exception is a site, not a file exemption. These observations
   # inspect fixture-owned retained records; they do not define live publication.
   $fixtures=@{
@@ -454,14 +457,14 @@ function Invoke-ReaderInventory {
       $table.Add(@{site="${name}:$line";api=$lines[$line-1].Trim();shareBefore='unchanged fixture API';shareAfter='unchanged';decoder='unchanged fixture decoder';callers='fixture-local assertion/observation';owner='fixture-only: synthetic lock or retained-byte assertion, not production publication'})
     }
   }
-  foreach($line in @(466,473,564,566,597,695)) {
+  foreach($line in @(462,469,560,562,593,691)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='1/3/libuv';shareAfter='unchanged';decoder='unchanged';callers='interruption / teardown / embedded Node';owner='#9624, deliberately not converted'})
   }
   foreach($line in @(20,32,33,92,124,125,154,162,174,194,195,205,209,315,396,399,504,505,531,533)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='Python read_text/read_bytes or pipe read';shareAfter='unchanged';decoder='unchanged Python decoder';callers='embedded native fixture setup / proc observation / pipe transport';owner='#9624; non-heavy-owner fixture/proc/transport reads, explicitly retained'})
   }
   $table.Add(@{site='controller-install-lock.psm1:230';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
-  $table.Add(@{site='controller-install-lock.psm1:258';api='File.Open / StreamReader (claim bytes read once)';shareBefore='new in #207';shareAfter=4;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Remove-ClaimedOwnerLock (renamed claim, not live owner.json)';owner='#207 installer dead-owner reclaim (#210)'})
+  $table.Add(@{site='controller-install-lock.psm1:260';api='File.Open / StreamReader (claim bytes read once)';shareBefore='new in #207';shareAfter=4;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Remove-ClaimedOwnerLock (renamed claim, not live owner.json)';owner='#207 installer dead-owner reclaim (#210)'})
   $table.Add(@{site='fleet-exclusive-admission.psm1:92';api='File.ReadAllText(paths.record)';shareBefore=1;shareAfter=1;decoder='strict UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Read-FleetAdmissionRecord';owner='separate fleet-admission.d protocol, not the heavy owner'})
   $table.Add(@{site='dispatch-ownership.ps1:518';api='File.ReadAllText(RecordPath)';shareBefore=1;shareAfter=1;decoder='UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record, never heavy owner.json'})
   # Discover owner/transition reads across tracked source languages, including
@@ -759,15 +762,22 @@ fs.readFileSync = (candidate, encoding) => {
 };
 const recovered = readers.readNestedOwner(input.root, 'a'.repeat(32));
 assert(recovered.owner && transient === 0, 'bounded retry recovers transient EPERM');
-fs.readFileSync = () => { const error = new Error('stable permission denial'); error.code = 'EACCES'; error.syscall = 'open'; throw error; };
+const mutantSource = source.replace('const ownerOpenRetryAttempts = 8;', 'const ownerOpenRetryAttempts = 1;');
+assert.notEqual(mutantSource, source);
+const mutant = new Function('require', 'module', '__dirname', mutantSource + '\nreturn { readNestedOwner };')((name) => name === 'node:fs' ? fs : require(name), {exports:{}}, path.dirname(input.source));
+transient = 3;
+assert.equal(mutant.readNestedOwner(input.root, 'a'.repeat(32)).failure, 'owner record was unreadable', 'retry-removal mutant is RED');
+let stableAttempts = 0;
+fs.readFileSync = () => { stableAttempts += 1; const error = new Error('stable permission denial'); error.code = 'EACCES'; error.syscall = 'open'; throw error; };
 const refused = readers.readNestedOwner(input.root, 'a'.repeat(32));
 assert(refused.failure === 'owner record was unreadable', 'stable EACCES remains fail-closed');
+assert.equal(stableAttempts, 8, 'stable denial exhausts exactly eight opens');
 '@)
   $retryInput=Join-Path $temporaryRoot 'node-owner-retry-input.json'
   [IO.File]::WriteAllText($retryInput,(@{source=$sourcePath;root=$temporaryRoot}|ConvertTo-Json -Compress))
   & (Resolve-NodeExecutable) $retryProbe $retryInput
   Assert-Owner ($LASTEXITCODE-eq0) 'Node owner reader bounded retry and stable-denial controls'
-  Write-Output 'PASS Node owner reader bounded retry recovers transient EPERM and refuses stable EACCES'
+  Write-Output 'PASS Node owner reader bounded retry recovers transient EPERM; retry-removal mutant RED; stable EACCES refused after eight opens'
 }
 try {
   if ($Scenario -in @('All','Continuous')) { Invoke-ContinuousPublication }
