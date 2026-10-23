@@ -2750,7 +2750,7 @@ try {
   $planningOnly = Write-DispatchOwnership -LaneRole "planning" -Label "goal-heavy-slot-planning-mutant"
   # One policy mutant admits the unchanged planning role at every protocol
   # boundary. It never relabels the real record as an implementation launch.
-  Set-SourceMutant $guardSource $guard @(@('if ($binding.Record -and ($binding.Record.laneRole -cne ''implementation'' -or $binding.Row -eq 13)) {', 'if ($false) { # MUTANT dispatch-role')) "dispatch-role"
+  Set-SourceMutant $guardSource $guard @(@('if ($binding.Record -and -not $workspaceDbImplementationLane -and', 'if ($false) { # MUTANT dispatch-role')) "dispatch-role"
   Set-SourceMutant $nestedOwnerSource $nestedOwner @(
     @('if (binding.LaneRole != "implementation" && binding.LaneRole != "review") throw new ArgumentException("binding.LaneRole");', '/* MUTANT dispatch-role */'),
     @('(role != "implementation" && role != "review")', '(false /* MUTANT dispatch-role */)')
