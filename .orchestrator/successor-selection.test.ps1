@@ -9,6 +9,10 @@ function Refuses([scriptblock]$Body,[string]$Pattern) {
   $caught=$null;try { & $Body | Out-Null } catch { $caught="$_" }
   Check ($null-ne$caught-and$caught-match$Pattern) "Expected $Pattern; got $caught"
 }
+# matrix-refresh keeps only samples newer than now minus -SinceDays. The fixtures are
+# dated 2026-09-22..29, so widen the window from that fixed anchor instead of
+# letting the default 30 days age them out as the calendar moves.
+$fixtureSinceDays=[int][Math]::Ceiling(([DateTime]::UtcNow-[DateTime]::new(2026,9,22,0,0,0,[DateTimeKind]::Utc)).TotalDays)+30
 try {
   $models=@('gpt-6.1-sol','gpt-6-luna','claude-opus-5-5','claude-sonnet-5-5')
   $retired=@('gpt-5.6-sol','gpt-5.6-luna','claude-opus-5','claude-sonnet-5','gpt-6-sol')
@@ -245,7 +249,7 @@ try {
   Check ($ambiguousCosts.Count-eq$ambiguousNames.Count) 'ambiguous control ledger incomplete'
   [IO.File]::WriteAllLines($ambiguousLedger,@($ambiguousCosts|ForEach-Object {$_|ConvertTo-Json -Compress -Depth 4}))
   $ambiguousMatrix=Join-Path $root 'ambiguous-matrix.json';Copy-Item $sourceMatrix $ambiguousMatrix
-  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $ambiguousMatrix -CostLedger $ambiguousLedger -DispatchLog $dispatch|Out-Null
+  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $ambiguousMatrix -CostLedger $ambiguousLedger -DispatchLog $dispatch|Out-Null
   $ambiguousRefresh=Get-Content $ambiguousMatrix -Raw|ConvertFrom-Json
   Check (@($ambiguousRefresh.configs|Where-Object {$_.model-ceq'gpt-6.1-sol'-and$_.PSObject.Properties['measured']}).Count-eq0) 'ambiguous names manufactured Sol 6.1 measured evidence'
   Check ($ambiguousRefresh.measuredAt.effortIdentity.byTranscriptName-eq0) 'ambiguous names supplied filename effort'
@@ -259,11 +263,11 @@ try {
   $nativeMatrixLedger=Join-Path $root 'synthetic-normalized-native-ledger.jsonl'
   Write-SyntheticNormalizedLedger $nativeLedger $nativeMatrixLedger
   $nativeMatrix=Join-Path $root 'native-matrix.json';Copy-Item $sourceMatrix $nativeMatrix
-  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $nativeMatrix -CostLedger $nativeMatrixLedger -DispatchLog $dispatch|Out-Null
+  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $nativeMatrix -CostLedger $nativeMatrixLedger -DispatchLog $dispatch|Out-Null
   Check (@((Get-Content $nativeMatrix -Raw|ConvertFrom-Json).configs|Where-Object {$_.model-ceq'gpt-6.1-sol'-and$_.PSObject.Properties['measured']}).Count-eq0) 'native model borrowed conflicting filename effort'
   [IO.File]::WriteAllText((Join-Path $nativeDir 'dispatch-log.jsonl'),('{"kind":"dispatch","transcript":"'+$nativeName+'","model":"gpt-6.1-sol","effort":"high"}'))
   $dispatchMatrix=Join-Path $root 'dispatch-matrix.json';Copy-Item $sourceMatrix $dispatchMatrix
-  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $dispatchMatrix -CostLedger $nativeMatrixLedger -DispatchLog (Join-Path $nativeDir 'dispatch-log.jsonl')|Out-Null
+  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $dispatchMatrix -CostLedger $nativeMatrixLedger -DispatchLog (Join-Path $nativeDir 'dispatch-log.jsonl')|Out-Null
   Check ((@((Get-Content $dispatchMatrix -Raw|ConvertFrom-Json).configs|Where-Object id -CEQ 'gpt-6.1-sol/high')[0]).measured.n-eq1) 'independent exact dispatch effort lost'
   foreach($spec in @(@('cost-harvest.ps1','Get-NameFacts'),@('matrix-refresh.ps1','Get-EffortFromTranscriptName'))){
     $tokens=$null;$errors=$null
@@ -329,14 +333,14 @@ try {
     $caseMatrixLedger=Join-Path $dir 'synthetic-normalized-ledger.jsonl'
     Write-SyntheticNormalizedLedger $caseLedger $caseMatrixLedger
     $caseMatrix=Join-Path $dir 'matrix.json';Copy-Item $sourceMatrix $caseMatrix
-    & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $caseMatrix -CostLedger $caseMatrixLedger -DispatchLog $caseDispatch|Out-Null
+    & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $caseMatrix -CostLedger $caseMatrixLedger -DispatchLog $caseDispatch|Out-Null
     $result=Get-Content $caseMatrix -Raw|ConvertFrom-Json
     Check ($result.measuredAt.effortIdentity.byTranscriptName-eq0-and@($result.configs|Where-Object {$_.model-ceq'gpt-6.1-sol'-and$_.PSObject.Properties['measured']}).Count-eq0) "conflicting filename supplied successor effort: $file"
     if(-not$case.model-and-not$case.dispatch){Check (-not$result.measuredAt.byModel.PSObject.Properties['gpt-6.1-sol']) "conflicting filename supplied successor model sample: $file"}
     if($case.model){Check (@($result.measuredAt.byModel|Get-Member -MemberType NoteProperty -Name 'gpt-6.1-sol').Count-eq1) 'native model-level telemetry lost'}
   }
   Write-Output 'PASS isolated mixed-selector, historical, Claude, and native/model-effort conflicts'
-  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $matrix -CostLedger $matrixLedger -DispatchLog $dispatch|Out-Null
+  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $matrix -CostLedger $matrixLedger -DispatchLog $dispatch|Out-Null
   $refreshed=Get-Content $matrix -Raw|ConvertFrom-Json
   Check (@($costs|Where-Object model -CEQ 'gpt-6-sol').Count-eq4-and@($costs|Where-Object model -CEQ 'gpt-6.1-sol').Count-eq6) 'Sol 6.1 and historical Sol 6 transcript attribution crossed'
   foreach($authored in @('benchmarkRebalance20260923','benchmarkRebalance20260928','benchmarkRebalance20260929')){
@@ -357,7 +361,7 @@ try {
   $retiredConfig=@($refreshed.configs|Where-Object id -CEQ 'gpt-5.6-sol/high')[0]
   $retiredConfig|Add-Member -NotePropertyName selectable -NotePropertyValue $true
   [IO.File]::WriteAllText($matrix,($refreshed|ConvertTo-Json -Depth 100))
-  Refuses { & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -Matrix $matrix -CostLedger $ledger -DispatchLog $dispatch -DryRun|Out-Null } 'historical-only.*cannot be selectable'
+  Refuses { & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $matrix -CostLedger $ledger -DispatchLog $dispatch -DryRun|Out-Null } 'historical-only.*cannot be selectable'
   Write-Output 'PASS exact filename attribution, successor prices, historical prices, and isolated refresh evidence'
 } finally {
   $env:CHASE_SETS_ROUTING_DATA_ROOT=$oldRoutingRoot;$env:CHASE_SETS_ROUTING_LKG_PATH=$oldRoutingLkg
