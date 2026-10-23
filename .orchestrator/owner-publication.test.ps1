@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [ValidateSet('All', 'Primitive', 'Readers', 'Continuous')][string]$Scenario = 'All',
-  [string]$EvidencePath = ''
+  [string]$EvidencePath = '',
+  [switch]$Stress
 )
 $ErrorActionPreference = 'Stop'
 (Get-Process -Id $PID).PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal
@@ -9,6 +10,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('owner-publication-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($temporaryRoot)
 $results = [Collections.Generic.List[object]]::new()
+$definitionCache = @{}
 function Assert-Owner($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
@@ -68,10 +70,13 @@ function Get-PreRepairSource([string]$Source, [switch]$ReaderOnly) {
   return [regex]::Replace($reverted, $catchPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $open })
 }
 function Get-Definition([string]$Source, [string]$Name) {
-  $tokens = $null; $errors = $null
-  $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errors)
-  Assert-Owner (-not $errors) "parse source for $Name"
-  $definitions = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]}, $true) | Where-Object Name -CEQ $Name)
+  if (-not $definitionCache.ContainsKey($Source)) {
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errors)
+    Assert-Owner (-not $errors) "parse source for $Name"
+    $definitionCache[$Source] = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]}, $true))
+  }
+  $definitions = @($definitionCache[$Source] | Where-Object Name -CEQ $Name)
   Assert-Owner ($definitions.Count -eq 1) "one definition of $Name"
   return $definitions[0].Extent.Text
 }
@@ -263,7 +268,7 @@ while (-not [IO.File]::Exists($Stop)) {
     try { $reader=[IO.StreamReader]::new($stream); try { $null=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() } } finally { $stream.Dispose() }
   } catch {
     $exception=$_.Exception.GetBaseException()
-    if($errors.Count-lt20){$errors.Add(@{type=$exception.GetType().FullName;code=($exception.HResult-band 0xffff);hresult=$exception.HResult;message=$exception.Message})}
+    if($errors.Count-lt20){$errors.Add(@{type=$exception.GetType().FullName;code=($exception.HResult-band 0xffff);hresult=$exception.HResult;message=$exception.Message;attempts=$openAttempt;elapsedMs=$openDeadline.Elapsed.TotalMilliseconds})}
     if (-not [IO.File]::Exists($Owner)) { $absent++ } else { $failures++ }
   }
   $polls++
@@ -277,7 +282,7 @@ while (-not [IO.File]::Exists($Stop)) {
   $openSource=Join-Path $temporaryRoot 'open-owner.ps1'
   [IO.File]::WriteAllText($openSource,$snapshot.Substring($openStart,$openEnd-$openStart))
   foreach ($variant in $variants.Keys) {
-    $copy = $variants[$variant].Replace('ChaseSets.HeavyAdmission', "ChaseSets.Continuous$($variant.Replace('-',''))")
+    $copy = $variants[$variant]
     if ($variant -cne 'candidate') { Assert-DistinctSources $copy $source "owner-rename-continuous/$variant" }
     Import-GuardFunctions $copy
     foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
@@ -754,7 +759,7 @@ fs.mkdirSync(lock, {recursive:true});
 const owner = path.join(lock, 'owner.json');
 fs.writeFileSync(owner, JSON.stringify({schemaVersion:4,lockId:'a'.repeat(32),owner:'fixture',lane:'fixture',branch:'codex/fixture',worktree:input.root,head:'b'.repeat(40),identityMode:'branch',pid:1,processStartUtc:'2026-01-01T00:00:00.0000000Z',startedUtc:'2026-01-01T00:00:00.0000000Z',gate:'test',commandIdentity:'c'.repeat(64),state:'started',childPid:2,childProcessStartUtc:'2026-01-01T00:00:00.0000000Z'}));
 const original = fs.readFileSync.bind(fs);
-const readers = new Function('require', 'module', '__dirname', source + '\nreturn { readNestedOwner };')((name) => name === 'node:fs' ? fs : require(name), {exports:{}}, path.dirname(input.source));
+const readers = new Function('require', 'module', '__dirname', source + '\nreturn { readNestedOwner, readOwnerText };')((name) => name === 'node:fs' ? fs : require(name), {exports:{}}, path.dirname(input.source));
 let transient = 3;
 fs.readFileSync = (candidate, encoding) => {
   if (candidate === owner && transient > 0) { transient -= 1; const error = new Error('transient owner open denial'); error.code = 'EPERM'; error.syscall = 'open'; throw error; }
@@ -778,6 +783,20 @@ fs.readFileSync = () => { stableAttempts += 1; const error = new Error('stable p
 const refused = readers.readNestedOwner(input.root, 'a'.repeat(32));
 assert(refused.failure === 'owner record was unreadable', 'stable EACCES remains fail-closed');
 assert.equal(stableAttempts, 8, 'stable denial exhausts exactly eight opens');
+const originalClock = process.hrtime.bigint;
+let clockCalls = 0;
+stableAttempts = 0;
+try {
+  process.hrtime.bigint = () => clockCalls++ === 0 ? 0n : 1000000000n;
+  assert.throws(() => readers.readOwnerText(owner), {code:'EACCES'});
+  assert.equal(stableAttempts, 1, 'one-second deadline prevents another open');
+} finally { process.hrtime.bigint = originalClock; }
+for (const [code, syscall] of [['ENOENT','open'], ['EIO','open'], ['EPERM','read']]) {
+  let attempts = 0;
+  fs.readFileSync = () => { attempts++; const error = new Error('not a transient open denial'); Object.assign(error, {code,syscall}); throw error; };
+  assert.throws(() => readers.readOwnerText(owner), {code,syscall});
+  assert.equal(attempts, 1, `${code}/${syscall} is never retried`);
+}
 '@)
   $retryInput=Join-Path $temporaryRoot 'node-owner-retry-input.json'
   [IO.File]::WriteAllText($retryInput,(@{source=$sourcePath;root=$temporaryRoot}|ConvertTo-Json -Compress))
@@ -786,7 +805,11 @@ assert.equal(stableAttempts, 8, 'stable denial exhausts exactly eight opens');
   Write-Output 'PASS Node owner reader bounded retry recovers transient EPERM and EBUSY; retry-removal mutant RED; stable EACCES refused after eight opens'
 }
 try {
-  if ($Scenario -in @('All','Continuous')) { Invoke-ContinuousPublication }
+  # The hosted battery runs without -Stress. Keep the 4000-replacement,
+  # production-reader diagnostic opt-in; deterministic removal controls below
+  # still exercise the production remedy on every default run.
+  if ($Scenario -eq 'Continuous' -and -not $Stress) { throw 'Continuous production-reader stress requires -Stress' }
+  if ($Stress -and $Scenario -in @('All','Continuous')) { Invoke-ContinuousPublication }
   if ($Scenario -in @('All','Primitive')) { Invoke-Primitive; Invoke-VanishedPublication }
   if ($Scenario -in @('All','Readers')) { Invoke-ReaderInventory; Invoke-ReaderMatrix; Invoke-ManagedReaderMatrix; Invoke-NodeReaderMatrix }
 } finally {

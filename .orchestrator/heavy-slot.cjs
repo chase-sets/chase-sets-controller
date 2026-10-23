@@ -71,7 +71,7 @@ function sleep(milliseconds) {
 }
 
 const ownerOpenRetryAttempts = 8;
-const ownerOpenRetryBudgetMilliseconds = 250;
+const ownerOpenRetryBudgetMilliseconds = 1000;
 
 function readOwnerText(ownerPath) {
   // Windows can transiently deny a name-based open during owner publication.
