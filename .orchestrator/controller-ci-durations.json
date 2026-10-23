@@ -7379,7 +7379,68 @@
       "planSha256": "e7c194507778761f35c019c4a7d0ff733ed30f261f2f36f2ecd278d84ba142db",
       "result": "FAIL",
       "exitCode": 1
+    },
+    {
+      "identity": "check:controller-ci-coverage",
+      "elapsedMs": 2437,
+      "recordedAtUtc": "2026-10-23T08:26:07.7627707Z",
+      "sourceSha256": "ab95fa74fa4285b5e0c12710293c7d9dde152388fe38a838d1b2762744908d25",
+      "sourceSetSha256": "13a330e64b75eebb02a13f1f8a85b3bfd20deee8378b4619e0d0403a735cef2e",
+      "controllerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "checkoutHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "runnerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "productSha": "e95ff701c5791e9242ad77243b639aacc7ca2ab3",
+      "runId": "39924379816",
+      "planSha256": "838504df4a137ba398d75bffd98383d67e410e5ccfeb0e40ce74b3053201e3d6",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "check:controller-ci-record-durations",
+      "elapsedMs": 2714,
+      "recordedAtUtc": "2026-10-23T08:26:13.6838502Z",
+      "sourceSha256": "d66c0a9dc5c332dac483b8cb6f88323f0e7c713acf34bbb41660034185ab11d3",
+      "sourceSetSha256": "13a330e64b75eebb02a13f1f8a85b3bfd20deee8378b4619e0d0403a735cef2e",
+      "controllerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "checkoutHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "runnerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "productSha": "e95ff701c5791e9242ad77243b639aacc7ca2ab3",
+      "runId": "39924379816",
+      "planSha256": "838504df4a137ba398d75bffd98383d67e410e5ccfeb0e40ce74b3053201e3d6",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "test:controller-ci.test.ps1",
+      "elapsedMs": 834,
+      "recordedAtUtc": "2026-10-23T08:26:07.0586730Z",
+      "sourceSha256": "3e2355da60b9b7af72ff556f634161004a1dda4c9adc0b67f9a9d5c0fcfdfce3",
+      "sourceSetSha256": "13a330e64b75eebb02a13f1f8a85b3bfd20deee8378b4619e0d0403a735cef2e",
+      "controllerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "checkoutHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "runnerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "productSha": "e95ff701c5791e9242ad77243b639aacc7ca2ab3",
+      "runId": "39924379816",
+      "planSha256": "838504df4a137ba398d75bffd98383d67e410e5ccfeb0e40ce74b3053201e3d6",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "check:controller-ci-sharding",
+      "elapsedMs": 1243,
+      "recordedAtUtc": "2026-10-23T08:27:08.5840482Z",
+      "sourceSha256": "b803d31ce0974cabb5e187acdb7f5d2a8e9657da4f69878ec5614636496d6fb0",
+      "sourceSetSha256": "13a330e64b75eebb02a13f1f8a85b3bfd20deee8378b4619e0d0403a735cef2e",
+      "controllerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "checkoutHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "runnerHead": "5ae2ad21fcca8dcc8fc8113fc70ca0525f9a9ff9",
+      "productSha": "e95ff701c5791e9242ad77243b639aacc7ca2ab3",
+      "runId": "39924379816",
+      "planSha256": "838504df4a137ba398d75bffd98383d67e410e5ccfeb0e40ce74b3053201e3d6",
+      "result": "PASS",
+      "exitCode": 0
     }
   ],
-  "schemaVersion": "controller-ci-durations/v1"
+  "schemaVersion": "controller-ci-durations/v1",
+  "shardCount": 18
 }
