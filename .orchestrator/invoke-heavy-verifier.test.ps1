@@ -14,9 +14,9 @@ param(
   [switch]$TeardownOnly,
   # #9627 named bypass mutants of the ControllerFixtureEquivalence route.
   [ValidateSet('', 'arbitrary-phase', 'forward-baseline', 'unchecked-evidence', 'untracked-check', 'unbound-source-bytes', 'unchecked-ancestry', 'platform-slot', 'early-release', 'bypass-eligibility')][string]$FixtureMutant = '',
-  [string]$GuardRevision = ""
+  [string]$GuardRevision = "", [string]$Part = ''
 )
-
+$ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); foreach($selector in @(Get-HeavySuitePartSelector $Part $PSBoundParameters)){Set-Variable -Name $selector -Value $true}
 $ErrorActionPreference = "Stop"
 $guard = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 function Assert-True($Condition, [string]$Message) {

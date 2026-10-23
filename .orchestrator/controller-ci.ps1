@@ -7,7 +7,7 @@ param(
   [ValidateSet('full','impact')][string]$Scope = 'full',
   [string]$PlanPath,
   [string]$OutputDirectory,
-  [ValidateRange(0,9)][int]$Shard = 0
+  [ValidateRange(0,17)][int]$Shard = 0
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')
@@ -80,13 +80,15 @@ function Select-CiRequiredItems([object[]]$Inventory, [string]$Selection) {
 }
 
 function New-CiAssignments([object[]]$Inventory, [string]$Selection, $Manifest=$null, $Profile=$null,
-    [string]$Root='', [datetimeoffset]$Now=[datetimeoffset]::UtcNow) {
+    [string]$Root='', [datetimeoffset]$Now=[datetimeoffset]::UtcNow, [int]$ShardCount=10) {
   $selected = Select-CiRequiredItems $Inventory $Selection
-  return ,(Set-CiBalancedShards (New-CiExecutionItems $selected $Manifest $Profile $Root $Now))
+  Assert-CiManifest $Inventory $Manifest $Root
+  return ,(Set-CiBalancedShards (New-CiExecutionItems $selected $Manifest $Profile $Root $Now) $ShardCount)
 }
 
 function Merge-CiResults($Plan, [object[]]$Shards) {
-  Assert-Ci ($Shards.Count -eq 10) 'exactly ten shard receipts required'
+  $shardCount = Get-CiShardCount $Plan
+  Assert-Ci ($Shards.Count -eq $shardCount) 'exact shard receipt count required'
   $seenShards = [Collections.Generic.HashSet[int]]::new()
   $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   $results = [Collections.Generic.List[object]]::new()
@@ -94,7 +96,8 @@ function Merge-CiResults($Plan, [object[]]$Shards) {
     Assert-Ci ($part.schemaVersion -ceq 'controller-ci-shard/v1') 'shard schema mismatch'
     Assert-Ci ($part.checkoutHead -ceq $Plan.checkoutHead -and $part.controllerHead -ceq $Plan.controllerHead -and
       $part.productSha -ceq $Plan.productSha -and $part.planSha256 -ceq $Plan.planSha256) 'shard identity mismatch'
-    Assert-Ci ($part.shard -ge 0 -and $part.shard -lt 10 -and $seenShards.Add([int]$part.shard)) 'duplicate/invalid shard'
+    Assert-Ci (($part.shard -is [int] -or $part.shard -is [long]) -and
+      $part.shard -ge 0 -and $part.shard -lt $shardCount -and $seenShards.Add([int]$part.shard)) 'duplicate/invalid shard'
     $executionItems = if ($null -ne $Plan.executionItems) { $Plan.executionItems } else { $Plan.selected }
     $expected = @($executionItems | Where-Object shard -EQ $part.shard)
     Assert-Ci (@($part.results).Count -eq $expected.Count) 'shard cardinality mismatch'
@@ -144,19 +147,32 @@ if ($Mode -ceq 'Plan') {
       arguments=@($item.arguments | ForEach-Object { ([string]$_).Replace($ControllerRoot, '{CONTROLLER}') })
       restriction=(Get-CiRestriction $item.identity $ControllerRoot) }
   })
+  # These hosted adapter checks are explicit additions to the source battery
+  # inventory, not substitutions for any of its required identities.
+  if(Test-Path -LiteralPath (Join-Path $ControllerRoot '.orchestrator/controller-ci-parts.json')) {
+    foreach($name in @('controller-ci-coverage','controller-ci-sharding','controller-ci-record-durations')) {
+      $path=".orchestrator/$name.check.ps1"
+      Assert-Ci (Test-Path -LiteralPath (Join-Path $ControllerRoot $path)) "required checker missing: $path"
+      $inventory+=[pscustomobject]@{identity="check:$name";path=$path;command="pwsh $path"
+        arguments=@('-NoProfile','-NonInteractive','-File',"{CONTROLLER}/$path");restriction=$null}
+    }
+  }
   $selected = Select-CiRequiredItems $inventory $Items
   $manifestPath = Join-Path $ControllerRoot '.orchestrator/controller-ci-parts.json'
   $manifest = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -Depth 40 } else { $null }
   $profile = Read-CiTimingProfile (Join-Path $ControllerRoot '.orchestrator/controller-ci-durations.json')
-  $executionItems = New-CiAssignments $inventory $Items $manifest $profile $ControllerRoot
+  . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
+  $shardCount = if ($null -ne $manifest) { Get-CiShardCount @{shardCount=$(if($null -ne $profile.shardCount){$profile.shardCount}else{18})} } else { Get-CiShardCount @{} }
+  $executionItems = New-CiAssignments $inventory $Items $manifest $profile $ControllerRoot -ShardCount $shardCount
   $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=(Get-CiSourceHead $ControllerRoot $checkoutHead)
     checkoutHead=$checkoutHead; productSha=$ProductSha; runnerHead=$env:GITHUB_SHA; inventory=$inventory; selected=$selected
     executionItems=$executionItems; planning=@{algorithm='LPT';fallbackMs=30000;maxAgeDays=30
-      shards=@(0..9 | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })}
+      shards=@(0..($shardCount-1) | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })}
     scope=@{kind=$capture.scope;reason=$capture.reason;baselineHead='';changedCount=0}; hostIdentity=$capture.hostIdentity
     startedUtc=[DateTime]::UtcNow.ToString('o'); requestedScope=$Scope }
+  if ($null -ne $manifest) { $plan.shardCount=$shardCount }
   Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
-  $matrix = @{include=@(0..9 | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
+  $matrix = @{include=@(0..($shardCount-1) | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
   Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "matrix=$matrix`ncheckout_head=$checkoutHead"
   Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count)"
   return
@@ -166,6 +182,7 @@ $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 40 -Da
 Assert-Ci ($plan.schemaVersion -ceq 'controller-ci-plan/v1') 'plan schema mismatch'
 $plan | Add-Member -NotePropertyName planSha256 -NotePropertyValue (Get-FileHash -LiteralPath $PlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Mode -ceq 'Shard') {
+  Assert-Ci ($Shard -lt (Get-CiShardCount $plan)) 'shard outside plan range'
   Assert-Ci ($checkoutHead -ceq $plan.checkoutHead -and $ProductSha -ceq $plan.productSha) 'plan checkout mismatch'
   $rows = [Collections.Generic.List[object]]::new()
   $start = [DateTime]::UtcNow
@@ -227,7 +244,7 @@ $record = [ordered]@{schemaVersion='controller-battery-result/v1';controllerHead
     reusedCount=0;satisfiedCount=@($results | Where-Object result -CEQ 'PASS').Count;onFailure='all';notRun=$notRun}
   inventory=$plan.inventory;results=$results;rawLog=@{kind='raw-log';relativePath='.orchestrator/artifacts/controller-ci.log'
     byteLength=(Get-Item $rawPath).Length;sha256=(Get-FileHash $rawPath -Algorithm SHA256).Hash.ToLowerInvariant()}
-  ci=@{checkoutHead=$plan.checkoutHead;productSha=$plan.productSha;runnerHead=$plan.runnerHead;runId=$env:GITHUB_RUN_ID
+  ci=@{checkoutHead=$plan.checkoutHead;productSha=$plan.productSha;runnerHead=$plan.runnerHead;runId=$env:GITHUB_RUN_ID;planSha256=$plan.planSha256
     localOnly=$localOnly;notHermetic=$notHermetic;shards=@($parts | Select-Object shard,startedUtc,finishedUtc,elapsedMs)
     planning=$plan.planning;executionResults=@($parts | ForEach-Object { $_.results })} }
 if ($outcome -cne 'PASS') { $record.failureCode="CI_$outcome" }

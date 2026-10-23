@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param([string]$LauncherPath=(Join-Path $PSScriptRoot 'dispatch-lane.ps1'),
   [ValidateSet('all','policy','current','admission','explicit','lkg','evidence','ledger-readers','capacity-shadow','capacity-active','capacity-validation','capacity-matrix','capacity-history','capacity-override','capacity-exemptions','capacity-logger','capacity-reserve','capacity-roles','capacity-continuation')][string]$Case='all',
-  [string]$EvidenceDir,[switch]$CapacityMutantsOnly)
+  [string]$EvidenceDir,[switch]$CapacityMutantsOnly,[string]$Part='')
+$ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part (Get-SuiteRoutingParts ([IO.File]::ReadAllText($PSCommandPath))) $PSBoundParameters @('Case','CapacityMutantsOnly')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
@@ -670,7 +672,7 @@ try {
   $cases=@('policy','current','admission','explicit','lkg','evidence','ledger-readers','capacity-shadow','capacity-active',
     'capacity-validation','capacity-matrix','capacity-history','capacity-override','capacity-exemptions','capacity-logger',
     'capacity-reserve','capacity-roles','capacity-continuation')
-  if(-not $CapacityMutantsOnly){foreach($name in $cases){if($Case-ceq'all'-or$Case-ceq$name){Invoke-Case $name}}}
+  if(-not $CapacityMutantsOnly){foreach($name in $cases){if($Case-ceq'all'-or$Case-ceq$name){if(Test-SuitePart $Part "case-$name"){Invoke-Case $name}}}}
   if($Case-ceq'all' -and -not $CapacityMutantsOnly){
     $source=[IO.File]::ReadAllText($LauncherPath)
     $mutants=@(
@@ -685,6 +687,7 @@ try {
     $evidence=if($EvidenceDir){[IO.Path]::GetFullPath($EvidenceDir)}else{Join-Path $root 'mutants'}
     [void][IO.Directory]::CreateDirectory($evidence)
     foreach($m in $mutants){
+      if(-not(Test-SuitePart $Part "routing-mutant-$($m.name)")){continue}
       Assert-True ($source.Contains($m.old)) "mutation seam $($m.name)"
       $dir=Join-Path $evidence $m.name;[void][IO.Directory]::CreateDirectory($dir)
       Get-ChildItem -LiteralPath (Split-Path -Parent $LauncherPath) -File | Where-Object Extension -In @('.ps1','.psm1','.cjs') | Copy-Item -Destination $dir
@@ -744,6 +747,7 @@ try {
     $evidence=if($EvidenceDir){[IO.Path]::GetFullPath($EvidenceDir)}else{Join-Path $root 'capacity-mutants'}
     [void][IO.Directory]::CreateDirectory($evidence)
     foreach($m in $capacityMutants){
+      if(-not(Test-SuitePart $Part "capacity-mutant-$($m.name)")){continue}
       $source=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $LauncherPath) $m.file)).Replace("`r`n","`n")
       $old=$m.old.Replace("`r`n","`n");Assert-True ($source.Contains($old)) "capacity mutation seam $($m.name)"
       $dir=Join-Path $evidence $m.name;[void][IO.Directory]::CreateDirectory($dir)

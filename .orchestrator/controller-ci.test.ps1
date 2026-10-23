@@ -34,3 +34,4 @@ Assert-Ci ($merged.Count -eq 23 -and @($merged | Where-Object result -CEQ 'LOCAL
 $parts[0].results[0].identity='test:extra.ps1'
 Refuses { Merge-CiResults $plan $parts }
 Write-Output 'PASS controller CI assignment, missing/duplicate/extra identities, digest, exit/result and exclusion controls'
+& (Join-Path $PSScriptRoot 'controller-ci-sharding.check.ps1')
