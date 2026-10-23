@@ -343,6 +343,10 @@
         {
           "name": "ten-item",
           "weight": 1
+        },
+        {
+          "name": "ten-item-scan",
+          "weight": 1
         }
       ],
       "ownership": {
@@ -351,7 +355,8 @@
           "baseline",
           "issue-scan",
           "no-linkage",
-          "ten-item"
+          "ten-item",
+          "ten-item-scan"
         ]
       }
     },
@@ -486,7 +491,45 @@
     {
       "path": ".orchestrator/board-hourly-scale.test.ps1",
       "baselineBlob": "4eedaa85619279fa8b30595045acf95a6137e802",
-      "edits": []
+      "edits": [
+        {
+          "offset": 1,
+          "remove": 1,
+          "original": [
+            "param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item')][string]$Arm = 'all')"
+          ],
+          "replacement": [
+            "param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]$Arm = 'all')"
+          ]
+        },
+        {
+          "offset": 14,
+          "remove": 1,
+          "original": [
+            "    if ($name -eq 'ten-item') {"
+          ],
+          "replacement": [
+            "    if ($name -eq 'ten-item' -and $Arm -eq 'all') {"
+          ]
+        },
+        {
+          "offset": 11,
+          "remove": 1,
+          "original": [
+            "    $f = New-BoardScaleFixture (Join-Path $root $name) $(if ($name -eq 'ten-item') { 10 } else { 2400 })"
+          ],
+          "replacement": [
+            "    if ($name -eq 'ten-item-scan') {",
+            "      $scan = New-BoardScaleFixture (Join-Path $root 'ten-item-scan') 10",
+            "      Invoke-BoardScaleArm $scan 'ten-item-scan'",
+            "      Write-Output 'CONTROL ten-item issue scan is non-discriminating'",
+            "      Write-Output \"PASS board-live-scale-hourly-apply $name\"",
+            "      continue",
+            "    }",
+            "    $f = New-BoardScaleFixture (Join-Path $root $name) $(if ($name -eq 'ten-item') { 10 } else { 2400 })"
+          ]
+        }
+      ]
     },
     {
       "path": ".orchestrator/landed-integration-dispatch.test.ps1",

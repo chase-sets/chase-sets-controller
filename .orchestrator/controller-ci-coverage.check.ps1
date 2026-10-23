@@ -53,7 +53,9 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     }
     if($before.ParamBlock){
       for($i=0;$i-lt$before.ParamBlock.Parameters.Count;$i++){
-        Assert-Ci ($before.ParamBlock.Parameters[$i].Extent.Text-ceq$after.ParamBlock.Parameters[$i].Extent.Text) 'legacy parameter/default/order changed'
+        $afterParameter=$after.ParamBlock.Parameters[$i].Extent.Text
+        if($leaf-ceq'board-hourly-scale.test.ps1'-and$i-eq0){$afterParameter=$afterParameter.Replace(",'ten-item-scan'",'')}
+        Assert-Ci ($before.ParamBlock.Parameters[$i].Extent.Text-ceq$afterParameter) 'legacy parameter/default/order changed'
       }
     }
   }
@@ -64,9 +66,34 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
   Assert-CiManifest $inventory $Manifest $root
 }
 Assert-Conservation $manifest
+function Refuses-Coverage([scriptblock]$Body){$refused=$false;try{&$Body}catch{$refused=$true};Assert-Ci $refused 'coverage bypass survived'}
+function Assert-BoardSplitContract([string]$Source){
+  Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
+  Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'
+  Assert-Ci ($Source.Contains("Invoke-BoardScaleArm `$f `$(if (`$name -eq 'ten-item') { 'candidate' } else { `$name })")) 'ten-item candidate verdict dropped'
+  Assert-Ci ($Source.Contains("if (`$name -eq 'ten-item' -and `$Arm -eq 'all')")) 'ten-item scan was merged into explicit candidate part'
+  Assert-Ci ($Source.Contains("if (`$name -eq 'ten-item-scan')")) 'ten-item-scan part dropped'
+  Assert-Ci ($Source.Contains("`$scan = New-BoardScaleFixture (Join-Path `$root 'ten-item-scan') 10")) 'ten-item-scan fixture dropped'
+  Assert-Ci ($Source.Contains("Invoke-BoardScaleArm `$scan 'ten-item-scan'")) 'ten-item-scan verdict dropped'
+  Assert-Ci ($Source.Contains("Write-Output 'CONTROL ten-item issue scan is non-discriminating'")) 'ten-item scan control dropped'
+}
+function Assert-BoardPartNames($Names){
+  $expected=@('candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')
+  $actualText=(@($Names|Sort-Object)-join',')
+  $expectedText=(@($expected|Sort-Object)-join',')
+  Assert-Ci ($actualText-ceq$expectedText) 'board part census changed'
+}
+$boardPath=Join-Path $PSScriptRoot 'board-hourly-scale.test.ps1'
+$boardText=[IO.File]::ReadAllText($boardPath).Replace("`r`n","`n")
+$boardItem=$manifest.items|Where-Object identity -eq 'test:board-hourly-scale.test.ps1'
+Assert-BoardPartNames @($boardItem.parts.name)
+Assert-BoardSplitContract $boardText
+Refuses-Coverage { Assert-BoardPartNames @($boardItem.parts.name|Where-Object{$_-ne'ten-item-scan'}) }
+Refuses-Coverage { Assert-BoardPartNames @($boardItem.parts.name|Where-Object{$_-ne'ten-item'}) }
+Refuses-Coverage { Assert-BoardSplitContract ($boardText.Replace("if (`$name -eq 'ten-item' -and `$Arm -eq 'all')","if (`$name -eq 'ten-item')")) }
+Refuses-Coverage { Assert-BoardSplitContract ($boardText.Replace("Invoke-BoardScaleArm `$f `$(if (`$name -eq 'ten-item') { 'candidate' } else { `$name })",'')) }
 $routing=Get-SuiteRoutingNames (ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-routing-data.test.ps1")))
 Assert-Ci ($routing.cases.Count-eq18-and$routing.mutants.Count-eq8-and$routing.capacityMutants.Count-eq36) 'baseline routing census drift'
-function Refuses-Coverage([scriptblock]$Body){$refused=$false;try{&$Body}catch{$refused=$true};Assert-Ci $refused 'coverage bypass survived'}
 $path=Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1'
 $text=[IO.File]::ReadAllText($path).Replace("`r`n","`n")
 Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps1'=$text.Replace('Invoke-Case $name','') }}
@@ -75,4 +102,4 @@ Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps
 Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps1'=$text.Replace('$exit-eq1-and','$exit-ne1-and') }}
 if($EvidenceDirectory){Write-CiJson @{baselineHead=$BaselineHead;baselineBlobs=$pins;routing=$routing;parts=@($manifest.items|Select-Object identity,ownership)
   repeatedWitnesses='Mutant children run their original -Case without -Part. Landed per-part synthetic-witness checks cover each disjoint retained fixture set; setup and unchanged summary lines may repeat.'} (Join-Path $EvidenceDirectory 'source-coverage.json')}
-Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate controls refused'
+Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, six board parts with required ten-item split, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate controls refused'
