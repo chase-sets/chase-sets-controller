@@ -1,10 +1,13 @@
-[CmdletBinding()]param([string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)
+[CmdletBinding()]param([ValidateSet('proof','scale')][string]$Part='',[string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('proof','scale') $PSBoundParameters @('EvidenceRoot','KeepEvidence')
 $suiteClock=[Diagnostics.Stopwatch]::StartNew()
 [Diagnostics.Process]::GetCurrentProcess().PriorityClass='BelowNormal'
 . (Join-Path $PSScriptRoot 'cleanup-orphan-worktree-dirs.ps1')
 $sourcePath=Join-Path $PSScriptRoot 'cleanup-orphan-worktree-dirs.ps1'
 $root=Join-Path ([IO.Path]::GetFullPath($EvidenceRoot)) ('cleanup-orphan-test-'+[guid]::NewGuid().ToString('N'))
+$construction=[Diagnostics.Stopwatch]::new();$wall=[timespan]::Zero
 function Assert-Cleanup([bool]$Condition,[string]$Message){if(-not$Condition){throw "ASSERTION FAILED: $Message"}}
 function Invoke-TestGit([string]$At,[string[]]$Arguments){$out=@(& git -C $At @Arguments 2>&1);if($LASTEXITCODE-ne0){throw "git failed: $($out-join"`n")"};(@($out)-join"`n").Trim()}
 function Write-Fixture([string]$Path,[string]$Text){[IO.File]::WriteAllText($Path,$Text,[Text.UTF8Encoding]::new($false))}
@@ -271,6 +274,7 @@ function Assert-BatchedAuthority {
 }
 try {
   New-Item -ItemType Directory -Path $root|Out-Null
+  if(-not$Part -or $Part -eq 'proof'){
   $resolvers=@{
     OwnershipResolver={param($Runtime,$Temp,$Container)$script:ownership}
     PrResolver={param($Repository,$Branch,$Head)$script:authorityRepositories.Add($Repository);if($script:merged){[pscustomobject]@{number=900011;state='MERGED';headRefName=$Branch;headRefOid=$Head}}}
@@ -527,6 +531,31 @@ try {
     Assert-Cleanup (($before.rows|Select-Object $fields|ConvertTo-Json -Compress)-ceq($after.rows|Select-Object $fields|ConvertTo-Json -Compress)) "baseline removable-set equivalence $($case.Key)"
   }
   Write-Output "PASS reclamation-baseline-equivalence cases=$($equivalence.Count)"
+  }
+  if($Part -eq 'scale'){
+  $resolvers=@{
+    OwnershipResolver={param($Runtime,$Temp,$Container)$script:ownership}
+    PrResolver={param($Repository,$Branch,$Head)$script:authorityRepositories.Add($Repository);if($script:merged){[pscustomobject]@{number=900011;state='MERGED';headRefName=$Branch;headRefOid=$Head}}}
+    ChildPrResolver={param($Repository,$Branch)$script:authorityRepositories.Add($Repository);$script:children}
+    OpenPrResolver={param($Repository)$script:authorityRepositories.Add($Repository);$script:openCalls++;$script:open}
+    IssueResolver={param($Number)$script:issue}
+  }
+  function Get-ReclamationWorktrees([string]$RepositoryRoot){@($script:worktrees)}
+  function Get-ReclamationBranches([string]$RepositoryRoot){@($script:branches)}
+  function Invoke-ReclamationGit([string]$At,[string[]]$Arguments){
+    $text='';$code=0
+    switch($Arguments[0]){
+      'status' {if($null-ne$script:statusPaths){$script:statusPaths.Add($At)};if($script:dirty){$text='?? synthetic-dirt'}}
+      'config' {$text='https://github.com/synthetic/reclamation-test.git'}
+      'merge-base' {if(-not$script:reachable){$code=1}}
+      'worktree' {$script:mutations.Add(($Arguments-join' '));$script:worktrees=@($script:worktrees|Where-Object{$_.path-cne$Arguments[3]})}
+      'update-ref' {$script:mutations.Add(($Arguments-join' '))}
+      default {throw "unexpected synthetic git: $($Arguments-join' ')"}
+    }
+    [pscustomobject]@{exitCode=$code;text=$text;output=@($text|Where-Object{$_})}
+  }
+  }
+  if(-not$Part -or $Part -eq 'scale'){
   # AC4 measures report mode only; construction is separately timed and bounded.
   Reset-Synthetic;$script:worktrees=@();$script:branches=@();$dispatchRows=[Collections.Generic.List[string]]::new()
   $scaleRoot=Join-Path $root 'scale';[void][IO.Directory]::CreateDirectory($scaleRoot)
@@ -558,6 +587,8 @@ try {
   Assert-Cleanup (@($script:scaleResult.rows|Where-Object{$_.reasonCode-ceq'identity-unrecognized'}).Count-eq150-and@($script:scaleResult.rows|Where-Object{$_.reasonCode-ceq'idle-under-six-hours'-and$_.idle.state-ceq'recent'}).Count-eq50) 'scale exercises cheap refusal and native early exit'
   Assert-Cleanup ($script:scaleResult.phaseTimings.total-lt300000-and$script:scaleResult.phaseTimings.total-le$wall.TotalMilliseconds) 'AC6 synthetic dry-run total under 300000 ms'
   Write-Output "PASS reclamation-scale-bound trees=200 filesPerTree=2000 constructionMs=$($construction.Elapsed.TotalMilliseconds) reportWallMs=$($wall.TotalMilliseconds) totalMs=$($script:scaleResult.phaseTimings.total) cpuStart=$scaleCpuStart cpuEnd=$scaleCpuEnd report=$scaleReport"
+  }
+  if(-not$Part -or $Part -eq 'proof'){
   Set-Item Function:Invoke-ReclamationGit $nativeGit;Set-Item Function:Get-ReclamationWorktrees $nativeTrees;Set-Item Function:Get-ReclamationBranches $nativeBranches
   foreach($repositoryKind in @('product','container-meta')){foreach($detached in @($false,$true)){
     $caseRoot=Join-Path $root ("native-$repositoryKind-$detached");New-Item -ItemType Directory $caseRoot|Out-Null;Invoke-TestGit $caseRoot @('init','--initial-branch=main')|Out-Null
@@ -604,6 +635,7 @@ try {
   $skill=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md')) -replace '\s+',' '
   Assert-Cleanup ($skill.Contains('cleanup-orphan-worktree-dirs.ps1 -Remove -ReportPath')-and$skill.Contains('worktree-reclamation-<yyyyMMddTHHmmssZ>.json')-and$skill.Contains('2026-10-04 directive')) 'cycle and directive contract'
   Write-Output 'PASS cleanup-orphan-worktree-dirs all focused controls'
+  }
 }finally{
   $teardown=[Diagnostics.Stopwatch]::StartNew()
   $resolved=[IO.Path]::GetFullPath($root);$evidence=[IO.Path]::GetFullPath($EvidenceRoot).TrimEnd('\','/')

@@ -4,7 +4,10 @@ The public repository is https://github.com/chase-sets/chase-sets-controller.
 `.github/workflows/controller-battery.yml` accepts manual dispatch and pushes to
 `main` only. There are no PR triggers. Actions are SHA-pinned, tokens are
 read-only, checkout credentials are not persisted, and no repository secrets
-are required. Each run has ten independent Windows-hosted shards. Tests within
+are required. A calibrated plan uses the smallest feasible shard count in
+16, 17, 18 with LPT maximum at most 250000 ms. Each execution shard must finish
+within 300000 ms. Legacy plans without `shardCount` still use exactly ten
+receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 
 ## Trigger and collect
@@ -40,21 +43,54 @@ Local container history must not be pushed: the publication scan found
 sensitive historical runtime-token captures. Scan every candidate tracked tree
 before publishing it. Do not add a push remote to the shared container, push
 `--all`, mirror, or use the source implementation branch in a push refspec.
-Create a parentless snapshot from the exact source tree with its mapping trailer:
+This development clone has public history. Publish its normal author branch
+without rebasing pushed commits, amending or force pushing. Never fetch the
+private container history into this clone. Select the candidate branch as the
+workflow ref: `controller_head` selects tested sources, not runner scripts.
 
 ```powershell
-$source = git rev-parse HEAD
-$tree = git rev-parse "$source`^{tree}"
-$snapshot = "Controller snapshot`n`nSource-Controller-Head: $source" | git -c user.name=chase-sets-controller -c user.email=controller@users.noreply.github.com commit-tree $tree
-git push https://github.com/chase-sets/chase-sets-controller.git "${snapshot}:refs/heads/snapshot/$source"
-gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref main -f controller_head="snapshot/$source" -f product_sha=<immutable-product-sha> -f scope=full
+git push origin HEAD
+gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref <candidate-branch> -f controller_head=<source-sha> -f product_sha=<immutable-product-sha> -f scope=full
 ```
 
-Each new source head gets a new snapshot ref, so no force push or local history
-rewrite is necessary. Keep the trusted workflow on the public `main` lineage;
-workflow updates must include only scanned changes on that already-safe public
-lineage, never a parent from private container history. Initial workflow
-activation is a normal fast-forward commit atop the public F2 orphan snapshot.
+The same candidate runner/workflow commit and product SHA must execute baseline
+and candidate sequentially for a gate pair. Keep every run ID, exact plan bytes,
+raw item logs, shard receipts and final receipt. A green shard job is not proof
+that its items passed.
+
+## Calibration
+
+`controller-ci-parts.json` owns the four oversized suites. Default and legacy
+suite entrypoints remain available. Routing parts are derived from all current
+case and mutant tables; mutant children retain their original focused cases.
+Board arms keep candidate/inert and ten-item/scan together. Cleanup remains a
+whole item, including construction and synchronous teardown.
+
+Calibrate the entire candidate inventory on hosted runners before the gate.
+`controller-ci-record-durations.ps1 -RecordPlanPath <plan> -ResultPath <final>
+-OutputPath .orchestrator/controller-ci-durations.json` records exact Git blob
+UTF-8 source digests, not console-decoded text or worktree fallback. CRLF is
+normalized to LF without changing the final newline. Each record binds the
+run, source, runner, product, exact plan digest and conservative per-item
+dependency closure. Runtime and fixture inputs, referenced proof siblings and
+the actual runner/workflow bytes are retained. Unrelated proof entrypoints
+and planning/recording inputs do not invalidate an ordinary suite; CI-library
+checks retain the full closure. The profile itself is excluded.
+Use `-Append` for additional reconciled hosted runs. Planning takes the maximum
+of all source/dependency-matching records within 30 days, never the latest or
+minimum sample. Baseline, re-probe, calibration and gate records retain their
+original run/head/plan provenance; they are not relabeled as new executions.
+
+Run `controller-ci-prediction.ps1 -EvidenceDirectory <evidence> -CalibrationPlanPath
+<plan> -WriteProfile` to replay all three bounded choices and record the smallest
+feasible N. No feasible count means stop for decomposition. Calibration may use
+fallback; the gate must have only `recorded`, `recorded-part` and `local-only`
+timing sources. Records older than 30 days or changed dependencies cannot be
+used as fresh proof. No timeout, retry, skip, sampling or waiver is introduced.
+
+The hosted inventory explicitly adds `check:controller-ci-coverage`,
+`check:controller-ci-sharding` and `check:controller-ci-record-durations` to the
+source battery's identities. Each is required and measured, not a replacement.
 
 ## Results and limitations
 

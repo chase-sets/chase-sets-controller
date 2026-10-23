@@ -1,0 +1,804 @@
+{
+  "items": [
+    {
+      "identity": "test:cleanup-orphan-worktree-dirs.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        {
+          "name": "proof",
+          "weight": 1
+        },
+        {
+          "name": "scale",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "proof",
+          "scale"
+        ]
+      }
+    },
+    {
+      "identity": "test:dispatch-routing-data.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        {
+          "name": "case-policy",
+          "weight": 1
+        },
+        {
+          "name": "case-current",
+          "weight": 1
+        },
+        {
+          "name": "case-admission",
+          "weight": 1
+        },
+        {
+          "name": "case-explicit",
+          "weight": 1
+        },
+        {
+          "name": "case-lkg",
+          "weight": 1
+        },
+        {
+          "name": "case-evidence",
+          "weight": 1
+        },
+        {
+          "name": "case-ledger-readers",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-shadow",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-active",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-validation",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-matrix",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-history",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-override",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-exemptions",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-logger",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-reserve",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-roles",
+          "weight": 1
+        },
+        {
+          "name": "case-capacity-continuation",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-freeze-row",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-freeze-current",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-admit-history",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-drop-lkg",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-drop-generation",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-drop-digest",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-drop-family",
+          "weight": 1
+        },
+        {
+          "name": "routing-mutant-drop-slot",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-fable-row-restriction-restored",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-third-model-authorship-restored",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-override-omission",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-non-prefix-flip",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-claude-prefix-restored",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-ruled-placement-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-lifecycle-brief-author-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-planning-receipt-authorship-restored",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-lifecycle-code-author-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-code-exclusion-dropped",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-brief-authors-merged",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-other-artifact-followed",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-artifact-required-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-role-row-rule-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-logger-ruled-placement-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-shadow-applied",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-own-row-effort",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-drop-generic-author",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-drop-patched-reviewer",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-partial-history-admitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-duplicate-author-erased",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-unknown-history-admitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-nested-validator-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-duration-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-digest-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-mode-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-format-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-object-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-provider-state-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-stale-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-unknown-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-steps-integer-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-toward-presence-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-steps-upper-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-steps-lower-omitted",
+          "weight": 1
+        },
+        {
+          "name": "capacity-mutant-instant-syntax-omitted",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "case-policy",
+          "case-current",
+          "case-admission",
+          "case-explicit",
+          "case-lkg",
+          "case-evidence",
+          "case-ledger-readers",
+          "case-capacity-shadow",
+          "case-capacity-active",
+          "case-capacity-validation",
+          "case-capacity-matrix",
+          "case-capacity-history",
+          "case-capacity-override",
+          "case-capacity-exemptions",
+          "case-capacity-logger",
+          "case-capacity-reserve",
+          "case-capacity-roles",
+          "case-capacity-continuation",
+          "routing-mutant-freeze-row",
+          "routing-mutant-freeze-current",
+          "routing-mutant-admit-history",
+          "routing-mutant-drop-lkg",
+          "routing-mutant-drop-generation",
+          "routing-mutant-drop-digest",
+          "routing-mutant-drop-family",
+          "routing-mutant-drop-slot",
+          "capacity-mutant-fable-row-restriction-restored",
+          "capacity-mutant-third-model-authorship-restored",
+          "capacity-mutant-override-omission",
+          "capacity-mutant-non-prefix-flip",
+          "capacity-mutant-claude-prefix-restored",
+          "capacity-mutant-ruled-placement-omitted",
+          "capacity-mutant-lifecycle-brief-author-omitted",
+          "capacity-mutant-planning-receipt-authorship-restored",
+          "capacity-mutant-lifecycle-code-author-omitted",
+          "capacity-mutant-code-exclusion-dropped",
+          "capacity-mutant-brief-authors-merged",
+          "capacity-mutant-other-artifact-followed",
+          "capacity-mutant-artifact-required-omitted",
+          "capacity-mutant-role-row-rule-omitted",
+          "capacity-mutant-logger-ruled-placement-omitted",
+          "capacity-mutant-shadow-applied",
+          "capacity-mutant-own-row-effort",
+          "capacity-mutant-drop-generic-author",
+          "capacity-mutant-drop-patched-reviewer",
+          "capacity-mutant-partial-history-admitted",
+          "capacity-mutant-duplicate-author-erased",
+          "capacity-mutant-unknown-history-admitted",
+          "capacity-mutant-nested-validator-omitted",
+          "capacity-mutant-duration-omitted",
+          "capacity-mutant-digest-omitted",
+          "capacity-mutant-mode-omitted",
+          "capacity-mutant-format-omitted",
+          "capacity-mutant-object-omitted",
+          "capacity-mutant-provider-state-omitted",
+          "capacity-mutant-stale-omitted",
+          "capacity-mutant-unknown-omitted",
+          "capacity-mutant-steps-integer-omitted",
+          "capacity-mutant-toward-presence-omitted",
+          "capacity-mutant-steps-upper-omitted",
+          "capacity-mutant-steps-lower-omitted",
+          "capacity-mutant-instant-syntax-omitted"
+        ]
+      }
+    },
+    {
+      "identity": "test:board-hourly-scale.test.ps1",
+      "selector": "-Arm",
+      "parts": [
+        {
+          "name": "candidate",
+          "weight": 1
+        },
+        {
+          "name": "baseline",
+          "weight": 1
+        },
+        {
+          "name": "issue-scan",
+          "weight": 1
+        },
+        {
+          "name": "no-linkage",
+          "weight": 1
+        },
+        {
+          "name": "ten-item",
+          "weight": 1
+        },
+        {
+          "name": "ten-item-scan",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "candidate",
+          "baseline",
+          "issue-scan",
+          "no-linkage",
+          "ten-item",
+          "ten-item-scan"
+        ]
+      }
+    },
+    {
+      "identity": "test:landed-integration-dispatch.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        {
+          "name": "product",
+          "weight": 1
+        },
+        {
+          "name": "authority",
+          "weight": 1
+        },
+        {
+          "name": "core",
+          "weight": 1
+        },
+        {
+          "name": "graph",
+          "weight": 1
+        },
+        {
+          "name": "ownership-cases",
+          "weight": 1
+        },
+        {
+          "name": "ownership-mutants",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "product",
+          "authority",
+          "core",
+          "graph",
+          "ownership-cases",
+          "ownership-mutants"
+        ]
+      }
+    },
+    {
+      "identity": "test:invoke-heavy-verifier.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        {
+          "name": "native-db",
+          "weight": 1
+        },
+        {
+          "name": "teardown",
+          "weight": 1
+        },
+        {
+          "name": "role-admission",
+          "weight": 1
+        },
+        {
+          "name": "fixture-equivalence",
+          "weight": 1
+        },
+        {
+          "name": "precursor",
+          "weight": 1
+        },
+        {
+          "name": "legacy",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "native-db",
+          "teardown",
+          "role-admission",
+          "fixture-equivalence",
+          "precursor",
+          "legacy"
+        ]
+      }
+    }
+  ],
+  "baselineHead": "e671d823b96d45a3b71d7b81cf05a24d173df73a",
+  "schemaVersion": "controller-ci-parts/v1",
+  "sourceConservation": [
+    {
+      "path": ".orchestrator/dispatch-routing-data.test.ps1",
+      "baselineBlob": "a3a957cc8e271d06e0a6b28b52d078ebc7b43a54",
+      "edits": [
+        {
+          "offset": 3,
+          "remove": 1,
+          "original": [
+            "  [string]$EvidenceDir,[switch]$CapacityMutantsOnly)"
+          ],
+          "replacement": [
+            "  [string]$EvidenceDir,[switch]$CapacityMutantsOnly,[string]$Part='')",
+            "$ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1')",
+            "Assert-SuiteSelection $Part (Get-SuiteRoutingParts ([IO.File]::ReadAllText($PSCommandPath))) $PSBoundParameters @('Case','CapacityMutantsOnly')"
+          ]
+        },
+        {
+          "offset": 672,
+          "remove": 1,
+          "original": [
+            "  if(-not $CapacityMutantsOnly){foreach($name in $cases){if($Case-ceq'all'-or$Case-ceq$name){Invoke-Case $name}}}"
+          ],
+          "replacement": [
+            "  if(-not $CapacityMutantsOnly){foreach($name in $cases){if($Case-ceq'all'-or$Case-ceq$name){if(Test-SuitePart $Part \"case-$name\"){Invoke-Case $name}}}}"
+          ]
+        },
+        {
+          "offset": 687,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "      if(-not(Test-SuitePart $Part \"routing-mutant-$($m.name)\")){continue}"
+          ]
+        },
+        {
+          "offset": 746,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "      if(-not(Test-SuitePart $Part \"capacity-mutant-$($m.name)\")){continue}"
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/board-hourly-scale.test.ps1",
+      "baselineBlob": "4eedaa85619279fa8b30595045acf95a6137e802",
+      "edits": [
+        {
+          "offset": 1,
+          "remove": 1,
+          "original": [
+            "param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item')][string]$Arm = 'all')"
+          ],
+          "replacement": [
+            "param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]$Arm = 'all')"
+          ]
+        },
+        {
+          "offset": 14,
+          "remove": 1,
+          "original": [
+            "    if ($name -eq 'ten-item') {"
+          ],
+          "replacement": [
+            "    if ($name -eq 'ten-item' -and $Arm -eq 'all') {"
+          ]
+        },
+        {
+          "offset": 11,
+          "remove": 1,
+          "original": [
+            "    $f = New-BoardScaleFixture (Join-Path $root $name) $(if ($name -eq 'ten-item') { 10 } else { 2400 })"
+          ],
+          "replacement": [
+            "    if ($name -eq 'ten-item-scan') {",
+            "      $scan = New-BoardScaleFixture (Join-Path $root 'ten-item-scan') 10",
+            "      Invoke-BoardScaleArm $scan 'ten-item-scan'",
+            "      Write-Output 'CONTROL ten-item issue scan is non-discriminating'",
+            "      Write-Output \"PASS board-live-scale-hourly-apply $name\"",
+            "      continue",
+            "    }",
+            "    $f = New-BoardScaleFixture (Join-Path $root $name) $(if ($name -eq 'ten-item') { 10 } else { 2400 })"
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/landed-integration-dispatch.test.ps1",
+      "baselineBlob": "d19467b682d79bb64a6ec58aef76f2da43c7cf59",
+      "edits": [
+        {
+          "offset": 0,
+          "remove": 1,
+          "original": [
+            "param([switch]$AuthorityOnly,[string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[switch]$OwnershipOnly,[string]$OwnershipControl='*',[switch]$SkipOwnershipMutants,[string]$DispatcherPath,[switch]$ProductCensusOnly,[switch]$RetainedCensusOnly,[switch]$OtherBranch,[string]$CensusMutant='')"
+          ],
+          "replacement": [
+            "param([switch]$AuthorityOnly,[string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[switch]$OwnershipOnly,[string]$OwnershipControl='*',[switch]$SkipOwnershipMutants,[string]$DispatcherPath,[switch]$ProductCensusOnly,[switch]$RetainedCensusOnly,[switch]$OtherBranch,[string]$CensusMutant='',[string]$Part=''); $ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); Assert-SuiteSelection $Part @('product','authority','core','graph','ownership-cases','ownership-mutants') $PSBoundParameters @('AuthorityOnly','OwnershipOnly','OwnershipControl','SkipOwnershipMutants','ProductCensusOnly','RetainedCensusOnly','OtherBranch','CensusMutant'); if($Part-ceq'product'){$ProductCensusOnly=$true}"
+          ]
+        },
+        {
+          "offset": 8,
+          "remove": 1,
+          "original": [
+            "if ($ProductCensusOnly -or (-not $AuthorityOnly -and -not $OwnershipOnly)) {"
+          ],
+          "replacement": [
+            "if ($ProductCensusOnly -or (-not $AuthorityOnly -and -not $OwnershipOnly)) { if(Test-SuitePart $Part 'product'){"
+          ]
+        },
+        {
+          "offset": 16,
+          "remove": 1,
+          "original": [
+            "}"
+          ],
+          "replacement": [
+            "}}"
+          ]
+        },
+        {
+          "offset": 141,
+          "remove": 1,
+          "original": [
+            "  if(-not$OwnershipOnly){"
+          ],
+          "replacement": [
+            "  if(-not$OwnershipOnly){ if(Test-SuitePart $Part 'authority'){"
+          ]
+        },
+        {
+          "offset": 162,
+          "remove": 1,
+          "original": [
+            "  if($AuthorityOnly){return}"
+          ],
+          "replacement": [
+            "  }; if($AuthorityOnly){return}; if(Test-SuitePart $Part 'core'){"
+          ]
+        },
+        {
+          "offset": 597,
+          "remove": 1,
+          "original": [
+            "  }"
+          ],
+          "replacement": [
+            "  }}"
+          ]
+        },
+        {
+          "offset": 767,
+          "remove": 1,
+          "original": [
+            "  if(-not$OwnershipOnly){"
+          ],
+          "replacement": [
+            "  if(-not$OwnershipOnly){ if(Test-SuitePart $Part 'graph'){"
+          ]
+        },
+        {
+          "offset": 835,
+          "remove": 1,
+          "original": [
+            "  }"
+          ],
+          "replacement": [
+            "  }}"
+          ]
+        },
+        {
+          "offset": 946,
+          "remove": 1,
+          "original": [
+            "  $ownershipFailures=[Collections.Generic.List[string]]::new()"
+          ],
+          "replacement": [
+            "  $ownershipFailures=[Collections.Generic.List[string]]::new(); if(Test-SuitePart $Part 'ownership-cases'){"
+          ]
+        },
+        {
+          "offset": 951,
+          "remove": 1,
+          "original": [
+            "  if($ownershipFailures.Count){throw ($ownershipFailures -join \"`n\")}"
+          ],
+          "replacement": [
+            "  if($ownershipFailures.Count){throw ($ownershipFailures -join \"`n\")}; }; if(Test-SuitePart $Part 'ownership-mutants'){"
+          ]
+        },
+        {
+          "offset": 992,
+          "remove": 1,
+          "original": [
+            "  }"
+          ],
+          "replacement": [
+            "  }}"
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/invoke-heavy-verifier.test.ps1",
+      "baselineBlob": "4abac745923af272440e35f9c04fb05448681d08",
+      "edits": [
+        {
+          "offset": 16,
+          "remove": 1,
+          "original": [
+            "  [string]$GuardRevision = \"\""
+          ],
+          "replacement": [
+            "  [string]$GuardRevision = \"\", [string]$Part = ''"
+          ]
+        },
+        {
+          "offset": 18,
+          "remove": 1,
+          "original": [
+            ""
+          ],
+          "replacement": [
+            "$ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); foreach($selector in @(Get-HeavySuitePartSelector $Part $PSBoundParameters)){Set-Variable -Name $selector -Value $true}"
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/cleanup-orphan-worktree-dirs.test.ps1",
+      "baselineBlob": "52d4aa1c082db8efcb3169b2bfa326b6ab1e38b6",
+      "edits": [
+        {
+          "offset": 7,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "$construction=[Diagnostics.Stopwatch]::new();$wall=[timespan]::Zero"
+          ]
+        },
+        {
+          "offset": 2,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            ". (Join-Path $PSScriptRoot 'suite-parts.ps1')",
+            "Assert-SuiteSelection $Part @('proof','scale') $PSBoundParameters @('EvidenceRoot','KeepEvidence')"
+          ]
+        },
+        {
+          "offset": 0,
+          "remove": 1,
+          "original": [
+            "[CmdletBinding()]param([string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)"
+          ],
+          "replacement": [
+            "[CmdletBinding()]param([ValidateSet('proof','scale')][string]$Part='',[string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)"
+          ]
+        },
+        {
+          "offset": 272,
+          "remove": 1,
+          "original": [
+            "  New-Item -ItemType Directory -Path $root|Out-Null"
+          ],
+          "replacement": [
+            "  New-Item -ItemType Directory -Path $root|Out-Null",
+            "  if(-not$Part -or $Part -eq 'proof'){"
+          ]
+        },
+        {
+          "offset": 529,
+          "remove": 1,
+          "original": [
+            "  # AC4 measures report mode only; construction is separately timed and bounded."
+          ],
+          "replacement": [
+            "  }",
+            "  if($Part -eq 'scale'){",
+            "  $resolvers=@{",
+            "    OwnershipResolver={param($Runtime,$Temp,$Container)$script:ownership}",
+            "    PrResolver={param($Repository,$Branch,$Head)$script:authorityRepositories.Add($Repository);if($script:merged){[pscustomobject]@{number=900011;state='MERGED';headRefName=$Branch;headRefOid=$Head}}}",
+            "    ChildPrResolver={param($Repository,$Branch)$script:authorityRepositories.Add($Repository);$script:children}",
+            "    OpenPrResolver={param($Repository)$script:authorityRepositories.Add($Repository);$script:openCalls++;$script:open}",
+            "    IssueResolver={param($Number)$script:issue}",
+            "  }",
+            "  function Get-ReclamationWorktrees([string]$RepositoryRoot){@($script:worktrees)}",
+            "  function Get-ReclamationBranches([string]$RepositoryRoot){@($script:branches)}",
+            "  function Invoke-ReclamationGit([string]$At,[string[]]$Arguments){",
+            "    $text='';$code=0",
+            "    switch($Arguments[0]){",
+            "      'status' {if($null-ne$script:statusPaths){$script:statusPaths.Add($At)};if($script:dirty){$text='?? synthetic-dirt'}}",
+            "      'config' {$text='https://github.com/synthetic/reclamation-test.git'}",
+            "      'merge-base' {if(-not$script:reachable){$code=1}}",
+            "      'worktree' {$script:mutations.Add(($Arguments-join' '));$script:worktrees=@($script:worktrees|Where-Object{$_.path-cne$Arguments[3]})}",
+            "      'update-ref' {$script:mutations.Add(($Arguments-join' '))}",
+            "      default {throw \"unexpected synthetic git: $($Arguments-join' ')\"}",
+            "    }",
+            "    [pscustomobject]@{exitCode=$code;text=$text;output=@($text|Where-Object{$_})}",
+            "  }",
+            "  }",
+            "  if(-not$Part -or $Part -eq 'scale'){",
+            "  # AC4 measures report mode only; construction is separately timed and bounded."
+          ]
+        },
+        {
+          "offset": 560,
+          "remove": 1,
+          "original": [
+            "  Set-Item Function:Invoke-ReclamationGit $nativeGit;Set-Item Function:Get-ReclamationWorktrees $nativeTrees;Set-Item Function:Get-ReclamationBranches $nativeBranches"
+          ],
+          "replacement": [
+            "  }",
+            "  if(-not$Part -or $Part -eq 'proof'){",
+            "  Set-Item Function:Invoke-ReclamationGit $nativeGit;Set-Item Function:Get-ReclamationWorktrees $nativeTrees;Set-Item Function:Get-ReclamationBranches $nativeBranches"
+          ]
+        },
+        {
+          "offset": 606,
+          "remove": 1,
+          "original": [
+            "}finally{"
+          ],
+          "replacement": [
+            "  }",
+            "}finally{"
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".orchestrator/board-scale-test-support.ps1",
+      "baselineBlob": "3bf88f145428c9950ee02019efca407802dea094",
+      "edits": []
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-param([switch]$AuthorityOnly,[string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[switch]$OwnershipOnly,[string]$OwnershipControl='*',[switch]$SkipOwnershipMutants,[string]$DispatcherPath,[switch]$ProductCensusOnly,[switch]$RetainedCensusOnly,[switch]$OtherBranch,[string]$CensusMutant='')
+param([switch]$AuthorityOnly,[string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[switch]$OwnershipOnly,[string]$OwnershipControl='*',[switch]$SkipOwnershipMutants,[string]$DispatcherPath,[switch]$ProductCensusOnly,[switch]$RetainedCensusOnly,[switch]$OtherBranch,[string]$CensusMutant='',[string]$Part=''); $ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); Assert-SuiteSelection $Part @('product','authority','core','graph','ownership-cases','ownership-mutants') $PSBoundParameters @('AuthorityOnly','OwnershipOnly','OwnershipControl','SkipOwnershipMutants','ProductCensusOnly','RetainedCensusOnly','OtherBranch','CensusMutant'); if($Part-ceq'product'){$ProductCensusOnly=$true}
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -6,7 +6,7 @@ try {
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
 if ($RetainedCensusOnly) { Test-PlatformSeatRetainedIntegration -OtherBranch:$OtherBranch -Mutant $CensusMutant; return }
-if ($ProductCensusOnly -or (-not $AuthorityOnly -and -not $OwnershipOnly)) {
+if ($ProductCensusOnly -or (-not $AuthorityOnly -and -not $OwnershipOnly)) { if(Test-SuitePart $Part 'product'){
   Test-PlatformSeatProductIntegration
   Test-PlatformSeatLiveProductOwner
   Test-PlatformSeatRetainedIntegration
@@ -14,7 +14,7 @@ if ($ProductCensusOnly -or (-not $AuthorityOnly -and -not $OwnershipOnly)) {
   foreach ($mutant in @('auth-branch-only','auth-child','handoff-before','handoff-after')) {
     Test-PlatformSeatRetainedIntegration -Mutant $mutant
   }
-}
+}}
 if ($ProductCensusOnly) { return }
 $root=Join-Path ([IO.Path]::GetTempPath()) ('landed-integration-test-'+[guid]::NewGuid().ToString('N'))
 $previousPoolUrl=$env:CODEX_POOL_STATUS_URL
@@ -139,7 +139,7 @@ exit 0
     Write-Output "CONTROL $Name PASS"
   }
   Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
-  if(-not$OwnershipOnly){
+  if(-not$OwnershipOnly){ if(Test-SuitePart $Part 'authority'){
   Test-AuthorityCensus 'stopped-and-eligible-mixed-census' mixed
   Test-AuthorityCensus 'scoped-invalid-release-eligible-sibling' invalid
   Test-AuthorityCensus 'terminal-authority-unbound' unbound
@@ -160,7 +160,7 @@ exit 0
     Assert-True $caught "$guard bypass survived its paired control"
     Write-Output "CONTROL AUTHORITY_GUARD_$guard bypass REJECTED"
   }
-  if($AuthorityOnly){return}
+  }; if($AuthorityOnly){return}; if(Test-SuitePart $Part 'core'){
   $env:SYNTHETIC_DISPATCH_CALLS=$calls
   Write-SyntheticIntegrationEligibility $history $nodes
   $first=& $script -LandedPr 1 -LandedHead $landedHead -HistoryPath $history -RuntimeRoot $runtime -ContainerRoot $root -Repository $SyntheticIntegrationRepository -FixturePath $fixturePath -IntegrationAuthorityFixturePath $authority -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String
@@ -595,7 +595,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
   $trigger=Get-Content -LiteralPath $triggerCalls -Raw|ConvertFrom-Json -DateKind String;$landedRow=Get-Content -LiteralPath $triggerHistory -Raw|ConvertFrom-Json -DateKind String
   Assert-True ($trigger.pr-eq1-and$trigger.head-ceq$landedHead-and$trigger.synchronous-eq$true-and$landedRow.kind-ceq'landed'-and$landedRow.head-ceq$landedHead) 'actual landed lifecycle row did not invoke the census with exact identity'
 
-  }
+  }}
   function New-Connection([object[]]$Nodes,[long]$Total,[bool]$HasNext,[string]$Cursor){
     [ordered]@{totalCount=$Total;pageInfo=[ordered]@{hasNextPage=$HasNext;endCursor=$Cursor};nodes=@($Nodes)}
   }
@@ -765,7 +765,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
   & git -C $productionRepository add seed.txt;& git -C $productionRepository -c user.name='Synthetic Test' -c user.email='synthetic@example.invalid' commit -q -m 'synthetic fixture';& git -C $productionRepository worktree add -q -b synthetic/cap-boundary $productionWorktree HEAD
   Publish-SyntheticIntegrationRemote $productionRepository (Join-Path $productionRoot 'remote.git')
   $productionHead=(& git -C $productionWorktree rev-parse HEAD).Trim();$base=(& git -C $productionWorktree rev-parse refs/remotes/origin/main).Trim()
-  if(-not$OwnershipOnly){
+  if(-not$OwnershipOnly){ if(Test-SuitePart $Part 'graph'){
   Invoke-GraphControl 'outer-and-file-page-101' (New-GraphQueue -OuterCount 101 -TargetPosition 101 -TargetFileCount 101) $true
   Invoke-GraphControl 'terminal-authority-stops-before-effects' (New-GraphQueue -TargetFileCount 1) $true 'TERMINAL_AUTHORITY_STOP' -TerminalStop
 
@@ -833,7 +833,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
   $partialQueue=New-GraphQueue -OuterCount 2 -TargetPosition 1 -TargetFileCount 1;$partialOpen=@($partialQueue|Where-Object{$_.name-ceq'open-page-1'})[0]
   $partialOpen.payload.data.repository.pullRequests.nodes=@($partialOpen.payload.data.repository.pullRequests.nodes|Select-Object -First 1)
   Invoke-GraphControl 'outer-partial' $partialQueue $false
-  }
+  }}
   function New-Owner([long]$Number=9900001,[string]$Repository='chase-sets/chase-sets',$Milestone=9908018,[string]$State='CLOSED',[string[]]$Labels=@('dispatch:platform')){
     [ordered]@{number=$Number;state=$State;repository=[ordered]@{nameWithOwner=$Repository};milestone=$(if($null-ne$Milestone){[ordered]@{number=$Milestone}}else{$null});labels=[ordered]@{totalCount=$Labels.Count;pageInfo=@{hasNextPage=$false};nodes=@($Labels|ForEach-Object{@{name=$_}})}}
   }
@@ -944,12 +944,12 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
   }
   foreach($mode in @('legacy-open','legacy-closed','legacy-malformed','legacy-absent','legacy-unreadable','incomplete-labels-total','incomplete-labels-next','incomplete-labels-missing','incomplete-labels-shape')){$ownershipCases[$mode]=$mode}
   foreach($mode in @('invalid-state','invalid-positive-pr','invalid-repository','invalid-number','invalid-milestone','invalid-nested-field','invalid-missing','invalid-transport','invalid-link-moves','drift-head','drift-branch','drift-milestone','drift-link','drift-register')){$ownershipCases["ownership-unknown-refuses-before-apply-$mode"]=$mode}
-  $ownershipFailures=[Collections.Generic.List[string]]::new()
+  $ownershipFailures=[Collections.Generic.List[string]]::new(); if(Test-SuitePart $Part 'ownership-cases'){
   foreach($case in $ownershipCases.GetEnumerator()){
     if($case.Key-notlike$OwnershipControl){continue}
     try{Test-OwnershipControl $case.Key $case.Value}catch{$ownershipFailures.Add("$($case.Key): $($_.Exception.Message)");Write-Output "CONTROL $($case.Key) FAIL $($_.Exception.Message)"}
   }
-  if($ownershipFailures.Count){throw ($ownershipFailures -join "`n")}
+  if($ownershipFailures.Count){throw ($ownershipFailures -join "`n")}; }; if(Test-SuitePart $Part 'ownership-mutants'){
   if(-not$SkipOwnershipMutants-and$OwnershipControl-ceq'*'){
     $source=[IO.File]::ReadAllText($script)
     $mutations=@(
@@ -990,7 +990,7 @@ param($LandedPr,$LandedHead,$HistoryPath,$RuntimeRoot,$FixturePath,[switch]$Sync
       Assert-True $caught "$($mutation.name) bypass survived its discriminating control"
       Write-Output "MUTANT $($mutation.name) REJECTED"
     }
-  }
+  }}
   Assert-SyntheticIntegrationWitnesses $root
   Write-Output 'PASS landed exact-once census plus wired outer/file pagination, page-101 decisive intersection, changedFiles/totalCount identity, exact-head re-observation, and partial/error/unsafe/cap UNKNOWN controls'
 }finally{
