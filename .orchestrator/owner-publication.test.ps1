@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('All', 'Primitive', 'Readers')][string]$Scenario = 'All',
+  [ValidateSet('All', 'Primitive', 'Readers', 'Continuous')][string]$Scenario = 'All',
   [string]$EvidencePath = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -57,7 +57,7 @@ function Get-PreRepairSource([string]$Source, [switch]$ReaderOnly) {
   # This is a local pre-repair control, not a historical checkout.  It models
   # only the two H3 seams that this file proves: Move publication and the
   # pre-repair sharing-violation throw.
-  $replace = '[IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)'
+  $replace = '[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
   Assert-Owner (([regex]::Matches($Source, [regex]::Escape($replace))).Count -eq 1) 'pre-repair publication seam exists once'
   $reverted = $Source.Replace($replace, '[IO.File]::Move($temporaryPath, $ownerPath, $true)')
   $newline = if ($Source.Contains("`r`n")) { "`r`n" } else { "`n" }
@@ -76,9 +76,21 @@ function Get-Definition([string]$Source, [string]$Name) {
   return $definitions[0].Extent.Text
 }
 function Import-GuardFunctions([string]$Source) {
+  $errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$null,[ref]$errors)
+  Assert-Owner (-not $errors) 'parse guard functions'
+  $definitions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]},$true))
   foreach ($name in @('Test-SamePath','Test-SafeDirectory','Test-SafeFile','Get-OwnerSnapshot','Write-OwnerRecord','Restore-ClaimedOwner','Remove-ClaimedOwnerLock','Test-PositivePid','Test-UtcIdentity','Test-OwnerShape','Test-ReclaimableOwner','Get-ProcessIdentityState','Test-PossibleOwnedChild','Invoke-StaleLockReclamation','Test-ThisOwner','Release-ThisLock')) {
-    . ([scriptblock]::Create((Get-Definition $Source $name)))
+    $definition=@($definitions | Where-Object Name -CEQ $name)
+    Assert-Owner ($definition.Count -eq 1) "one definition of $name"
+    . ([scriptblock]::Create($definition[0].Extent.Text))
     Set-Item -Path "Function:script:$name" -Value (Get-Item "Function:$name").ScriptBlock
+  }
+  if ($Source.Contains('function Initialize-OwnerRename')) {
+    $definition=@($definitions | Where-Object Name -CEQ 'Initialize-OwnerRename')
+    Assert-Owner ($definition.Count -eq 1) 'one definition of Initialize-OwnerRename'
+    . ([scriptblock]::Create($definition[0].Extent.Text))
+    Initialize-OwnerRename
   }
 }
 function New-Lock {
@@ -101,9 +113,12 @@ function Assert-DistinctSources([string]$Installed, [string]$Candidate, [string]
 function Invoke-Primitive {
   $source = Read-Source 'invoke-heavy-verifier.ps1'
   $baseline = Get-PreRepairSource $source
-  foreach ($variant in @('installed', 'candidate', 'move-mutant', 'share3-control')) {
+  $rename = '[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
+  foreach ($variant in @('installed', 'candidate', 'move-mutant', 'replace-mutant', 'share3-control')) {
     $copy = if ($variant -ceq 'installed') { $baseline } else { $source }
-    if ($variant -ceq 'move-mutant') { $copy = $copy.Replace('[IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)', '[IO.File]::Move($temporaryPath, $ownerPath, $true)') }
+    if ($variant -ceq 'move-mutant') { $copy = $copy.Replace($rename, '[IO.File]::Move($temporaryPath, $ownerPath, $true)') }
+    if ($variant -ceq 'replace-mutant') { $copy = $copy.Replace($rename, '[IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)') }
+    if ($variant -cne 'candidate' -and $variant -cne 'share3-control') { Assert-DistinctSources $copy $source "owner-replace-held-reader/$variant" }
     Import-GuardFunctions $copy
     foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
       New-Lock
@@ -126,7 +141,7 @@ function Invoke-Primitive {
         $entries=@(Get-ChildItem -LiteralPath $lockPath -Force | ForEach-Object Name)
         Assert-Owner ($entries.Count-eq1 -and $entries[0]-ceq'owner.json') 'publication leaves only owner.json'
         $results.Add([ordered]@{test='owner-replace-held-reader';variant=$variant;transition=$kind;green=$ok;error=$failure;entries=$entries;bytes=$actual})
-        if($variant-ceq'candidate'){ Assert-Owner $ok "$kind candidate publishes with a held delete-sharing reader" }
+        if($variant-in@('candidate','replace-mutant')){ Assert-Owner $ok "$kind $variant publishes with a held delete-sharing reader" }
         else { Assert-Owner (-not $ok) "$variant is RED for $kind" }
       } finally { $held.Dispose() }
     }
@@ -203,6 +218,132 @@ function Invoke-Primitive {
   $results.Add(@{test='owner-lifecycle-held-reader';control='non-sharing IO';threw=$threw;raw=$raw})
   Write-Output 'PASS owner-replace-held-reader; Move/share-3 controls RED; missing destination fails closed; owner-lifecycle-held-reader'
 }
+function Invoke-ContinuousPublication {
+  $source = Read-Source 'invoke-heavy-verifier.ps1'
+  $rename = '[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
+  $variants = [ordered]@{candidate=$source}
+  if ($source.Contains($rename)) {
+    $variants['replace-mutant'] = $source.Replace($rename, '[IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)')
+    $variants['move-mutant'] = $source.Replace($rename, '[IO.File]::Move($temporaryPath, $ownerPath, $true)')
+  }
+  $poller = Join-Path $temporaryRoot 'continuous.cjs'
+  [IO.File]::WriteAllText($poller, @'
+const fs = require('node:fs');
+const path = require('node:path');
+const [owner, ready, stop, result] = process.argv.slice(2);
+let absent = 0, failures = 0, polls = 0, maxEntries = 0; const errors = [];
+fs.writeFileSync(ready, 'ready');
+while (!fs.existsSync(stop)) {
+  try {
+    fs.lstatSync(owner);
+    JSON.parse(fs.readFileSync(owner, 'utf8'));
+    const entries = fs.readdirSync(path.dirname(owner));
+    maxEntries = Math.max(maxEntries, entries.length);
+    if (entries.some(n => n !== 'owner.json' && !/^owner\.transition\.[a-f0-9]{32}\.tmp$/.test(n))) failures++;
+  } catch (e) { if (e.code === 'ENOENT') absent++; else { failures++; if (errors.length < 3) errors.push(String(e)); } }
+  polls++;
+}
+fs.writeFileSync(result, JSON.stringify({absent, failures, polls, maxEntries, errors}));
+'@)
+  $managedPoller = Join-Path $temporaryRoot 'continuous.ps1'
+  [IO.File]::WriteAllText($managedPoller, @'
+param($Owner, $Ready, $Stop, $Result)
+$absent=0; $failures=0; $polls=0
+[IO.File]::WriteAllText($Ready,'ready')
+while (-not [IO.File]::Exists($Stop)) {
+  try {
+    $stream=[IO.File]::Open($Owner,'Open','Read',([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { $reader=[IO.StreamReader]::new($stream); try { $null=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() } } finally { $stream.Dispose() }
+  } catch { if (-not [IO.File]::Exists($Owner)) { $absent++ } else { $failures++ } }
+  $polls++
+}
+[IO.File]::WriteAllText($Result,(@{absent=$absent;failures=$failures;polls=$polls}|ConvertTo-Json -Compress))
+'@)
+  foreach ($variant in $variants.Keys) {
+    $copy = $variants[$variant]
+    if ($variant -cne 'candidate') { Assert-DistinctSources $copy $source "owner-rename-continuous/$variant" }
+    Import-GuardFunctions $copy
+    foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
+      New-Lock
+      $before = @{schemaVersion=4;state='launching';childPid=$null;native=@{linux=$null}}
+      $after = @{schemaVersion=4;state='started';childPid=123;native=@{linux=$null}}
+      if ($kind -like 'native-*') { $before.schemaVersion=6; $after.schemaVersion=6 }
+      if ($kind -ceq 'native-tuple') { $before.state='started'; $after.native.linux=@{bootId='12345678-1234-1234-1234-123456789abc';outerPid=42;startTicks='123';nspid=@(42,1);inode='456'} }
+      [void](Write-OwnerRecord $before -CreateNew)
+      $processes = @(); $signals = @()
+      foreach ($readerKind in @('node','powershell')) {
+        $prefix = Join-Path $temporaryRoot ([guid]::NewGuid().ToString('N'))
+        $signals += @{ready="$prefix.ready";stop="$prefix.stop";result="$prefix.json"}
+        $signal = $signals[-1]
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = if ($readerKind -ceq 'node') { Resolve-NodeExecutable } else { (Get-Process -Id $PID).Path }
+        $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+        $arguments = if ($readerKind -ceq 'node') { @($poller) } else { @('-NoProfile','-File',$managedPoller) }
+        foreach ($argument in @($arguments) + @($ownerPath,$signal.ready,$signal.stop,$signal.result)) { $start.ArgumentList.Add($argument) }
+        $processes += [Diagnostics.Process]::Start($start)
+      }
+      $writerFailures=0; $writerErrors=@()
+      try {
+        $deadline=[datetime]::UtcNow.AddSeconds(30)
+        while (@($signals | Where-Object {-not [IO.File]::Exists($_.ready)}).Count -gt 0 -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 10 }
+        Assert-Owner (@($signals | Where-Object {-not [IO.File]::Exists($_.ready)}).Count -eq 0) 'continuous readers ready'
+        $held=[IO.File]::Open($ownerPath,'Open','Read',([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+          for ($iteration=0; $iteration -lt 400; $iteration++) {
+            try { [void](Write-OwnerRecord $(if ($iteration % 2) { $before } else { $after })) } catch { $writerFailures++; if ($writerErrors.Count -lt 3) { $writerErrors += $_.Exception.ToString() } }
+          }
+        } finally { $held.Dispose() }
+      } finally {
+        foreach ($signal in $signals) { [IO.File]::WriteAllText($signal.stop,'stop') }
+        foreach ($process in $processes) { if (-not $process.WaitForExit(30000)) { $process.Kill(); $process.WaitForExit(); throw 'continuous reader did not stop' }; Assert-Owner ($process.ExitCode -eq 0) 'continuous reader exits' }
+      }
+      $observations=@($signals | ForEach-Object { [IO.File]::ReadAllText($_.result) | ConvertFrom-Json })
+      $absent=($observations | Measure-Object absent -Sum).Sum
+      $failures=$writerFailures + ($observations | Measure-Object failures -Sum).Sum
+      $maxEntries=$observations[0].maxEntries
+      $green=($absent -eq 0 -and $failures -eq 0 -and $maxEntries -le 2 -and $observations[0].polls -gt 0 -and $observations[1].polls -gt 0)
+      $row=@{test='owner-rename-continuous';variant=$variant;transition=$kind;replacements=400;absent=$absent;failures=$failures;writerFailures=$writerFailures;writerErrors=$writerErrors;readers=$observations;maxEntries=$maxEntries;hash=(Get-SourceHash $copy);green=$green}
+      $results.Add($row)
+      Write-Output "CONTROL owner-rename-continuous variant=$variant transition=$kind replacements=400 absent=$absent failures=$failures writerFailures=$writerFailures maxEntries=$maxEntries green=$green hash=$($row.hash)"
+      if (-not $green -and $variant -ceq 'candidate') { Write-Output ($row | ConvertTo-Json -Compress -Depth 8) }
+      if ($variant -ceq 'candidate') { if (-not $green) { $candidateFailed=$true } }
+      elseif ($variant -ceq 'replace-mutant') { Assert-Owner ($absent -gt 0) 'replace-mutant is RED on absence' }
+      else { Assert-Owner ($writerFailures -gt 0) 'move-mutant is RED on failures' }
+    }
+  }
+  Assert-Owner (-not $candidateFailed) 'owner-rename-continuous candidate is GREEN for every transition'
+}
+function Invoke-VanishedPublication {
+  $source=Read-Source 'invoke-heavy-verifier.ps1'
+  $anchor='[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
+  Assert-Owner ($source.Contains($anchor)) 'vanished publication seam exists'
+  foreach ($variant in @('candidate','no-link-check')) {
+    $copy=$source
+    if ($variant -ceq 'no-link-check') {
+      $check='!inspected || replaced.NumberOfLinks != 0'
+      Assert-Owner ($copy.Contains($check)) 'link-check mutant seam exists'
+      $copy=$copy.Replace($check,'!inspected')
+      Assert-DistinctSources $copy $source 'owner-rename-vanished/no-link-check'
+    }
+    # Separate compiled namespaces keep the bypass and candidate independent.
+    $copy=$copy.Replace('ChaseSets.HeavyAdmission',"ChaseSets.Vanished$($variant.Replace('-',''))")
+    $call=$anchor.Replace('ChaseSets.HeavyAdmission',"ChaseSets.Vanished$($variant.Replace('-',''))")
+    $copy=$copy.Replace($call,('[IO.File]::Move($ownerPath, $script:vanishedClaim); ' + $call))
+    Import-GuardFunctions $copy
+    New-Lock
+    $script:vanishedClaim=Join-Path $lockPath ('owner.cleanup.'+('e'*32)+'.json')
+    $raw=Write-OwnerRecord @{schemaVersion=4;state='launching'} -CreateNew
+    $threw=$false
+    try { [void](Write-OwnerRecord @{schemaVersion=4;state='started'}) } catch { $threw=$true }
+    $entries=@(Get-ChildItem $lockPath -Force | ForEach-Object Name)
+    $bytesUnchanged=([Text.Encoding]::UTF8.GetString((Read-Bytes $vanishedClaim)) -ceq $raw)
+    $green=($threw -and $entries.Count -eq 1 -and $entries[0] -ceq (Split-Path -Leaf $vanishedClaim) -and $bytesUnchanged)
+    $results.Add(@{test='owner-rename-vanished';variant=$variant;green=$green;threw=$threw;entries=$entries;claimBytesUnchanged=$bytesUnchanged})
+    Write-Output "CONTROL owner-rename-vanished variant=$variant green=$green threw=$threw entries=$($entries -join ',') claimBytesUnchanged=$bytesUnchanged"
+    if ($variant -ceq 'candidate') { Assert-Owner $green 'vanished owner is never recreated' }
+    else { Assert-Owner (-not $green -and -not $threw -and $entries.Count -eq 2 -and $bytesUnchanged) 'missing link check mutant is RED' }
+  }
+}
 function Test-ReaderContract([hashtable]$Sources) {
   $failures = [Collections.Generic.List[string]]::new()
   foreach ($site in @(
@@ -273,7 +414,7 @@ function Invoke-ReaderInventory {
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
     'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
-    'heavy-slot.test.ps1'=@(95,98,121,1722,2048,2225)
+    'heavy-slot.test.ps1'=@(95,98,121,1881,2207,2384)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -320,7 +461,7 @@ function Invoke-ReaderInventory {
   $stalePinMutant=$fixtures.Clone(); $stalePinMutant['install-controller-skills.ps1']=@(137,138)
   Assert-Owner ((@(& $findStale $stalePinMutant)) -ccontains 'install-controller-skills.ps1:137') 'stale fixture pin control is RED'
   $selfSource=Read-Source 'owner-publication.test.ps1'
-  foreach($spec in @(@('Invoke-Primitive',4,'deliberately held positive/negative readers and injected claim opener'),@('Test-ReaderContract',3,'source-only regression expressions, not executed opens'),@('Invoke-ReaderInventory',3,'source-only inventory expressions, not executed opens'),@('Invoke-ReaderMatrix',1,'deliberately cached-handle negative control'))) {
+  foreach($spec in @(@('Invoke-Primitive',4,'deliberately held positive/negative readers and injected claim opener'),@('Invoke-ContinuousPublication',1,'held delete-sharing reader across continuous fixture publications'),@('Test-ReaderContract',3,'source-only regression expressions, not executed opens'),@('Invoke-ReaderInventory',3,'source-only inventory expressions, not executed opens'),@('Invoke-ReaderMatrix',1,'deliberately cached-handle negative control'))) {
     $body=Get-Definition $selfSource $spec[0]
     $base=1+[regex]::Matches($selfSource.Substring(0,$selfSource.IndexOf($body)),"`n").Count
     $siteMatches=@();$offset=0
@@ -345,6 +486,10 @@ function Invoke-ReaderInventory {
     $writerSite=@{site=$writerSite;api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
     $claimSite=@{site=$claimSite;api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
   }
+  $boundWriterExpression='[ChaseSets.HeavyAdmission.OwnerRename]::OpenDestination(' + $ownerVariable + ')'
+  Assert-Owner ($invokeSource.Contains($boundWriterExpression)) 'handle-bound owner publication is classified'
+  $boundWriterLine=1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($boundWriterExpression,[StringComparison]::Ordinal)),"`n").Count
+  $table.Add(@{site="invoke-heavy-verifier.ps1:$boundWriterLine";api='OwnerRename.OpenDestination / CreateFileW(FILE_READ_ATTRIBUTES, share 7)';shareBefore='File.Replace';shareAfter=7;decoder='none';callers='Write-OwnerRecord non-create';owner='bound rename writer and replaced-file unlink proof, not a snapshot reader'})
   foreach($relative in @(& git -C $root ls-files '.orchestrator/*.ps1' '.orchestrator/*.psm1' '.orchestrator/*.cs' '.orchestrator/*.cjs' '.orchestrator/*.py' '.orchestrator/*.mjs' '.orchestrator/*.js')) {
     $name=[IO.Path]::GetFileName($relative); $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
     for($index=0;$index-lt$lines.Length;$index++) {
@@ -579,7 +724,8 @@ fs.closeSync(fd);
   Write-Output 'PASS Node owner reader matrix; actual libuv held descriptor is delete-sharing'
 }
 try {
-  if ($Scenario -in @('All','Primitive')) { Invoke-Primitive }
+  if ($Scenario -in @('All','Continuous')) { Invoke-ContinuousPublication }
+  if ($Scenario -in @('All','Primitive')) { Invoke-Primitive; Invoke-VanishedPublication }
   if ($Scenario -in @('All','Readers')) { Invoke-ReaderInventory; Invoke-ReaderMatrix; Invoke-ManagedReaderMatrix; Invoke-NodeReaderMatrix }
 } finally {
   if ($EvidencePath) { [IO.File]::WriteAllText($EvidencePath,($results|ConvertTo-Json -Depth 18),[Text.UTF8Encoding]::new($false)) }
