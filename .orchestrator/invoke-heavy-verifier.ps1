@@ -1751,6 +1751,73 @@ function Complete-RefusedAttachedAdmission {
     Start-Sleep -Milliseconds 100
   }
 }
+function Initialize-OwnerRename {
+  if ('ChaseSets.HeavyAdmission.OwnerRename' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace ChaseSets.HeavyAdmission {
+  public static class OwnerRename {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security,
+      uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFileInformationByHandle(SafeFileHandle file, int kind, IntPtr data, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int kind, out StandardInfo info, uint size);
+    [StructLayout(LayoutKind.Sequential)]
+    struct StandardInfo {
+      public long AllocationSize, EndOfFile;
+      public uint NumberOfLinks;
+      public byte DeletePending, Directory;
+    }
+    static SafeFileHandle Open(string path, uint access) {
+      SafeFileHandle file = CreateFileW(path, access, 7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
+      if (file.IsInvalid) { int error = Marshal.GetLastWin32Error(); file.Dispose(); throw new Win32Exception(error); }
+      return file;
+    }
+    public static SafeFileHandle OpenDestination(string path) { return Open(path, 0x80); }
+    public static void Publish(string transitionPath, string ownerPath, SafeFileHandle destination) {
+      using (SafeFileHandle transition = Open(transitionPath, 0x00010080)) {
+        byte[] name = Encoding.Unicode.GetBytes(Path.GetFullPath(ownerPath));
+        int rootOffset = IntPtr.Size == 8 ? 8 : 4;
+        int lengthOffset = rootOffset + IntPtr.Size;
+        int nameOffset = lengthOffset + 4;
+        IntPtr buffer = Marshal.AllocHGlobal(nameOffset + name.Length + 2);
+        try {
+          for (int i = 0; i < nameOffset; i++) Marshal.WriteByte(buffer, i, 0);
+          Marshal.WriteInt32(buffer, 0, 3); // REPLACE_IF_EXISTS | POSIX_SEMANTICS
+          Marshal.WriteInt32(buffer, lengthOffset, name.Length);
+          Marshal.Copy(name, 0, IntPtr.Add(buffer, nameOffset), name.Length);
+          Marshal.WriteInt16(buffer, nameOffset + name.Length, 0);
+          if (!SetFileInformationByHandle(transition, 22, buffer, (uint)(nameOffset + name.Length + 2)))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        } finally { Marshal.FreeHGlobal(buffer); }
+        StandardInfo replaced;
+        bool inspected = GetFileInformationByHandleEx(destination, 1, out replaced, (uint)Marshal.SizeOf<StandardInfo>());
+        int inspectionError = inspected ? 0 : Marshal.GetLastWin32Error();
+        if (!inspected || replaced.NumberOfLinks != 0) {
+          // The destination was moved away, not replaced. Undo only our own
+          // publication by its still-held handle, never by the owner name.
+          IntPtr disposition = Marshal.AllocHGlobal(4);
+          try {
+            Marshal.WriteInt32(disposition, 3); // DELETE | POSIX_SEMANTICS
+            if (!SetFileInformationByHandle(transition, 21, disposition, 4))
+              throw new Win32Exception(Marshal.GetLastWin32Error());
+          } finally { Marshal.FreeHGlobal(disposition); }
+          if (!inspected) throw new Win32Exception(inspectionError);
+          throw new IOException("heavy-verifier: owner destination was not replaced");
+        }
+      }
+    }
+  }
+}
+'@ -ErrorAction Stop
+}
 function Write-OwnerRecord($Record, [switch]$CreateNew) {
   $raw = if ($Record.schemaVersion -eq 6) { $Record | ConvertTo-Json -Compress -Depth 16 } else { $Record | ConvertTo-Json -Compress }
   if ($CreateNew) {
@@ -1774,7 +1841,10 @@ function Write-OwnerRecord($Record, [switch]$CreateNew) {
     } finally {
       $stream.Dispose()
     }
-    [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
+    $destination = [ChaseSets.HeavyAdmission.OwnerRename]::OpenDestination($ownerPath)
+    try {
+      [ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)
+    } finally { $destination.Dispose() }
     return $raw
   } finally {
     if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
@@ -2189,6 +2259,7 @@ if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { 
 $mutexHash = [Convert]::ToHexString(
   [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($coordinationKey))
 ).ToLowerInvariant()
+if (-not $isAttachedAdmission) { Initialize-OwnerRename }
 $coordinationMutex = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-verifier-$mutexHash")
 $mutexHeld = $false
 try {

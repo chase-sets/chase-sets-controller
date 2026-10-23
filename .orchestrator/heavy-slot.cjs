@@ -225,7 +225,7 @@ function samePath(left, right) {
 // One canonical owner file contract: the closed schema-v4/v5 record that the
 // exact wrapper published. The client compares every identity in the signed
 // reply against this record, so a forged or replaced owner cannot admit.
-function readNestedOwner(containerRoot, token) {
+function readNestedOwner(containerRoot, token, allowLaunching = false) {
   const lockPath = path.join(containerRoot, ".orchestrator", "verify-lock.d");
   const ownerPath = path.join(lockPath, "owner.json");
   if (!isPlainDirectory(lockPath) || !isPlainFile(ownerPath)) return { failure: "no live owner record" };
@@ -242,6 +242,7 @@ function readNestedOwner(containerRoot, token) {
     return { failure: "owner record is not a closed schema-v4 or v5 record" };
   }
   if (owner.lockId !== token) return { failure: "owner record does not carry the inherited token" };
+  if (allowLaunching && owner.state === "launching") return { owner };
   if (owner.state !== "started" && owner.state !== "attached") {
     return { failure: `owner record state ${JSON.stringify(owner.state)} is not started or attached` };
   }
@@ -455,7 +456,7 @@ function verifyNestedReply(replyLine, descriptor, owner, challenge, kind) {
 // after it has proven this process is a live descendant of the guarded root.
 function nestedContinuation(containerRoot, token, kind) {
   if (!lockIdShape.test(token)) return "inherited heavy slot token is malformed";
-  const ownerResult = readNestedOwner(containerRoot, token);
+  const ownerResult = readNestedOwner(containerRoot, token, true);
   if (ownerResult.failure) return ownerResult.failure;
   const transportResult = parseTransportDescriptor(process.env.CHASE_SETS_HEAVY_SLOT_TRANSPORT, token);
   if (transportResult.failure) return transportResult.failure;
@@ -478,8 +479,12 @@ function nestedContinuation(containerRoot, token, kind) {
     laneRole: descriptor.laneRole,
   };
   const exchange = exchangeNested(containerRoot, `\\\\.\\pipe\\chase-sets-heavy-${token}`, `${JSON.stringify(request)}\n`);
+  // The reserved pipe only answers once the wrapper has published and armed.
+  // A refusal is not authority either: owner validation still takes precedence.
+  const acknowledgedOwner = readNestedOwner(containerRoot, token);
+  if (acknowledgedOwner.failure) return acknowledgedOwner.failure;
   if (exchange.failure) return exchange.failure;
-  const verification = verifyNestedReply(exchange.replyLine, descriptor, owner, challenge, kind);
+  const verification = verifyNestedReply(exchange.replyLine, descriptor, acknowledgedOwner.owner, challenge, kind);
   return verification.failure ?? null;
 }
 
