@@ -743,6 +743,15 @@
           ],
           "replacement": [
             "  }",
+            "  if($Part -eq 'scale'){",
+            "  $resolvers=@{",
+            "    OwnershipResolver={param($Runtime,$Temp,$Container)$script:ownership}",
+            "    PrResolver={param($Repository,$Branch,$Head)$script:authorityRepositories.Add($Repository);if($script:merged){[pscustomobject]@{number=900011;state='MERGED';headRefName=$Branch;headRefOid=$Head}}}",
+            "    ChildPrResolver={param($Repository,$Branch)$script:authorityRepositories.Add($Repository);$script:children}",
+            "    OpenPrResolver={param($Repository)$script:authorityRepositories.Add($Repository);$script:openCalls++;$script:open}",
+            "    IssueResolver={param($Number)$script:issue}",
+            "  }",
+            "  }",
             "  if(-not$Part -or $Part -eq 'scale'){",
             "  # AC4 measures report mode only; construction is separately timed and bounded."
           ]
