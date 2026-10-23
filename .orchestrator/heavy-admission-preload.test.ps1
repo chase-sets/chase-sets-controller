@@ -699,6 +699,7 @@ $launcher = (Get-Process -Id $PID).Parent
 $record = $null
 while (-not $record) {
   $launcherExited = $null -eq $launcher -or $launcher.HasExited
+  $publicationAttempted = Test-Path -LiteralPath "$($fixture.Marker).publication-attempt-$PID"
   foreach ($file in @(Get-ChildItem -LiteralPath $fixture.RuntimeRoot -Filter 'dispatch-launch-*.json')) {
     try {
       $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
@@ -711,6 +712,7 @@ while (-not $record) {
     }
   }
   if (-not $record) {
+    if ($publicationAttempted) { throw 'canonical launcher completed its publication attempt without publishing this native child' }
     if ($launcherExited) { throw 'canonical launcher exited before it published this native child' }
     Start-Sleep -Milliseconds 25
   }
@@ -772,7 +774,18 @@ exit $exitCode
       Arguments = $Shape.Arguments; Environment = $Environment; RuntimeRoot = $orchestrator
       Dispatcher = (Join-Path $PSScriptRoot 'dispatch-lane.ps1'); Parameters = $parameters
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $inputPath
-    $command = '$fixture = Get-Content -LiteralPath $env:DERIVED_LAUNCH_INPUT -Raw | ConvertFrom-Json -AsHashtable; $parameters = $fixture.Parameters; & $fixture.Dispatcher @parameters'
+    # dispatch-lane emits its PID after the publication attempt, before waiting
+    # for the child. Observe it in the streaming pipeline, not after EOF.
+    $command = @'
+$fixture = Get-Content -LiteralPath $env:DERIVED_LAUNCH_INPUT -Raw | ConvertFrom-Json -AsHashtable
+$parameters = $fixture.Parameters
+& $fixture.Dispatcher @parameters | ForEach-Object {
+  if ($_ -cmatch '^dispatch-lane: pid ([0-9]+)$') {
+    [IO.File]::WriteAllText("$($fixture.Marker).publication-attempt-$($Matches[1])", 'complete')
+  }
+  $_
+}
+'@
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $pwsh
     $start.WorkingDirectory = $Directory
@@ -848,6 +861,7 @@ exit $exitCode
           (Get-DispatchProcessIdentityState $dispatch.childPid $dispatch.childStartIdentity) -ceq 'dead') "$Name exact native dispatch has exited before cleanup"
         Assert-True (Remove-DispatchLaunchResources $dispatchPath $dispatch $orchestrator $privateTemp) "$Name canonical exact-owner cleanup"
       }
+      Assert-True (Test-Path -LiteralPath "$marker.entry") "$Name nested child inherited NODE_OPTIONS and ran its entry observer"
       $entry = Get-Content -LiteralPath "$marker.entry" -Raw | ConvertFrom-Json
       Assert-True ($entry.transport.launchId -ceq $dispatch.launchId -and $entry.transport.laneRole -ceq $dispatch.laneRole) "$Name transport binds the canonical native dispatch"
       Assert-True (-not (Test-Path -LiteralPath $dispatchPath)) "$Name canonical machinery releases its own record"
