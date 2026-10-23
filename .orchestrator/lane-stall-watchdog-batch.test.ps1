@@ -432,38 +432,49 @@ try{
       Write-Output 'PASS 8186 mixed-role-isolation planning-row8/review-row11-detached/review-row0-empty observation-only around a contained implementation expiry'
     }
     if('reducer-failure-isolation'-in$run8186){
-      $live8186=New-Producer 'synthetic-live-8186' live;$liveSpec8186=Get-Content $live8186.spec -Raw|ConvertFrom-Json -DateKind String
-      $script:descendant=Get-Content ($live8186.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
       $badStub=Stub 'bad-lane-only' ('if($Label-ceq'''+$A.label+'''){'+$fail19+'}'+"`n"+'& '''+$reducer.Replace("'","''")+''' @PSBoundParameters;exit $LASTEXITCODE')
-      $orders=@{first=@((Lane $A),(Lane $live8186),(Lane $B));middle=@((Lane $live8186),(Lane $A),(Lane $B));last=@((Lane $live8186),(Lane $B),(Lane $A))}
-      $isolation={param($r,[string]$name)
+      function Isolation-Lanes([string]$Order,$Live){
+        switch($Order){first{return @((Lane $A),(Lane $Live),(Lane $B))}middle{return @((Lane $Live),(Lane $A),(Lane $B))}last{return @((Lane $Live),(Lane $B),(Lane $A))}}
+      }
+      function Isolation-Batch([string]$Name,[string]$Order,[string]$Subject){
+        # One live producer per batch: no worker has to outlive more than its own
+        # readiness and one two-poll batch, so the worker's 90-second guard stays.
+        $live=New-Producer "synthetic-live-8186-$Name" live;$liveSpec=Get-Content $live.spec -Raw|ConvertFrom-Json -DateKind String
+        $script:descendant=Get-Content ($live.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+        $r=Batch (Isolation-Lanes $Order $live) "AC8186-isolation-$Name" @('-ReducerScript',$badStub) $Subject 10
+        Same-Worker $liveSpec
+        [IO.File]::WriteAllText($live.release,'release');$done=End-Native $live.handle;Check ($done.exit-eq0) "8186 $Name`: cooperative live worker completion"
+        Check (@(Get-Process -Id $script:descendant.pid -ErrorAction SilentlyContinue).Count-eq0) "8186 $Name`: cooperative descendant survived completion"
+        return [pscustomobject]@{result=$r;live=$live}
+      }
+      $isolation={param($r,$live,[string]$name)
         Reducer-Failure $r 'REDUCER_EXIT' "8186 $name`: bad lane is a contained REDUCER_EXIT" 'WINDOW_EXPIRED' $A.label
         $failures=Events $r REDUCER_FAILURE;$first=[array]::IndexOf($r.events,$failures[0])
         $after=@($r.events|Select-Object -Skip ($first+1))
-        Check (@($after|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'LIVE_SLOW'-and$_.label-ceq$live8186.label}).Count-ge1-and
-          @($after|Where-Object{$_.event-ceq'UNCHANGED'-and$_.label-ceq$A.label}).Count-ge1) "8186 $name`: live sibling not observed after the first failure, or no later sweep"
-        Check (@(Events $r OBSERVATION $B.label|Where-Object status -ceq TERMINAL_SUCCESS).Count-eq1-and@(Events $r OBSERVATION $A.label).Count-eq0-and@($r.events|Where-Object relaunch -eq $true).Count-eq0) "8186 $name`: terminal sibling observed once; bad lane never became health"
+        Check ($failures.Count-ge2-and@($after|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'LIVE_SLOW'-and$_.label-ceq$live.label}).Count-ge1-and
+          @($after|Where-Object{$_.event-ceq'UNCHANGED'-and$_.label-ceq$A.label}).Count-ge1) "8186 $name`: live sibling not observed after the first failure, or bad lane not reduced again in a later sweep"
+        $terminalB=@(Events $r OBSERVATION $B.label|Where-Object status -ceq TERMINAL_SUCCESS)
+        Check ($terminalB.Count-eq1-and@(Events $r OBSERVATION $A.label).Count-eq0-and@($r.events|Where-Object relaunch -eq $true).Count-eq0) "8186 $name`: terminal sibling observed once; bad lane never became health"
+        Check ([array]::IndexOf($r.events,$failures[-1])-gt[array]::IndexOf($r.events,$terminalB[0])) "8186 $name`: bad lane not revisited after the terminal sibling resolved"
       }
       $cycleEntry=Poll-Clock 'AC8186-isolation' 2
       foreach($name in @('first','middle','last')){
-        $r=Batch $orders[$name] "AC8186-isolation-$name" @('-ReducerScript',$badStub) $cycleEntry 10
-        & $isolation $r $name;Cadence $r 1;Same-Worker $liveSpec8186
+        $run=Isolation-Batch $name $name $cycleEntry
+        & $isolation $run.result $run.live $name;Cadence $run.result 1
       }
       $mutant=Mutate 'batch-abort-on-reducer-error' "`$reducerFailureCodes=@('REDUCER_EXIT','RESULT_INVALID','WATCHDOG_RELAUNCH_WINDOW_EXPIRED')" '$reducerFailureCodes=@()'
       $mutant=Poll-Clock 'AC8186-isolation-abort-mutant' 2 $mutant
-      $m=Batch $orders['first'] 'AC8186-isolation-mutant' @('-ReducerScript',$badStub) $mutant 10
+      $run=Isolation-Batch 'mutant' 'first' $mutant;$m=$run.result
       Check ($m.exit-ne0-and@(Events $m TRANSPORT_FAILURE).Count-eq1-and@(Events $m OBSERVATION).Count-eq0) '8186 abort mutant must reach the batch-wide abort, not an unrelated failure'
-      Reject-Mutant 'batch-abort-on-reducer-error' {& $isolation $m 'mutant'}
+      Reject-Mutant 'batch-abort-on-reducer-error' {& $isolation $m $run.live 'mutant'}
       $anchor='if(@($lanes|Where-Object{-not$_.terminal}).Count-eq0)'
       $mutant=Mutate 'expire-after-first-sweep' $anchor ('$clock.Elapsed.TotalSeconds=$WindowSeconds;'+$anchor)
       $mutant=Poll-Clock 'AC8186-isolation-one-sweep-mutant' 2 $mutant
-      $m=Batch $orders['first'] 'AC8186-isolation-one-sweep-mutant' @('-ReducerScript',$badStub) $mutant 10
+      $run=Isolation-Batch 'one-sweep-mutant' 'first' $mutant;$m=$run.result
       Reducer-Failure $m 'REDUCER_EXIT' '8186 one-sweep mutant reaches unresolved expiry' 'WINDOW_EXPIRED' $A.label
-      Check (@(Events $m UNCHANGED $A.label).Count-eq1-and@(Events $m OBSERVATION $live8186.label|Where-Object status -ceq LIVE_SLOW).Count-eq1) '8186 one-sweep mutant must observe the live sibling but suppress the later sweep'
-      Reject-Mutant 'expire-after-first-sweep' {& $isolation $m 'one-sweep mutant'}
-      Same-Worker $liveSpec8186
-      [IO.File]::WriteAllText($live8186.release,'release');$done=End-Native $live8186.handle;Check ($done.exit-eq0) '8186 cooperative live worker completion'
-      Write-Output 'PASS 8186 reducer-failure-isolation bad lane first/middle/last with live+terminal siblings'
+      Check (@(Events $m UNCHANGED $A.label).Count-eq1-and@(Events $m OBSERVATION $run.live.label|Where-Object status -ceq LIVE_SLOW).Count-eq1) '8186 one-sweep mutant must observe the live sibling but suppress the later sweep'
+      Reject-Mutant 'expire-after-first-sweep' {& $isolation $m $run.live 'one-sweep mutant'}
+      Write-Output 'PASS 8186 reducer-failure-isolation bad lane first/middle/last with live+terminal siblings, one live producer per batch'
     }
     if('day-after-error-and-observation'-in$run8186){
       $P=$planningDead
@@ -526,7 +537,8 @@ try{
     if('terminal-sibling'-in$run8186-or'day-after-error-and-observation'-in$run8186){
       # The invariant is unchanged by how many reductions fit the four-second
       # window: A fails before B terminates, never recovers, and stays unresolved
-      # at nonzero expiry. Repeated failures are covered by the two-cycles case.
+      # at nonzero expiry. That A is reduced again after B terminates is proved by
+      # the isolation case: its poll clock forces a second sweep after sweep 1.
       $terminalSiblingOracle={param($r)
         Reducer-Failure $r 'REDUCER_EXIT' '8186 terminal sibling: unresolved error still exits nonzero at expiry' 'WINDOW_EXPIRED' $A.label
         $failures=@(Events $r REDUCER_FAILURE $A.label)
