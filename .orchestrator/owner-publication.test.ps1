@@ -762,6 +762,12 @@ fs.readFileSync = (candidate, encoding) => {
 };
 const recovered = readers.readNestedOwner(input.root, 'a'.repeat(32));
 assert(recovered.owner && transient === 0, 'bounded retry recovers transient EPERM');
+transient = 3;
+fs.readFileSync = (candidate, encoding) => {
+  if (candidate === owner && transient > 0) { transient -= 1; const error = new Error('transient sharing violation'); error.code = 'EBUSY'; error.syscall = 'open'; throw error; }
+  return original(candidate, encoding);
+};
+assert(readers.readNestedOwner(input.root, 'a'.repeat(32)).owner && transient === 0, 'bounded retry recovers Windows sharing violation');
 const mutantSource = source.replace('const ownerOpenRetryAttempts = 8;', 'const ownerOpenRetryAttempts = 1;');
 assert.notEqual(mutantSource, source);
 const mutant = new Function('require', 'module', '__dirname', mutantSource + '\nreturn { readNestedOwner };')((name) => name === 'node:fs' ? fs : require(name), {exports:{}}, path.dirname(input.source));
@@ -777,7 +783,7 @@ assert.equal(stableAttempts, 8, 'stable denial exhausts exactly eight opens');
   [IO.File]::WriteAllText($retryInput,(@{source=$sourcePath;root=$temporaryRoot}|ConvertTo-Json -Compress))
   & (Resolve-NodeExecutable) $retryProbe $retryInput
   Assert-Owner ($LASTEXITCODE-eq0) 'Node owner reader bounded retry and stable-denial controls'
-  Write-Output 'PASS Node owner reader bounded retry recovers transient EPERM; retry-removal mutant RED; stable EACCES refused after eight opens'
+  Write-Output 'PASS Node owner reader bounded retry recovers transient EPERM and EBUSY; retry-removal mutant RED; stable EACCES refused after eight opens'
 }
 try {
   if ($Scenario -in @('All','Continuous')) { Invoke-ContinuousPublication }

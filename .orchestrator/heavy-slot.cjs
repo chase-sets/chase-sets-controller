@@ -84,7 +84,7 @@ function readOwnerText(ownerPath) {
     } catch (error) {
       const transient =
         process.platform === "win32" &&
-        (error?.code === "EPERM" || error?.code === "EACCES") &&
+        (error?.code === "EPERM" || error?.code === "EACCES" || error?.code === "EBUSY") &&
         error?.syscall === "open";
       if (!transient || attempt >= ownerOpenRetryAttempts || elapsedMilliseconds(started) >= ownerOpenRetryBudgetMilliseconds) throw error;
       sleep(Math.max(0, Math.min(10, ownerOpenRetryBudgetMilliseconds - elapsedMilliseconds(started))));
