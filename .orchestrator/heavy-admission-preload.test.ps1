@@ -79,8 +79,10 @@ function Wait-Condition([scriptblock]$Condition, [string]$Message, [int]$Attempt
 function Read-Owner {
   if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return $null }
   try {
-    return Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop |
-      ConvertFrom-Json -DateKind String -ErrorAction Stop
+    # Delete sharing keeps this observation from failing a holder's owner-to-claim move.
+    $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { $raw = [IO.StreamReader]::new($stream).ReadToEnd() } finally { $stream.Dispose() }
+    return $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
     return $null
   }
@@ -209,6 +211,25 @@ function New-AdmissionConfiguration(
     [Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress))
   )
 }
+# Output drains from launch, so a fixture never blocks on a full pipe. The
+# cleanup list keeps its own copy of the launch identity.
+function Register-Fixture([Diagnostics.Process]$Process) {
+  $identity = [pscustomobject]@{
+    pid = $Process.Id
+    processStartUtc = $Process.StartTime.ToUniversalTime().ToString("o")
+  }
+  $startedProcesses.Add([pscustomobject]@{ Process = $Process; Identity = $identity })
+  return [pscustomobject]@{
+    Process = $Process; Identity = $identity
+    StandardOutput = $Process.StandardOutput.ReadToEndAsync(); StandardError = $Process.StandardError.ReadToEndAsync()
+  }
+}
+function Read-FixtureOutput($Fixture) {
+  return [pscustomobject]@{
+    stdout = $Fixture.StandardOutput.GetAwaiter().GetResult()
+    stderr = $Fixture.StandardError.GetAwaiter().GetResult()
+  }
+}
 function Start-NodeFixture(
   [string]$Script,
   [string[]]$Arguments,
@@ -240,13 +261,7 @@ function Start-NodeFixture(
   foreach ($entry in $ExtraEnvironment.GetEnumerator()) {
     $start.Environment[$entry.Key] = [string]$entry.Value
   }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-ShimFixture(
   [string]$Shim,
@@ -272,13 +287,7 @@ function Start-ShimFixture(
   $start.Environment["ADMISSION_DELAY_MS"] = "0"
   $start.Environment["ADMISSION_NODE"] = $node
   $start.Environment["ADMISSION_PNPM"] = $pnpmScript
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-NativePnpmFixture(
   [string]$Worktree,
@@ -305,13 +314,7 @@ function Start-NativePnpmFixture(
   $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
   if ($Marker) { $start.Environment["ADMISSION_MARKER"] = $Marker }
   if ($Output) { $start.Environment["ADMISSION_OUTPUT"] = $Output }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-RootPnpmFixture(
   [string]$Worktree,
@@ -345,13 +348,7 @@ function Start-RootPnpmFixture(
   foreach ($entry in $ExtraEnvironment.GetEnumerator()) {
     $start.Environment[$entry.Key] = [string]$entry.Value
   }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-LifecycleFixture(
   [string]$Worktree,
@@ -378,13 +375,7 @@ function Start-LifecycleFixture(
   $start.Environment["npm_lifecycle_script"] = "node ./scripts/browser-e2e-probe.mjs"
   $start.Environment["ADMISSION_MARKER"] = $Marker
   $start.Environment["ADMISSION_OUTPUT"] = $Output
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-AlternatePnpmFixture(
   [string]$Worktree,
@@ -410,18 +401,13 @@ function Start-AlternatePnpmFixture(
   $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
   $start.Environment["ADMISSION_MARKER"] = $Marker
   $start.Environment["ADMISSION_DELAY_MS"] = "0"
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Complete-Fixture($Fixture, [int]$ExpectedExit, [string]$Message) {
   Assert-True ($Fixture.Process.WaitForExit(20000)) "$Message exits within 20 seconds"
-  $stderr = $Fixture.Process.StandardError.ReadToEnd()
-  $stdout = $Fixture.Process.StandardOutput.ReadToEnd()
+  $output = Read-FixtureOutput $Fixture
+  $stderr = $output.stderr
+  $stdout = $output.stdout
   Assert-True ($Fixture.Process.ExitCode -eq $ExpectedExit) "$Message exit code is $ExpectedExit (actual $($Fixture.Process.ExitCode); stderr=$stderr; stdout=$stdout)"
   return [pscustomobject]@{ stderr = $stderr; stdout = $stdout }
 }
@@ -734,13 +720,11 @@ exit $exitCode
     foreach ($argument in @('-NoProfile', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command)))) {
       $start.ArgumentList.Add($argument)
     }
-    $process = [Diagnostics.Process]::Start($start)
-    $identity = [pscustomobject]@{ pid = $process.Id; processStartUtc = $process.StartTime.ToUniversalTime().ToString('o') }
-    $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-    return [pscustomobject]@{
-      Process = $process; Identity = $identity
+    $fixture = Register-Fixture ([Diagnostics.Process]::Start($start))
+    $fixture | Add-Member -NotePropertyMembers ([ordered]@{
       Transcript = (Join-Path $orchestrator "$label.jsonl"); ErrorLog = (Join-Path $orchestrator "$label.err.log")
-    }
+    })
+    return $fixture
   }
   function Invoke-DerivedProbe([scriptblock]$Probe) {
     try { & $Probe } catch {
@@ -772,7 +756,8 @@ exit $exitCode
           if ($fixture.Process.HasExited) {
             $entry = if (Test-Path -LiteralPath "$marker.entry") { Get-Content -LiteralPath "$marker.entry" -Raw } else { "absent" }
             $dispatchError = if ($dispatched -and (Test-Path -LiteralPath $fixture.ErrorLog)) { Get-Content -LiteralPath $fixture.ErrorLog -Raw } else { '' }
-            throw "$Name exited before body: $($fixture.Process.ExitCode) child-entry=$entry launcher-stdout=$($fixture.Process.StandardOutput.ReadToEnd()) launcher-stderr=$($fixture.Process.StandardError.ReadToEnd()) child-stderr=$dispatchError"
+            $launcherOutput = Read-FixtureOutput $fixture
+            throw "$Name exited before body: $($fixture.Process.ExitCode) child-entry=$entry launcher-stdout=$($launcherOutput.stdout) launcher-stderr=$($launcherOutput.stderr) child-stderr=$dispatchError"
           }
           Test-Path -LiteralPath $marker
         } "$Name admitted body"
@@ -1162,8 +1147,7 @@ process.exit(Number(process.env.E2E_EXIT));
       $start.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($start)
-    $fixture = [pscustomobject]@{ Process=$process; Identity=@{pid=$process.Id; processStartUtc=$process.StartTime.ToUniversalTime().ToString('o')} }
-    $startedProcesses.Add($fixture)
+    $fixture = Register-Fixture $process
     Complete-Fixture $fixture $case.exit "e2e gate $($case.name)" | Out-Null
     Assert-True (-not (Test-Path $lock)) 'e2e wrapper releases exact owner'
     Assert-True ((Test-Path $marker) -eq ($case.name -in @('success', 'child-failure'))) 'e2e parameter refusal has no body effects'
@@ -1272,7 +1256,8 @@ try {
   }
   Wait-Condition {
     if ($probeBlocker.Process.HasExited) {
-      throw "probe blocker exited before ownership: exit=$($probeBlocker.Process.ExitCode) stderr=$($probeBlocker.Process.StandardError.ReadToEnd()) stdout=$($probeBlocker.Process.StandardOutput.ReadToEnd())"
+      $blockerOutput = Read-FixtureOutput $probeBlocker
+      throw "probe blocker exited before ownership: exit=$($probeBlocker.Process.ExitCode) stderr=$($blockerOutput.stderr) stdout=$($blockerOutput.stdout)"
     }
     $record = Read-Owner
     $record -and $record.lane -ceq "lane-a" -and $record.state -ceq "attached"
@@ -1311,8 +1296,9 @@ try {
     $caseOutput = Join-Path $root "$caseSlug.output"
     $caseFixture = & $case.Start $caseMarker $caseOutput
     $completed = $caseFixture.Process.WaitForExit(20000)
-    $caseStderr = $caseFixture.Process.StandardError.ReadToEnd()
-    $caseStdout = $caseFixture.Process.StandardOutput.ReadToEnd()
+    $caseStreams = Read-FixtureOutput $caseFixture
+    $caseStderr = $caseStreams.stderr
+    $caseStdout = $caseStreams.stdout
     if (-not $completed -or
         $caseFixture.Process.ExitCode -ne 73 -or
         $caseStderr -notmatch "command body was not executed" -or
@@ -1349,7 +1335,8 @@ try {
     } "browser probe owner and inert body"
   } catch {
     $reverseState = if ($reverseProbe.Process.HasExited) {
-      "exited=$($reverseProbe.Process.ExitCode) stderr=$($reverseProbe.Process.StandardError.ReadToEnd()) stdout=$($reverseProbe.Process.StandardOutput.ReadToEnd())"
+      $reverseOutput = Read-FixtureOutput $reverseProbe
+      "exited=$($reverseProbe.Process.ExitCode) stderr=$($reverseOutput.stderr) stdout=$($reverseOutput.stdout)"
     } else {
       "live owner=$((Read-Owner | ConvertTo-Json -Compress)) marker=$(Test-Path -LiteralPath $reverseProbeMarker) output=$(Test-Path -LiteralPath $reverseProbeOutput)"
     }
@@ -1761,7 +1748,7 @@ for (const [name, before, after, expectedFailure] of [
     } "schema-v4 Git-bound gate owner"
   } catch {
     if ($gateOwner.Process.HasExited) {
-      $gateOwnerError = $gateOwner.Process.StandardError.ReadToEnd()
+      $gateOwnerError = (Read-FixtureOutput $gateOwner).stderr
       throw "schema-v4 gate fixture exited $($gateOwner.Process.ExitCode) before ownership: $gateOwnerError"
     }
     throw
