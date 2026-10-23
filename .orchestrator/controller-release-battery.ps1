@@ -292,7 +292,18 @@ function Get-BatteryFleetLoad([switch]$Holder) {
   $ownerPath = Join-Path (Split-Path -Parent $controller) ".orchestrator\verify-lock.d\owner.json"
   if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return $vacant }
   try {
-    $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $openDeadline = [Diagnostics.Stopwatch]::StartNew()
+    $stream = $null
+    for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
+      try {
+        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+      } catch {
+        $exception = $_.Exception.GetBaseException()
+        $errorCode = [int]$exception.HResult -band 0xffff
+        if ($errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
+        [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 250 - $openDeadline.ElapsedMilliseconds)))
+      }
+    }
     try {
       $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
@@ -498,7 +509,18 @@ function Assert-BatteryAdmission {
           (Test-SameBatteryPath $entries[0].FullName $ownerPath) -and
           -not $entries[0].PSIsContainer -and
           (($entries[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)) {
-        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $openDeadline = [Diagnostics.Stopwatch]::StartNew()
+        $stream = $null
+        for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
+          try {
+            $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+          } catch {
+            $exception = $_.Exception.GetBaseException()
+            $errorCode = [int]$exception.HResult -band 0xffff
+            if ($errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
+            [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 250 - $openDeadline.ElapsedMilliseconds)))
+          }
+        }
         try {
           $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
           try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }

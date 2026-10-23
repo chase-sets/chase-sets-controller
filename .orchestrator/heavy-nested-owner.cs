@@ -23,6 +23,7 @@
 // Nothing here spawns a process, writes a file, or changes the owner record.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
@@ -1027,7 +1028,21 @@ namespace ChaseSets.HeavyAdmission
 
         private static byte[] ReadOwnerBytes(string path)
         {
-            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            Stopwatch watch = Stopwatch.StartNew();
+            FileStream stream = null;
+            for (int attempt = 1; stream == null; attempt += 1)
+            {
+                try
+                {
+                    stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                }
+                catch (Exception error) when ((error is IOException || error is UnauthorizedAccessException) &&
+                    (error.HResult & 0xffff) is 5 or 32 && attempt < 8 && watch.ElapsedMilliseconds < 250)
+                {
+                    Thread.Sleep((int)Math.Min(10, Math.Max(1, 250 - watch.ElapsedMilliseconds)));
+                }
+            }
+            using (stream)
             using (MemoryStream buffer = new MemoryStream())
             {
                 stream.CopyTo(buffer);

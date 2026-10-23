@@ -1421,7 +1421,18 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
   try {
     $entries = @(Get-ChildItem -LiteralPath $lockPath -Force -ErrorAction Stop)
     if ($entries.Count -ne 1 -or -not (Test-SamePath $entries[0].FullName $RecordPath)) { return $null }
-    $stream = [IO.File]::Open($RecordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    $openDeadline = [Diagnostics.Stopwatch]::StartNew()
+    $stream = $null
+    for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
+      try {
+        $stream = [IO.File]::Open($RecordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+      } catch {
+        $exception = $_.Exception.GetBaseException()
+        $errorCode = [int]$exception.HResult -band 0xffff
+        if ($errorCode -notin @(5, 32) -or $openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 250) { throw }
+        [Threading.Thread]::Sleep([int][Math]::Min(10, [Math]::Max(1, 250 - $openDeadline.ElapsedMilliseconds)))
+      }
+    }
     $buffer = [IO.MemoryStream]::new()
     try { $stream.CopyTo($buffer); $bytes = $buffer.ToArray() } finally { $stream.Dispose(); $buffer.Dispose() }
     $buffer = [IO.MemoryStream]::new($bytes, $false)

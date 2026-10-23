@@ -70,6 +70,24 @@ function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
+const ownerOpenRetryAttempts = 8;
+const ownerOpenRetryBudgetMilliseconds = 250;
+
+function readOwnerText(ownerPath) {
+  const deadline = Date.now() + ownerOpenRetryBudgetMilliseconds;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return fs.readFileSync(ownerPath, "utf8");
+    } catch (error) {
+      const transient =
+        (error?.code === "EPERM" || error?.code === "EACCES") &&
+        error?.syscall === "open";
+      if (!transient || attempt >= ownerOpenRetryAttempts || Date.now() >= deadline) throw error;
+      sleep(Math.min(10, Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
 function isPlainFile(candidate) {
   try {
     const stat = fs.lstatSync(candidate);
@@ -142,7 +160,7 @@ function liveOwnerMatchesToken(containerRoot, token, powershellPath) {
   if (!isPlainDirectory(lockPath) || !isPlainFile(ownerPath)) return false;
   try {
     if (!lockEntriesMatchWriterContract(lockPath)) return false;
-    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+    const owner = JSON.parse(readOwnerText(ownerPath));
     if (
       owner.lockId !== token ||
       !Number.isInteger(owner.pid) ||
@@ -233,7 +251,7 @@ function readNestedOwner(containerRoot, token, allowLaunching = false) {
   try {
     if (!lockEntriesMatchWriterContract(lockPath)) return { failure: "owner writer entries are unknown" };
     if (fs.statSync(ownerPath).size > nestedMaxReplyBytes) return { failure: "owner record is oversized" };
-    owner = parseClosedJson(fs.readFileSync(ownerPath, "utf8"));
+    owner = parseClosedJson(readOwnerText(ownerPath));
   } catch {
     return { failure: "owner record was unreadable" };
   }

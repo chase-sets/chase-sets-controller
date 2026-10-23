@@ -294,7 +294,11 @@ finally:
     while ([DateTime]::UtcNow -lt $deadline) {
       if (Test-Path $path) {
         try {
-          $stream=[IO.File]::Open($path,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
+          $openDeadline=[Diagnostics.Stopwatch]::StartNew();$stream=$null
+          for($openAttempt=1;$null-eq$stream;$openAttempt++){
+            try{$stream=[IO.File]::Open($path,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))}
+            catch{$exception=$_.Exception.GetBaseException();$errorCode=[int]$exception.HResult-band 0xffff;if($errorCode-notin@(5,32)-or$openAttempt-ge8-or$openDeadline.ElapsedMilliseconds-ge250){throw};[Threading.Thread]::Sleep([int][Math]::Min(10,[Math]::Max(1,250-$openDeadline.ElapsedMilliseconds)))}
+          }
           try {
             $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
             try { $raw=$reader.ReadToEnd() } finally { $reader.Dispose() }
