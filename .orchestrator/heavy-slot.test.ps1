@@ -1,4 +1,4 @@
-param([switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
+param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
 
 $ErrorActionPreference = "Stop"
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
@@ -433,7 +433,7 @@ function Start-RefusedAttachedFixture($GuardedIdentity, [string]$AdmissionRoot) 
   $startedProcesses.Add($entry)
   return $entry
 }
-function Start-GateWrapper([string]$Gate, [string]$Script, [hashtable]$ExtraEnvironment = @{}, [switch]$ImmutableHead) {
+function Start-GateWrapper([string]$Gate, [string]$Script, [hashtable]$ExtraEnvironment = @{}, [switch]$ImmutableHead, [int]$PublicationDelay = 0) {
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = $pwsh
   $start.WorkingDirectory = $worktree
@@ -456,6 +456,7 @@ function Start-GateWrapper([string]$Gate, [string]$Script, [hashtable]$ExtraEnvi
     @("-Branch", "codex/heavy-slot-fixture", "-ClaimedHead", (Invoke-FixtureGit @("rev-parse", "HEAD")))
   }
   foreach ($argument in $identityArguments) { [void]$start.ArgumentList.Add($argument) }
+  if ($PublicationDelay) { $start.ArgumentList.Add('-TestDelayChildPublicationMilliseconds'); $start.ArgumentList.Add([string]$PublicationDelay) }
   Set-CleanAdmissionEnvironment $start $ExtraEnvironment
   $process = [Diagnostics.Process]::Start($start)
   $entry = [pscustomobject]@{ Process = $process; Identity = Get-ProcessIdentity $process }
@@ -605,11 +606,11 @@ function Start-DriverHolder([hashtable]$ExtraEnvironment = @{}, [IntPtr]$Job = [
   Wait-Condition { $record = Read-Owner; $record -and $record.lockId -ceq $ready.token } "driver holder owner"
   return [pscustomobject]@{ Entry = $entry; Driver = $driver; Ready = $ready; Owner = Read-Owner; OwnerRaw = Read-OwnerRaw }
 }
-function Start-GateDriverHolder([string]$Gate, [hashtable]$ExtraEnvironment = @{}, [switch]$ImmutableHead) {
+function Start-GateDriverHolder([string]$Gate, [hashtable]$ExtraEnvironment = @{}, [switch]$ImmutableHead, [int]$PublicationDelay = 0) {
   $driver = New-DriverDirectory
   $environment = @{ SLOT_DRIVER = $driver }
   foreach ($entry in $ExtraEnvironment.GetEnumerator()) { $environment[$entry.Key] = $entry.Value }
-  $entry = Start-GateWrapper $Gate $fixture $environment -ImmutableHead:$ImmutableHead
+  $entry = Start-GateWrapper $Gate $fixture $environment -ImmutableHead:$ImmutableHead -PublicationDelay $PublicationDelay
   $ready = Wait-DriverReady $driver $entry "gate driver holder"
   Wait-Condition { $record = Read-Owner; $record -and $record.lockId -ceq $ready.token -and $record.state -ceq "started" } "gate driver holder owner"
   $guardedOwner = Read-Owner
@@ -1287,6 +1288,128 @@ function New-ForeignPublicKey {
   $key = [Security.Cryptography.ECDsa]::Create([Security.Cryptography.ECCurve+NamedCurves]::nistP256)
   try { return [Convert]::ToBase64String($key.ExportSubjectPublicKeyInfo()) } finally { $key.Dispose() }
 }
+function Test-RenameTypeBeforeAcquire {
+  $source=[IO.File]::ReadAllText($guardSource)
+  $class='public static class OwnerRename {'
+  Assert-True ($source.Contains($class)) 'rename-type-before-acquire compile seam exists'
+  $invalid=$source.Replace($class,"$class`n#error fix125 injected rename type failure")
+  $load='if (-not $isAttachedAdmission) { Initialize-OwnerRename }'
+  Assert-True ($source.Contains($load)) 'rename-type-before-acquire load seam exists'
+  foreach ($variant in @('candidate','late-load')) {
+    $copy=$invalid
+    if ($variant -ceq 'late-load') {
+      $copy=$copy.Replace($load,'# MUTANT load at first non-create transition')
+      $copy=$copy.Replace('  $temporaryPath = Join-Path $lockPath ("owner.transition."','  Initialize-OwnerRename' + "`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')
+    }
+    $marker=Join-Path $root "rename-type-$variant.exit"
+    try {
+      [IO.File]::WriteAllText($guard,$copy)
+      $entry=Start-GateWrapper 'test:scripts' $fixture @{SLOT_EXIT_MARKER=$marker}
+      $stdout=$entry.Process.StandardOutput.ReadToEndAsync(); $stderr=$entry.Process.StandardError.ReadToEndAsync()
+      Assert-True ($entry.Process.WaitForExit(30000)) 'rename compile failure exits within existing fixture bound'
+      $output=$stdout.Result + $stderr.Result
+      Assert-True ($entry.Process.ExitCode -ne 0 -and $output.Contains('fix125 injected rename type failure')) 'rename type failure is observable'
+      if ($variant -ceq 'late-load') { Wait-Condition { Test-Path $marker } 'late-load pre-acquire exit marker' }
+      $markerPresent=Test-Path $marker
+      $lockPresent=Test-Path $lock
+      if ($variant -ceq 'candidate') { Assert-True (-not $markerPresent -and -not $lockPresent) 'rename-type-before-acquire leaves no lock or child' }
+      else { Assert-True $markerPresent 'late-load mutant is RED: child existed before compile failure' }
+      Write-Output "CONTROL rename-type-before-acquire variant=$variant exit=$($entry.Process.ExitCode) marker=$markerPresent lock=$lockPresent"
+    } finally { [IO.File]::WriteAllText($guard,$source) }
+    if ($variant -ceq 'late-load') {
+      # The failed fixture's child is gone; the ordinary next fixture exercises
+      # the existing pending-child recovery instead of inventing a cleanup path.
+      $recovered=Start-GateDriverHolder 'test:scripts'
+      Stop-DriverHolder $recovered | Out-Null
+    }
+  }
+}
+function Test-NestedLaunchingFailClosed {
+  $scriptPath=Join-Path $root 'nested-launching-controls.cjs'
+  [IO.File]::WriteAllText($scriptPath,@'
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const cp = require('node:child_process');
+const [sourcePath, root, pwsh, mode, variant = 'candidate'] = process.argv.slice(2);
+const token = 'a'.repeat(32), stamp = '2026-01-01T00:00:00.0000000Z';
+if (!mode) {
+  const cases = ['wrapper-gone', 'foreign-token', 'reply-refused', 'ack-root', 'absent', 'unknown-entry', 'malformed', 'wrong-schema', 'reparse', 'ack-absent', 'ack-malformed', 'ack-unknown-entry', 'ack-wrong-schema', 'ack-reparse', 'ack-state'];
+  const mutants = {'foreign-token':'defer-before-token', 'wrapper-gone':'failure-before-reread', 'reply-refused':'reply-before-reread', 'ack-root':'first-read-verification'};
+  for (const name of cases) {
+    const variants = ['candidate', ...(mutants[name] ? [mutants[name]] : [])];
+    for (const v of variants) {
+      const run = cp.spawnSync(process.execPath, [__filename, sourcePath, root, pwsh, name, v], {encoding:'utf8', windowsHide:true});
+      assert(run.stdout,`${name}/${v}: ${run.stderr}`);
+      const trace=JSON.parse(run.stdout);
+      const expected = {'wrapper-gone':/is not started or attached/,'reply-refused':/is not started or attached/,'foreign-token':/does not carry the inherited token/,'absent':/no live owner record/,'unknown-entry':/writer entries are unknown/,'malformed':/unreadable/,'wrong-schema':/not a closed schema/,'reparse':/no live owner record/};
+      const expectedRefusal=name.startsWith('ack-') ? (name === 'ack-state' ? /is not started or attached/ : expected[name.slice(4)]) : expected[name];
+      const green=name === 'ack-root' ? run.status === 0 && trace.body === 1 && trace.connections === 1 : run.status === 73 && trace.body === 0 && expectedRefusal.test(run.stderr) && trace.connections === (['wrapper-gone','reply-refused'].includes(name) || name.startsWith('ack-') ? 1 : 0);
+      if (v === 'candidate') assert(green,`${name}: ${JSON.stringify(trace)} ${run.stderr}`);
+      else { assert(!green,`mutant survived: ${v}`); if (v === 'first-read-verification') assert.match(run.stderr,/different guarded root or wrapper/); }
+      process.stdout.write(`CONTROL nested-launching-fail-closed mode=${name} variant=${v} green=${green} exit=${run.status} body=${trace.body} connections=${trace.connections} refusal=${run.stderr.trim()}\n`);
+    }
+  }
+  process.exit(0);
+}
+const container = path.join(root, `authority-${mode}-${variant}`), runtime = path.join(container, '.orchestrator');
+const lock = path.join(runtime, 'verify-lock.d'), ownerPath = path.join(lock, 'owner.json');
+fs.mkdirSync(lock, {recursive:true});
+fs.writeFileSync(path.join(runtime, 'invoke-heavy-verifier.ps1'), 'fixture container sentinel');
+fs.copyFileSync(path.join(path.dirname(sourcePath),'heavy-nested-client.cjs'),path.join(runtime,'heavy-nested-client.cjs'));
+const owner = {schemaVersion:4,lockId:token,owner:'fixture',lane:'fixture',branch:'codex/fixture',worktree:root,head:'b'.repeat(40),identityMode:'branch',pid:123,processStartUtc:stamp,startedUtc:stamp,gate:'test:scripts',commandIdentity:'c'.repeat(64),state:'launching',childPid:null,childProcessStartUtc:null};
+if (mode === 'foreign-token') owner.lockId = 'd'.repeat(32);
+if (mode === 'wrong-schema') owner.schemaVersion = 99;
+fs.writeFileSync(ownerPath, mode === 'malformed' ? '{' : JSON.stringify(owner));
+if (mode === 'absent') fs.unlinkSync(ownerPath);
+if (mode === 'unknown-entry') fs.writeFileSync(path.join(lock,'unexpected'),'x');
+if (mode === 'reparse') { const target=path.join(container,'linked.json'); fs.renameSync(ownerPath,target); fs.symlinkSync(target,ownerPath); }
+const keys=crypto.generateKeyPairSync('ec',{namedCurve:'prime256v1'});
+process.env.CHASE_SETS_HEAVY_SLOT_ID=token;
+process.env.CHASE_SETS_HEAVY_SLOT_TRANSPORT=Buffer.from(JSON.stringify({schemaVersion:1,lockId:token,publicKey:keys.publicKey.export({format:'der',type:'spki'}).toString('base64'),launchId:'12345678-1234-1234-1234-123456789abc',laneRole:'implementation'})).toString('base64');
+let source=fs.readFileSync(sourcePath,'utf8');
+function replaceOnce(before,after) { assert.equal(source.split(before).length,2,`mutant ${variant} seam`); source=source.replace(before,after); }
+if (variant === 'defer-before-token') {
+  replaceOnce('  if (allowLaunching && owner.state === "launching") return { owner };','');
+  replaceOnce('  if (owner.lockId !== token)', '  if (allowLaunching && owner.state === "launching") return { owner };\n  if (owner.lockId !== token)');
+}
+if (variant === 'failure-before-reread') replaceOnce('  const acknowledgedOwner = readNestedOwner(containerRoot, token);','  if (exchange.failure) return exchange.failure;\n  const acknowledgedOwner = readNestedOwner(containerRoot, token);');
+if (variant === 'reply-before-reread') replaceOnce('  const acknowledgedOwner = readNestedOwner(containerRoot, token);','  if (exchange.replyLine) { const early = verifyNestedReply(exchange.replyLine, descriptor, owner, challenge, kind); if (early.failure) return early.failure; }\n  const acknowledgedOwner = readNestedOwner(containerRoot, token);');
+if (variant === 'first-read-verification') replaceOnce('verifyNestedReply(exchange.replyLine, descriptor, acknowledgedOwner.owner, challenge, kind)','verifyNestedReply(exchange.replyLine, descriptor, owner, challenge, kind)');
+let connections=0;
+const exchange=(original,_container,_pipe,line)=>{
+  connections++;
+  if (mode === 'wrapper-gone') return original(_container,_pipe,line);
+  if (mode.startsWith('ack-') && mode !== 'ack-root') {
+    if (mode === 'ack-absent') fs.unlinkSync(ownerPath);
+    if (mode === 'ack-malformed') fs.writeFileSync(ownerPath,'{');
+    if (mode === 'ack-unknown-entry') fs.writeFileSync(path.join(lock,'unexpected'),'x');
+    if (mode === 'ack-wrong-schema') fs.writeFileSync(ownerPath,JSON.stringify({...owner,schemaVersion:99}));
+    if (mode === 'ack-state') fs.writeFileSync(ownerPath,JSON.stringify({...owner,state:'unknown'}));
+    if (mode === 'ack-reparse') { const target=path.join(container,'linked.json'); fs.renameSync(ownerPath,target); fs.symlinkSync(target,ownerPath); }
+    return {failure:'fixture exchange failure must not outrank owner refusal'};
+  }
+  if (mode !== 'ack-root') return mode === 'reply-refused' ? {replyLine:Buffer.from('{"accepted":false,"message":"fixture server refusal"}')} : {failure:'fixture connect failure'};
+  const request=JSON.parse(line);
+  const started={...owner,state:'started',childPid:456,childProcessStartUtc:stamp};
+  fs.writeFileSync(ownerPath,JSON.stringify(started));
+  const payload=Buffer.from(JSON.stringify({schemaVersion:1,accepted:true,challenge:request.challenge,client:{pid:process.pid,processStartUtc:stamp},root:{pid:456,processStartUtc:stamp},wrapper:{pid:123,processStartUtc:stamp},lockId:token,dispatch:{launchId:'12345678-1234-1234-1234-123456789abc',laneRole:'implementation'},kind:'script-battery',gate:started.gate,lane:started.lane,worktree:started.worktree,branch:started.branch,head:started.head,identityMode:started.identityMode,owner:started.owner}));
+  const signature=crypto.sign('sha256',payload,{key:keys.privateKey,dsaEncoding:'ieee-p1363'});
+  return {replyLine:Buffer.from(JSON.stringify({payload:payload.toString('base64'),signature:signature.toString('base64')}))};
+};
+// Only the exchange is replaced. The real acquire/refuse path sets exit 73;
+// the started acknowledgement and signed reply are produced synchronously.
+const load=new Function('require','module','__dirname','testExchange',source+'\nconst originalExchange=exchangeNested; exchangeNested=(...args)=>testExchange(originalExchange,...args); return module.exports;');
+const acquire=load(require,{exports:{}},runtime,exchange);
+let body=0;
+process.on('exit',()=>process.stdout.write(JSON.stringify({body,connections})));
+acquire('script-battery',{configuration:{powershellPath:pwsh}});
+body++;
+'@)
+  & $node $scriptPath $clientSource $root $pwsh
+  Assert-True ($LASTEXITCODE -eq 0) 'nested-launching-fail-closed and post-acknowledgement authority controls'
+}
 
 New-Item -ItemType Directory -Path $orchestrator, (Split-Path -Parent $fixture), $privateTemp, $secondWorktree | Out-Null
 Copy-Item -LiteralPath $clientSource -Destination $client
@@ -1590,6 +1713,31 @@ try {
   $fixtureStage = "initial-boundary"
   Assert-DisposableRoot
   Assert-FreshChildEnvironmentBoundary
+  if ($OwnerTransitionOnly -or -not ($FilteredTestOnly -or $BrowserOnly -or $BrowserBaseline -or $CensusOnly -or $CurrentBindingOnly -or $IdentityOnly -or $LauncherNonReentryOnly -or $Baseline -or $CleanupDiscriminator -or $NestedSmoke -or $NestedOnly)) {
+    $fixtureStage = 'nested-publication-window'
+    $dispatchRecord = Write-DispatchOwnership
+    Test-NestedLaunchingFailClosed
+    $windowMarker = Join-Path $root 'publication-window.body'
+    $windowHolder = Start-GateDriverHolder 'test:scripts' @{ SLOT_MARKER = $windowMarker } -PublicationDelay 3000
+    Assert-True ($windowHolder.Ready.acquireMs -ge 3000) 'nested-publication-window waits for started acknowledgement'
+    Assert-True ($windowHolder.Owner.state -ceq 'started' -and (Test-Path $windowMarker)) 'nested-publication-window body executes only after started publication'
+    $windowChild = Invoke-NestedChild $windowHolder 'publication-window-once'
+    Assert-True ($windowChild.status -eq 0 -and $windowChild.stdout -match '"bodyCounter":1') 'nested-publication-window body ran once'
+    $foreignLaunching=$windowHolder.OwnerRaw | ConvertFrom-Json -AsHashtable -DateKind String
+    $foreignLaunching.state='launching'; $foreignLaunching.lockId=('f'*32)
+    Write-OwnerRaw ($foreignLaunching | ConvertTo-Json -Compress)
+    try {
+      $foreignChild=Invoke-NestedChild $windowHolder 'publication-window-foreign-token'
+      Assert-True ($foreignChild.status -eq 73 -and $foreignChild.stderr -match 'does not carry the inherited token' -and $foreignChild.stdout -eq '') 'foreign launching token refuses before body or pipe connection'
+    } finally { Write-OwnerRaw $windowHolder.OwnerRaw }
+    $windowStop=Stop-DriverHolder $windowHolder
+    Assert-True ($windowStop.stderr -match 'connections=2\b') 'foreign launching owner never connects: wrapper served only root and one child'
+    Write-Output "PASS nested-publication-window exit=0 body=1 acquireMs=$($windowHolder.Ready.acquireMs) delay=3000 state=started"
+    Test-RenameTypeBeforeAcquire
+    Remove-DispatchOwnership $dispatchRecord
+    $dispatchRecord = $null
+    if ($OwnerTransitionOnly) { return }
+  }
   if ($LauncherNonReentryOnly) {
     $fixtureStage = "launcher-non-reentry"
     Test-LauncherNonReentry

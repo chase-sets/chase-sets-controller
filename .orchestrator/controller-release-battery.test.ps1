@@ -3201,13 +3201,13 @@ function Test-BatteryFleetSampleCap {
 
 # AC2 control sampler-transition-pause. A fixture-local copy of the repaired
 # guard pauses at its Write-OwnerRecord publication (the delete-shared
-# [IO.File]::Replace of chase-sets/chase-sets#9739: the probe's pause injection,
+# handle-bound POSIX rename: the probe's pause injection,
 # rekeyed to that writer). While the guard is paused a sampler opens the owner
 # record and holds that handle until the released publication has completed or
 # failed. Sampling off, the battery's own Get-BatteryFleetLoad, and the pre-fix
 # Get-Content sampler each run the same Gate transition in their own synthetic
 # container under $testRoot; the guard never sees another container.
-$pause99Anchor = '    [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)'
+$pause99Anchor = '      [ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
 $pause99Injection = @'
     if ($env:BATTERY99_PAUSE_DIR) {
       $pauseId = [guid]::NewGuid().ToString('N')
@@ -3221,14 +3221,14 @@ $pause99Injection = @'
       $pauseDeadline = [DateTime]::UtcNow.AddSeconds(120)
       while (-not [IO.File]::Exists((Join-Path $env:BATTERY99_PAUSE_DIR "pending.$pauseId.release")) -and [DateTime]::UtcNow -lt $pauseDeadline) { Start-Sleep -Milliseconds 15 }
       try {
-        [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
+        [ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)
       } catch {
         & $pauseSignal "failed.$pauseId.txt" $_.Exception.ToString()
         throw
       }
       & $pauseSignal "published.$pauseId.json" $raw
     } else {
-      [IO.File]::Replace($temporaryPath, $ownerPath, [NullString]::Value)
+      [ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)
     }
 '@
 # The pre-fix sampler: Get-BatteryFleetLoad as it was before
