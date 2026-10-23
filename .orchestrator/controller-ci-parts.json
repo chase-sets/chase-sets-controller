@@ -1,6 +1,26 @@
 {
   "items": [
     {
+      "identity": "test:cleanup-orphan-worktree-dirs.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        {
+          "name": "proof",
+          "weight": 1
+        },
+        {
+          "name": "scale",
+          "weight": 1
+        }
+      ],
+      "ownership": {
+        "parts": [
+          "proof",
+          "scale"
+        ]
+      }
+    },
+    {
       "identity": "test:dispatch-routing-data.test.ps1",
       "selector": "-Part",
       "parts": [
@@ -676,7 +696,81 @@
     {
       "path": ".orchestrator/cleanup-orphan-worktree-dirs.test.ps1",
       "baselineBlob": "52d4aa1c082db8efcb3169b2bfa326b6ab1e38b6",
-      "edits": []
+      "edits": [
+        {
+          "offset": 7,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "$construction=[Diagnostics.Stopwatch]::new();$wall=[timespan]::Zero"
+          ]
+        },
+        {
+          "offset": 2,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            ". (Join-Path $PSScriptRoot 'suite-parts.ps1')",
+            "Assert-SuiteSelection $Part @('proof','scale') $PSBoundParameters @('EvidenceRoot','KeepEvidence')"
+          ]
+        },
+        {
+          "offset": 0,
+          "remove": 1,
+          "original": [
+            "[CmdletBinding()]param([string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)"
+          ],
+          "replacement": [
+            "[CmdletBinding()]param([ValidateSet('proof','scale')][string]$Part='',[string]$EvidenceRoot=[IO.Path]::GetTempPath(),[switch]$KeepEvidence)"
+          ]
+        },
+        {
+          "offset": 272,
+          "remove": 1,
+          "original": [
+            "  New-Item -ItemType Directory -Path $root|Out-Null"
+          ],
+          "replacement": [
+            "  New-Item -ItemType Directory -Path $root|Out-Null",
+            "  if(-not$Part -or $Part -eq 'proof'){"
+          ]
+        },
+        {
+          "offset": 529,
+          "remove": 1,
+          "original": [
+            "  # AC4 measures report mode only; construction is separately timed and bounded."
+          ],
+          "replacement": [
+            "  }",
+            "  if(-not$Part -or $Part -eq 'scale'){",
+            "  # AC4 measures report mode only; construction is separately timed and bounded."
+          ]
+        },
+        {
+          "offset": 560,
+          "remove": 1,
+          "original": [
+            "  Set-Item Function:Invoke-ReclamationGit $nativeGit;Set-Item Function:Get-ReclamationWorktrees $nativeTrees;Set-Item Function:Get-ReclamationBranches $nativeBranches"
+          ],
+          "replacement": [
+            "  }",
+            "  if(-not$Part -or $Part -eq 'proof'){",
+            "  Set-Item Function:Invoke-ReclamationGit $nativeGit;Set-Item Function:Get-ReclamationWorktrees $nativeTrees;Set-Item Function:Get-ReclamationBranches $nativeBranches"
+          ]
+        },
+        {
+          "offset": 606,
+          "remove": 1,
+          "original": [
+            "}finally{"
+          ],
+          "replacement": [
+            "  }",
+            "}finally{"
+          ]
+        }
+      ]
     },
     {
       "path": ".orchestrator/board-scale-test-support.ps1",

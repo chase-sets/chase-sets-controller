@@ -35,7 +35,8 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
       $lines.InsertRange($edit.offset,[string[]]@($edit.replacement))
     }
     $actual=if($Overrides.ContainsKey($leaf)){$Overrides[$leaf]}else{[IO.File]::ReadAllText((Join-Path $root $entry.path)).Replace("`r`n","`n")}
-    Assert-Ci (($lines-join"`n")-ceq$actual) "changed/dropped/duplicate/misowned source predicate: $leaf"
+    $joined=$lines -join "`n"
+    Assert-Ci ($joined-ceq$actual) "changed/dropped/duplicate/misowned source predicate: $leaf"
     $t=$null;$e=$null
     $before=[Management.Automation.Language.Parser]::ParseInput($baselineSource,[ref]$t,[ref]$e)
     Assert-Ci ($e.Count-eq0) 'baseline parse failed'
@@ -52,16 +53,23 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
       $available[$key]--
     }
     if($before.ParamBlock){
-      for($i=0;$i-lt$before.ParamBlock.Parameters.Count;$i++){
-        $afterParameter=$after.ParamBlock.Parameters[$i].Extent.Text
-        if($leaf-ceq'board-hourly-scale.test.ps1'-and$i-eq0){$afterParameter=$afterParameter.Replace(",'ten-item-scan'",'')}
-        Assert-Ci ($before.ParamBlock.Parameters[$i].Extent.Text-ceq$afterParameter) 'legacy parameter/default/order changed'
+      if($leaf-ceq'cleanup-orphan-worktree-dirs.test.ps1'){
+        foreach($beforeParameter in $before.ParamBlock.Parameters){
+          $afterParameter=@($after.ParamBlock.Parameters|Where-Object {$_.Name.Extent.Text-ceq$beforeParameter.Name.Extent.Text})
+          Assert-Ci ($afterParameter.Count-eq1-and$beforeParameter.Extent.Text-ceq$afterParameter[0].Extent.Text) 'legacy parameter/default/order changed'
+        }
+      }else{
+        for($i=0;$i-lt$before.ParamBlock.Parameters.Count;$i++){
+          $afterParameter=$after.ParamBlock.Parameters[$i].Extent.Text
+          if($leaf-ceq'board-hourly-scale.test.ps1'-and$i-eq0){$afterParameter=$afterParameter.Replace(",'ten-item-scan'",'')}
+          Assert-Ci ($before.ParamBlock.Parameters[$i].Extent.Text-ceq$afterParameter) 'legacy parameter/default/order changed'
+        }
       }
     }
   }
   Assert-Ci ($seen.Count-eq$pins.Count) 'missing conservation source'
-  $expectedMappings=@('test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq4-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq5-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
@@ -83,6 +91,21 @@ function Assert-BoardPartNames($Names){
   $expectedText=(@($expected|Sort-Object)-join',')
   Assert-Ci ($actualText-ceq$expectedText) 'board part census changed'
 }
+function Assert-CleanupPartNames($Names){
+  $expected=@('proof','scale')
+  Assert-Ci ((@($Names|Sort-Object)-join',')-ceq(@($expected|Sort-Object)-join',')) 'cleanup part census changed'
+}
+function Assert-CleanupSplitContract([string]$Source){
+  Assert-Ci ($Source.Contains("[ValidateSet('proof','scale')][string]`$Part=''")) 'cleanup selector census changed'
+  Assert-Ci ($Source.Contains("if(-not`$Part -or `$Part -eq 'proof')")) 'cleanup proof part dropped'
+  Assert-Ci ($Source.Contains("if(-not`$Part -or `$Part -eq 'scale')")) 'cleanup scale part dropped'
+  Assert-Ci ($Source.Contains('for($tree=0;$tree-lt200;$tree++)')) 'cleanup fixture tree count changed'
+  Assert-Ci ($Source.Contains('for($file=0;$file-lt2000;$file++)')) 'cleanup fixture file count changed'
+  Assert-Ci ($Source.Contains('Elapsed.TotalMinutes-ge12')) 'cleanup construction bound changed'
+  Assert-Ci ($Source.Contains('wall.TotalSeconds-lt60')) 'cleanup report bound changed'
+  Assert-Ci ($Source.Contains('phaseTimings.total-lt300000')) 'cleanup total bound changed'
+  Assert-Ci ($Source.Contains('}finally{')) 'cleanup synchronous teardown dropped'
+}
 $boardPath=Join-Path $PSScriptRoot 'board-hourly-scale.test.ps1'
 $boardText=[IO.File]::ReadAllText($boardPath).Replace("`r`n","`n")
 $boardItem=$manifest.items|Where-Object identity -eq 'test:board-hourly-scale.test.ps1'
@@ -92,6 +115,14 @@ Refuses-Coverage { Assert-BoardPartNames @($boardItem.parts.name|Where-Object{$_
 Refuses-Coverage { Assert-BoardPartNames @($boardItem.parts.name|Where-Object{$_-ne'ten-item'}) }
 Refuses-Coverage { Assert-BoardSplitContract ($boardText.Replace("if (`$name -eq 'ten-item' -and `$Arm -eq 'all')","if (`$name -eq 'ten-item')")) }
 Refuses-Coverage { Assert-BoardSplitContract ($boardText.Replace("Invoke-BoardScaleArm `$f `$(if (`$name -eq 'ten-item') { 'candidate' } else { `$name })",'')) }
+$cleanupPath=Join-Path $PSScriptRoot 'cleanup-orphan-worktree-dirs.test.ps1'
+$cleanupText=[IO.File]::ReadAllText($cleanupPath).Replace("`r`n","`n")
+$cleanupItem=$manifest.items|Where-Object identity -eq 'test:cleanup-orphan-worktree-dirs.test.ps1'
+Assert-CleanupPartNames @($cleanupItem.parts.name)
+Assert-CleanupSplitContract $cleanupText
+Refuses-Coverage { Assert-CleanupPartNames @($cleanupItem.parts.name|Where-Object{$_-ne'proof'}) }
+Refuses-Coverage { Assert-CleanupPartNames @($cleanupItem.parts.name|Where-Object{$_-ne'scale'}) }
+Refuses-Coverage { Assert-CleanupSplitContract ($cleanupText.Replace("if(-not`$Part -or `$Part -eq 'scale')",'')) }
 $routing=Get-SuiteRoutingNames (ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-routing-data.test.ps1")))
 Assert-Ci ($routing.cases.Count-eq18-and$routing.mutants.Count-eq8-and$routing.capacityMutants.Count-eq36) 'baseline routing census drift'
 $path=Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1'
