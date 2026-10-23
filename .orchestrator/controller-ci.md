@@ -71,8 +71,15 @@ Calibrate the entire candidate inventory on hosted runners before the gate.
 -OutputPath .orchestrator/controller-ci-durations.json` records exact Git blob
 UTF-8 source digests, not console-decoded text or worktree fallback. CRLF is
 normalized to LF without changing the final newline. Each record binds the
-run, source, runner, product, exact plan digest and conservative tracked-source
-dependency closure. The profile itself is excluded from that closure.
+run, source, runner, product, exact plan digest and conservative per-item
+dependency closure. Runtime and fixture inputs, referenced proof siblings and
+the actual runner/workflow bytes are retained. Unrelated proof entrypoints
+and planning/recording inputs do not invalidate an ordinary suite; CI-library
+checks retain the full closure. The profile itself is excluded.
+Use `-Append` for additional reconciled hosted runs. Planning takes the maximum
+of all source/dependency-matching records within 30 days, never the latest or
+minimum sample. Baseline, re-probe, calibration and gate records retain their
+original run/head/plan provenance; they are not relabeled as new executions.
 
 Run `controller-ci-prediction.ps1 -EvidenceDirectory <evidence> -CalibrationPlanPath
 <plan> -WriteProfile` to replay all three bounded choices and record the smallest

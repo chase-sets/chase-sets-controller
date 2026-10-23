@@ -17,24 +17,25 @@ function Get-CiEstimatedDuration($Item, $Profile, [string]$Root, [datetimeoffset
   $fallback = @{elapsedMs=30000L;source='fallback'}
   if ($null -eq $Profile) { return $fallback }
   $records = @($Profile.records | Where-Object identity -CEQ $Item.identity)
-  if ($records.Count -ne 1) { return $fallback }
-  $record = $records[0]
-  try {
+  if ($records.Count -eq 0) { return $fallback }
+  $digest=Get-CiSourceDigest (Join-Path $Root $Item.path)
+  if (-not $SourceSet) {
+    . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
+    $SourceSet=Get-CiTimingSourceSetDigest $Root (Get-CiHead $Root) $Item.path
+  }
+  $fresh=[Collections.Generic.List[long]]::new()
+  $stale=[Collections.Generic.List[long]]::new()
+  foreach($record in $records){try {
     $age = $Now - [datetimeoffset]::Parse($record.recordedAtUtc, [Globalization.CultureInfo]::InvariantCulture)
     if ($age.TotalDays -lt 0 -or $age.TotalDays -gt 30 -or
         ($record.elapsedMs -isnot [long] -and $record.elapsedMs -isnot [int]) -or $record.elapsedMs -le 0 -or
-        $record.sourceSha256 -cnotmatch '^[a-f0-9]{64}$') { return $fallback }
-    $source = Join-Path $Root $Item.path
-    if ((Get-CiSourceDigest $source) -cne $record.sourceSha256) { return @{elapsedMs=[long]$record.elapsedMs;source='stale-recorded'} }
-    if (-not $SourceSet) {
-      . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
-      $SourceSet=Get-CiTreeDigest $Root (Get-CiHead $Root)
-    }
-    if ($null -eq $record.sourceSetSha256 -or $record.sourceSetSha256 -cne $SourceSet) {
-      return @{elapsedMs=[long]$record.elapsedMs;source='stale-recorded'}
-    }
-    return @{elapsedMs=[long]$record.elapsedMs;source='recorded'}
-  } catch { return $fallback }
+        $record.sourceSha256 -cnotmatch '^[a-f0-9]{64}$') { continue }
+    if ($digest-cne$record.sourceSha256-or$record.sourceSetSha256-cne$SourceSet) {$stale.Add([long]$record.elapsedMs);continue}
+    $fresh.Add([long]$record.elapsedMs)
+  } catch { continue }}
+  if($fresh.Count){return @{elapsedMs=[long](($fresh|Measure-Object -Maximum).Maximum);source='recorded'}}
+  if($stale.Count){return @{elapsedMs=[long](($stale|Measure-Object -Maximum).Maximum);source='stale-recorded'}}
+  return $fallback
 }
 
 function Assert-CiManifest([object[]]$Inventory, $Manifest, [string]$Root='') {
@@ -72,14 +73,19 @@ function Assert-CiManifest([object[]]$Inventory, $Manifest, [string]$Root='') {
 
 function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string]$Root, [datetimeoffset]$Now) {
   Assert-Ci ($null -eq $Manifest -or $Manifest.schemaVersion -ceq 'controller-ci-parts/v1') 'parts manifest schema mismatch'
-  $sourceSet=''
+  $sourceSets=@{}
   if ($null -ne $Profile) {
     . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
-    $sourceSet=Get-CiTreeDigest $Root (Get-CiHead $Root)
+    $sourceHead=Get-CiHead $Root
   }
   $tasks = [Collections.Generic.List[object]]::new()
   $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   foreach ($item in $Inventory) {
+    $sourceSet=''
+    if($null-ne$Profile-and$null-eq$item.restriction){
+      if(-not$sourceSets.ContainsKey($item.path)){$sourceSets[$item.path]=Get-CiTimingSourceSetDigest $Root $sourceHead $item.path}
+      $sourceSet=$sourceSets[$item.path]
+    }
     $timing = Get-CiEstimatedDuration $item $Profile $Root $Now $sourceSet
     $mapping = @($Manifest.items | Where-Object identity -CEQ $item.identity)
     Assert-Ci ($mapping.Count -le 1) 'duplicate split mapping'

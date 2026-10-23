@@ -22,7 +22,10 @@ $replays=@(foreach($count in @(16,17,18)){
 $feasible=@($replays|Where-Object feasible)
 $chosen=if($feasible.Count){$feasible[0].shardCount}else{$null}
 Write-CiJson @{calibrationPlanSha256=(Get-FileHash $CalibrationPlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  sourceHead=(Get-CiHead $root);sourceSetSha256=(Get-CiTreeDigest $root (Get-CiHead $root));chosenShardCount=$chosen;replays=$replays} (Join-Path $EvidenceDirectory 'prediction.json')
+  sourceHead=(Get-CiHead $root);sourceSetSha256=(Get-CiTreeDigest $root (Get-CiHead $root));chosenShardCount=$chosen;replays=$replays
+  weighting='maximum attributable source/dependency-matching record within 30 days'
+  profileRecordCount=@($profile.records).Count
+  recordRuns=@($profile.records|Group-Object runId|ForEach-Object{@{runId=$_.Name;records=$_.Count}})} (Join-Path $EvidenceDirectory 'prediction.json')
 $replays|ForEach-Object{Write-Output "LPT N=$($_.shardCount) maxMs=$($_.maxMs) sumMs=$($_.sumMs) feasible=$($_.feasible)"}
 Assert-Ci ($null-ne$chosen) 'no N in 16/17/18 fits 250000 ms; preserve evidence and stop for decomposition'
 if($WriteProfile){$profile|Add-Member shardCount $chosen -Force;Write-CiJson $profile $profilePath}
