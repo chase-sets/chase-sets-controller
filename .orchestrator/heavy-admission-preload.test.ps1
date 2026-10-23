@@ -1970,7 +1970,8 @@ for (const [name, before, after, expectedFailure] of [
   if (Test-Path -LiteralPath $root) {
     Assert-DisposableRoot
     # Each remaining process of this temp root is its own producer: the wait
-    # ends when a census finds none, after each exact identity has exited.
+    # ends when a census finds none, after each exact identity has exited. A
+    # process that cannot be waited by identity is polled at the old cadence.
     do {
       $remaining = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -1984,6 +1985,7 @@ for (const [name, before, after, expectedFailure] of [
           # An exited or reused PID is not a producer of this temp root.
         }
       }
+      if ($remaining.Count -gt 0) { Start-Sleep -Milliseconds 25 }
     } while ($remaining.Count -gt 0)
     $admissionTempRoots = @(
       Get-ChildItem -LiteralPath $privateTemp -Directory -Filter "chase-sets-heavy-admission-*" -ErrorAction SilentlyContinue
