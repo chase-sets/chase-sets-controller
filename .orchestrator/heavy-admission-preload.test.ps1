@@ -1062,10 +1062,13 @@ exit $exitCode
     Assert-True ($candidate.Contains($mutant.From)) "$($mutant.Name) source mutation has an anchor"
     $controlFailure = $null
     try { & $mutant.Case | Out-Null } catch { $controlFailure = $_.Exception.Message }
+    # An arm that fails before its own drain must not leave its holder to the next arm.
+    Wait-LockRelease "$($mutant.Name) true-candidate arm owner release"
     try {
       [IO.File]::WriteAllText($preload, $candidate.Replace($mutant.From, $mutant.To))
       $failure = $null
       try { & $mutant.Case | Out-Null } catch { $failure = $_.Exception.Message }
+      Wait-LockRelease "$($mutant.Name) mutant arm owner release"
       if ($controlFailure) {
         $derivedFailures.Add("$($mutant.Name) discrimination incomplete: true candidate failed: $controlFailure")
         Write-Output "FAIL omission-mutant $($mutant.Name) true-candidate=$controlFailure mutant=$failure"
