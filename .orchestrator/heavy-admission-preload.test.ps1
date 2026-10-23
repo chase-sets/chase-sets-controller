@@ -69,18 +69,65 @@ function Assert-DisposableRoot {
   Assert-True ($resolved.StartsWith($systemTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) "test root stays below system temp"
   Assert-True ((Split-Path -Leaf $resolved) -like "heavy-admission-test-*") "test root has the owned safety prefix"
 }
-function Wait-Condition([scriptblock]$Condition, [string]$Message, [int]$Attempts = 600) {
-  for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+# A wait ends on its signal or on the terminal state of the producer that
+# delivers it; elapsed time never decides a verdict. The terminal state is read
+# before the signal, so a signal published before termination still passes and
+# a terminal state without the signal fails naming that state.
+function Wait-Condition([scriptblock]$Condition, [string]$Message, [scriptblock]$Terminal) {
+  if (-not $Terminal) { throw "wait has no producer terminal state: $Message" }
+  while ($true) {
+    $terminalState = & $Terminal
     if (& $Condition) { return }
+    if ($terminalState) { throw "ASSERTION FAILED: $Message did not arrive before $terminalState" }
     Start-Sleep -Milliseconds 25
   }
-  throw "ASSERTION FAILED: timed out waiting for $Message"
+}
+function Wait-FixtureExit($Fixture) {
+  $Fixture.Process.WaitForExit()
+  return $Fixture.Process.HasExited
+}
+function Get-ExitedFixtureState($Fixture) {
+  if (-not $Fixture.Process.HasExited) { return $null }
+  $output = Read-FixtureOutput $Fixture
+  return "fixture pid=$($Fixture.Process.Id) exited $($Fixture.Process.ExitCode) (stderr=$($output.stderr); stdout=$($output.stdout))"
+}
+# Admission publishes the owner before the guarded body starts, so a started
+# body is the terminal state of an owner wait.
+function Get-BodyStartedState($Fixture, [string]$Marker) {
+  $exited = Get-ExitedFixtureState $Fixture
+  if ($exited) { return $exited }
+  if (-not (Test-Path -LiteralPath $Marker)) { return $null }
+  $owner = if (-not (Test-Path -LiteralPath $lock)) { "absent" } else { $record = Read-Owner; if ($record) { $record | ConvertTo-Json -Compress } else { "unreadable" } }
+  return "fixture pid=$($Fixture.Process.Id) started its body under owner $owner"
+}
+# The holder named by the last readable owner record releases the lock; its
+# exit with the lock still present is the terminal state. Without a readable
+# owner, any live process of this test root may still release it.
+function Wait-LockRelease([string]$Message) {
+  $holder = $null
+  while (Test-Path -LiteralPath $lock) {
+    $record = Read-Owner
+    if ($record) { $holder = $record }
+    $terminalState = if ($holder) {
+      if (-not (Test-ExactProcess $holder)) { "holder pid=$($holder.pid) exited with its $($holder.state) owner in place" }
+    } else {
+      try {
+        if (-not @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { [string]$_.CommandLine -like "*$root*" }).Count) {
+          "the lock had no readable owner and no live process of this test root"
+        }
+      } catch {}
+    }
+    if ($terminalState -and (Test-Path -LiteralPath $lock)) { throw "ASSERTION FAILED: $Message did not arrive before $terminalState" }
+    if (-not $terminalState) { Start-Sleep -Milliseconds 25 }
+  }
 }
 function Read-Owner {
   if (-not (Test-Path -LiteralPath $ownerPath -PathType Leaf)) { return $null }
   try {
-    return Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop |
-      ConvertFrom-Json -DateKind String -ErrorAction Stop
+    # Delete sharing keeps this observation from failing a holder's owner-to-claim move.
+    $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { $raw = [IO.StreamReader]::new($stream).ReadToEnd() } finally { $stream.Dispose() }
+    return $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
     return $null
   }
@@ -209,6 +256,25 @@ function New-AdmissionConfiguration(
     [Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress))
   )
 }
+# Output drains from launch, so a fixture never blocks on a full pipe. The
+# cleanup list keeps its own copy of the launch identity.
+function Register-Fixture([Diagnostics.Process]$Process) {
+  $identity = [pscustomobject]@{
+    pid = $Process.Id
+    processStartUtc = $Process.StartTime.ToUniversalTime().ToString("o")
+  }
+  $startedProcesses.Add([pscustomobject]@{ Process = $Process; Identity = $identity })
+  return [pscustomobject]@{
+    Process = $Process; Identity = $identity
+    StandardOutput = $Process.StandardOutput.ReadToEndAsync(); StandardError = $Process.StandardError.ReadToEndAsync()
+  }
+}
+function Read-FixtureOutput($Fixture) {
+  return [pscustomobject]@{
+    stdout = $Fixture.StandardOutput.GetAwaiter().GetResult()
+    stderr = $Fixture.StandardError.GetAwaiter().GetResult()
+  }
+}
 function Start-NodeFixture(
   [string]$Script,
   [string[]]$Arguments,
@@ -240,13 +306,7 @@ function Start-NodeFixture(
   foreach ($entry in $ExtraEnvironment.GetEnumerator()) {
     $start.Environment[$entry.Key] = [string]$entry.Value
   }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-ShimFixture(
   [string]$Shim,
@@ -272,13 +332,7 @@ function Start-ShimFixture(
   $start.Environment["ADMISSION_DELAY_MS"] = "0"
   $start.Environment["ADMISSION_NODE"] = $node
   $start.Environment["ADMISSION_PNPM"] = $pnpmScript
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-NativePnpmFixture(
   [string]$Worktree,
@@ -305,13 +359,7 @@ function Start-NativePnpmFixture(
   $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
   if ($Marker) { $start.Environment["ADMISSION_MARKER"] = $Marker }
   if ($Output) { $start.Environment["ADMISSION_OUTPUT"] = $Output }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-RootPnpmFixture(
   [string]$Worktree,
@@ -345,13 +393,7 @@ function Start-RootPnpmFixture(
   foreach ($entry in $ExtraEnvironment.GetEnumerator()) {
     $start.Environment[$entry.Key] = [string]$entry.Value
   }
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-LifecycleFixture(
   [string]$Worktree,
@@ -378,13 +420,7 @@ function Start-LifecycleFixture(
   $start.Environment["npm_lifecycle_script"] = "node ./scripts/browser-e2e-probe.mjs"
   $start.Environment["ADMISSION_MARKER"] = $Marker
   $start.Environment["ADMISSION_OUTPUT"] = $Output
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Start-AlternatePnpmFixture(
   [string]$Worktree,
@@ -410,18 +446,13 @@ function Start-AlternatePnpmFixture(
   $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
   $start.Environment["ADMISSION_MARKER"] = $Marker
   $start.Environment["ADMISSION_DELAY_MS"] = "0"
-  $process = [Diagnostics.Process]::Start($start)
-  $identity = [pscustomobject]@{
-    pid = $process.Id
-    processStartUtc = $process.StartTime.ToUniversalTime().ToString("o")
-  }
-  $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-  return [pscustomobject]@{ Process = $process; Identity = $identity }
+  return Register-Fixture ([Diagnostics.Process]::Start($start))
 }
 function Complete-Fixture($Fixture, [int]$ExpectedExit, [string]$Message) {
-  Assert-True ($Fixture.Process.WaitForExit(20000)) "$Message exits within 20 seconds"
-  $stderr = $Fixture.Process.StandardError.ReadToEnd()
-  $stdout = $Fixture.Process.StandardOutput.ReadToEnd()
+  Assert-True (Wait-FixtureExit $Fixture) "$Message exits"
+  $output = Read-FixtureOutput $Fixture
+  $stderr = $output.stderr
+  $stdout = $output.stdout
   Assert-True ($Fixture.Process.ExitCode -eq $ExpectedExit) "$Message exit code is $ExpectedExit (actual $($Fixture.Process.ExitCode); stderr=$stderr; stdout=$stdout)"
   return [pscustomobject]@{ stderr = $stderr; stdout = $stdout }
 }
@@ -663,20 +694,29 @@ if (process.env.ADMISSION_RELEASE_FILE) {
     $childCommand = @'
 $ErrorActionPreference = "Stop"
 $fixture = Get-Content -LiteralPath $env:DERIVED_LAUNCH_INPUT -Raw | ConvertFrom-Json
+$share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+$launcher = (Get-Process -Id $PID).Parent
 $record = $null
-for ($attempt = 0; $attempt -lt 600; $attempt++) {
+while (-not $record) {
+  $launcherExited = $null -eq $launcher -or $launcher.HasExited
+  $publicationAttempted = Test-Path -LiteralPath "$($fixture.Marker).publication-attempt-$PID"
   foreach ($file in @(Get-ChildItem -LiteralPath $fixture.RuntimeRoot -Filter 'dispatch-launch-*.json')) {
-    try { $candidate = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { continue }
+    try {
+      $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+      try { $candidate = [IO.StreamReader]::new($stream).ReadToEnd() | ConvertFrom-Json } finally { $stream.Dispose() }
+    } catch { continue }
     if ($candidate.state -ceq 'started' -and $candidate.childPid -eq $PID) {
       $record = $candidate
       [IO.File]::Copy($file.FullName, "$($fixture.Marker).dispatch", $false)
       break
     }
   }
-  if ($record) { break }
-  Start-Sleep -Milliseconds 25
+  if (-not $record) {
+    if ($publicationAttempted) { throw 'canonical launcher completed its publication attempt without publishing this native child' }
+    if ($launcherExited) { throw 'canonical launcher exited before it published this native child' }
+    Start-Sleep -Milliseconds 25
+  }
 }
-if (-not $record) { throw 'canonical launcher did not publish this native child' }
 $start = [Diagnostics.ProcessStartInfo]::new()
 $start.FileName = $fixture.Node
 $start.WorkingDirectory = $fixture.Directory
@@ -702,11 +742,24 @@ $process.WaitForExit()
 [Console]::Out.Write($stdout.GetAwaiter().GetResult())
 [Console]::Error.Write($stderr.GetAwaiter().GetResult())
 $exitCode = $process.ExitCode
-for ($attempt = 0; $attempt -lt 600; $attempt++) {
-  if (-not (Test-Path -LiteralPath (Join-Path $fixture.RuntimeRoot 'verify-lock.d'))) { break }
-  Start-Sleep -Milliseconds 25
+$lockPath = Join-Path $fixture.RuntimeRoot 'verify-lock.d'
+$ownerPath = Join-Path $lockPath 'owner.json'
+$holder = $null
+while (Test-Path -LiteralPath $lockPath) {
+  try {
+    $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try { $read = [IO.StreamReader]::new($stream).ReadToEnd() | ConvertFrom-Json -DateKind String } finally { $stream.Dispose() }
+    if ($read) { $holder = $read }
+  } catch {}
+  $terminalState = if ($holder) {
+    $live = try { (Get-Process -Id ([int]$holder.pid) -ErrorAction Stop).StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse([string]$holder.processStartUtc).UtcTicks } catch { $false }
+    if (-not $live) { "holder pid=$($holder.pid) exited" }
+  } else {
+    try { if (-not @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { [string]$_.CommandLine -like "*$($fixture.RuntimeRoot)*" }).Count) { 'no owner was readable and no runtime process is live' } } catch {}
+  }
+  if ($terminalState -and (Test-Path -LiteralPath $lockPath)) { throw "derived owner did not drain before dispatch release: $terminalState" }
+  if (-not $terminalState) { Start-Sleep -Milliseconds 25 }
 }
-if (Test-Path -LiteralPath (Join-Path $fixture.RuntimeRoot 'verify-lock.d')) { throw 'derived owner did not drain before dispatch release' }
 exit $exitCode
 '@
     $parameters = @{
@@ -721,7 +774,18 @@ exit $exitCode
       Arguments = $Shape.Arguments; Environment = $Environment; RuntimeRoot = $orchestrator
       Dispatcher = (Join-Path $PSScriptRoot 'dispatch-lane.ps1'); Parameters = $parameters
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $inputPath
-    $command = '$fixture = Get-Content -LiteralPath $env:DERIVED_LAUNCH_INPUT -Raw | ConvertFrom-Json -AsHashtable; $parameters = $fixture.Parameters; & $fixture.Dispatcher @parameters'
+    # dispatch-lane emits its PID after the publication attempt, before waiting
+    # for the child. Observe it in the streaming pipeline, not after EOF.
+    $command = @'
+$fixture = Get-Content -LiteralPath $env:DERIVED_LAUNCH_INPUT -Raw | ConvertFrom-Json -AsHashtable
+$parameters = $fixture.Parameters
+& $fixture.Dispatcher @parameters | ForEach-Object {
+  if ($_ -cmatch '^dispatch-lane: pid ([0-9]+)$') {
+    [IO.File]::WriteAllText("$($fixture.Marker).publication-attempt-$($Matches[1])", 'complete')
+  }
+  $_
+}
+'@
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $pwsh
     $start.WorkingDirectory = $Directory
@@ -734,13 +798,11 @@ exit $exitCode
     foreach ($argument in @('-NoProfile', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command)))) {
       $start.ArgumentList.Add($argument)
     }
-    $process = [Diagnostics.Process]::Start($start)
-    $identity = [pscustomobject]@{ pid = $process.Id; processStartUtc = $process.StartTime.ToUniversalTime().ToString('o') }
-    $startedProcesses.Add([pscustomobject]@{ Process = $process; Identity = $identity })
-    return [pscustomobject]@{
-      Process = $process; Identity = $identity
+    $fixture = Register-Fixture ([Diagnostics.Process]::Start($start))
+    $fixture | Add-Member -NotePropertyMembers ([ordered]@{
       Transcript = (Join-Path $orchestrator "$label.jsonl"); ErrorLog = (Join-Path $orchestrator "$label.err.log")
-    }
+    })
+    return $fixture
   }
   function Invoke-DerivedProbe([scriptblock]$Probe) {
     try { & $Probe } catch {
@@ -772,16 +834,17 @@ exit $exitCode
           if ($fixture.Process.HasExited) {
             $entry = if (Test-Path -LiteralPath "$marker.entry") { Get-Content -LiteralPath "$marker.entry" -Raw } else { "absent" }
             $dispatchError = if ($dispatched -and (Test-Path -LiteralPath $fixture.ErrorLog)) { Get-Content -LiteralPath $fixture.ErrorLog -Raw } else { '' }
-            throw "$Name exited before body: $($fixture.Process.ExitCode) child-entry=$entry launcher-stdout=$($fixture.Process.StandardOutput.ReadToEnd()) launcher-stderr=$($fixture.Process.StandardError.ReadToEnd()) child-stderr=$dispatchError"
+            $launcherOutput = Read-FixtureOutput $fixture
+            throw "$Name exited before body: $($fixture.Process.ExitCode) child-entry=$entry launcher-stdout=$($launcherOutput.stdout) launcher-stderr=$($launcherOutput.stderr) child-stderr=$dispatchError"
           }
           Test-Path -LiteralPath $marker
-        } "$Name admitted body"
+        } "$Name admitted body" { Get-ExitedFixtureState $fixture }
       }
     } finally {
       if ($Admitted) {
         Set-Content -LiteralPath $release -Value "release"
-        Assert-True ($fixture.Process.WaitForExit(20000)) "$Name exact fixture exits after release"
-        Wait-Condition { -not (Test-Path -LiteralPath $lock) } "$Name exact owner drains before next probe"
+        Assert-True (Wait-FixtureExit $fixture) "$Name exact fixture exits after release"
+        Wait-LockRelease "$Name exact owner drains before next probe"
       }
     }
     $output = Complete-Fixture $fixture $Exit $Name
@@ -798,12 +861,13 @@ exit $exitCode
           (Get-DispatchProcessIdentityState $dispatch.childPid $dispatch.childStartIdentity) -ceq 'dead') "$Name exact native dispatch has exited before cleanup"
         Assert-True (Remove-DispatchLaunchResources $dispatchPath $dispatch $orchestrator $privateTemp) "$Name canonical exact-owner cleanup"
       }
+      Assert-True (Test-Path -LiteralPath "$marker.entry") "$Name nested child inherited NODE_OPTIONS and ran its entry observer"
       $entry = Get-Content -LiteralPath "$marker.entry" -Raw | ConvertFrom-Json
       Assert-True ($entry.transport.launchId -ceq $dispatch.launchId -and $entry.transport.laneRole -ceq $dispatch.laneRole) "$Name transport binds the canonical native dispatch"
       Assert-True (-not (Test-Path -LiteralPath $dispatchPath)) "$Name canonical machinery releases its own record"
       Write-Output "$Name DISPATCH $($dispatch | ConvertTo-Json -Compress)"
     }
-    Wait-Condition { -not (Test-Path -LiteralPath $lock) } "$Name exact-owner release"
+    Wait-LockRelease "$Name exact-owner release"
     Assert-True ($output.stdout -ceq "") "$Name stdout is silent"
     $expectedStderr = if ($Warn) { "heavy-admission: unguarded heavy command outside a lane worktree ($Directory)`n" } else { "" }
     if ($Exit -eq 73) {
@@ -871,7 +935,7 @@ exit $exitCode
       DERIVED_TREE_STALE = $(if ($StaleToken) { "1" } else { "0" })
     } @{} -Derived
     $output = Complete-Fixture $fixture 29 $Name
-    Wait-Condition { -not (Test-Path -LiteralPath $lock) } "$Name exact-owner release"
+    Wait-LockRelease "$Name exact-owner release"
     $parent = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json -DateKind String
     $result = Get-Content -LiteralPath "$marker.result" -Raw | ConvertFrom-Json
     $observed = @(Get-Content -LiteralPath $events | ConvertFrom-Json)
@@ -976,7 +1040,7 @@ exit $exitCode
     ADMISSION_RELEASE_FILE = $heldRelease
   }
   try {
-    Wait-Condition { Test-Path -LiteralPath $heldMarker } "derived held-slot control owner"
+    Wait-Condition { Test-Path -LiteralPath $heldMarker } "derived held-slot control owner" { Get-ExitedFixtureState $holder }
     $heldRaw = Get-Content -LiteralPath $ownerPath -Raw
     foreach ($shape in $heavyShapes) {
       $marker = Join-Path $derivedDirectory ([guid]::NewGuid().ToString("N") + ".refused")
@@ -989,7 +1053,7 @@ exit $exitCode
   } finally {
     Set-Content -LiteralPath $heldRelease -Value "release"
     Complete-Fixture $holder 0 "derived held-slot control owner" | Out-Null
-    Wait-Condition { -not (Test-Path -LiteralPath $lock) } "derived held-slot control release"
+    Wait-LockRelease "derived held-slot control release"
   }
 
   $candidate = [IO.File]::ReadAllText($preload)
@@ -1012,10 +1076,13 @@ exit $exitCode
     Assert-True ($candidate.Contains($mutant.From)) "$($mutant.Name) source mutation has an anchor"
     $controlFailure = $null
     try { & $mutant.Case | Out-Null } catch { $controlFailure = $_.Exception.Message }
+    # An arm that fails before its own drain must not leave its holder to the next arm.
+    Wait-LockRelease "$($mutant.Name) true-candidate arm owner release"
     try {
       [IO.File]::WriteAllText($preload, $candidate.Replace($mutant.From, $mutant.To))
       $failure = $null
       try { & $mutant.Case | Out-Null } catch { $failure = $_.Exception.Message }
+      Wait-LockRelease "$($mutant.Name) mutant arm owner release"
       if ($controlFailure) {
         $derivedFailures.Add("$($mutant.Name) discrimination incomplete: true candidate failed: $controlFailure")
         Write-Output "FAIL omission-mutant $($mutant.Name) true-candidate=$controlFailure mutant=$failure"
@@ -1100,10 +1167,10 @@ function Test-AdmissionGitIdentity {
     Branch = "codex/lane-a"
     ClaimedHead = $staleHeadClaim
   }
-  Assert-True ($staleHeadPreload.Process.WaitForExit(20000)) 'pinned-H0 probe finishes'
+  Assert-True (Wait-FixtureExit $staleHeadPreload) 'pinned-H0 probe finishes'
   Write-Output "REPRO pinned-H0 ordinary-commit H0=$staleHeadClaim H1=$(Invoke-RepoGit $laneA @('rev-parse', 'HEAD')) gateExit=$($staleHeadPreload.Process.ExitCode) body=$(Test-Path $staleHeadMarker)"
   Complete-Fixture $staleHeadPreload 0 "same-branch commit retains admission" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "advanced-head owner release"
+  Wait-LockRelease "advanced-head owner release"
   Assert-True (Test-Path -LiteralPath $staleHeadMarker) "advanced-head body executes"
   Write-Output "PASS pinned-H0 ordinary-commit H0=$staleHeadClaim H1=$(Invoke-RepoGit $laneA @('rev-parse', 'HEAD')) gateExit=$($staleHeadPreload.Process.ExitCode) body=True ownerReleased=True"
 
@@ -1115,7 +1182,7 @@ function Test-AdmissionGitIdentity {
     ImmutableHead = $detachedPreloadHead
   }
   Complete-Fixture $detachedPreload 0 "detached exact-head direct-command admission" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "detached exact-head owner release"
+  Wait-LockRelease "detached exact-head owner release"
   Assert-True ((Test-Path -LiteralPath $detachedPreloadMarker) -and
     -not (Test-Path -LiteralPath $lock)) "detached exact-head preload runs and releases"
   Invoke-RepoGit $laneA @("checkout", "codex/lane-a") | Out-Null
@@ -1162,8 +1229,7 @@ process.exit(Number(process.env.E2E_EXIT));
       $start.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($start)
-    $fixture = [pscustomobject]@{ Process=$process; Identity=@{pid=$process.Id; processStartUtc=$process.StartTime.ToUniversalTime().ToString('o')} }
-    $startedProcesses.Add($fixture)
+    $fixture = Register-Fixture $process
     Complete-Fixture $fixture $case.exit "e2e gate $($case.name)" | Out-Null
     Assert-True (-not (Test-Path $lock)) 'e2e wrapper releases exact owner'
     Assert-True ((Test-Path $marker) -eq ($case.name -in @('success', 'child-failure'))) 'e2e parameter refusal has no body effects'
@@ -1214,7 +1280,7 @@ fs.writeFileSync(process.env.ADMISSION_MARKER, 'body-ran');
       $snapshot = "$marker.owner.json"
       $probe = Start-NodeFixture $script $arguments $laneA 'lane-a' $marker 0 @{ ADMISSION_OWNER_SNAPSHOT=$snapshot; ADMISSION_OWNER_PATH=$ownerPath } @{ Branch=$case.branch; ClaimedHead=$case.head }
       $output = Complete-Fixture $probe $case.exit "$entry $($case.name)"
-      Wait-Condition { -not (Test-Path -LiteralPath $lock) } "$entry $($case.name) owner absent"
+      Wait-LockRelease "$entry $($case.name) owner absent"
       Assert-True ((Test-Path $marker) -eq ($case.exit -eq 0)) "$entry $($case.name) body boundary"
       if ($case.exit -eq 0 -and $entry -ceq 'preload') {
         $observed = Get-Content $snapshot -Raw | ConvertFrom-Json
@@ -1272,11 +1338,12 @@ try {
   }
   Wait-Condition {
     if ($probeBlocker.Process.HasExited) {
-      throw "probe blocker exited before ownership: exit=$($probeBlocker.Process.ExitCode) stderr=$($probeBlocker.Process.StandardError.ReadToEnd()) stdout=$($probeBlocker.Process.StandardOutput.ReadToEnd())"
+      $blockerOutput = Read-FixtureOutput $probeBlocker
+      throw "probe blocker exited before ownership: exit=$($probeBlocker.Process.ExitCode) stderr=$($blockerOutput.stderr) stdout=$($blockerOutput.stdout)"
     }
     $record = Read-Owner
     $record -and $record.lane -ceq "lane-a" -and $record.state -ceq "attached"
-  } "live different owner for browser probe controls"
+  } "live different owner for browser probe controls" { Get-BodyStartedState $probeBlocker $probeBlockerMarker }
   $probeBlockerOwner = Get-Content -LiteralPath $ownerPath -Raw
   $probeCases = @(
     [pscustomobject]@{
@@ -1310,9 +1377,10 @@ try {
     $caseMarker = Join-Path $root "$caseSlug.marker"
     $caseOutput = Join-Path $root "$caseSlug.output"
     $caseFixture = & $case.Start $caseMarker $caseOutput
-    $completed = $caseFixture.Process.WaitForExit(20000)
-    $caseStderr = $caseFixture.Process.StandardError.ReadToEnd()
-    $caseStdout = $caseFixture.Process.StandardOutput.ReadToEnd()
+    $completed = Wait-FixtureExit $caseFixture
+    $caseStreams = Read-FixtureOutput $caseFixture
+    $caseStderr = $caseStreams.stderr
+    $caseStdout = $caseStreams.stdout
     if (-not $completed -or
         $caseFixture.Process.ExitCode -ne 73 -or
         $caseStderr -notmatch "command body was not executed" -or
@@ -1326,7 +1394,7 @@ try {
   Assert-True ((Get-Content -LiteralPath $ownerPath -Raw) -ceq $probeBlockerOwner) "probe contenders leave the live different owner byte-exact"
   Set-Content -LiteralPath $probeBlockerRelease -Value "release"
   Complete-Fixture $probeBlocker 0 "browser probe control blocker" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "browser probe control blocker release"
+  Wait-LockRelease "browser probe control blocker release"
   Assert-True ($probeFailures.Count -eq 0) "all browser probe forms parent-fail before body:`n$($probeFailures -join "`n")"
 
   # Reversing the launch order gives the probe the same exclusive owner:
@@ -1346,10 +1414,11 @@ try {
         $record.state -ceq "attached" -and
         (Test-Path -LiteralPath $reverseProbeMarker) -and
         (Test-Path -LiteralPath $reverseProbeOutput)
-    } "browser probe owner and inert body"
+    } "browser probe owner and inert body" { Get-BodyStartedState $reverseProbe $reverseProbeMarker }
   } catch {
     $reverseState = if ($reverseProbe.Process.HasExited) {
-      "exited=$($reverseProbe.Process.ExitCode) stderr=$($reverseProbe.Process.StandardError.ReadToEnd()) stdout=$($reverseProbe.Process.StandardOutput.ReadToEnd())"
+      $reverseOutput = Read-FixtureOutput $reverseProbe
+      "exited=$($reverseProbe.Process.ExitCode) stderr=$($reverseOutput.stderr) stdout=$($reverseOutput.stdout)"
     } else {
       "live owner=$((Read-Owner | ConvertTo-Json -Compress)) marker=$(Test-Path -LiteralPath $reverseProbeMarker) output=$(Test-Path -LiteralPath $reverseProbeOutput)"
     }
@@ -1363,7 +1432,7 @@ try {
     -not (Test-Path -LiteralPath $reverseGateMarker)) "reverse-order repository gate parent-fails behind probe"
   Set-Content -LiteralPath $reverseProbeRelease -Value "release"
   Complete-Fixture $reverseProbe 0 "browser probe reverse-order owner" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "browser probe reverse-order owner release"
+  Wait-LockRelease "browser probe reverse-order owner release"
   Assert-True ((Test-Path -LiteralPath $reverseProbeMarker) -and
     (Test-Path -LiteralPath $reverseProbeOutput) -and
     -not (Test-Path -LiteralPath $reverseGateMarker)) "reverse launch order admits exactly one command body"
@@ -1758,10 +1827,10 @@ for (const [name, before, after, expectedFailure] of [
         $record.identityMode -ceq "branch" -and
         $record.branch -ceq "codex/lane-a" -and
         $record.head -ceq (Invoke-RepoGit $laneA @("rev-parse", "HEAD")).ToLowerInvariant()
-    } "schema-v4 Git-bound gate owner"
+    } "schema-v4 Git-bound gate owner" { Get-BodyStartedState $gateOwner $gateMarker }
   } catch {
     if ($gateOwner.Process.HasExited) {
-      $gateOwnerError = $gateOwner.Process.StandardError.ReadToEnd()
+      $gateOwnerError = (Read-FixtureOutput $gateOwner).stderr
       throw "schema-v4 gate fixture exited $($gateOwner.Process.ExitCode) before ownership: $gateOwnerError"
     }
     throw
@@ -1772,7 +1841,7 @@ for (const [name, before, after, expectedFailure] of [
     $loserOutput.stderr -match "command body was not executed") "loser returns bounded exact owner identity"
   Set-Content -LiteralPath $gateRelease -Value "release"
   Complete-Fixture $gateOwner 0 "repository gate owner" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "repository gate owner release"
+  Wait-LockRelease "repository gate owner release"
   Assert-True ((Test-Path -LiteralPath $gateMarker) -and -not (Test-Path -LiteralPath $playwrightMarker)) "exactly one concurrent command body executes"
 
   # Exact inter-attempt lock-gap race: lane A releases attempt one; lane B
@@ -1780,20 +1849,20 @@ for (const [name, before, after, expectedFailure] of [
   $attemptOneMarker = Join-Path $root "attempt-one.marker"
   $attemptOne = Start-NodeFixture $pnpmScript @("run", "verify:static") $laneA "lane-a" $attemptOneMarker 100
   Complete-Fixture $attemptOne 0 "first lane-a attempt" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "inter-attempt lock gap"
+  Wait-LockRelease "inter-attempt lock gap"
   $reviewMarker = Join-Path $root "review-playwright.marker"
   $reviewRelease = Join-Path $root "review.release"
   $review = Start-NodeFixture $playwrightScript @("test") $laneB "lane-b" $reviewMarker 0 @{
     ADMISSION_RELEASE_FILE = $reviewRelease
   }
-  Wait-Condition { (Test-Path -LiteralPath $reviewMarker) -and (Read-Owner).lane -ceq "lane-b" } "review Playwright admission inside the gap"
+  Wait-Condition { (Test-Path -LiteralPath $reviewMarker) -and (Read-Owner).lane -ceq "lane-b" } "review Playwright admission inside the gap" { Get-BodyStartedState $review $reviewMarker }
   $attemptTwoMarker = Join-Path $root "attempt-two.marker"
   $attemptTwo = Start-NodeFixture $pnpmScript @("run", "verify:static") $laneA "lane-a" $attemptTwoMarker
   $attemptTwoOutput = Complete-Fixture $attemptTwo 73 "second lane-a attempt"
   Assert-True ($attemptTwoOutput.stderr -match "lane=lane-b branch=codex/lane-b pid=\d+") "inter-attempt loser names the review owner"
   Set-Content -LiteralPath $reviewRelease -Value "release"
   Complete-Fixture $review 0 "review Playwright owner" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "review owner release"
+  Wait-LockRelease "review owner release"
   Assert-True ((Test-Path -LiteralPath $attemptOneMarker) -and
     (Test-Path -LiteralPath $reviewMarker) -and
     -not (Test-Path -LiteralPath $attemptTwoMarker)) "inter-attempt race never overlaps heavy bodies"
@@ -1805,7 +1874,7 @@ for (const [name, before, after, expectedFailure] of [
   $vitestOwner = Start-NodeFixture $vitestScript @("run", "--config", "vitest.config.ts") $laneA "lane-a" $vitestOwnerMarker 0 @{
     ADMISSION_RELEASE_FILE = $vitestRelease
   }
-  Wait-Condition { $record = Read-Owner; $record -and $record.gate -ceq "vitest-full" } "full Vitest owner"
+  Wait-Condition { $record = Read-Owner; $record -and $record.gate -ceq "vitest-full" } "full Vitest owner" { Get-BodyStartedState $vitestOwner $vitestOwnerMarker }
   $nestedMarker = Join-Path $root "nested-pnpm.marker"
   $nested = Start-NodeFixture $outerScript @() $laneB "lane-b" $nestedMarker 0 @{
     NESTED_PNPM = $pnpmScript
@@ -1828,7 +1897,7 @@ for (const [name, before, after, expectedFailure] of [
     -not (Test-Path -LiteralPath $alternateMarker)) "native pnpm binary that ignores NODE_OPTIONS still cannot start a heavy lifecycle body"
   Set-Content -LiteralPath $vitestRelease -Value "release"
   Complete-Fixture $vitestOwner 0 "full Vitest owner" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "Vitest owner release"
+  Wait-LockRelease "Vitest owner release"
 
   # Forced admission-holder death cannot steal the lock while the guarded
   # direct-binary process remains alive; exact stale recovery follows its exit.
@@ -1837,8 +1906,8 @@ for (const [name, before, after, expectedFailure] of [
   $forcedOwner = Start-NodeFixture $playwrightScript @("test") $laneA "lane-a" $forcedMarker 0 @{
     ADMISSION_RELEASE_FILE = $forcedRelease
   }
-  Wait-Condition { $record = Read-Owner; $record -and $record.schemaVersion -eq 5 -and $record.state -ceq "attached" } "attached holder owner"
-  Wait-Condition { Test-Path -LiteralPath $forcedMarker -PathType Leaf } "guarded body start before forced holder death"
+  Wait-Condition { $record = Read-Owner; $record -and $record.schemaVersion -eq 5 -and $record.state -ceq "attached" } "attached holder owner" { Get-BodyStartedState $forcedOwner $forcedMarker }
+  Wait-Condition { Test-Path -LiteralPath $forcedMarker -PathType Leaf } "guarded body start before forced holder death" { Get-ExitedFixtureState $forcedOwner }
   $forcedRecord = Read-Owner
   $holderIdentity = [pscustomobject]@{ pid = $forcedRecord.pid; processStartUtc = $forcedRecord.processStartUtc }
   Stop-ExactProcess $holderIdentity
@@ -1853,7 +1922,7 @@ for (const [name, before, after, expectedFailure] of [
   $recoveryMarker = Join-Path $root "forced-recovery.marker"
   $recovery = Start-NodeFixture $pnpmScript @("run", "build") $laneB "lane-b" $recoveryMarker
   Complete-Fixture $recovery 0 "exact schema-v4 stale recovery" | Out-Null
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "schema-v4 recovery release"
+  Wait-LockRelease "schema-v4 recovery release"
   Assert-True (Test-Path -LiteralPath $recoveryMarker) "schema-v4 stale owner recovers only after guarded death"
 
   # A detached live descendant remains protected after its direct heavy parent
@@ -1868,7 +1937,9 @@ for (const [name, before, after, expectedFailure] of [
     DESCENDANT_RELEASE_FILE = $descendantRelease
   }
   Complete-Fixture $descendantOwner 0 "heavy parent with detached descendant" | Out-Null
-  Wait-Condition { (Test-Path -LiteralPath $descendantIdentityPath) -and (Test-Path -LiteralPath $lock) } "live detached descendant lock preservation"
+  Wait-Condition { (Test-Path -LiteralPath $descendantIdentityPath) -and (Test-Path -LiteralPath $lock) } "live detached descendant lock preservation" {
+    if ($descendantOwner.Process.HasExited) { "the heavy parent exited with identity=$(Test-Path -LiteralPath $descendantIdentityPath) lock=$(Test-Path -LiteralPath $lock)" }
+  }
   $descendantPid = [int](Get-Content -LiteralPath $descendantIdentityPath -Raw)
   Assert-True (@(Get-Process -Id $descendantPid -ErrorAction SilentlyContinue).Count -eq 1) "detached descendant is live after parent exit"
   $descendantLoserMarker = Join-Path $root "descendant-loser.marker"
@@ -1876,7 +1947,7 @@ for (const [name, before, after, expectedFailure] of [
   Complete-Fixture $descendantLoser 73 "contender behind live detached descendant" | Out-Null
   Assert-True (-not (Test-Path -LiteralPath $descendantLoserMarker)) "live descendant prevents contender body"
   Set-Content -LiteralPath $descendantRelease -Value "release"
-  Wait-Condition { -not (Test-Path -LiteralPath $lock) } "descendant drain and holder release"
+  Wait-LockRelease "descendant drain and holder release"
 
   Write-Output "PASS heavy lane admission classifier and inert discriminators"
   if ($derivedFailure) { throw $derivedFailure }
@@ -1912,12 +1983,24 @@ for (const [name, before, after, expectedFailure] of [
   }
   if (Test-Path -LiteralPath $root) {
     Assert-DisposableRoot
-    Wait-Condition {
-      @(
+    # Each remaining process of this temp root is its own producer: the wait
+    # ends when a census finds none, after each exact identity has exited. A
+    # process that cannot be waited by identity is polled at the old cadence.
+    do {
+      $remaining = @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
           Where-Object { [string]$_.CommandLine -like "*$root*" }
-      ).Count -eq 0
-    } "all exact temp-root admission holders to exit" 400
+      )
+      foreach ($remainingProcess in $remaining) {
+        try {
+          $live = Get-Process -Id ([int]$remainingProcess.ProcessId) -ErrorAction Stop
+          if ([Math]::Abs(($live.StartTime - $remainingProcess.CreationDate).Ticks) -lt 10) { $live.WaitForExit() }
+        } catch {
+          # An exited or reused PID is not a producer of this temp root.
+        }
+      }
+      if ($remaining.Count -gt 0) { Start-Sleep -Milliseconds 25 }
+    } while ($remaining.Count -gt 0)
     $admissionTempRoots = @(
       Get-ChildItem -LiteralPath $privateTemp -Directory -Filter "chase-sets-heavy-admission-*" -ErrorAction SilentlyContinue
     )
