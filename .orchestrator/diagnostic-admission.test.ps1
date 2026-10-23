@@ -47,10 +47,12 @@ try {
   $scriptRelative='.orchestrator/artifacts/diagnostic-success.mjs'; $scriptPath=Join-Path $worktree ($scriptRelative -replace '/','\')
   Set-Content -LiteralPath $scriptPath -Value @'
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 const childEnv = { ...process.env };
+const sync = spawnSync(process.execPath, ['-e', 'process.stdout.write(process.env.NODE_OPTIONS)'], { windowsHide: true, env: childEnv, encoding: 'utf8' });
+if (sync.error || sync.status !== 0 || sync.stdout !== process.env.NODE_OPTIONS) throw new Error('sync child did not inherit the checked preload');
 const children = [1, 2].map(() => spawn(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true, env: childEnv }));
-await Promise.all(children.map((child) => new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); })));
+await Promise.all(children.map((child) => new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`async child exit=${code}`))); })));
 fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'ran-after-child');
 fs.writeFileSync(new URL('./diagnostic-success.result.json', import.meta.url), 'result-written-during-run');
 process.exitCode = 7;
