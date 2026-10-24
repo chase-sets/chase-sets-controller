@@ -2,6 +2,10 @@ param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
+. (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+function Assert-True([bool]$Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
 $dispatchParts = @('all') + @((Get-DispatchLanePartMap).Keys)
 Assert-SuiteSelection $Part $dispatchParts $PSBoundParameters @('ValidatorOnly','FleetPreClosureOnly','NativeBranchOnly','OrdinaryOnly','ProductCensusOnly','CapacityOnly','RoutingIssueOnly','VerificationPolicyOnly','GuardRevision','PolicyMutant')
 $runPart = { param([string]$Name) -not $Part -or $Part -ceq 'all' -or $Part -ceq $Name }
@@ -520,12 +524,9 @@ function Invoke-AdmissionContractControls {
   $candidateSource = [IO.File]::ReadAllText($launcher)
   $controllerRoot = Split-Path -Parent $PSScriptRoot
   $baseHead = "20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5"
-  $baseObject = "$baseHead`:.orchestrator/dispatch-lane.ps1"
-  $baseLines = @(& $realGit -C $controllerRoot show $baseObject 2>&1)
-  if ($LASTEXITCODE -ne 0) {
-    throw "unable to materialize exact base launcher $baseObject"
-  }
-  $baseSource = ($baseLines -join "`n") + "`n"
+  $baseFixtureRoot = Join-Path $testRoot 'historical-admission-base'
+  [void](New-HistoricalDispatchFixture $baseHead $baseFixtureRoot)
+  $baseSource = [IO.File]::ReadAllText((Join-Path $baseFixtureRoot '.orchestrator/dispatch-lane.ps1'))
   $cleanCall = 'Assert-DispatchAdmissionClean $worktreeResolved # ADMISSION_GUARD_CLEANLINESS'
   $occupancyCall = 'Assert-DispatchAdmissionExclusiveBranchAttachment $admissionIdentityBefore # ADMISSION_GUARD_EXCLUSIVE_BRANCH'
   Assert-True ([regex]::Matches($candidateSource, [regex]::Escape($cleanCall)).Count -eq 1) "cleanliness mutant removes exactly one load-bearing call"
@@ -1499,7 +1500,7 @@ Start-Sleep -Seconds 16
   Assert-True (Test-Path -LiteralPath $claudeHelpFixtureReadme) 'hosted Claude help fixture provenance exists'
   $claudeHelpFixtureBytes = [IO.File]::ReadAllBytes($claudeHelpFixture)
   $claudeHelpFixtureHash = ([Security.Cryptography.SHA256]::Create().ComputeHash($claudeHelpFixtureBytes) | ForEach-Object ToString x2) -join ''
-  Assert-True ($claudeHelpFixtureHash -ceq '6a68777b1133bc483e126238b9f15f50e23c903de3455ecae67c09eea01cd3c3') 'hosted Claude help fixture bytes are pinned'
+  Assert-True ($claudeHelpFixtureHash -ceq '6a68777b1133bc483e126238b9f15f50e23c903deb3455ecae67c09eea01cd3c') 'hosted Claude help fixture bytes are pinned'
   Assert-True (([Text.Encoding]::UTF8.GetString($claudeHelpFixtureBytes)) -match '(?m)^--disallowedTools$') 'hosted Claude help fixture covers the configured option'
   Write-Output "PASS hosted Claude help fixture $claudeHelpFixtureHash"
   $sonnetPlanning = & $launcher -Harness claude -Model claude-sonnet-5-5 -Effort medium -Placement override-Todd `
