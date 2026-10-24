@@ -501,7 +501,7 @@ exit $LASTEXITCODE
     $expected=@($shape.unmerged|ForEach-Object { ($_ -split ' ',3)[2] })
     if((@($stages|ForEach-Object{($_-split' ',3)[2]})-join"`n")-cne($expected-join"`n")){throw '7963 original native stage-shape mismatch'}
     foreach($stage in $stages){$mode,$oid,$tail=$stage -split ' ',3;$number,$path=$tail.Split("`t",2);$blob=FixtureGit $repo @('cat-file','blob',$oid);$prefix=switch($number){'1'{'synthetic ancestor'};'2'{'synthetic landed'};'3'{'synthetic feature'}};if(-not$blob.StartsWith("$prefix $path")){throw '7963 native stage contents mismatch'}}
-    foreach($change in $shape.changes){$kind,$path=$change.Split("`t",2);if($kind-cne'U'){if(-not(FixtureGit $repo @('show','--',":$path")).StartsWith("synthetic feature $path")){throw '7963 staged nonconflict body mismatch'}}}
+    foreach($change in $shape.changes){$kind,$path=$change.Split("`t",2);if($kind-cne'U'){if(-not(FixtureGit $repo @('show',":$path",'--')).StartsWith("synthetic feature $path")){throw '7963 staged nonconflict body mismatch'}}}
     if($CopiedHelper){
       # Deliberately untrusted input, hashed from the actual copied-helper run.
       # No transcript command or native result is rewritten to claim execution.
