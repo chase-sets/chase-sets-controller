@@ -30,10 +30,36 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc96a')][string]$Name,[string]$Destination) {
+  $fixtureRoot=Join-Path $PSScriptRoot "fixtures/historical-$Name"
+  $readme=Join-Path $fixtureRoot 'README.md'
+  if(-not(Test-Path -LiteralPath $readme -PathType Leaf)){throw "HISTORICAL_FIXTURE: missing README for $Name"}
+  $entries=@(Get-Content -LiteralPath $readme | ForEach-Object {
+    if($_ -match '^\- (?<path>\.orchestrator/[^|]+?)\s*\| blob `(?<blob>[0-9a-f]{40})`$'){
+      [pscustomobject]@{path=$Matches.path.Trim();blob=$Matches.blob}
+    }
+  })
+  if(-not$entries.Count){throw "HISTORICAL_FIXTURE: empty read set for $Name"}
+  $actualFiles=@(Get-ChildItem -LiteralPath $fixtureRoot -File -Recurse | ForEach-Object {[IO.Path]::GetRelativePath($fixtureRoot,$_.FullName).Replace('\','/')} | Where-Object {$_ -cne 'README.md' -and $_ -cne '.gitattributes'})
+  if((@($actualFiles|Sort-Object)-join ',') -cne (@($entries.path|Sort-Object)-join ',')){throw "HISTORICAL_FIXTURE: read set changed for $Name"}
+  [IO.Directory]::CreateDirectory($Destination)|Out-Null
+  foreach($entry in $entries){
+    $source=Join-Path $fixtureRoot $entry.path
+    $actual=((& git.exe hash-object -- $source) -join '').Trim()
+    if($LASTEXITCODE-ne0-or$actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
+    $target=Join-Path $Destination $entry.path
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $target))|Out-Null
+    Copy-Item -LiteralPath $source -Destination $target -Force
+  }
+  return (Join-Path $Destination '.orchestrator')
+}
+
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier) {
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a','dispatch-incident-b')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
+  if ($Part -ceq 'dispatch-incident-a') { $Incident = '7906' }
+  if ($Part -ceq 'dispatch-incident-b') { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'); . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-7963-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
@@ -42,10 +68,7 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   # Candidate admission must reject that selector; never relax production
   # validation just to construct a historical stopped-attempt fixture.
   $historicalRoot = Join-Path $root 'pre-migration'
-  $historicalZip = Join-Path $root 'pre-migration.zip'
-  & git -C (Split-Path -Parent $PSScriptRoot) archive --format=zip "--output=$historicalZip" b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780 .orchestrator
-  if ($LASTEXITCODE -ne 0) { throw '7963 historical launcher archive failed' }
-  Expand-Archive -LiteralPath $historicalZip -DestinationPath $historicalRoot; [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
@@ -663,9 +686,8 @@ exit $LASTEXITCODE
       $targetState=ScopeState $target; $siblingState=ScopeState $f.repo
       $targetBefore = FixtureGit $target @('status','--porcelain=v1','--untracked-files=normal')
       Proof ($targetBefore -ceq '' -and (Get-Content (Join-Path $f.repo '.git/rebase-merge/head-name')) -ceq "refs/heads/$($f.branch)" -and (FixtureGit $f.repo @('rev-parse',"refs/heads/$($f.branch)")) -cne $f.original) '8023 real native different head-name with moved original ref and clean ordinary target'
-      $archive = Join-Path $f.case 'old8023.zip'; $old = Join-Path $f.case 'old8023'
-      [void](FixtureGit (Split-Path -Parent $PSScriptRoot) @('archive','--format=zip','-o',$archive,'f67fc96aa2b12050408b97dbe023fe6de586ca74','.orchestrator'))
-      [IO.Compression.ZipFile]::ExtractToDirectory($archive,$old)
+      $old = Join-Path $f.case 'old8023'
+      [void](New-HistoricalDispatchFixture 'f67fc96a' $old)
       $body = Join-Path $f.case 'ordinary-body.ps1'
       [IO.File]::WriteAllText($body,@'
 param([string]$Config)
@@ -758,7 +780,9 @@ exit 0
       $finished=$true
       return
     }
-    $incidents = if($Carrier-ceq'dispatch'){@('7906','7927')}else{@('7927')}
+    $incidents = if($Carrier-ceq'dispatch') {
+      if($Incident){ @($Incident) } else { @('7906','7927') }
+    } else { @('7927') }
     foreach($incident in $incidents){
       $f=Fixture $incident -SecondStop:($Carrier-ceq'retained') -CurrentRequest:($Carrier-ceq'rebase')
       if($Carrier-ceq'rebase'){
@@ -766,10 +790,7 @@ exit 0
       }
       Write-Output "PROOF 7963 $Carrier shape=$incident actual native stage bodies and every staged nonconflict body verified root=$($f.case)"
       if($Carrier-ceq'dispatch'){
-        $baseline=Join-Path $f.case 'baseline';[IO.Directory]::CreateDirectory($baseline)|Out-Null
-        # Extract with .NET rather than whichever tar is first on PATH: GNU tar reads a Windows drive prefix as a remote host.
-        $archive=Join-Path $f.case 'baseline.zip';[void](FixtureGit (Split-Path -Parent $PSScriptRoot) @('archive','--format=zip','-o',$archive,'0b6e67e87d82d340c496f05a54bff149bda39d4d','.orchestrator'))
-        [IO.Compression.ZipFile]::ExtractToDirectory($archive,$baseline)
+        $baseline=Join-Path $f.case 'baseline';[void](New-HistoricalDispatchFixture '0b6e67e8' $baseline)
         if(-not(Test-Path -LiteralPath (Join-Path $baseline '.orchestrator/dispatch-lane.ps1') -PathType Leaf)){throw '7963 immutable baseline extraction failed'}
         $candidate=$f.cfg.dispatch;$input=$f.cfg.resumePath;$f.cfg.dispatch=Join-Path $baseline '.orchestrator/dispatch-lane.ps1';$f.cfg.resumePath=''
         Refusal $f "$incident immutable baseline refuses" 'detached worktrees'
@@ -1037,9 +1058,9 @@ exit 0
 # MEASURED_LOAD ends the test process with exit 75 and one standalone
 # MEASURED_LOAD line (holder identity and elapsed time), never PASS or FAIL.
 # Every other failure propagates unchanged (exit 1).
-function Invoke-7963ResumeCarriers([string[]]$Carriers) {
+function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='') {
   foreach ($carrier in $Carriers) {
-    try { Test-7963ResumeCarrier $carrier }
+    try { Test-7963ResumeCarrier $carrier -Incident $Incident }
     catch {
       if ($_.Exception.Message -clike 'MEASURED_LOAD *') { Write-Output $_.Exception.Message; exit 75 }
       throw
@@ -2335,23 +2356,7 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
     $output=@(& git.exe --no-optional-locks -C $copy @arguments 2>&1)
     if($LASTEXITCODE-ne0){throw "8102 copy Git failed: $($arguments -join ' ') $($output -join "`n")"}
   }
-  # Copied-runtime tests have synthetic Git history. Resolve the immutable
-  # pre-migration fixture through the caller's read-only alternates instead of
-  # asking the dev clone's upload side to advertise a private object.
-  $privateObjectDirectories=@()
-  if(-not [string]::IsNullOrWhiteSpace($env:GIT_ALTERNATE_OBJECT_DIRECTORIES)){
-    $privateObjectDirectories=@($env:GIT_ALTERNATE_OBJECT_DIRECTORIES -split [regex]::Escape([IO.Path]::PathSeparator) | ForEach-Object {$_.Trim().Trim('"')} | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
-    if($privateObjectDirectories.Count){
-      $alternates=Join-Path $copy '.git/objects/info/alternates'
-      [IO.Directory]::CreateDirectory((Split-Path -Parent $alternates))|Out-Null
-      [IO.File]::WriteAllText($alternates,(($privateObjectDirectories -join "`n")+"`n"),[Text.UTF8Encoding]::new($false))
-    }
-  }
-  $historical='b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780'
-  $historicalType=@(& git.exe -C $copy cat-file -t "${historical}^{commit}" 2>&1)
-  if($LASTEXITCODE-ne0-or(($historicalType-join '').Trim()-cne'commit')){throw "8102 historical fixture unavailable through GIT_ALTERNATE_OBJECT_DIRECTORIES"}
-  $output=@(& git.exe -C $copy update-ref refs/heads/synthetic/8102-historical $historical 2>&1)
-  if($LASTEXITCODE-ne0){throw "8102 historical fixture ref update failed: $($output -join ' ')"}
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $copy 'historical-b3b4ac2'))
   return [pscustomobject]@{label=$Label;container=$container;root=$copy;runtime=(Join-Path $copy '.orchestrator');applied=$applied}
 }
 # Runs one carrier from a copy in its own pwsh process, bounded, and returns the

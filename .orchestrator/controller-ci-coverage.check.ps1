@@ -68,13 +68,38 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     }
   }
   Assert-Ci ($seen.Count-eq$pins.Count) 'missing conservation source'
-  $expectedMappings=@('test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq5-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq6-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
 Assert-Conservation $manifest
 function Refuses-Coverage([scriptblock]$Body){$refused=$false;try{&$Body}catch{$refused=$true};Assert-Ci $refused 'coverage bypass survived'}
+
+function Get-DispatchCoverageKeys([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch-lane source parse failed'
+  $keys=[Collections.Generic.List[string]]::new()
+  foreach($fn in @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]},$true))){$keys.Add("function:$($fn.Name)")}
+  foreach($call in @($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))){
+    $name=$call.GetCommandName()
+    if($name -and ($name -match '^(Test|Invoke|Assert)-' -or $name -ceq 'Start-Process')){$keys.Add("call:$name")}
+  }
+  return @($keys)
+}
+$dispatchPath=Join-Path $PSScriptRoot 'dispatch-lane.test.ps1'
+$dispatchSource=[IO.File]::ReadAllText($dispatchPath).Replace("`r`n","`n")
+$dispatchExpected=@((Get-DispatchLanePartMap).Keys)
+$dispatchItem=$manifest.items|Where-Object identity -eq 'test:dispatch-lane.test.ps1'
+Assert-Ci ($null -ne $dispatchItem) 'dispatch-lane split mapping missing'
+Assert-Ci ((@($dispatchItem.parts.name|Sort-Object)-join ',') -ceq (@($dispatchExpected|Sort-Object)-join ',')) 'dispatch-lane part census changed'
+$dispatchBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-lane.test.ps1"))).Replace("`r`n","`n")
+$baselineKeys=Get-DispatchCoverageKeys $dispatchBaseline
+$candidateKeys=Get-DispatchCoverageKeys $dispatchSource
+foreach($key in $baselineKeys){Assert-Ci ($candidateKeys -contains $key) "dispatch-lane baseline proof key lost: $key"}
+Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name|Where-Object{$_ -ne 'dispatch-incident-a'}|Sort-Object)-join ',') -ceq (@($dispatchExpected|Sort-Object)-join ',')) 'dispatch part dropped' }
+Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-a')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'

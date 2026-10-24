@@ -21,6 +21,16 @@ function Get-HeavySuitePartSelector([string]$Part,$BoundParameters) {
   if($Part){return $map[$Part]}
 }
 
+function Get-DispatchLanePartMap {
+  [ordered]@{
+    refusal = 'refusal'
+    'dispatch-incident-a' = 'dispatch-incident-a'
+    'dispatch-incident-b' = 'dispatch-incident-b'
+    'dispatch-guard' = 'dispatch-guard'
+    'native-branch' = 'native-branch'
+  }
+}
+
 function Get-SuiteRoutingNames([string]$Source) {
   $tokens=$null; $errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
@@ -53,6 +63,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   $source=[IO.File]::ReadAllText($Path)
   if((Split-Path -Leaf $Path)-ceq'dispatch-routing-data.test.ps1'){return Get-SuiteRoutingParts $source}
   if((Split-Path -Leaf $Path)-ceq'invoke-heavy-verifier.test.ps1'){return @((Get-HeavySuitePartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
   if($errors.Count){throw 'SUITE_PART: source parse failed'}

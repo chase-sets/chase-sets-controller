@@ -1,6 +1,10 @@
-param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$OrdinaryOnly,[switch]$ProductCensusOnly,[switch]$CapacityOnly,[switch]$RoutingIssueOnly,[switch]$VerificationPolicyOnly,[string]$GuardRevision='',[ValidateSet('','universal-preamble','local-product-gate')][string]$PolicyMutant='')
+param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$OrdinaryOnly,[switch]$ProductCensusOnly,[switch]$CapacityOnly,[switch]$RoutingIssueOnly,[switch]$VerificationPolicyOnly,[string]$GuardRevision='',[ValidateSet('','universal-preamble','local-product-gate')][string]$PolicyMutant='', [string]$Part='')
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+$dispatchParts = @('all') + @((Get-DispatchLanePartMap).Keys)
+Assert-SuiteSelection $Part $dispatchParts $PSBoundParameters @('ValidatorOnly','FleetPreClosureOnly','NativeBranchOnly','OrdinaryOnly','ProductCensusOnly','CapacityOnly','RoutingIssueOnly','VerificationPolicyOnly','GuardRevision','PolicyMutant')
+$runPart = { param([string]$Name) -not $Part -or $Part -ceq 'all' -or $Part -ceq $Name }
 if ($VerificationPolicyOnly) {
   $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/dispatch-lane.ps1") -join "`n") } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-lane.ps1')) }
   if($PolicyMutant -eq 'universal-preamble'){$source=$source.Replace("if (`$Role -cne 'implementation' -or `$RoutingRow -eq 13)",'if ($false)')}
@@ -108,6 +112,8 @@ if ($OrdinaryOnly) {
   return
 }
 
+$runLauncher = & $runPart 'refusal'
+if ($runLauncher) {
 $launcher = Join-Path $PSScriptRoot "dispatch-lane.ps1"
 $ownershipHelper = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
 $claudeAuditHelper = Join-Path $PSScriptRoot "dispatch-claude-stream-audit.ps1"
@@ -1487,6 +1493,15 @@ Start-Sleep -Seconds 16
   ) "Claude launch arguments exactly deny only the supported session-scoped orchestration tools"
   Assert-True ($claude.stdin -eq $prompt) "claude prompt arrives via stdin, never argument quoting"
   Assert-True ($claude.laneRole -ceq 'review') 'Sonnet Row 0 retains the existing review envelope, not implementation routing'
+  $claudeHelpFixture = Join-Path $PSScriptRoot 'fixtures/claude-help/help.txt'
+  $claudeHelpFixtureReadme = Join-Path $PSScriptRoot 'fixtures/claude-help/README.md'
+  Assert-True (Test-Path -LiteralPath $claudeHelpFixture) 'hosted Claude help fixture exists'
+  Assert-True (Test-Path -LiteralPath $claudeHelpFixtureReadme) 'hosted Claude help fixture provenance exists'
+  $claudeHelpFixtureBytes = [IO.File]::ReadAllBytes($claudeHelpFixture)
+  $claudeHelpFixtureHash = ([Security.Cryptography.SHA256]::Create().ComputeHash($claudeHelpFixtureBytes) | ForEach-Object ToString x2) -join ''
+  Assert-True ($claudeHelpFixtureHash -ceq '6a68777b1133bc483e126238b9f15f50e23c903de3455ecae67c09eea01cd3c3') 'hosted Claude help fixture bytes are pinned'
+  Assert-True (([Text.Encoding]::UTF8.GetString($claudeHelpFixtureBytes)) -match '(?m)^--disallowedTools$') 'hosted Claude help fixture covers the configured option'
+  Write-Output "PASS hosted Claude help fixture $claudeHelpFixtureHash"
   $sonnetPlanning = & $launcher -Harness claude -Model claude-sonnet-5-5 -Effort medium -Placement override-Todd `
     -LaneRole planning -PromptFile $prompt -Worktree $worktree -Label "test-sonnet-planning-$([guid]::NewGuid())" `
     -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
@@ -1497,27 +1512,6 @@ Start-Sleep -Seconds 16
         -LaneRole review -Row $reviewRow -PromptFile $prompt -Worktree $worktree -Label synthetic-sonnet-review `
         -DryRun -ExecutablePath $fakeExe
     } 'not an admitted' 'Row 0 compatibility must not admit Sonnet as a row-11/12 reviewer'
-  }
-
-  # Parse the exact configured arguments through the installed CLI with --help.
-  # --help is bounded and exits before session creation, authentication, or a
-  # model request; the IDs themselves are the built-ins reported by CLI init.
-  $installedClaude = Get-Command claude -CommandType Application -ErrorAction Stop |
-    Select-Object -First 1
-  $claudeHelpOutput = Join-Path $testRoot "claude-argument-fixture.out"
-  $claudeHelpError = Join-Path $testRoot "claude-argument-fixture.err"
-  $claudeHelpProcess = $null
-  try {
-    $claudeHelpProcess = Start-Process -FilePath $installedClaude.Source `
-      -ArgumentList @($expectedClaudeArguments + "--help") -WindowStyle Hidden -PassThru `
-      -RedirectStandardOutput $claudeHelpOutput -RedirectStandardError $claudeHelpError
-    $claudeHelpProcess.WaitForExit()
-    $claudeHelpExited = $claudeHelpProcess.HasExited
-    Assert-True ($claudeHelpExited) "installed Claude argument fixture exits without launching a model"
-    Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"
-    Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"
-  } finally {
-    if ($claudeHelpProcess) { $claudeHelpProcess.Dispose() }
   }
 
   # --- Claude stream-json task-state audit and exact injected preamble ---------
@@ -2081,6 +2075,7 @@ exit $LASTEXITCODE
   }
   Remove-Item -LiteralPath $testRootResolved -Recurse -Force -ErrorAction SilentlyContinue
 }
+}
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 
@@ -2390,14 +2385,17 @@ function Test-TreeDeathOmissionStillRefuses {
   } finally { Stop-8103IdleChild $child; Import-Module $psm -Force -DisableNameChecking; if(Test-Path -LiteralPath $mutantDir){Remove-Item -LiteralPath $mutantDir -Recurse -Force -ErrorAction SilentlyContinue} }
 }
 
-Test-ReusedPidRootIsDeadByIdentity
-Test-TreeDeathOmissionStillRefuses
-
-Test-8076MeasuredReuseIsLauncherOnly
-Test-ArmAfterOmissionSurvivesPreArmDelay
-Test-TimedFixtureUnderFleetLoadMeasuresLoad
-Test-RegressionUnderLoadIsNotMasked
-Invoke-7963ResumeCarriers @('native-branch')
+if (& $runPart 'dispatch-guard') {
+  Test-ReusedPidRootIsDeadByIdentity
+  Test-TreeDeathOmissionStillRefuses
+  Test-8076MeasuredReuseIsLauncherOnly
+  Test-ArmAfterOmissionSurvivesPreArmDelay
+  Test-TimedFixtureUnderFleetLoadMeasuresLoad
+  Test-RegressionUnderLoadIsNotMasked
+}
+if (& $runPart 'dispatch-incident-a') { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a' }
+if (& $runPart 'dispatch-incident-b') { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b' }
+if (& $runPart 'native-branch') { Invoke-7963ResumeCarriers @('native-branch') }
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

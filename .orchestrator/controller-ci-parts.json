@@ -1,6 +1,20 @@
 {
   "items": [
     {
+      "identity": "test:dispatch-lane.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "refusal", "weight": 1 },
+        { "name": "dispatch-incident-a", "weight": 1 },
+        { "name": "dispatch-incident-b", "weight": 1 },
+        { "name": "dispatch-guard", "weight": 1 },
+        { "name": "native-branch", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["refusal", "dispatch-incident-a", "dispatch-incident-b", "dispatch-guard", "native-branch"]
+      }
+    },
+    {
       "identity": "test:cleanup-orphan-worktree-dirs.test.ps1",
       "selector": "-Part",
       "parts": [
