@@ -88,6 +88,19 @@ function Get-DispatchCoverageKeys([string]$Source) {
   }
   return @($keys)
 }
+function Get-DispatchCaseOwners([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch-lane case ownership source parse failed'
+  $owners=[Collections.Generic.List[object]]::new()
+  foreach($call in @($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Invoke-DispatchMeasuredCase','Start-DispatchCase')},$true))){
+    if($call.CommandElements.Count -lt 3 -or
+       $call.CommandElements[1] -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+       $call.CommandElements[2] -isnot [Management.Automation.Language.StringConstantExpressionAst]){continue}
+    $owners.Add([pscustomobject]@{name=[string]$call.CommandElements[1].Value;part=[string]$call.CommandElements[2].Value})
+  }
+  return @($owners)
+}
 $dispatchPath=Join-Path $PSScriptRoot 'dispatch-lane.test.ps1'
 $dispatchSource=[IO.File]::ReadAllText($dispatchPath).Replace("`r`n","`n")
 $dispatchExpected=@((Get-DispatchLanePartMap).Keys)
@@ -106,6 +119,44 @@ foreach($partName in $dispatchExpected){
   }
 }
 Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-b-route-baseline')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
+$dispatchCaseExpected=[ordered]@{
+  'dispatch-foundation-verification-policy'='dispatch-foundation'
+  'dispatch-foundation-routing'='dispatch-foundation'
+  'dispatch-foundation-publication'='dispatch-foundation'
+  'refusal-foundation'='refusal-foundation'
+  'refusal-harness'='refusal-harness'
+  'dispatch-guard-pid'='dispatch-guard-pid'
+  'dispatch-guard-omission'='dispatch-guard-omission'
+  'dispatch-guard-reuse'='dispatch-guard-reuse'
+  'dispatch-guard-arm'='dispatch-guard-arm'
+  'dispatch-guard-timed'='dispatch-guard-timed'
+  'dispatch-guard-regression'='dispatch-guard-regression'
+  'dispatch-incident-a-route'='dispatch-incident-a-route'
+  'dispatch-incident-a-binding'='dispatch-incident-a-binding'
+  'dispatch-incident-a-source-native'='dispatch-incident-a-source-native'
+  'dispatch-incident-b-route-baseline'='dispatch-incident-b-route-baseline'
+  'dispatch-incident-b-route-matrix'='dispatch-incident-b-route-matrix'
+  'dispatch-incident-b-binding-structure'='dispatch-incident-b-binding-structure'
+  'dispatch-incident-b-binding-mutants'='dispatch-incident-b-binding-mutants'
+  'dispatch-incident-b-source-binding'='dispatch-incident-b-source-binding'
+  'dispatch-incident-b-source-remote'='dispatch-incident-b-source-remote'
+  'dispatch-incident-b-native'='dispatch-incident-b-native'
+  'native-branch-scope'='native-branch-scope'
+  'native-branch-resume'='native-branch-resume'
+}
+$dispatchCaseOwners=Get-DispatchCaseOwners $dispatchSource
+Assert-Ci (@($dispatchCaseOwners).Count -eq $dispatchCaseExpected.Count) 'dispatch asserting block was dropped, duplicated or merged'
+foreach($caseName in $dispatchCaseExpected.Keys){
+  $matches=@($dispatchCaseOwners|Where-Object name -ceq $caseName)
+  Assert-Ci ($matches.Count -eq 1 -and $matches[0].part -ceq $dispatchCaseExpected[$caseName]) "dispatch case ownership is missing, duplicated or misbound: $caseName"
+}
+Refuses-Coverage {
+  $needle="Invoke-DispatchMeasuredCase 'dispatch-guard-pid' 'dispatch-guard-pid'"
+  Assert-Ci ($dispatchSource.Contains($needle)) 'dispatch duplicate-execution mutant anchor missing'
+  $mutant=$dispatchSource.Replace($needle,"$needle`n$needle")
+  $mutantOwners=Get-DispatchCaseOwners $mutant
+  Assert-Ci (@($mutantOwners|Where-Object name -ceq 'dispatch-guard-pid').Count -eq 1) 'dispatch duplicate-execution mutant survived'
+}
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'

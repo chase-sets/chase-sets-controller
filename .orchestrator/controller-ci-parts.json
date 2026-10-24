@@ -4,6 +4,7 @@
       "identity": "test:dispatch-lane.test.ps1",
       "selector": "-Part",
       "parts": [
+        { "name": "dispatch-foundation", "weight": 1 },
         { "name": "refusal-foundation", "weight": 1 },
         { "name": "refusal-harness", "weight": 1 },
         { "name": "dispatch-incident-a-route", "weight": 1 },
@@ -20,12 +21,13 @@
         { "name": "dispatch-guard-omission", "weight": 1 },
         { "name": "dispatch-guard-reuse", "weight": 1 },
         { "name": "dispatch-guard-arm", "weight": 1 },
-        { "name": "dispatch-guard-load", "weight": 1 },
+        { "name": "dispatch-guard-timed", "weight": 1 },
+        { "name": "dispatch-guard-regression", "weight": 1 },
         { "name": "native-branch-scope", "weight": 1 },
         { "name": "native-branch-resume", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["refusal-foundation", "refusal-harness", "dispatch-incident-a-route", "dispatch-incident-a-binding", "dispatch-incident-a-source-native", "dispatch-incident-b-route-baseline", "dispatch-incident-b-route-matrix", "dispatch-incident-b-binding-structure", "dispatch-incident-b-binding-mutants", "dispatch-incident-b-source-binding", "dispatch-incident-b-source-remote", "dispatch-incident-b-native", "dispatch-guard-pid", "dispatch-guard-omission", "dispatch-guard-reuse", "dispatch-guard-arm", "dispatch-guard-load", "native-branch-scope", "native-branch-resume"]
+        "parts": ["dispatch-foundation", "refusal-foundation", "refusal-harness", "dispatch-incident-a-route", "dispatch-incident-a-binding", "dispatch-incident-a-source-native", "dispatch-incident-b-route-baseline", "dispatch-incident-b-route-matrix", "dispatch-incident-b-binding-structure", "dispatch-incident-b-binding-mutants", "dispatch-incident-b-source-binding", "dispatch-incident-b-source-remote", "dispatch-incident-b-native", "dispatch-guard-pid", "dispatch-guard-omission", "dispatch-guard-reuse", "dispatch-guard-arm", "dispatch-guard-timed", "dispatch-guard-regression", "native-branch-scope", "native-branch-resume"]
       }
     },
     {

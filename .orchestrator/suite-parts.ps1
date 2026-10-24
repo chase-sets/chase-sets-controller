@@ -23,6 +23,7 @@ function Get-HeavySuitePartSelector([string]$Part,$BoundParameters) {
 
 function Get-DispatchLanePartMap {
   [ordered]@{
+    'dispatch-foundation' = 'dispatch-foundation'
     'refusal-foundation' = 'refusal-foundation'
     'refusal-harness' = 'refusal-harness'
     'dispatch-incident-a-route' = 'dispatch-incident-a-route'
@@ -39,7 +40,8 @@ function Get-DispatchLanePartMap {
     'dispatch-guard-omission' = 'dispatch-guard-omission'
     'dispatch-guard-reuse' = 'dispatch-guard-reuse'
     'dispatch-guard-arm' = 'dispatch-guard-arm'
-    'dispatch-guard-load' = 'dispatch-guard-load'
+    'dispatch-guard-timed' = 'dispatch-guard-timed'
+    'dispatch-guard-regression' = 'dispatch-guard-regression'
     'native-branch-scope' = 'native-branch-scope'
     'native-branch-resume' = 'native-branch-resume'
   }
