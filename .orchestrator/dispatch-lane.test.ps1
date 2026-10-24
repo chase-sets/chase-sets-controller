@@ -116,7 +116,7 @@ if ($OrdinaryOnly) {
   return
 }
 
-$runLauncher = & $runPart 'refusal'
+$runLauncher = -not $Part -or $Part -ceq 'all' -or $Part -in @('refusal-foundation','refusal-harness')
 if ($runLauncher) {
 $launcher = Join-Path $PSScriptRoot "dispatch-lane.ps1"
 $ownershipHelper = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
@@ -170,6 +170,10 @@ $fakeExe = Join-Path $testRoot "fake-harness.exe"
 Set-Content -LiteralPath $fakeExe -Value ""
 $fakeShim = Join-Path $testRoot "fake-harness.cmd"
 Set-Content -LiteralPath $fakeShim -Value ""
+$nativeBin = Join-Path $testRoot 'native-bin'
+New-Item -ItemType Directory -Path $nativeBin | Out-Null
+$fakeNativeCodex = Join-Path $nativeBin 'codex.exe'
+Copy-Item -LiteralPath (Join-Path $PSHOME 'pwsh.exe') -Destination $fakeNativeCodex
 $launcherOutputFiles = @()
 $ownershipRoot = Join-Path $testRoot "dispatch-runtime"
 $providerTempRoot = Join-Path $testRoot "provider-temp"
@@ -1042,6 +1046,7 @@ try {
     if(Test-Path -LiteralPath $strictForecastPath){Remove-Item -LiteralPath $strictForecastPath -Force}
     [IO.File]::WriteAllText($controllerLog,'')
   }
+  if (& $runPart 'refusal-foundation') {
   Invoke-FleetLauncherOrderingControls
   # --- direct ownership validator: no launcher, provider, or live runtime -----
   function New-OwnershipFixture(
@@ -1408,6 +1413,9 @@ Start-Sleep -Seconds 16
   Assert-True (-not (Test-Path -LiteralPath $forcedRecord.promptPath)) "next real inert dispatch reclaims the terminated launch prompt"
   Assert-True (-not (Test-Path -LiteralPath $forcedRecord.reviewIsolationRoot)) "next real inert dispatch reclaims the terminated provider-isolation root"
 
+  }
+
+  if (& $runPart 'refusal-harness') {
   # --- omission is least-authority; implementation requires explicit opt-in --
   $codex = & $launcher -Harness codex -Model gpt-6.1-sol -Effort high `
     -PromptFile $prompt -Worktree $worktree -Label "test-codex-$([guid]::NewGuid())" `
@@ -1799,7 +1807,13 @@ exit $LASTEXITCODE
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $emptyPrompt -Worktree $worktree -Label "t2" -DryRun -ExecutablePath $fakeExe } "empty" "empty prompt file must refuse (stdin EOF gotcha)"
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree (Join-Path $testRoot "no-such-lane") -Label "t3" -DryRun -ExecutablePath $fakeExe } "worktree" "missing worktree must refuse"
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t4" -DryRun -ExecutablePath $fakeShim } "native" "shim executable must refuse (codex shim gotcha)"
-  Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t5" -DryRun -TestArgumentList @("--test") } "requires" "test arguments cannot alter a production-resolved harness"
+  $savedPath = $env:PATH
+  try {
+    $env:PATH = "$nativeBin;$savedPath"
+    Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t5" -DryRun -TestArgumentList @("--test") } "requires" "test arguments cannot alter a production-resolved harness"
+  } finally {
+    $env:PATH = $savedPath
+  }
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -LaneRole implementaton -PromptFile $prompt -Worktree $worktree -Label "t6" -DryRun -ExecutablePath $fakeExe } "" "mistyped lane role must refuse instead of inheriting provider authority"
 
   # --- incident controls: omission isolates; explicit implementation inherits -
@@ -2059,6 +2073,7 @@ exit $LASTEXITCODE
   }
 
   Write-Output "PASS dispatch-lane launcher coverage"
+  }
 } finally {
   if ($forcedLauncherProcess -and -not $forcedLauncherProcess.HasExited) {
     Stop-Process -Id $forcedLauncherProcess.Id -Force -ErrorAction SilentlyContinue
@@ -2386,16 +2401,23 @@ function Test-TreeDeathOmissionStillRefuses {
   } finally { Stop-8103IdleChild $child; Import-Module $psm -Force -DisableNameChecking; if(Test-Path -LiteralPath $mutantDir){Remove-Item -LiteralPath $mutantDir -Recurse -Force -ErrorAction SilentlyContinue} }
 }
 
-if (& $runPart 'dispatch-guard') {
+if (& $runPart 'dispatch-guard-pid') {
   Test-ReusedPidRootIsDeadByIdentity
+}
+if (& $runPart 'dispatch-guard-omission') {
   Test-TreeDeathOmissionStillRefuses
+}
+if (& $runPart 'dispatch-guard-reuse') {
   Test-8076MeasuredReuseIsLauncherOnly
+}
+if (& $runPart 'dispatch-guard-arm') {
   Test-ArmAfterOmissionSurvivesPreArmDelay
+}
+if (& $runPart 'dispatch-guard-load') {
   Test-TimedFixtureUnderFleetLoadMeasuresLoad
   Test-RegressionUnderLoadIsNotMasked
 }
-if (& $runPart 'dispatch-incident-a') { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a' }
-foreach ($partName in @('dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native')) {
+foreach ($partName in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) {
   if (& $runPart $partName) { Test-7963ResumeCarrier 'dispatch' -Part $partName }
 }
 if (-not $Part -or $Part -ceq 'all') { Invoke-7963ResumeCarriers @('native-branch') }

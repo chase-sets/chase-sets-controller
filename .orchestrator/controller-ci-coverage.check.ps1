@@ -105,7 +105,7 @@ foreach($partName in $dispatchExpected){
     Assert-Ci ((@($remaining|Sort-Object)-join ',') -eq (@($dispatchExpected|Sort-Object)-join ',')) "dispatch part dropped: $partName"
   }
 }
-Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-b-route')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
+Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-b-route-baseline')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'

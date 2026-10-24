@@ -57,9 +57,9 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc9
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a','dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
-  if ($Part -ceq 'dispatch-incident-a') { $Incident = '7906' }
-  if ($Part -in @('dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native')) { $Incident = '7927' }
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
+  if ($Part -in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native')) { $Incident = '7906' }
+  if ($Part -in @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'); . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-7963-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
@@ -665,10 +665,13 @@ exit $LASTEXITCODE
   try {
     $runNativeScope = -not $Part -or $Part -ceq 'native-branch-scope'
     $runNativeResume = -not $Part -or $Part -ceq 'native-branch-resume'
-    $runDispatchRoute = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-route'
-    $runDispatchBinding = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-binding'
-    $runDispatchSource = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-source'
-    $runDispatchNative = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-native'
+    $runDispatchRouteBaseline = -not $Part -or $Part -in @('dispatch-incident-a-route','dispatch-incident-b-route-baseline')
+    $runDispatchRouteMatrix = -not $Part -or $Part -in @('dispatch-incident-a-route','dispatch-incident-b-route-matrix')
+    $runDispatchBindingStructure = -not $Part -or $Part -in @('dispatch-incident-a-binding','dispatch-incident-b-binding-structure')
+    $runDispatchBindingMutants = -not $Part -or $Part -in @('dispatch-incident-a-binding','dispatch-incident-b-binding-mutants')
+    $runDispatchSourceBinding = -not $Part -or $Part -in @('dispatch-incident-a-source-native','dispatch-incident-b-source-binding')
+    $runDispatchSourceRemote = -not $Part -or $Part -in @('dispatch-incident-a-source-native','dispatch-incident-b-source-remote')
+    $runDispatchNative = -not $Part -or $Part -ceq 'dispatch-incident-a-source-native' -or $Part -ceq 'dispatch-incident-b-native'
     if ($Carrier -ceq 'native-branch') {
       function ScopeState([string]$Repo) {
         $files=[ordered]@{}
@@ -801,13 +804,15 @@ exit 0
       Write-Output "PROOF 7963 $Carrier shape=$incident actual native stage bodies and every staged nonconflict body verified root=$($f.case)"
       if($Carrier-ceq'dispatch'){
         $fable=@('-Dry','-Harness','claude','-Model','claude-fable-5-1')
-        if ($runDispatchRoute) {
+        if ($runDispatchRouteBaseline) {
         $baseline=Join-Path $f.case 'baseline';[void](New-HistoricalDispatchFixture '0b6e67e8' $baseline)
         if(-not(Test-Path -LiteralPath (Join-Path $baseline '.orchestrator/dispatch-lane.ps1') -PathType Leaf)){throw '7963 immutable baseline extraction failed'}
         $candidate=$f.cfg.dispatch;$input=$f.cfg.resumePath;$f.cfg.dispatch=Join-Path $baseline '.orchestrator/dispatch-lane.ps1';$f.cfg.resumePath=''
         Refusal $f "$incident immutable baseline refuses" 'detached worktrees'
         $f.cfg.dispatch=$candidate;$f.cfg.resumePath=$input
         foreach($role in @('review','planning')){Refusal $f "$incident wrong role $role" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Role',$role)}
+        }
+        if ($runDispatchRouteMatrix) {
         Refusal $f "$incident Sol off its row-7 slot placement" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol');ValidPlan $f "$incident current row-7 codex slot codex/gpt-6.1-sol/high/7/provisional admitted" @('-Dry','-Model','gpt-6.1-sol','-Placement','provisional');ValidPlan $f "$incident current row-7 claude slot claude/claude-opus-5-5/xhigh/7/provisional admitted" @('-Dry','-Harness','claude','-Model','claude-opus-5-5','-Effort','xhigh','-Placement','provisional')
         # 8063: beside today's row-7 slots, only the retained Astra tuple and the Todd-ruled Fable 5.1
         # fallback tuple (4388/5743533387) are admitted; every other harness/model/effort/row/role/placement refuses.
@@ -820,7 +825,7 @@ exit 0
         Refusal $f "$incident 8063 Fable on codex harness" 'MODEL_HARNESS_MISMATCH' @('-Dry','-Harness','codex','-Model','claude-fable-5-1')
         Refusal $f "$incident 8063 Astra on claude harness" 'MODEL_HARNESS_MISMATCH' @('-Dry','-Harness','claude','-Model','gpt-6-astra')
         }
-        if ($runDispatchBinding) {
+        if ($runDispatchBindingStructure) {
         foreach($section in @('obligation','sources','state')){
           $bad=$f.binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.$section|Add-Member -NotePropertyName unknownAuthority -NotePropertyValue $true;Save $f.cfg.resumePath $bad
           Refusal $f "$incident closed nested $section" 'INTEGRATION_RESUME_BINDING'
@@ -834,6 +839,8 @@ exit 0
           Refusal $f "$incident independent $field" 'INTEGRATION_RESUME_'
         }
         Save $f.cfg.resumePath $f.binding
+        }
+        if ($runDispatchBindingMutants) {
         $stateMutant=Mutant 'fingerprint' 'landed-integration-evidence.psm1' (GuardLine 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_STATE: stale or unrelated bytes') '  # Synthetic omission: exact current input fingerprint comparison.'
         foreach($field in @('indexSha256','dirtySha256','metadataSha256','stagesSha256','stagedSha256','unstagedSha256','stoppedCommit','stoppedHead','oldBase')){
           $bad=$f.binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.state.$field=$(if($field-in@('stoppedCommit','stoppedHead','oldBase')){'b'*40}else{'b'*64});Save $f.cfg.resumePath $bad
@@ -846,11 +853,13 @@ exit 0
         Discriminator $f "$incident 8063 claude sibling model on the fallback route" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Harness','claude','-Model','claude-sonnet-5-5')
         Discriminator $f "$incident 8063 Fable fallback route effort" 'INTEGRATION_RESUME_ROUTE' $routeMutant ($fable+@('-Effort','medium'))
         }
-        if ($runDispatchSource) {
+        if ($runDispatchSourceBinding) {
         $sourceMutant=Mutant 'source-binding' 'landed-integration-evidence.psm1' (GuardLine 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_SOURCE: changed binding') '  # Synthetic omission: source bytes comparison.'
         $bad=$f.binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.sources.ackSha256='b'*64;Save $f.cfg.resumePath $bad
         Discriminator $f "$incident exact source bytes" 'INTEGRATION_RESUME_SOURCE' $sourceMutant
         Save $f.cfg.resumePath $f.binding
+        }
+        if ($runDispatchSourceRemote) {
         $remoteMutant=Mutant 'remote' 'landed-integration-evidence.psm1' (GuardLine 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_REMOTE: original branch/PR changed') '    # Synthetic omission: original remote equality.'
         $older=FixtureGit $f.repo @('rev-parse',"$($f.original)^")
         [void](FixtureGit (Join-Path $f.case 'remote.git') @('update-ref',"refs/pull/$($f.pr)/head",$older))
@@ -1076,7 +1085,7 @@ exit 0
 # MEASURED_LOAD ends the test process with exit 75 and one standalone
 # MEASURED_LOAD line (holder identity and elapsed time), never PASS or FAIL.
 # Every other failure propagates unchanged (exit 1).
-function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a','dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='') {
+function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='') {
   foreach ($carrier in $Carriers) {
     try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part }
     catch {
