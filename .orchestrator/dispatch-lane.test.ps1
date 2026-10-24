@@ -2395,8 +2395,12 @@ if (& $runPart 'dispatch-guard') {
   Test-RegressionUnderLoadIsNotMasked
 }
 if (& $runPart 'dispatch-incident-a') { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a' }
-if (& $runPart 'dispatch-incident-b') { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b' }
-if (& $runPart 'native-branch') { Invoke-7963ResumeCarriers @('native-branch') }
+foreach ($partName in @('dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native')) {
+  if (& $runPart $partName) { Test-7963ResumeCarrier 'dispatch' -Part $partName }
+}
+if (-not $Part -or $Part -ceq 'all') { Invoke-7963ResumeCarriers @('native-branch') }
+elseif (& $runPart 'native-branch-scope') { Test-7963ResumeCarrier 'native-branch' -Part 'native-branch-scope' }
+elseif (& $runPart 'native-branch-resume') { Test-7963ResumeCarrier 'native-branch' -Part 'native-branch-resume' }
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

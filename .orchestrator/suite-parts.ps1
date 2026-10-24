@@ -25,9 +25,13 @@ function Get-DispatchLanePartMap {
   [ordered]@{
     refusal = 'refusal'
     'dispatch-incident-a' = 'dispatch-incident-a'
-    'dispatch-incident-b' = 'dispatch-incident-b'
+    'dispatch-incident-b-route' = 'dispatch-incident-b-route'
+    'dispatch-incident-b-binding' = 'dispatch-incident-b-binding'
+    'dispatch-incident-b-source' = 'dispatch-incident-b-source'
+    'dispatch-incident-b-native' = 'dispatch-incident-b-native'
     'dispatch-guard' = 'dispatch-guard'
-    'native-branch' = 'native-branch'
+    'native-branch-scope' = 'native-branch-scope'
+    'native-branch-resume' = 'native-branch-resume'
   }
 }
 

@@ -6,12 +6,16 @@
       "parts": [
         { "name": "refusal", "weight": 1 },
         { "name": "dispatch-incident-a", "weight": 1 },
-        { "name": "dispatch-incident-b", "weight": 1 },
+        { "name": "dispatch-incident-b-route", "weight": 1 },
+        { "name": "dispatch-incident-b-binding", "weight": 1 },
+        { "name": "dispatch-incident-b-source", "weight": 1 },
+        { "name": "dispatch-incident-b-native", "weight": 1 },
         { "name": "dispatch-guard", "weight": 1 },
-        { "name": "native-branch", "weight": 1 }
+        { "name": "native-branch-scope", "weight": 1 },
+        { "name": "native-branch-resume", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["refusal", "dispatch-incident-a", "dispatch-incident-b", "dispatch-guard", "native-branch"]
+        "parts": ["refusal", "dispatch-incident-a", "dispatch-incident-b-route", "dispatch-incident-b-binding", "dispatch-incident-b-source", "dispatch-incident-b-native", "dispatch-guard", "native-branch-scope", "native-branch-resume"]
       }
     },
     {

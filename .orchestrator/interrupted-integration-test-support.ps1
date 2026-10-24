@@ -57,9 +57,9 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc9
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a','dispatch-incident-b')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a','dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
   if ($Part -ceq 'dispatch-incident-a') { $Incident = '7906' }
-  if ($Part -ceq 'dispatch-incident-b') { $Incident = '7927' }
+  if ($Part -in @('dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native')) { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'); . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-7963-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
@@ -663,12 +663,13 @@ exit $LASTEXITCODE
     Proof ($result.exit-ne0-and$result.stderr.Contains($Reason)-and-not(Test-Path -LiteralPath $f.cfg.entry)-and(Get-RebaseRecordIdentity $before)-ceq(Get-RebaseRecordIdentity $after)-and(Get-RebaseRecordIdentity $files)-ceq(Get-RebaseRecordIdentity $filesAfter)-and-not$result.stdout.Contains('"heavyAdmission"')) "$Name exit=$($result.exit) body=NOTRUN index/bytes/metadata/runtime=UNCHANGED raw=$($result.resultPath)"
   }
   try {
+    $runNativeScope = -not $Part -or $Part -ceq 'native-branch-scope'
+    $runNativeResume = -not $Part -or $Part -ceq 'native-branch-resume'
+    $runDispatchRoute = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-route'
+    $runDispatchBinding = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-binding'
+    $runDispatchSource = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-source'
+    $runDispatchNative = -not $Part -or $Part -ceq 'dispatch-incident-a' -or $Part -ceq 'dispatch-incident-b-native'
     if ($Carrier -ceq 'native-branch') {
-      $f = Fixture '7927'
-      $target = Join-Path $f.case 'ordinary-target'
-      [void](FixtureGit $f.repo @('worktree','add','-b','synthetic/unrelated-target',$target,$f.onto))
-      [void](FixtureGit $f.repo @('update-ref',"refs/heads/$($f.branch)",$f.onto,$f.original))
-      $before = RawState $f
       function ScopeState([string]$Repo) {
         $files=[ordered]@{}
         foreach($relative in @((FixtureGit $Repo @('ls-files','--cached','--others','--exclude-standard')) -split "`n" | Sort-Object -Unique)) {
@@ -683,6 +684,12 @@ exit $LASTEXITCODE
         if(-not[IO.Path]::IsPathFullyQualified($index)){$index=Join-Path $Repo $index}
         Get-RebaseRecordIdentity ([ordered]@{head=(FixtureGit $Repo @('rev-parse','HEAD'));refs=(FixtureGit $Repo @('show-ref'));table=(FixtureGit $Repo @('worktree','list','--porcelain'));index=(Get-RebaseHash ([IO.File]::ReadAllBytes($index)));files=$files;metadata=$(if($metadata.Count){$metadata}else{$null})})
       }
+      if ($runNativeScope) {
+      $f = Fixture '7927'
+      $target = Join-Path $f.case 'ordinary-target'
+      [void](FixtureGit $f.repo @('worktree','add','-b','synthetic/unrelated-target',$target,$f.onto))
+      [void](FixtureGit $f.repo @('update-ref',"refs/heads/$($f.branch)",$f.onto,$f.original))
+      $before = RawState $f
       $targetState=ScopeState $target; $siblingState=ScopeState $f.repo
       $targetBefore = FixtureGit $target @('status','--porcelain=v1','--untracked-files=normal')
       Proof ($targetBefore -ceq '' -and (Get-Content (Join-Path $f.repo '.git/rebase-merge/head-name')) -ceq "refs/heads/$($f.branch)" -and (FixtureGit $f.repo @('rev-parse',"refs/heads/$($f.branch)")) -cne $f.original) '8023 real native different head-name with moved original ref and clean ordinary target'
@@ -749,6 +756,8 @@ exit 0
           if($state -ceq 'matching'){[void](FixtureGit $f.repo @('update-ref','refs/heads/synthetic/unrelated-target',$f.onto,$f.original));[void](FixtureGit $target @('read-tree','--reset','-u',$f.onto))}
         }
       }
+      }
+      if ($runNativeResume) {
       $r=Fixture '7927'
       $sibling=Join-Path $r.case 'stale-sibling'
       [void](FixtureGit $r.repo @('worktree','add','-b','synthetic/stale-sibling',$sibling,$r.original))
@@ -777,6 +786,7 @@ exit 0
       $r.cfg.entryOnly=$true
       $resume=Launch $r
       Proof ($resume.exit -eq 0 -and (Test-Path $r.cfg.entry) -and (ScopeState $sibling) -ceq $resumeSiblingState) "8023 real interrupted child admitted with unrelated stale native sibling unchanged raw=$($resume.resultPath)"
+      }
       $finished=$true
       return
     }
@@ -790,6 +800,8 @@ exit 0
       }
       Write-Output "PROOF 7963 $Carrier shape=$incident actual native stage bodies and every staged nonconflict body verified root=$($f.case)"
       if($Carrier-ceq'dispatch'){
+        $fable=@('-Dry','-Harness','claude','-Model','claude-fable-5-1')
+        if ($runDispatchRoute) {
         $baseline=Join-Path $f.case 'baseline';[void](New-HistoricalDispatchFixture '0b6e67e8' $baseline)
         if(-not(Test-Path -LiteralPath (Join-Path $baseline '.orchestrator/dispatch-lane.ps1') -PathType Leaf)){throw '7963 immutable baseline extraction failed'}
         $candidate=$f.cfg.dispatch;$input=$f.cfg.resumePath;$f.cfg.dispatch=Join-Path $baseline '.orchestrator/dispatch-lane.ps1';$f.cfg.resumePath=''
@@ -799,7 +811,6 @@ exit 0
         Refusal $f "$incident Sol off its row-7 slot placement" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Model','gpt-6.1-sol');ValidPlan $f "$incident current row-7 codex slot codex/gpt-6.1-sol/high/7/provisional admitted" @('-Dry','-Model','gpt-6.1-sol','-Placement','provisional');ValidPlan $f "$incident current row-7 claude slot claude/claude-opus-5-5/xhigh/7/provisional admitted" @('-Dry','-Harness','claude','-Model','claude-opus-5-5','-Effort','xhigh','-Placement','provisional')
         # 8063: beside today's row-7 slots, only the retained Astra tuple and the Todd-ruled Fable 5.1
         # fallback tuple (4388/5743533387) are admitted; every other harness/model/effort/row/role/placement refuses.
-        $fable=@('-Dry','-Harness','claude','-Model','claude-fable-5-1')
         ValidPlan $f "$incident 8063 claude/claude-fable-5-1/high/7/override-Todd fallback route admitted" $fable
         foreach($sibling in @('claude-sonnet-5-5','claude-opus-5-5')){Refusal $f "$incident 8063 claude sibling $sibling at the Fable high/override-Todd tuple refused" 'INTEGRATION_RESUME_ROUTE' @('-Dry','-Harness','claude','-Model',$sibling)}
         Refusal $f "$incident 8063 Fable wrong effort" 'INTEGRATION_RESUME_ROUTE' ($fable+@('-Effort','medium'))
@@ -808,6 +819,8 @@ exit 0
         foreach($placement in @('measured','provisional','override-todd')){Refusal $f "$incident 8063 Fable wrong placement $placement" 'INTEGRATION_RESUME_ROUTE' ($fable+@('-Placement',$placement))}
         Refusal $f "$incident 8063 Fable on codex harness" 'MODEL_HARNESS_MISMATCH' @('-Dry','-Harness','codex','-Model','claude-fable-5-1')
         Refusal $f "$incident 8063 Astra on claude harness" 'MODEL_HARNESS_MISMATCH' @('-Dry','-Harness','claude','-Model','gpt-6-astra')
+        }
+        if ($runDispatchBinding) {
         foreach($section in @('obligation','sources','state')){
           $bad=$f.binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.$section|Add-Member -NotePropertyName unknownAuthority -NotePropertyValue $true;Save $f.cfg.resumePath $bad
           Refusal $f "$incident closed nested $section" 'INTEGRATION_RESUME_BINDING'
@@ -832,6 +845,8 @@ exit 0
         Discriminator $f "$incident Sol off its row-7 slot placement" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Model','gpt-6.1-sol')
         Discriminator $f "$incident 8063 claude sibling model on the fallback route" 'INTEGRATION_RESUME_ROUTE' $routeMutant @('-Dry','-Harness','claude','-Model','claude-sonnet-5-5')
         Discriminator $f "$incident 8063 Fable fallback route effort" 'INTEGRATION_RESUME_ROUTE' $routeMutant ($fable+@('-Effort','medium'))
+        }
+        if ($runDispatchSource) {
         $sourceMutant=Mutant 'source-binding' 'landed-integration-evidence.psm1' (GuardLine 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_SOURCE: changed binding') '  # Synthetic omission: source bytes comparison.'
         $bad=$f.binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.sources.ackSha256='b'*64;Save $f.cfg.resumePath $bad
         Discriminator $f "$incident exact source bytes" 'INTEGRATION_RESUME_SOURCE' $sourceMutant
@@ -849,6 +864,8 @@ exit 0
         $localOlder=FixtureGit $localMoved.repo @('rev-parse',"$($localMoved.original)^")
         [void](FixtureGit $localMoved.repo @('update-ref',"refs/heads/$($localMoved.branch)",$localOlder))
         Discriminator $localMoved "$incident exact local original" 'native original branch moved' $localMutant
+        }
+        if ($runDispatchNative) {
         $replayMutant=Mutant 'native-proof' 'landed-integration-evidence.psm1' '    Assert-InterruptedIntegrationReplay $o $state # RESUME_GUARD_NATIVE_REPLAY' '    # Synthetic omission: independent native replay.'
         # Mutating an index or a working file changes native stat state too.
         # Give destructive controls their own stopped repo; never repair one
@@ -877,6 +894,7 @@ exit 0
           Proof ($wrongDone.exit-ne0-and$wrongDone.stderr.Contains('INTEGRATION_RESUME_OPERATION')-and-not$wrongDone.stdout.Contains('"heavyAdmission"')-and(RawState $f)-ceq$altered) "$incident actual native done history mutation refuses before plan and preserves mutated bytes raw=$($wrongDone.resultPath)"
         }finally{[IO.File]::WriteAllBytes($donePath,$doneBytes)}
         Proof ((RawState $f)-ceq$before) "$incident owned native done control restored exactly"
+        }
       }
       if($Carrier-ceq'ownership'){
         $raceCandidate=Fixture $incident
@@ -1058,9 +1076,9 @@ exit 0
 # MEASURED_LOAD ends the test process with exit 75 and one standalone
 # MEASURED_LOAD line (holder identity and elapsed time), never PASS or FAIL.
 # Every other failure propagates unchanged (exit 1).
-function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='') {
+function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a','dispatch-incident-b-route','dispatch-incident-b-binding','dispatch-incident-b-source','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='') {
   foreach ($carrier in $Carriers) {
-    try { Test-7963ResumeCarrier $carrier -Incident $Incident }
+    try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part }
     catch {
       if ($_.Exception.Message -clike 'MEASURED_LOAD *') { Write-Output $_.Exception.Message; exit 75 }
       throw

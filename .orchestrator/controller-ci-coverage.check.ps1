@@ -98,8 +98,14 @@ $dispatchBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob'
 $baselineKeys=Get-DispatchCoverageKeys $dispatchBaseline
 $candidateKeys=Get-DispatchCoverageKeys $dispatchSource
 foreach($key in $baselineKeys){Assert-Ci ($candidateKeys -contains $key) "dispatch-lane baseline proof key lost: $key"}
-Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name|Where-Object{$_ -ne 'dispatch-incident-a'}|Sort-Object)-join ',') -ceq (@($dispatchExpected|Sort-Object)-join ',')) 'dispatch part dropped' }
-Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-a')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
+foreach($partName in $dispatchExpected){
+  Assert-Ci ($dispatchSource.Contains("'$partName'")) "dispatch source selector missing: $partName"
+  Refuses-Coverage {
+    $remaining=@($dispatchItem.parts.name|Where-Object{$_ -ne $partName})
+    Assert-Ci ((@($remaining|Sort-Object)-join ',') -eq (@($dispatchExpected|Sort-Object)-join ',')) "dispatch part dropped: $partName"
+  }
+}
+Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-b-route')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'
