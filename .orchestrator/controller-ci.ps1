@@ -7,7 +7,8 @@ param(
   [ValidateSet('full','impact')][string]$Scope = 'full',
   [string]$PlanPath,
   [string]$OutputDirectory,
-  [ValidateRange(0,17)][int]$Shard = 0
+  [ValidateRange(0,31)][int]$Shard = 0,
+  [ValidateSet('candidate','baseline')][string]$Role = 'candidate'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')
@@ -41,8 +42,8 @@ function Get-CiRestriction([string]$Identity, [string]$Root) {
   if ($Identity -ceq 'test:codex-launch-boundary.test.ps1') {
     return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited.' }
   }
-  if ($Identity -ceq 'test:dispatch-lane.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe, excluded historical fixtures, and native carrier host fleet probe.'; notHermetic=$true }
+  if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture.' }
   }
   if ($Identity -cin @('test:dispatch-ownership.test.ps1','test:rebase-integration.test.ps1',
       'test:lane-stall-watchdog.test.ps1','test:landed-integration-r3.test.ps1')) {
@@ -164,17 +165,22 @@ if ($Mode -ceq 'Plan') {
   . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
   $shardCount = if ($null -ne $manifest) { Get-CiShardCount @{shardCount=$(if($null -ne $profile.shardCount){$profile.shardCount}else{18})} } else { Get-CiShardCount @{} }
   $executionItems = New-CiAssignments $inventory $Items $manifest $profile $ControllerRoot -ShardCount $shardCount
-  $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=(Get-CiSourceHead $ControllerRoot $checkoutHead)
+  $planShards = @(0..($shardCount-1) | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })
+  $sourceHead = Get-CiSourceHead $ControllerRoot $checkoutHead
+  # The workflow's explicit role input decides the bound: a candidate plan is
+  # bounded on any checkout and runner; only role=baseline (a comparison run)
+  # records the bound without enforcing it.
+  $bound = Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000
+  $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=$sourceHead
     checkoutHead=$checkoutHead; productSha=$ProductSha; runnerHead=$env:GITHUB_SHA; inventory=$inventory; selected=$selected
-    executionItems=$executionItems; planning=@{algorithm='LPT';fallbackMs=30000;maxAgeDays=30
-      shards=@(0..($shardCount-1) | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })}
+    executionItems=$executionItems; planning=@{algorithm='LPT';fallbackMs=30000;maxAgeDays=30;shards=$planShards;bound=$bound}
     scope=@{kind=$capture.scope;reason=$capture.reason;baselineHead='';changedCount=0}; hostIdentity=$capture.hostIdentity
     startedUtc=[DateTime]::UtcNow.ToString('o'); requestedScope=$Scope }
   if ($null -ne $manifest) { $plan.shardCount=$shardCount }
   Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
   $matrix = @{include=@(0..($shardCount-1) | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
   Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "matrix=$matrix`ncheckout_head=$checkoutHead"
-  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count)"
+  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count) shards=$shardCount role=$($bound.role) boundEnforced=$($bound.enforced) maxEstimatedMs=$((($planShards | Measure-Object estimatedMs -Maximum).Maximum))"
   return
 }
 

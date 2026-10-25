@@ -21,6 +21,32 @@ function Get-HeavySuitePartSelector([string]$Part,$BoundParameters) {
   if($Part){return $map[$Part]}
 }
 
+function Get-DispatchLanePartMap {
+  [ordered]@{
+    'dispatch-foundation' = 'dispatch-foundation'
+    'refusal-foundation' = 'refusal-foundation'
+    'refusal-harness' = 'refusal-harness'
+    'dispatch-incident-a-route' = 'dispatch-incident-a-route'
+    'dispatch-incident-a-binding' = 'dispatch-incident-a-binding'
+    'dispatch-incident-a-source-native' = 'dispatch-incident-a-source-native'
+    'dispatch-incident-b-route-baseline' = 'dispatch-incident-b-route-baseline'
+    'dispatch-incident-b-route-matrix' = 'dispatch-incident-b-route-matrix'
+    'dispatch-incident-b-binding-structure' = 'dispatch-incident-b-binding-structure'
+    'dispatch-incident-b-binding-mutants' = 'dispatch-incident-b-binding-mutants'
+    'dispatch-incident-b-source-binding' = 'dispatch-incident-b-source-binding'
+    'dispatch-incident-b-source-remote' = 'dispatch-incident-b-source-remote'
+    'dispatch-incident-b-native' = 'dispatch-incident-b-native'
+    'dispatch-guard-pid' = 'dispatch-guard-pid'
+    'dispatch-guard-omission' = 'dispatch-guard-omission'
+    'dispatch-guard-reuse' = 'dispatch-guard-reuse'
+    'dispatch-guard-arm' = 'dispatch-guard-arm'
+    'dispatch-guard-timed' = 'dispatch-guard-timed'
+    'dispatch-guard-regression' = 'dispatch-guard-regression'
+    'native-branch-scope' = 'native-branch-scope'
+    'native-branch-resume' = 'native-branch-resume'
+  }
+}
+
 function Get-SuiteRoutingNames([string]$Source) {
   $tokens=$null; $errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
@@ -53,6 +79,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   $source=[IO.File]::ReadAllText($Path)
   if((Split-Path -Leaf $Path)-ceq'dispatch-routing-data.test.ps1'){return Get-SuiteRoutingParts $source}
   if((Split-Path -Leaf $Path)-ceq'invoke-heavy-verifier.test.ps1'){return @((Get-HeavySuitePartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
   if($errors.Count){throw 'SUITE_PART: source parse failed'}

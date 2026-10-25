@@ -1,6 +1,27 @@
-param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$OrdinaryOnly,[switch]$ProductCensusOnly,[switch]$CapacityOnly,[switch]$RoutingIssueOnly,[switch]$VerificationPolicyOnly,[string]$GuardRevision='',[ValidateSet('','universal-preamble','local-product-gate')][string]$PolicyMutant='')
+param([switch]$ValidatorOnly,[Parameter(DontShow)][switch]$FleetPreClosureOnly,[switch]$NativeBranchOnly,[switch]$OrdinaryOnly,[switch]$ProductCensusOnly,[switch]$CapacityOnly,[switch]$RoutingIssueOnly,[switch]$VerificationPolicyOnly,[string]$GuardRevision='',[ValidateSet('','universal-preamble','local-product-gate')][string]$PolicyMutant='', [string]$Part='')
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+. (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+function Assert-True([bool]$Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+function Invoke-DispatchMeasuredCase([string]$Name,[string]$Part,[scriptblock]$Body) {
+  $timer=[Diagnostics.Stopwatch]::StartNew()
+  try { & $Body }
+  finally { $timer.Stop(); Write-Output ("CASE_ELAPSED {0} {1:N3}" -f $Name,$timer.Elapsed.TotalSeconds) }
+}
+function Start-DispatchCase([string]$Name,[string]$Part) {
+  return [Diagnostics.Stopwatch]::StartNew()
+}
+function Stop-DispatchCase([string]$Name,[Diagnostics.Stopwatch]$Timer) {
+  $Timer.Stop()
+  Write-Output ("CASE_ELAPSED {0} {1:N3}" -f $Name,$Timer.Elapsed.TotalSeconds)
+}
+$dispatchParts = @('all') + @((Get-DispatchLanePartMap).Keys)
+Assert-SuiteSelection $Part $dispatchParts $PSBoundParameters @('ValidatorOnly','FleetPreClosureOnly','NativeBranchOnly','OrdinaryOnly','ProductCensusOnly','CapacityOnly','RoutingIssueOnly','VerificationPolicyOnly','GuardRevision','PolicyMutant')
+$runPart = { param([string]$Name) -not $Part -or $Part -ceq 'all' -or $Part -ceq $Name }
+$dispatchWholeRun = -not $Part -or $Part -ceq 'all'
 if ($VerificationPolicyOnly) {
   $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/dispatch-lane.ps1") -join "`n") } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-lane.ps1')) }
   if($PolicyMutant -eq 'universal-preamble'){$source=$source.Replace("if (`$Role -cne 'implementation' -or `$RoutingRow -eq 13)",'if ($false)')}
@@ -28,10 +49,16 @@ if ($VerificationPolicyOnly) {
   if($skill -match 'ControllerBattery|ControllerPrecursor' -or $skill -notmatch 'separate controller thread'){throw 'product skill must leave controller verification to the controller thread'}
   return
 }
-if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){ & $PSCommandPath -VerificationPolicyOnly }
+if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){
+  if (& $runPart 'dispatch-foundation') {
+    Invoke-DispatchMeasuredCase 'dispatch-foundation-verification-policy' 'dispatch-foundation' { & $PSCommandPath -VerificationPolicyOnly }
+  }
+}
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
+if (& $runPart 'dispatch-foundation') {
+Invoke-DispatchMeasuredCase 'dispatch-foundation-routing' 'dispatch-foundation' {
 # Execute the exact routing statement with inert launcher inputs and the real
 # logger. No model subprocess, ownership census or live runtime is involved.
 $routingRoot=Join-Path ([IO.Path]::GetTempPath()) ('synthetic-8526-routing-'+[guid]::NewGuid().ToString('N'))
@@ -84,6 +111,8 @@ try {
 } finally {
   if([IO.Path]::GetFullPath($routingRoot).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)){Remove-Item -LiteralPath $routingRoot -Recurse -Force}
 }
+}
+}
 if($RoutingIssueOnly){return}
 if($CapacityOnly){
   & (Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1') -Case capacity-override
@@ -93,7 +122,11 @@ if($CapacityOnly){
 if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -and -not $NativeBranchOnly)) {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
-  Test-PlatformSeatNativePublication
+  # -Part never combines with a legacy switch (Assert-SuiteSelection), so a
+  # -ProductCensusOnly run always passes this part guard.
+  if (& $runPart 'dispatch-foundation') {
+    Invoke-DispatchMeasuredCase 'dispatch-foundation-publication' 'dispatch-foundation' { Test-PlatformSeatNativePublication }
+  }
   if ($ProductCensusOnly) { return }
 }
 if ($NativeBranchOnly) {
@@ -108,6 +141,8 @@ if ($OrdinaryOnly) {
   return
 }
 
+$runLauncher = -not $Part -or $Part -ceq 'all' -or $Part -in @('refusal-foundation','refusal-harness')
+if ($runLauncher) {
 $launcher = Join-Path $PSScriptRoot "dispatch-lane.ps1"
 $ownershipHelper = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
 $claudeAuditHelper = Join-Path $PSScriptRoot "dispatch-claude-stream-audit.ps1"
@@ -160,6 +195,10 @@ $fakeExe = Join-Path $testRoot "fake-harness.exe"
 Set-Content -LiteralPath $fakeExe -Value ""
 $fakeShim = Join-Path $testRoot "fake-harness.cmd"
 Set-Content -LiteralPath $fakeShim -Value ""
+$nativeBin = Join-Path $testRoot 'native-bin'
+New-Item -ItemType Directory -Path $nativeBin | Out-Null
+$fakeNativeCodex = Join-Path $nativeBin 'codex.exe'
+Copy-Item -LiteralPath (Join-Path $PSHOME 'pwsh.exe') -Destination $fakeNativeCodex
 $launcherOutputFiles = @()
 $ownershipRoot = Join-Path $testRoot "dispatch-runtime"
 $providerTempRoot = Join-Path $testRoot "provider-temp"
@@ -514,12 +553,9 @@ function Invoke-AdmissionContractControls {
   $candidateSource = [IO.File]::ReadAllText($launcher)
   $controllerRoot = Split-Path -Parent $PSScriptRoot
   $baseHead = "20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5"
-  $baseObject = "$baseHead`:.orchestrator/dispatch-lane.ps1"
-  $baseLines = @(& $realGit -C $controllerRoot show $baseObject 2>&1)
-  if ($LASTEXITCODE -ne 0) {
-    throw "unable to materialize exact base launcher $baseObject"
-  }
-  $baseSource = ($baseLines -join "`n") + "`n"
+  $baseFixtureRoot = Join-Path $testRoot 'historical-admission-base'
+  [void](New-HistoricalDispatchFixture $baseHead $baseFixtureRoot)
+  $baseSource = [IO.File]::ReadAllText((Join-Path $baseFixtureRoot '.orchestrator/dispatch-lane.ps1'))
   $cleanCall = 'Assert-DispatchAdmissionClean $worktreeResolved # ADMISSION_GUARD_CLEANLINESS'
   $occupancyCall = 'Assert-DispatchAdmissionExclusiveBranchAttachment $admissionIdentityBefore # ADMISSION_GUARD_EXCLUSIVE_BRANCH'
   Assert-True ([regex]::Matches($candidateSource, [regex]::Escape($cleanCall)).Count -eq 1) "cleanliness mutant removes exactly one load-bearing call"
@@ -984,6 +1020,8 @@ try {
     $controls9382=@('installed-baseline','AC1-AC4-void-omitted')
     if([string]::IsNullOrWhiteSpace($env:GIT_ALTERNATE_OBJECT_DIRECTORIES)){
       Write-Output "LOCAL_PRIVATE_HISTORY #9382 installed-baseline skipped: GIT_ALTERNATE_OBJECT_DIRECTORIES is not configured (baseline=$prelogBaseline)"
+      # Hosted runners never configure the private-history alternates, so a hosted PASS does not include this control.
+      Write-Output "SKIPPED #9382 installed-baseline control: private history unavailable (GIT_ALTERNATE_OBJECT_DIRECTORIES unset); AC1-AC4-void-omitted still runs"
       $controls9382=@('AC1-AC4-void-omitted')
     }
     foreach($control9382 in $controls9382) {
@@ -1035,6 +1073,9 @@ try {
     if(Test-Path -LiteralPath $strictForecastPath){Remove-Item -LiteralPath $strictForecastPath -Force}
     [IO.File]::WriteAllText($controllerLog,'')
   }
+  if (& $runPart 'refusal-foundation') {
+  $refusalFoundationTimer=Start-DispatchCase 'refusal-foundation' 'refusal-foundation'
+  try {
   Invoke-FleetLauncherOrderingControls
   # --- direct ownership validator: no launcher, provider, or live runtime -----
   function New-OwnershipFixture(
@@ -1401,6 +1442,14 @@ Start-Sleep -Seconds 16
   Assert-True (-not (Test-Path -LiteralPath $forcedRecord.promptPath)) "next real inert dispatch reclaims the terminated launch prompt"
   Assert-True (-not (Test-Path -LiteralPath $forcedRecord.reviewIsolationRoot)) "next real inert dispatch reclaims the terminated provider-isolation root"
 
+  } finally {
+    Stop-DispatchCase 'refusal-foundation' $refusalFoundationTimer
+  }
+  }
+
+  if (& $runPart 'refusal-harness') {
+  $refusalHarnessTimer=Start-DispatchCase 'refusal-harness' 'refusal-harness'
+  try {
   # --- omission is least-authority; implementation requires explicit opt-in --
   $codex = & $launcher -Harness codex -Model gpt-6.1-sol -Effort high `
     -PromptFile $prompt -Worktree $worktree -Label "test-codex-$([guid]::NewGuid())" `
@@ -1487,6 +1536,15 @@ Start-Sleep -Seconds 16
   ) "Claude launch arguments exactly deny only the supported session-scoped orchestration tools"
   Assert-True ($claude.stdin -eq $prompt) "claude prompt arrives via stdin, never argument quoting"
   Assert-True ($claude.laneRole -ceq 'review') 'Sonnet Row 0 retains the existing review envelope, not implementation routing'
+  $claudeHelpFixture = Join-Path $PSScriptRoot 'fixtures/claude-help/help.txt'
+  $claudeHelpFixtureReadme = Join-Path $PSScriptRoot 'fixtures/claude-help/README.md'
+  Assert-True (Test-Path -LiteralPath $claudeHelpFixture) 'hosted Claude help fixture exists'
+  Assert-True (Test-Path -LiteralPath $claudeHelpFixtureReadme) 'hosted Claude help fixture provenance exists'
+  $claudeHelpFixtureBytes = [IO.File]::ReadAllBytes($claudeHelpFixture)
+  $claudeHelpFixtureHash = ([Security.Cryptography.SHA256]::Create().ComputeHash($claudeHelpFixtureBytes) | ForEach-Object ToString x2) -join ''
+  Assert-True ($claudeHelpFixtureHash -ceq '6a68777b1133bc483e126238b9f15f50e23c903deb3455ecae67c09eea01cd3c') 'hosted Claude help fixture bytes are pinned'
+  Assert-True (([Text.Encoding]::UTF8.GetString($claudeHelpFixtureBytes)) -match '(?m)^--disallowedTools$') 'hosted Claude help fixture covers the configured option'
+  Write-Output "PASS hosted Claude help fixture $claudeHelpFixtureHash"
   $sonnetPlanning = & $launcher -Harness claude -Model claude-sonnet-5-5 -Effort medium -Placement override-Todd `
     -LaneRole planning -PromptFile $prompt -Worktree $worktree -Label "test-sonnet-planning-$([guid]::NewGuid())" `
     -DryRun -ExecutablePath $fakeExe | ConvertFrom-Json
@@ -1497,27 +1555,6 @@ Start-Sleep -Seconds 16
         -LaneRole review -Row $reviewRow -PromptFile $prompt -Worktree $worktree -Label synthetic-sonnet-review `
         -DryRun -ExecutablePath $fakeExe
     } 'not an admitted' 'Row 0 compatibility must not admit Sonnet as a row-11/12 reviewer'
-  }
-
-  # Parse the exact configured arguments through the installed CLI with --help.
-  # --help is bounded and exits before session creation, authentication, or a
-  # model request; the IDs themselves are the built-ins reported by CLI init.
-  $installedClaude = Get-Command claude -CommandType Application -ErrorAction Stop |
-    Select-Object -First 1
-  $claudeHelpOutput = Join-Path $testRoot "claude-argument-fixture.out"
-  $claudeHelpError = Join-Path $testRoot "claude-argument-fixture.err"
-  $claudeHelpProcess = $null
-  try {
-    $claudeHelpProcess = Start-Process -FilePath $installedClaude.Source `
-      -ArgumentList @($expectedClaudeArguments + "--help") -WindowStyle Hidden -PassThru `
-      -RedirectStandardOutput $claudeHelpOutput -RedirectStandardError $claudeHelpError
-    $claudeHelpProcess.WaitForExit()
-    $claudeHelpExited = $claudeHelpProcess.HasExited
-    Assert-True ($claudeHelpExited) "installed Claude argument fixture exits without launching a model"
-    Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"
-    Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"
-  } finally {
-    if ($claudeHelpProcess) { $claudeHelpProcess.Dispose() }
   }
 
   # --- Claude stream-json task-state audit and exact injected preamble ---------
@@ -1804,7 +1841,13 @@ exit $LASTEXITCODE
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $emptyPrompt -Worktree $worktree -Label "t2" -DryRun -ExecutablePath $fakeExe } "empty" "empty prompt file must refuse (stdin EOF gotcha)"
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree (Join-Path $testRoot "no-such-lane") -Label "t3" -DryRun -ExecutablePath $fakeExe } "worktree" "missing worktree must refuse"
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t4" -DryRun -ExecutablePath $fakeShim } "native" "shim executable must refuse (codex shim gotcha)"
-  Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t5" -DryRun -TestArgumentList @("--test") } "requires" "test arguments cannot alter a production-resolved harness"
+  $savedPath = $env:PATH
+  try {
+    $env:PATH = "$nativeBin;$savedPath"
+    Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -PromptFile $prompt -Worktree $worktree -Label "t5" -DryRun -TestArgumentList @("--test") } "requires" "test arguments cannot alter a production-resolved harness"
+  } finally {
+    $env:PATH = $savedPath
+  }
   Assert-Throws { & $launcher -Harness codex -Model gpt-6.1-sol -Effort high -LaneRole implementaton -PromptFile $prompt -Worktree $worktree -Label "t6" -DryRun -ExecutablePath $fakeExe } "" "mistyped lane role must refuse instead of inheriting provider authority"
 
   # --- incident controls: omission isolates; explicit implementation inherits -
@@ -2064,6 +2107,10 @@ exit $LASTEXITCODE
   }
 
   Write-Output "PASS dispatch-lane launcher coverage"
+  } finally {
+    Stop-DispatchCase 'refusal-harness' $refusalHarnessTimer
+  }
+  }
 } finally {
   if ($forcedLauncherProcess -and -not $forcedLauncherProcess.HasExited) {
     Stop-Process -Id $forcedLauncherProcess.Id -Force -ErrorAction SilentlyContinue
@@ -2080,6 +2127,7 @@ exit $LASTEXITCODE
     throw "refusing unsafe test cleanup target: $testRootResolved"
   }
   Remove-Item -LiteralPath $testRootResolved -Recurse -Force -ErrorAction SilentlyContinue
+}
 }
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
@@ -2225,10 +2273,15 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
 function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $test='timed-fixture-under-fleet-load-measures-load'
   # Classifier legs are proof arms (Test-BatteryProofRelevant); the unmodified
-  # dispatch carrier below always runs.
+  # dispatch carrier below always runs in a whole run. A single -Part run defers
+  # it to the dispatch-incident-* parts and says so instead of claiming the vacant pass.
   if(-not(Test-BatteryProofRelevant @('landed-integration-evidence.psm1','dispatch-lane.test.ps1'))){
     Write-Output "SKIPPED 8102 $test classifier legs: classifier files unchanged in impact battery"
+    if($dispatchWholeRun){
     Invoke-7963ResumeCarriers @('dispatch')
+    } else {
+      Write-Output "DEFERRED 8102 $test unmodified dispatch carrier: runs in the dispatch-incident-* parts"
+    }
     return
   }
   $stallEdits=@{'interrupted-integration-test-support.ps1'=@(,@($stall8102Needle,$stall8102))}
@@ -2245,8 +2298,13 @@ function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $mutant=Invoke-8102DispatchLeg $test 'stalled-vacant-unconditional-mutant' $mutantEdits $false
   Assert-8102 ($mutant.exit-eq75-and$mutant.measured.Count-eq1-and$mutant.measured[0]-clike'MEASURED_LOAD 8076 dispatch fleetHolder=none elapsedSeconds=*') $test "fixture mutant that classifies MEASURED_LOAD without a concurrent holder reports fleetHolder=none on a vacant fleet (actual exit=$($mutant.exit))" $mutant
   Assert-8102 (-not($mutant.exit-eq1-and$mutant.measured.Count-eq0-and$mutant.text.Contains('8076 AC3 NOT_CONSTRUCTIBLE: holder not live and unreleased before armed deadline at release'))) $test 'vacant-fleet FAIL control rejects that mutant' $mutant
+  if($dispatchWholeRun){
   Invoke-7963ResumeCarriers @('dispatch')
   Write-Output "PASS 8102 $test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT vacant=PASS"
+  } else {
+    Write-Output "PASS 8102 $test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT"
+    Write-Output "DEFERRED 8102 $test vacant=DEFERRED unmodified dispatch carrier: runs in the dispatch-incident-* parts"
+  }
   foreach($leg in @($loaded,$vacant,$mutant)){Remove-8102FixtureCopy $leg.copy}
 }
 
@@ -2390,6 +2448,7 @@ function Test-TreeDeathOmissionStillRefuses {
   } finally { Stop-8103IdleChild $child; Import-Module $psm -Force -DisableNameChecking; if(Test-Path -LiteralPath $mutantDir){Remove-Item -LiteralPath $mutantDir -Recurse -Force -ErrorAction SilentlyContinue} }
 }
 
+if ($dispatchWholeRun) {
 Test-ReusedPidRootIsDeadByIdentity
 Test-TreeDeathOmissionStillRefuses
 
@@ -2398,6 +2457,40 @@ Test-ArmAfterOmissionSurvivesPreArmDelay
 Test-TimedFixtureUnderFleetLoadMeasuresLoad
 Test-RegressionUnderLoadIsNotMasked
 Invoke-7963ResumeCarriers @('native-branch')
+} else {
+# Single-part hosted carriers. Each carrier part runs through the same
+# Invoke-7963ResumeCarriers wrapper as the whole run, so MEASURED_LOAD still exits 75.
+if (& $runPart 'dispatch-guard-pid') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-pid' 'dispatch-guard-pid' { Test-ReusedPidRootIsDeadByIdentity }
+}
+if (& $runPart 'dispatch-guard-omission') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-omission' 'dispatch-guard-omission' { Test-TreeDeathOmissionStillRefuses }
+}
+if (& $runPart 'dispatch-guard-reuse') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-reuse' 'dispatch-guard-reuse' { Test-8076MeasuredReuseIsLauncherOnly }
+}
+if (& $runPart 'dispatch-guard-arm') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-arm' 'dispatch-guard-arm' { Test-ArmAfterOmissionSurvivesPreArmDelay }
+}
+if (& $runPart 'dispatch-guard-timed') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-timed' 'dispatch-guard-timed' { Test-TimedFixtureUnderFleetLoadMeasuresLoad }
+}
+if (& $runPart 'dispatch-guard-regression') {
+  Invoke-DispatchMeasuredCase 'dispatch-guard-regression' 'dispatch-guard-regression' { Test-RegressionUnderLoadIsNotMasked }
+}
+if (& $runPart 'dispatch-incident-a-route') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-route' 'dispatch-incident-a-route' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-route' } }
+if (& $runPart 'dispatch-incident-a-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-binding' 'dispatch-incident-a-binding' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-binding' } }
+if (& $runPart 'dispatch-incident-a-source-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-source-native' 'dispatch-incident-a-source-native' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-source-native' } }
+if (& $runPart 'dispatch-incident-b-route-baseline') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-baseline' 'dispatch-incident-b-route-baseline' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-route-baseline' } }
+if (& $runPart 'dispatch-incident-b-route-matrix') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-matrix' 'dispatch-incident-b-route-matrix' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-route-matrix' } }
+if (& $runPart 'dispatch-incident-b-binding-structure') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-structure' 'dispatch-incident-b-binding-structure' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-binding-structure' } }
+if (& $runPart 'dispatch-incident-b-binding-mutants') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-mutants' 'dispatch-incident-b-binding-mutants' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-binding-mutants' } }
+if (& $runPart 'dispatch-incident-b-source-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-binding' 'dispatch-incident-b-source-binding' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-source-binding' } }
+if (& $runPart 'dispatch-incident-b-source-remote') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-remote' 'dispatch-incident-b-source-remote' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-source-remote' } }
+if (& $runPart 'dispatch-incident-b-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-native' 'dispatch-incident-b-native' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-native' } }
+if (& $runPart 'native-branch-scope') { Invoke-DispatchMeasuredCase 'native-branch-scope' 'native-branch-scope' { Invoke-7963ResumeCarriers -Carriers @('native-branch') -Part 'native-branch-scope' } }
+if (& $runPart 'native-branch-resume') { Invoke-DispatchMeasuredCase 'native-branch-resume' 'native-branch-resume' { Invoke-7963ResumeCarriers -Carriers @('native-branch') -Part 'native-branch-resume' } }
+}
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

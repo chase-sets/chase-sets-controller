@@ -130,20 +130,33 @@ function New-CiDurationRecords($Plan,$Result,[string]$PlanDigest,[string]$Root) 
   return ,$records
 }
 
+# Appending merges records (first copy of identity/run/plan wins) and keeps the
+# profile's chosen shardCount; dropping it would silently replan the 18-shard
+# fallback ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within the
+# shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
+# A fresh (non-append) profile has no shardCount until prediction writes one.
+function New-CiDurationProfile($Existing,[object[]]$Records) {
+  $all=@(if($null-ne$Existing){@($Existing.records)})+@($Records)
+  $unique=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  $merged=@(foreach($record in $all){
+    $key="$($record.identity)|$($record.runId)|$($record.planSha256)"
+    if($unique.Add($key)){$record}
+  })
+  $profileOut=@{schemaVersion='controller-ci-durations/v1';records=$merged}
+  if($null-ne$Existing-and$null-ne$Existing.shardCount){$profileOut.shardCount=Get-CiShardCount @{shardCount=$Existing.shardCount}}
+  return $profileOut
+}
+
 if($Library){return}
 $plan=Get-Content -LiteralPath $RecordPlanPath -Raw|ConvertFrom-Json -Depth 50 -DateKind String
 $result=Get-Content -LiteralPath $ResultPath -Raw|ConvertFrom-Json -Depth 50 -DateKind String
 $digest=(Get-FileHash -LiteralPath $RecordPlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $records=New-CiDurationRecords $plan $result $digest $RepositoryRoot
+$existing=$null
 if($Append-and(Test-Path -LiteralPath $OutputPath)){
   $existing=Read-CiTimingProfile $OutputPath
   Assert-Ci ($null-ne$existing) 'cannot append unreadable timing profile'
-  $all=@($existing.records)+@($records)
-  $unique=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-  $records=@(foreach($record in $all){
-    $key="$($record.identity)|$($record.runId)|$($record.planSha256)"
-    if($unique.Add($key)){$record}
-  })
 }
-Write-CiJson @{schemaVersion='controller-ci-durations/v1';records=$records} $OutputPath
-Write-Output "RECORDED run=$($result.ci.runId) records=$($records.Count) output=$OutputPath"
+$durationProfile=New-CiDurationProfile $existing $records
+Write-CiJson $durationProfile $OutputPath
+Write-Output "RECORDED run=$($result.ci.runId) records=$($durationProfile.records.Count) shardCount=$($durationProfile.shardCount) output=$OutputPath"

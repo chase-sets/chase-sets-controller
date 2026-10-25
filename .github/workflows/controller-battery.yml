@@ -23,6 +23,11 @@ on:
         type: choice
         options: [full, impact]
         default: full
+      role:
+        description: Gate role; candidate plans must fit the hosted shard bound, baseline comparison plans record it unenforced
+        type: choice
+        options: [candidate, baseline]
+        default: candidate
 
 permissions:
   contents: read
@@ -76,9 +81,10 @@ jobs:
         env:
           CI_ITEMS: ${{ inputs.items }}
           CI_SCOPE: ${{ inputs.scope || 'full' }}
+          CI_ROLE: ${{ inputs.role || 'candidate' }}
           PRODUCT_SHA: ${{ steps.product.outputs.sha }}
         run: |
-          & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Plan -ControllerRoot "$env:GITHUB_WORKSPACE/container/controller" -ProductSha $env:PRODUCT_SHA -Items $env:CI_ITEMS -Scope $env:CI_SCOPE -OutputDirectory "$env:GITHUB_WORKSPACE/plan"
+          & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Plan -ControllerRoot "$env:GITHUB_WORKSPACE/container/controller" -ProductSha $env:PRODUCT_SHA -Items $env:CI_ITEMS -Scope $env:CI_SCOPE -Role $env:CI_ROLE -OutputDirectory "$env:GITHUB_WORKSPACE/plan"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

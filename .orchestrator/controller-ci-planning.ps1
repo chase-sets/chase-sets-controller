@@ -113,6 +113,9 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
       $estimate = [long][Math]::Ceiling($timing.elapsedMs * ([double]$part.weight / $weight))
       $timingSource = $timing.source + '-split-estimate'
       if ($partTiming.source -ceq 'recorded') { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
+      # A hosted part observation keeps its own shape; an equal-weight share of
+      # the whole suite is only the last resort for a part never observed.
+      elseif ($partTiming.source -ceq 'stale-recorded') { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
       $tasks.Add([pscustomobject]@{identity=$id;requiredIdentity=$item.identity;path=$item.path;command=$item.command
         arguments=@($item.arguments) + @($split.selector,$part.name);restriction=$item.restriction
         estimatedMs=$estimate;timingSource=$timingSource})
@@ -124,12 +127,12 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
 function Get-CiShardCount($Plan) {
   if ($null -eq $Plan.shardCount) { return 10 }
   Assert-Ci (($Plan.shardCount -is [int] -or $Plan.shardCount -is [long]) -and
-    $Plan.shardCount -in @(16,17,18)) 'unsupported shard count'
+    $Plan.shardCount -ge 16 -and $Plan.shardCount -le 32) 'unsupported shard count'
   return [int]$Plan.shardCount
 }
 
 function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
-  Assert-Ci ($ShardCount -in @(10,16,17,18)) 'unsupported shard count'
+  Assert-Ci ($ShardCount -eq 10 -or ($ShardCount -ge 16 -and $ShardCount -le 32)) 'unsupported shard count'
   # Ordinal identity breaks equal-duration ties independently of locale and input order.
   $order = [Collections.Generic.List[object]]::new()
   foreach ($task in $Tasks) { $order.Add($task) }
@@ -147,6 +150,32 @@ function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
     $loads[$shard] += $task.estimatedMs
   }
   return ,@($order)
+}
+
+# The hosted shard bound ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts
+# within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
+# every shard estimate is a hosted observation of its own execution identity
+# and the largest shard fits the 300 s job bound. Fallback, equal-weight split
+# and whole-item stale estimates are not observations of the planned bytes; a
+# split part may still use its own stale record (stale-recorded-part).
+function Assert-CiPlanBound([object[]]$Shards, [object[]]$Tasks, [long]$BoundMs=300000) {
+  $unobserved = @($Tasks | Where-Object { $_.timingSource -ceq 'fallback' -or $_.timingSource -ceq 'stale-recorded' -or ([string]$_.timingSource).EndsWith('-split-estimate', [StringComparison]::Ordinal) })
+  Assert-Ci ($unobserved.Count -eq 0) "plan bound: unobserved timing estimate: $(@($unobserved | ForEach-Object { "$($_.identity)=$($_.timingSource)" }) -join ',')"
+  $maxMs = [long](($Shards | Measure-Object estimatedMs -Maximum).Maximum)
+  Assert-Ci ($maxMs -le $BoundMs) "plan bound: max shard estimatedMs=$maxMs exceeds $BoundMs"
+  return $maxMs
+}
+
+# The run's declared role decides enforcement, never which commit the runner
+# or checkout is: a candidate plan is bounded on any checkout, and only an
+# explicit baseline comparison run records the bound without enforcing it.
+function Get-CiPlanBound([string]$Role, [object[]]$Shards, [object[]]$Tasks, [string]$CheckoutHead, [string]$RunnerHead, [long]$BoundMs=300000) {
+  Assert-Ci ($Role -cin @('candidate','baseline')) "plan role must be candidate or baseline: '$Role'"
+  $enforced = $Role -cne 'baseline'
+  $bound = [ordered]@{role=$Role;enforced=$enforced;boundMs=$BoundMs;checkoutHead=$CheckoutHead;runnerHead=$RunnerHead}
+  if ($enforced) { $bound.maxEstimatedMs = Assert-CiPlanBound $Shards $Tasks $BoundMs }
+  else { $bound.maxEstimatedMs = [long](($Shards | Measure-Object estimatedMs -Maximum).Maximum); $bound.reason = 'baseline comparison run: bound recorded, not enforced' }
+  return $bound
 }
 
 function ConvertTo-CiRequiredResults($Plan, [object[]]$Results) {
