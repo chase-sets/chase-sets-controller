@@ -157,6 +157,64 @@ Refuses-Coverage {
   $mutantOwners=Get-DispatchCaseOwners $mutant
   Assert-Ci (@($mutantOwners|Where-Object name -ceq 'dispatch-guard-pid').Count -eq 1) 'dispatch duplicate-execution mutant survived'
 }
+# Whole-run (no -Part / -Part all) dispatch-lane keeps the base carrier shape:
+# the 8102 test owns both literal dispatch carrier calls, guarded by the
+# whole-run selector with a DEFERRED single-part branch, and the base top-level
+# sequence. Single parts call carriers only through Invoke-7963ResumeCarriers
+# (MEASURED_LOAD -> exit 75), never Test-7963ResumeCarrier directly.
+function Test-DispatchAstWithin($Node,$Container){ $Container.Extent.StartOffset -le $Node.Extent.StartOffset -and $Node.Extent.EndOffset -le $Container.Extent.EndOffset }
+function Assert-DispatchCarrierShape([string]$Source,[string]$Baseline) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch carrier shape parse failed'
+  Assert-Ci (@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Test-7963ResumeCarrier'},$true)).Count -eq 0) 'dispatch carrier bypasses the Invoke-7963ResumeCarriers MEASURED_LOAD wrapper'
+  $timed=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-TimedFixtureUnderFleetLoadMeasuresLoad'},$true))
+  Assert-Ci ($timed.Count -eq 1) 'dispatch 8102 timed fixture function missing'
+  $literal="Invoke-7963ResumeCarriers @('dispatch')"
+  $calls=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text -ceq $literal},$true))
+  Assert-Ci ($calls.Count -eq 2) 'dispatch whole-run carrier call count changed'
+  foreach($call in $calls){
+    Assert-Ci (Test-DispatchAstWithin $call $timed[0]) 'dispatch whole-run carrier call left the 8102 test'
+    $guard=$call.Parent; while($guard -and $guard -isnot [Management.Automation.Language.IfStatementAst]){$guard=$guard.Parent}
+    Assert-Ci ($null -ne $guard -and $guard.Clauses.Count -eq 1 -and $guard.Clauses[0].Item1.Extent.Text -ceq '$dispatchWholeRun' -and
+      (Test-DispatchAstWithin $call $guard.Clauses[0].Item2) -and $null -ne $guard.ElseClause -and
+      $guard.ElseClause.Extent.Text.Contains('DEFERRED 8102') -and -not $guard.ElseClause.Extent.Text.Contains('vacant=PASS')) 'dispatch whole-run carrier is not guarded by the whole-run selector with a DEFERRED single-part branch'
+  }
+  Assert-Ci ([regex]::Matches($timed[0].Extent.Text,'vacant=PASS').Count -eq 1) 'dispatch 8102 vacant=PASS claim duplicated or dropped'
+  $whole=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -eq 1 -and $n.Clauses[0].Item1.Extent.Text -ceq '$dispatchWholeRun' -and -not (Test-DispatchAstWithin $n $timed[0])},$true))
+  Assert-Ci ($whole.Count -eq 1 -and $null -ne $whole[0].ElseClause) 'dispatch whole-run top-level selector missing'
+  $expected=@('Test-ReusedPidRootIsDeadByIdentity','Test-TreeDeathOmissionStillRefuses','Test-8076MeasuredReuseIsLauncherOnly','Test-ArmAfterOmissionSurvivesPreArmDelay','Test-TimedFixtureUnderFleetLoadMeasuresLoad','Test-RegressionUnderLoadIsNotMasked',"Invoke-7963ResumeCarriers @('native-branch')")
+  $at=0
+  foreach($statement in $expected){$at=$Baseline.IndexOf("`n$statement`n",$at,[StringComparison]::Ordinal);Assert-Ci ($at -ge 0) "dispatch base top-level sequence anchor missing: $statement";$at++}
+  $actual=@($whole[0].Clauses[0].Item2.Statements|ForEach-Object{$_.Extent.Text})
+  Assert-Ci (($actual -join "`n") -ceq ($expected -join "`n")) 'dispatch whole-run top-level sequence differs from base'
+  $parts=[ordered]@{}
+  foreach($name in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')){$parts[$name]='dispatch'}
+  $parts['native-branch-scope']='native-branch';$parts['native-branch-resume']='native-branch'
+  $measured=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Invoke-DispatchMeasuredCase' -and $n.CommandElements.Count -ge 4 -and $n.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst]},$true))
+  foreach($case in @($measured|Where-Object{$_.CommandElements[1].Value -like 'dispatch-guard-*'})){Assert-Ci (Test-DispatchAstWithin $case $whole[0].ElseClause) "dispatch single-part guard escaped into the whole run: $($case.CommandElements[1].Value)"}
+  foreach($name in $parts.Keys){
+    $case=@($measured|Where-Object{$_.CommandElements[1].Value -ceq $name})
+    Assert-Ci ($case.Count -eq 1 -and (Test-DispatchAstWithin $case[0] $whole[0].ElseClause)) "dispatch carrier part is missing or runs in the whole run: $name"
+    $inner=@($case[0].CommandElements[3].FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))
+    Assert-Ci ($inner.Count -eq 1 -and $inner[0].Extent.Text -ceq "Invoke-7963ResumeCarriers -Carriers @('$($parts[$name])') -Part '$name'") "dispatch carrier part does not run through Invoke-7963ResumeCarriers with its own -Part: $name"
+  }
+}
+$dispatchBaseHead=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','62a4a6c1469beb46be27b3805a3a398fc5b598d0:.orchestrator/dispatch-lane.test.ps1'))).Replace("`r`n","`n")
+Assert-DispatchCarrierShape $dispatchSource $dispatchBaseHead
+foreach($carrierMutant in @(
+  @("Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-native'","Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-native'"),
+  @("-Part 'dispatch-incident-a-route' }","-Part 'dispatch-incident-a-binding' }"),
+  @("`n    Invoke-7963ResumeCarriers @('dispatch')`n","`n    Write-Output 'carrier omitted'`n"),
+  @("`n    Write-Output `"PASS 8102 `$test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT`"`n","`n    Write-Output `"PASS 8102 `$test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT vacant=PASS`"`n"),
+  @("`nTest-TimedFixtureUnderFleetLoadMeasuresLoad`n","`n"),
+  @('if ($dispatchWholeRun) {','if ($true) {')
+)){
+  Assert-Ci ($dispatchSource.Contains($carrierMutant[0])) "dispatch carrier mutant anchor missing: $($carrierMutant[0])"
+  $mutantSource=([regex]::new([regex]::Escape($carrierMutant[0]))).Replace($dispatchSource,$carrierMutant[1].Replace('$','$$'),1)
+  Refuses-Coverage { Assert-DispatchCarrierShape $mutantSource $dispatchBaseHead }
+}
+Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guarded 8102 carrier calls; single parts through Invoke-7963ResumeCarriers -Part; 6 carrier mutants refused'
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'

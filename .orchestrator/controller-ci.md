@@ -4,9 +4,10 @@ The public repository is https://github.com/chase-sets/chase-sets-controller.
 `.github/workflows/controller-battery.yml` accepts manual dispatch and pushes to
 `main` only. There are no PR triggers. Actions are SHA-pinned, tokens are
 read-only, checkout credentials are not persisted, and no repository secrets
-are required. A calibrated plan uses the smallest feasible shard count in
-16, 17, 18 with LPT maximum at most 250000 ms. Each execution shard must finish
-within 300000 ms. Legacy plans without `shardCount` still use exactly ten
+are required. A calibrated plan raises the shard count from 16 until the LPT
+predicted maximum is at most 200000 ms, capped at 32. When no count meets that
+target, the cap is used if its predicted maximum is at most 300000 ms. Each
+execution shard must finish within 300000 ms. Legacy plans without `shardCount` still use exactly ten
 receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 
@@ -82,10 +83,15 @@ minimum sample. Baseline, re-probe, calibration and gate records retain their
 original run/head/plan provenance; they are not relabeled as new executions.
 
 Run `controller-ci-prediction.ps1 -EvidenceDirectory <evidence> -CalibrationPlanPath
-<plan> -WriteProfile` to replay all three bounded choices and record the smallest
-feasible N. No feasible count means stop for decomposition. Calibration may use
-fallback; the gate must have only `recorded`, `recorded-part` and `local-only`
-timing sources. Records older than 30 days or changed dependencies cannot be
+<plan> -WriteProfile` to replay N=16..32 and record the chosen N (above). No
+count within 300000 ms means stop for decomposition. Every estimate must be a
+hosted observation of that exact execution identity: `recorded`,
+`recorded-part`, `stale-recorded`, `stale-recorded-part` or `local-only`.
+Fallback and equal-weight `*-split-estimate` timings refuse. A split part with
+only stale records uses its own slowest stale observation; an equal-weight
+share of the whole suite is used only for a part that was never observed.
+Record both gate runs (`-Append`) so the next plan takes the slowest hosted
+observation per item. Records older than 30 days or changed dependencies cannot be
 used as fresh proof. No timeout, retry, skip, sampling or waiver is introduced.
 
 The hosted inventory explicitly adds `check:controller-ci-coverage`,

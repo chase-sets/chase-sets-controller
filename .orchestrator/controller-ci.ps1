@@ -7,7 +7,7 @@ param(
   [ValidateSet('full','impact')][string]$Scope = 'full',
   [string]$PlanPath,
   [string]$OutputDirectory,
-  [ValidateRange(0,17)][int]$Shard = 0
+  [ValidateRange(0,31)][int]$Shard = 0
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')

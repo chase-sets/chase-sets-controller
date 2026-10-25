@@ -22,6 +22,7 @@ $dispatchParts = @('all') + @((Get-DispatchLanePartMap).Keys)
 Assert-SuiteSelection $Part $dispatchParts $PSBoundParameters @('ValidatorOnly','FleetPreClosureOnly','NativeBranchOnly','OrdinaryOnly','ProductCensusOnly','CapacityOnly','RoutingIssueOnly','VerificationPolicyOnly','GuardRevision','PolicyMutant')
 $runPart = { param([string]$Name) -not $Part -or $Part -ceq 'all' -or $Part -ceq $Name }
 $runFoundation = & $runPart 'dispatch-foundation'
+$dispatchWholeRun = -not $Part -or $Part -ceq 'all'
 if ($VerificationPolicyOnly) {
   $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/dispatch-lane.ps1") -join "`n") } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-lane.ps1')) }
   if($PolicyMutant -eq 'universal-preamble'){$source=$source.Replace("if (`$Role -cne 'implementation' -or `$RoutingRow -eq 13)",'if ($false)')}
@@ -2269,9 +2270,15 @@ function Test-ArmAfterOmissionSurvivesPreArmDelay {
 function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $test='timed-fixture-under-fleet-load-measures-load'
   # Classifier legs are proof arms (Test-BatteryProofRelevant); the unmodified
-  # dispatch carrier below always runs.
+  # dispatch carrier below always runs in a whole run. A single -Part run defers
+  # it to the dispatch-incident-* parts and says so instead of claiming the vacant pass.
   if(-not(Test-BatteryProofRelevant @('landed-integration-evidence.psm1','dispatch-lane.test.ps1'))){
     Write-Output "SKIPPED 8102 $test classifier legs: classifier files unchanged in impact battery"
+    if($dispatchWholeRun){
+    Invoke-7963ResumeCarriers @('dispatch')
+    } else {
+      Write-Output "DEFERRED 8102 $test unmodified dispatch carrier: runs in the dispatch-incident-* parts"
+    }
     return
   }
   $stallEdits=@{'interrupted-integration-test-support.ps1'=@(,@($stall8102Needle,$stall8102))}
@@ -2288,7 +2295,13 @@ function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $mutant=Invoke-8102DispatchLeg $test 'stalled-vacant-unconditional-mutant' $mutantEdits $false
   Assert-8102 ($mutant.exit-eq75-and$mutant.measured.Count-eq1-and$mutant.measured[0]-clike'MEASURED_LOAD 8076 dispatch fleetHolder=none elapsedSeconds=*') $test "fixture mutant that classifies MEASURED_LOAD without a concurrent holder reports fleetHolder=none on a vacant fleet (actual exit=$($mutant.exit))" $mutant
   Assert-8102 (-not($mutant.exit-eq1-and$mutant.measured.Count-eq0-and$mutant.text.Contains('8076 AC3 NOT_CONSTRUCTIBLE: holder not live and unreleased before armed deadline at release'))) $test 'vacant-fleet FAIL control rejects that mutant' $mutant
+  if($dispatchWholeRun){
+  Invoke-7963ResumeCarriers @('dispatch')
   Write-Output "PASS 8102 $test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT vacant=PASS"
+  } else {
+    Write-Output "PASS 8102 $test held-miss=MEASURED_LOAD vacant-miss=FAIL vacant-mutant=CAUGHT"
+    Write-Output "DEFERRED 8102 $test vacant=DEFERRED unmodified dispatch carrier: runs in the dispatch-incident-* parts"
+  }
   foreach($leg in @($loaded,$vacant,$mutant)){Remove-8102FixtureCopy $leg.copy}
 }
 
@@ -2432,6 +2445,18 @@ function Test-TreeDeathOmissionStillRefuses {
   } finally { Stop-8103IdleChild $child; Import-Module $psm -Force -DisableNameChecking; if(Test-Path -LiteralPath $mutantDir){Remove-Item -LiteralPath $mutantDir -Recurse -Force -ErrorAction SilentlyContinue} }
 }
 
+if ($dispatchWholeRun) {
+Test-ReusedPidRootIsDeadByIdentity
+Test-TreeDeathOmissionStillRefuses
+
+Test-8076MeasuredReuseIsLauncherOnly
+Test-ArmAfterOmissionSurvivesPreArmDelay
+Test-TimedFixtureUnderFleetLoadMeasuresLoad
+Test-RegressionUnderLoadIsNotMasked
+Invoke-7963ResumeCarriers @('native-branch')
+} else {
+# Single-part hosted carriers. Each carrier part runs through the same
+# Invoke-7963ResumeCarriers wrapper as the whole run, so MEASURED_LOAD still exits 75.
 if (& $runPart 'dispatch-guard-pid') {
   Invoke-DispatchMeasuredCase 'dispatch-guard-pid' 'dispatch-guard-pid' { Test-ReusedPidRootIsDeadByIdentity }
 }
@@ -2450,18 +2475,19 @@ if (& $runPart 'dispatch-guard-timed') {
 if (& $runPart 'dispatch-guard-regression') {
   Invoke-DispatchMeasuredCase 'dispatch-guard-regression' 'dispatch-guard-regression' { Test-RegressionUnderLoadIsNotMasked }
 }
-if (& $runPart 'dispatch-incident-a-route') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-route' 'dispatch-incident-a-route' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a-route' } }
-if (& $runPart 'dispatch-incident-a-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-binding' 'dispatch-incident-a-binding' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a-binding' } }
-if (& $runPart 'dispatch-incident-a-source-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-source-native' 'dispatch-incident-a-source-native' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-a-source-native' } }
-if (& $runPart 'dispatch-incident-b-route-baseline') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-baseline' 'dispatch-incident-b-route-baseline' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-route-baseline' } }
-if (& $runPart 'dispatch-incident-b-route-matrix') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-matrix' 'dispatch-incident-b-route-matrix' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-route-matrix' } }
-if (& $runPart 'dispatch-incident-b-binding-structure') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-structure' 'dispatch-incident-b-binding-structure' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-binding-structure' } }
-if (& $runPart 'dispatch-incident-b-binding-mutants') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-mutants' 'dispatch-incident-b-binding-mutants' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-binding-mutants' } }
-if (& $runPart 'dispatch-incident-b-source-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-binding' 'dispatch-incident-b-source-binding' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-source-binding' } }
-if (& $runPart 'dispatch-incident-b-source-remote') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-remote' 'dispatch-incident-b-source-remote' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-source-remote' } }
-if (& $runPart 'dispatch-incident-b-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-native' 'dispatch-incident-b-native' { Test-7963ResumeCarrier 'dispatch' -Part 'dispatch-incident-b-native' } }
-if (& $runPart 'native-branch-scope') { Invoke-DispatchMeasuredCase 'native-branch-scope' 'native-branch-scope' { Test-7963ResumeCarrier 'native-branch' -Part 'native-branch-scope' } }
-if (& $runPart 'native-branch-resume') { Invoke-DispatchMeasuredCase 'native-branch-resume' 'native-branch-resume' { Test-7963ResumeCarrier 'native-branch' -Part 'native-branch-resume' } }
+if (& $runPart 'dispatch-incident-a-route') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-route' 'dispatch-incident-a-route' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-route' } }
+if (& $runPart 'dispatch-incident-a-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-binding' 'dispatch-incident-a-binding' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-binding' } }
+if (& $runPart 'dispatch-incident-a-source-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-a-source-native' 'dispatch-incident-a-source-native' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-a-source-native' } }
+if (& $runPart 'dispatch-incident-b-route-baseline') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-baseline' 'dispatch-incident-b-route-baseline' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-route-baseline' } }
+if (& $runPart 'dispatch-incident-b-route-matrix') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-route-matrix' 'dispatch-incident-b-route-matrix' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-route-matrix' } }
+if (& $runPart 'dispatch-incident-b-binding-structure') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-structure' 'dispatch-incident-b-binding-structure' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-binding-structure' } }
+if (& $runPart 'dispatch-incident-b-binding-mutants') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-binding-mutants' 'dispatch-incident-b-binding-mutants' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-binding-mutants' } }
+if (& $runPart 'dispatch-incident-b-source-binding') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-binding' 'dispatch-incident-b-source-binding' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-source-binding' } }
+if (& $runPart 'dispatch-incident-b-source-remote') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-source-remote' 'dispatch-incident-b-source-remote' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-source-remote' } }
+if (& $runPart 'dispatch-incident-b-native') { Invoke-DispatchMeasuredCase 'dispatch-incident-b-native' 'dispatch-incident-b-native' { Invoke-7963ResumeCarriers -Carriers @('dispatch') -Part 'dispatch-incident-b-native' } }
+if (& $runPart 'native-branch-scope') { Invoke-DispatchMeasuredCase 'native-branch-scope' 'native-branch-scope' { Invoke-7963ResumeCarriers -Carriers @('native-branch') -Part 'native-branch-scope' } }
+if (& $runPart 'native-branch-resume') { Invoke-DispatchMeasuredCase 'native-branch-resume' 'native-branch-resume' { Invoke-7963ResumeCarriers -Carriers @('native-branch') -Part 'native-branch-resume' } }
+}
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

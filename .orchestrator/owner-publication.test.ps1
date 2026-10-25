@@ -485,6 +485,55 @@ function Invoke-ReaderInventory {
   Assert-Owner ($staleFixtures.Count-eq0) "owner-reader-inventory stale fixture sites: $($staleFixtures -join ', ')"
   $stalePinMutant=$fixtures.Clone(); $stalePinMutant['install-controller-skills.ps1']=@(137,138)
   Assert-Owner ((@(& $findStale $stalePinMutant)) -ccontains 'install-controller-skills.ps1:137') 'stale fixture pin control is RED'
+  # Pinned historical fixture bytes (fixtures/historical-*/README.md blob pins)
+  # are only copied into synthetic temp roots by New-HistoricalDispatchFixture.
+  # Their sites are keyed by repository-relative path, so a historical opener
+  # can never borrow the classification of a current file with the same name
+  # and line. Each pinned site must still name a discovered opener.
+  $historicalSites=[ordered]@{
+    '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/dispatch-ownership.ps1'=@(258)
+    '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
+    '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/dispatch-ownership.ps1'=@(278)
+    '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/invoke-heavy-verifier.ps1'=@(693,696,1017,1067)
+    '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/landed-integration-evidence.psm1'=@(924)
+    '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/dispatch-ownership.ps1'=@(278)
+    '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
+  }
+  function Get-ReaderSiteKey([string]$Relative,[int]$Line) {
+    if($Relative -clike '.orchestrator/fixtures/historical-*/*'){ return "${Relative}:$Line" }
+    return "$([IO.Path]::GetFileName($Relative)):$Line"
+  }
+  $findStaleHistorical={ param($Pins) @(foreach($relative in $Pins.Keys){ $lines=[IO.File]::ReadAllLines((Join-Path $root $relative)); foreach($line in $Pins[$relative]){ if($line-gt$lines.Length -or -not($lines[$line-1]-match$readPattern-and$lines[$line-1]-match$pathPattern)){Get-ReaderSiteKey $relative $line} } }) }
+  $staleHistorical=@(& $findStaleHistorical $historicalSites)
+  Assert-Owner ($staleHistorical.Count-eq0) "owner-reader-inventory stale historical fixture sites: $($staleHistorical -join ', ')"
+  $staleHistoricalMutant=[ordered]@{'.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/dispatch-ownership.ps1'=@(259)}
+  Assert-Owner ((@(& $findStaleHistorical $staleHistoricalMutant)) -ccontains '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/dispatch-ownership.ps1:259') 'stale historical fixture pin control is RED'
+  foreach($relative in $historicalSites.Keys) {
+    $fixtureRoot=[regex]::Match($relative,'^\.orchestrator/fixtures/historical-[^/]+').Value
+    $inner=$relative.Substring($fixtureRoot.Length+1)
+    $pin=@(Get-Content -LiteralPath (Join-Path $root "$fixtureRoot/README.md") | ForEach-Object { if($_ -match '^\- (?<path>\.orchestrator/[^|]+?)\s*\| blob `(?<blob>[0-9a-f]{40})`$' -and $Matches.path.Trim() -ceq $inner){$Matches.blob} })
+    # Committed fixture files carry CRLF; the README pins the historical LF blob.
+    $raw=[IO.File]::ReadAllBytes((Join-Path $root $relative)); $lfList=[Collections.Generic.List[byte]]::new($raw.Length)
+    for($i=0;$i-lt$raw.Length;$i++){ if(-not($raw[$i]-eq13-and$i+1-lt$raw.Length-and$raw[$i+1]-eq10)){$lfList.Add($raw[$i])} }
+    $lf=$lfList.ToArray()
+    $actual=[Convert]::ToHexString([Security.Cryptography.SHA1]::HashData([byte[]]([Text.Encoding]::ASCII.GetBytes("blob $($lf.Length)`0")+$lf))).ToLowerInvariant()
+    Assert-Owner ($pin.Count-eq1 -and $actual-ceq$pin[0]) "historical fixture bytes are not the README-pinned blob: $relative"
+    $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
+    foreach($line in $historicalSites[$relative]) {
+      $key=Get-ReaderSiteKey $relative $line
+      $table.Add(@{site=$key;api=$lines[$line-1].Trim();shareBefore='pinned historical bytes';shareAfter='unchanged';decoder='unchanged historical decoder';callers='New-HistoricalDispatchFixture copy into a synthetic temp root';owner="pinned historical fixture bytes (blob $($pin[0])), never live publication"})
+      $classified[$key]=$true
+    }
+  }
+  # Control: a current-file entry with the same file name and line must not
+  # classify a historical site. The bare-name key would have accepted it.
+  $borrowProbe='.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/dispatch-ownership.ps1'
+  $borrowed=@{}; foreach($key in $classified.Keys){ if($key -notlike '.orchestrator/fixtures/historical-*'){ $borrowed[$key]=$true } }
+  $borrowed["$([IO.Path]::GetFileName($borrowProbe)):258"]=$true
+  Assert-Owner ($borrowed.ContainsKey("$([IO.Path]::GetFileName($borrowProbe)):258")) 'historical borrow control has a same-name current-file entry'
+  $refused=$false
+  try { Assert-ClassifiedOpeners @(Get-ReaderSiteKey $borrowProbe 258) $borrowed } catch {$refused=$_.Exception.Message.Contains('unclassified openers')}
+  Assert-Owner $refused 'historical site cannot borrow a current-file classification control is RED'
   $selfSource=Read-Source 'owner-publication.test.ps1'
   foreach($spec in @(@('Invoke-Primitive',4,'deliberately held positive/negative readers and injected claim opener'),@('Invoke-ContinuousPublication',1,'held delete-sharing reader across continuous fixture publications'),@('Test-ReaderContract',2,'source-only regression expressions, not executed opens'),@('Invoke-ReaderInventory',3,'source-only inventory expressions, not executed opens'),@('Invoke-ReaderMatrix',1,'deliberately cached-handle negative control'))) {
     $body=Get-Definition $selfSource $spec[0]
@@ -520,7 +569,7 @@ function Invoke-ReaderInventory {
     for($index=0;$index-lt$lines.Length;$index++) {
       $text=$lines[$index]
       if($text-match$readPattern -and $text-match$pathPattern) {
-        $key="${name}:$($index+1)"
+        $key=Get-ReaderSiteKey $relative ($index+1)
         if($key-ceq$writerSite) {
           $table.Add(@{site=$key;api='CreateNew / Write';shareBefore=0;shareAfter=0;decoder='none';callers='initial acquisition';owner='writer, not a snapshot reader'}); continue
         }

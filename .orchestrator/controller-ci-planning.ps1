@@ -113,6 +113,9 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
       $estimate = [long][Math]::Ceiling($timing.elapsedMs * ([double]$part.weight / $weight))
       $timingSource = $timing.source + '-split-estimate'
       if ($partTiming.source -ceq 'recorded') { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
+      # A hosted part observation keeps its own shape; an equal-weight share of
+      # the whole suite is only the last resort for a part never observed.
+      elseif ($partTiming.source -ceq 'stale-recorded') { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
       $tasks.Add([pscustomobject]@{identity=$id;requiredIdentity=$item.identity;path=$item.path;command=$item.command
         arguments=@($item.arguments) + @($split.selector,$part.name);restriction=$item.restriction
         estimatedMs=$estimate;timingSource=$timingSource})
@@ -124,12 +127,12 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
 function Get-CiShardCount($Plan) {
   if ($null -eq $Plan.shardCount) { return 10 }
   Assert-Ci (($Plan.shardCount -is [int] -or $Plan.shardCount -is [long]) -and
-    $Plan.shardCount -in @(16,17,18)) 'unsupported shard count'
+    $Plan.shardCount -ge 16 -and $Plan.shardCount -le 32) 'unsupported shard count'
   return [int]$Plan.shardCount
 }
 
 function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
-  Assert-Ci ($ShardCount -in @(10,16,17,18)) 'unsupported shard count'
+  Assert-Ci ($ShardCount -eq 10 -or ($ShardCount -ge 16 -and $ShardCount -le 32)) 'unsupported shard count'
   # Ordinal identity breaks equal-duration ties independently of locale and input order.
   $order = [Collections.Generic.List[object]]::new()
   foreach ($task in $Tasks) { $order.Add($task) }
