@@ -287,7 +287,7 @@ try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'even
     Assert-Log ($after.issue -eq 908526) "launch-issue-no-host-row/${version}: Issue survives routing serializer"
     $after.PSObject.Properties.Remove('issue');$after.ts=$before.ts
     Assert-Log (($before|ConvertTo-Json -Compress) -ceq ($after|ConvertTo-Json -Compress)) 'implementation routing bytes unchanged apart from issue and timestamp'
-    foreach($role in @('planning','review')) {
+    foreach($role in @('planning','review','decision')) {
       $route.LaneRole=$role;& $logger @route | Out-Null
       $row=(Get-Content $routeLog -Tail 1)|ConvertFrom-Json -DateKind String
       Assert-Log ($row.issue -eq 908526 -and $row.laneRole -ceq $role) "launch-label-issue-resolution/$version/$role"

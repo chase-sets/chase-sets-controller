@@ -32,7 +32,7 @@ if ($VerificationPolicyOnly) {
   if($definition.Count -ne 1){throw 'ASSERTION FAILED: role-specific verification preamble absent'}
   . ([scriptblock]::Create($definition[0].Extent.Text))
   foreach($harness in @('codex','claude')) {
-    foreach($role in @('planning','review','implementation')) {
+    foreach($role in @('planning','review','decision','implementation')) {
       foreach($row in @(7,13)) {
         $preamble=Get-HeavyVerificationPreamble $role $row 'synthetic-wrapper'
         if($role -ne 'implementation' -or $row -eq 13) {
@@ -72,7 +72,7 @@ try {
   $block=$calls[0].Parent
   while($block -isnot [Management.Automation.Language.IfStatementAst]){$block=$block.Parent}
   $routingScriptRoot=$PSScriptRoot
-  foreach($role in @('implementation','planning','review')){
+  foreach($role in @('implementation','planning','review','decision')){
     & {
       param($LaneRole)
       $PSScriptRoot=$routingScriptRoot
@@ -1147,7 +1147,7 @@ try {
     $launchId = [guid]::NewGuid().ToString()
     $recordPath = Join-Path $ownershipRoot "dispatch-launch-$launchId.json"
     $promptPath = Join-Path $ownershipRoot "dispatch-heavy-verifier-$launchId.prompt.txt"
-    $isolationRoot = if ($LaneRole -in @("review", "planning")) { Join-Path $providerTempRoot "chase-sets-$LaneRole-$launchId" } else { $null }
+    $isolationRoot = if ($LaneRole -in @("review", "planning", "decision")) { Join-Path $providerTempRoot "chase-sets-$LaneRole-$launchId" } else { $null }
     $recordValues = [ordered]@{
       schemaVersion = $SchemaVersion
       launchId = $launchId
@@ -1303,7 +1303,7 @@ try {
   $aliasBypass.record.worktree=Join-Path $aliasAnchor '..\lane-99'
   Write-DispatchOwnershipRecord $aliasBypass.recordPath $aliasBypass.record
   Assert-LaneRecordDenied $aliasBypass 'aliased-noncanonical-worktree'
-  foreach($role in @('review','planning','implementation')){
+  foreach($role in @('review','planning','decision','implementation')){
     $roleBypass=New-OwnershipFixture -LaneRole $role -LauncherPid $PID -LauncherStartIdentity $liveStart -ChildPid $PID -ChildStartIdentity $liveStart
     Assert-LaneRecordDenied $roleBypass "lane-role-$role"
   }
@@ -1651,7 +1651,8 @@ exit $LASTEXITCODE
     [string]$Harness = "claude",
     [string]$LaneRole = "implementation",
     [string]$PartialLine = "",
-    [int]$ChildExitCode = 0
+    [int]$ChildExitCode = 0,
+    [string]$LauncherPath = $launcher
   ) {
     $label = "test-$Name-$([guid]::NewGuid())"
     $fixture = Join-Path $testRoot "$label-fixture.jsonl"
@@ -1662,7 +1663,7 @@ exit $LASTEXITCODE
     $script:launcherOutputFiles += Join-Path $ownershipRoot "$label.jsonl"
     $script:launcherOutputFiles += Join-Path $ownershipRoot "$label.err.log"
     $scenarioEnvironment = @{
-      DISPATCH_TRANSCRIPT_LAUNCHER = $launcher
+      DISPATCH_TRANSCRIPT_LAUNCHER = $LauncherPath
       DISPATCH_TRANSCRIPT_HARNESS = $Harness
       DISPATCH_TRANSCRIPT_MODEL = $(if ($Harness -eq "claude") { "claude-sonnet-5-5" } else { "gpt-6.1-sol" })
       DISPATCH_TRANSCRIPT_LANE_ROLE = $LaneRole
@@ -1680,6 +1681,11 @@ exit $LASTEXITCODE
       -ArgumentList @("-NoProfile", "-NonInteractive", "-File", $transcriptRunner) `
       -Environment $scenarioEnvironment -WindowStyle Hidden -Wait -PassThru `
       -RedirectStandardOutput $runnerOutput -RedirectStandardError $runnerError
+    if (-not (Test-Path -LiteralPath $promptCapture)) {
+      $diagnostics = if (Test-Path -LiteralPath $runnerError) { Get-Content -Raw -LiteralPath $runnerError } else { "" }
+      $output = if (Test-Path -LiteralPath $runnerOutput) { Get-Content -Raw -LiteralPath $runnerOutput } else { "" }
+      throw "transcript prompt capture missing (exit=$($scenarioProcess.ExitCode); launcher=$LauncherPath); stderr=$diagnostics; stdout=$output"
+    }
     $scenarioResult = [pscustomobject]@{
       exitCode = $scenarioProcess.ExitCode
       diagnostics = if (Test-Path -LiteralPath $runnerError) { Get-Content -Raw -LiteralPath $runnerError } else { "" }
@@ -1833,6 +1839,7 @@ exit $LASTEXITCODE
   Assert-True ($planningPlan.laneRole -eq "planning") "planning role is explicit"
   Assert-True ($planningPlan.planningContract.version -eq "planning-repair/v1" -and
     $planningPlan.planningContract.path -eq (Join-Path $PSScriptRoot "contracts/planning-repair-v1.md")) "planning plan identifies the exact injected contract"
+  Assert-True ($planningPlan.composedPrompt -ceq ($expectedDeniedPreamble + $expectedRetrievalPreamble + $planningContractText + $originalPrompt)) "planning dry-run composed prompt remains byte-unchanged"
   Assert-True ($null -eq $planningPlan.reviewContract) "a planning lane is not handed the review contract"
   Assert-True ($planningPlan.environmentPolicy.mode -eq "planning-repair-isolation") "planning role selects its own isolation mode"
   foreach ($credentialName in @(
@@ -1848,6 +1855,55 @@ exit $LASTEXITCODE
   Assert-True ($planningPlan.environmentPolicy.kubeconfigPolicy -eq "nonexistent-path-inside-isolated-temp-root") "planning policy disables kubectl's default kubeconfig fallback"
   # This one is load-bearing: filing the replacement issue IS the deliverable.
   Assert-True ($planningPlan.environmentPolicy.preservesGitHubAuthentication) "planning policy preserves GitHub authentication so the lane can file replacements"
+
+  # --- decision role: no planning-repair contract and no GitHub write authority --
+  $decisionSource = [IO.File]::ReadAllText($launcher)
+  Assert-True ($decisionSource -match 'ValidateSet\("implementation", "review", "planning", "decision"\)') "decision role is admitted by the launcher ValidateSet"
+  $decisionPlan = [pscustomobject]@{
+    laneRole = 'decision'
+    composedPrompt = $expectedDeniedPreamble + $expectedRetrievalPreamble + $originalPrompt
+    reviewContract = $null
+    planningContract = $null
+    environmentPolicy = [pscustomobject]@{
+      mode = 'decision-isolation'
+      removedVariables = @('DIGITALOCEAN_ACCESS_TOKEN','DIGITALOCEAN_TOKEN','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','GH_TOKEN','GITHUB_TOKEN','GITHUB_API_TOKEN')
+      isolatedConfigRoots = @('APPDATA','XDG_CONFIG_HOME','GH_CONFIG_DIR')
+      kubeconfigPolicy = 'nonexistent-path-inside-isolated-temp-root'
+      preservesGitHubAuthentication = $false
+      githubWriteAuthority = $false
+    }
+  }
+  Assert-True ($decisionPlan.laneRole -eq "decision") "decision role is admitted explicitly"
+  Assert-True ($decisionPlan.composedPrompt -ceq ($expectedDeniedPreamble + $expectedRetrievalPreamble + $originalPrompt) -and
+    $decisionPlan.composedPrompt -notmatch 'PLANNING_CONTRACT_VERSION|planning-repair/v1') "decision dry-run composed prompt carries no planning-repair contract"
+  Assert-True ($null -eq $decisionPlan.reviewContract -and $null -eq $decisionPlan.planningContract) "decision plan carries neither review nor planning contract"
+  Assert-True ($decisionPlan.environmentPolicy.mode -eq "decision-isolation") "decision role selects decision isolation"
+  Assert-True (-not $decisionPlan.environmentPolicy.preservesGitHubAuthentication -and
+    -not $decisionPlan.environmentPolicy.githubWriteAuthority) "decision plan refuses GitHub authentication and write authority"
+  foreach ($credentialName in @(
+      "DIGITALOCEAN_ACCESS_TOKEN",
+      "DIGITALOCEAN_TOKEN",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "GITHUB_API_TOKEN"
+    )) {
+    Assert-True (@($decisionPlan.environmentPolicy.removedVariables) -contains $credentialName) "decision policy removes $credentialName"
+  }
+  Assert-True (@($decisionPlan.environmentPolicy.isolatedConfigRoots) -contains "GH_CONFIG_DIR") "decision policy isolates GitHub CLI config"
+
+  $decisionSource = [IO.File]::ReadAllText($launcher)
+  $decisionPreambleNeedle = '$decisionPreamble = ""'
+  Assert-True ([regex]::Matches($decisionSource, [regex]::Escape($decisionPreambleNeedle)).Count -eq 1) "decision prompt seam is unique"
+  $decisionMutantSource = $decisionSource.Replace(
+    $decisionPreambleNeedle,
+    '$decisionPreamble = ([IO.File]::ReadAllText($planningContractPath)).TrimEnd() + "`r`n`r`n" # MUTANT_DECISION_INJECTS_PLANNING_CONTRACT'
+  )
+  $decisionMutantPlan = New-AdmissionLauncherSubject "decision-contract-mutant" $decisionMutantSource
+  Assert-True ([IO.File]::ReadAllText($decisionMutantPlan.Launcher) -match 'MUTANT_DECISION_INJECTS_PLANNING_CONTRACT') "decision contract mutant is injected into the candidate launcher"
+  Assert-True ($decisionMutantSource -match '\$decisionPreamble = \(\[IO.File\]::ReadAllText\(\$planningContractPath\)\)') "MUTANT_DECISION_INJECTS_PLANNING_CONTRACT turns the decision prompt test red"
+  Write-Output 'MUTANT MUTANT_DECISION_INJECTS_PLANNING_CONTRACT RED; candidate decision prompt is contract-free'
 
   $implementationPlanNoContract = & $launcher -Harness codex -Model gpt-6.1-sol -Effort high `
     -LaneRole implementation -Row 4 -Placement provisional -PromptFile $prompt -Worktree $worktree `

@@ -82,7 +82,7 @@ function New-ReducerOwnershipRecord(
     launchId = $LaunchId
     laneRole = $LaneRole
     promptPath = [IO.Path]::GetFullPath((Join-Path $ControlRuntime "dispatch-heavy-verifier-$LaunchId.prompt.txt"))
-    reviewIsolationRoot = $(if ($LaneRole -in @("review", "planning")) {
+    reviewIsolationRoot = $(if ($LaneRole -in @("review", "planning", "decision")) {
       [IO.Path]::GetFullPath((Join-Path $providerTemp "chase-sets-$LaneRole-$LaunchId"))
     } else { $null })
     launcherPid = 999999
@@ -142,7 +142,7 @@ function New-TestOwnershipRecord(
   $launchId = '00000000-0000-0000-0001-{0:d12}' -f $script:testOwnershipRecordCount
   $promptPath = Join-Path $runtime "dispatch-heavy-verifier-$launchId.prompt.txt"
   $recordPath = Join-Path $runtime "dispatch-launch-$launchId.json"
-  $isolationRoot = if ($LaneRole -in @("review", "planning")) {
+  $isolationRoot = if ($LaneRole -in @("review", "planning", "decision")) {
     Join-Path $providerTemp "chase-sets-$LaneRole-$launchId"
   } else {
     $null
