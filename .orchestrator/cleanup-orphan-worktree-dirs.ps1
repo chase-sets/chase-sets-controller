@@ -359,6 +359,16 @@ function Get-ReclamationIdle([string]$Path,[Nullable[datetime]]$RecentCutoff,[sc
   finally{while($enumerators.Count){$enumerators.Pop().Dispose()}}
 }
 
+function Get-ReclamationLiveOwnership([string]$RuntimeRoot,[string]$TempRoot,[string]$ContainerRoot) {
+  # The shipped 5s/64-record default truncates a normal fleet census, and a
+  # partial census retains every row as ownership-unknown (#222). Size the cap
+  # to every launch record and allow a minute; completeness is still proven by
+  # the census itself, and a partial result still retains everything.
+  $launches=0
+  try{$launches=@([IO.Directory]::EnumerateFiles($RuntimeRoot,'dispatch-launch-*.json',[IO.SearchOption]::TopDirectoryOnly)).Count}catch{$launches=0}
+  Get-LiveDispatchOwnership $RuntimeRoot $TempRoot $ContainerRoot -MaxRecords ([Math]::Max(64,$launches)) -DeadlineMs 60000
+}
+
 function Get-ReclamationContext {
   param(
     [string]$ContainerRoot,[string]$RuntimeRoot,[string]$TempRoot,
@@ -494,7 +504,7 @@ function Get-ReclamationRows {
 function Get-ReclamationInventory {
   param(
     [string]$ContainerRoot,[string]$RuntimeRoot,[string]$TempRoot,
-    [scriptblock]$OwnershipResolver={param($Runtime,$Temp,$Container)Get-LiveDispatchOwnership $Runtime $Temp $Container},
+    [scriptblock]$OwnershipResolver={param($Runtime,$Temp,$Container)Get-ReclamationLiveOwnership $Runtime $Temp $Container},
     [scriptblock]$PrResolver,[scriptblock]$ChildPrResolver,
     [scriptblock]$OpenPrResolver={param($Repository)Get-ReclamationOpenPrAuthority $Repository},
     [scriptblock]$IssueResolver,
@@ -570,7 +580,7 @@ function Write-ReclamationReport([string]$Path,$Report) {
 function Invoke-WorktreeReclamation {
   param(
     [string]$ContainerRoot,[string]$RuntimeRoot,[string]$TempRoot,[switch]$Apply,
-    [scriptblock]$OwnershipResolver={param($Runtime,$Temp,$Container)Get-LiveDispatchOwnership $Runtime $Temp $Container},
+    [scriptblock]$OwnershipResolver={param($Runtime,$Temp,$Container)Get-ReclamationLiveOwnership $Runtime $Temp $Container},
     [scriptblock]$PrResolver,[scriptblock]$ChildPrResolver,
     [scriptblock]$OpenPrResolver={param($Repository)Get-ReclamationOpenPrAuthority $Repository},
     [scriptblock]$IssueResolver,
