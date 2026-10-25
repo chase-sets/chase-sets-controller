@@ -44,6 +44,36 @@ try{
     $record.checkoutHead-ceq$head-and$record.runnerHead-ceq$plan.runnerHead-and$record.productSha-ceq$plan.productSha-and
     $record.planSha256-ceq('d'*64)-and$record.sourceSha256-ceq$observed[0]) 'measured provenance changed'
   $result.ci.planSha256='wrong';Refuses-Record {New-CiDurationRecords $plan $result ('d'*64) $temp}
+  # -Append keeps the profile's shardCount: function controls, a carry-dropping
+  # mutant, and an end-to-end append through the recorder entrypoint.
+  $r1=[ordered]@{identity='test:a';runId='1';planSha256='p1';elapsedMs=1}
+  $r2=[ordered]@{identity='test:a';runId='2';planSha256='p2';elapsedMs=2}
+  $withCount={param($Count) [pscustomobject]@{schemaVersion='controller-ci-durations/v1';shardCount=$Count;records=@($r1)}}
+  $kept=New-CiDurationProfile (& $withCount 32) @($r1,$r2)
+  Assert-Ci ($kept.shardCount-is[int]-and$kept.shardCount-eq32-and@($kept.records).Count-eq2) 'append dropped shardCount or mis-merged records'
+  $absent=New-CiDurationProfile ([pscustomobject]@{schemaVersion='controller-ci-durations/v1';records=@($r1)}) @($r2)
+  Assert-Ci (-not$absent.ContainsKey('shardCount')-and@($absent.records).Count-eq2) 'append invented a shardCount'
+  Assert-Ci (-not(New-CiDurationProfile $null @($r1)).ContainsKey('shardCount')) 'fresh profile invented a shardCount'
+  foreach($bad in @(40,'32',15)){Refuses-Record {New-CiDurationProfile (& $withCount $bad) @($r1)}}
+  $profileDefinition=(Get-Command New-CiDurationProfile).Definition
+  $carry='if($null-ne$Existing-and$null-ne$Existing.shardCount){$profileOut.shardCount=Get-CiShardCount @{shardCount=$Existing.shardCount}}'
+  Assert-Ci ($profileDefinition.Contains($carry,[StringComparison]::Ordinal)) 'shardCount carry mutation target missing'
+  & {
+    . ([scriptblock]::Create("function New-CiDurationProfile {`n$($profileDefinition.Replace($carry,''))`n}"))
+    Refuses-Record {Assert-Ci ((New-CiDurationProfile (& $withCount 32) @($r1)).shardCount-eq32) 'shardCount-dropping mutant accepted'}
+  }
+  $e2e=Join-Path $temp '.git/ci-record-e2e';[void][IO.Directory]::CreateDirectory($e2e)
+  $e2ePlanPath=Join-Path $e2e 'plan.json';Write-CiJson $plan $e2ePlanPath
+  $e2eDigest=(Get-FileHash -LiteralPath $e2ePlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $e2eResult=@{controllerHead=$head;ci=@{checkoutHead=$head;runnerHead=$plan.runnerHead;productSha=$plan.productSha
+    planSha256=$e2eDigest;runId='124';executionResults=@(@{identity='test:encoding';result='PASS';exitCode=0;elapsedMs=4321;finishedUtc='2026-10-23T00:00:00Z'})}}
+  $e2eResultPath=Join-Path $e2e 'final.json';Write-CiJson $e2eResult $e2eResultPath
+  $e2eProfilePath=Join-Path $e2e 'durations.json';Write-CiJson (& $withCount 32) $e2eProfilePath
+  $e2eOut=@(& (Get-Process -Id $PID).Path -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -RecordPlanPath $e2ePlanPath -ResultPath $e2eResultPath -OutputPath $e2eProfilePath -Append -RepositoryRoot $temp 2>&1)
+  Assert-Ci ($LASTEXITCODE-eq0) "end-to-end append failed: $($e2eOut -join ' ')"
+  $appended=Read-CiTimingProfile $e2eProfilePath
+  Assert-Ci ($appended.shardCount-eq32-and@($appended.records).Count-eq2-and@($appended.records)[1].elapsedMs-eq4321) 'end-to-end -Append dropped shardCount or the new record'
+  Write-Output 'PASS append keeps shardCount: function keeps 32, adds none when absent or fresh, refuses 40/"32"/15; carry-dropping mutant red; end-to-end -Append through the recorder keeps shardCount=32 and adds the new record'
   $item=[pscustomobject]@{identity='test:maximum';path='lf-False.ps1';restriction=$null}
   $low=[pscustomobject]@{identity=$item.identity;elapsedMs=1000;recordedAtUtc='2026-10-23T00:00:00Z';sourceSha256=$observed[0];sourceSetSha256='fixture'}
   $high=$low|Select-Object *;$high.elapsedMs=9000;$high.recordedAtUtc='2026-10-23T00:01:00Z'

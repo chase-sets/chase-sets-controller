@@ -120,12 +120,12 @@ change is therefore a recording run:
    (no items). Its plan records the bound without enforcing it.
 2. Append that run's durations with `controller-ci-record-durations.ps1
    -RecordPlanPath <plan> -ResultPath <final> -OutputPath
-   .orchestrator/controller-ci-durations.json -Append`. The recorder rewrites
-   the profile without `shardCount`, so then run `controller-ci-prediction.ps1
-   -EvidenceDirectory <evidence> -CalibrationPlanPath <recording plan>
-   -WriteProfile` to restore it; without it Plan falls back to 18 shards.
-   Commit only the profile. The profile is excluded from every digest, so this
-   commit leaves the new records current.
+   .orchestrator/controller-ci-durations.json -Append`. `-Append` keeps the
+   profile's `shardCount` (the `RECORDED` line prints it); check it before
+   committing, because a profile without it makes Plan fall back to 18
+   shards. Rerun `controller-ci-prediction.ps1 -WriteProfile` only to change
+   the count. Commit only the profile. The profile is excluded from every
+   digest, so this commit leaves the new records current.
 3. Only then dispatch `role=candidate` runs, at the durations commit.
 
 The `controller-ci*` checks digest every tracked file except the profile, so
