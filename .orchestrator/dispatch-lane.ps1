@@ -66,7 +66,7 @@ param(
   # and disable kubectl's default kubeconfig fallback before the harness child
   # starts while retaining GitHub authentication.
   # implementation: explicitly inherit the launcher environment unchanged.
-  [ValidateSet("implementation", "review", "planning")][string]$LaneRole = "review",
+  [ValidateSet("implementation", "review", "planning", "decision")][string]$LaneRole = "review",
   [ValidateRange(1,[int]::MaxValue)][int]$Issue,
   [ValidateSet('product','controller')][string]$ReviewTarget = 'product',
   [ValidateRange(1,[int]::MaxValue)][int]$ControllerIssue,
@@ -528,6 +528,13 @@ $providerCredentialNames = @(
   "RELEASE_EVIDENCE_SPACES_ACCESS_ID",
   "RELEASE_EVIDENCE_SPACES_SECRET_KEY"
 )
+$githubCredentialNames = @(
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GITHUB_API_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN"
+)
 # Lane transcripts show the bulk of context spent on unbounded reads: whole
 # runtime transcripts and ledgers, directory inventories of the runtime root,
 # complete hosted CI logs and repeated tail/status polls. Each such output is
@@ -626,11 +633,12 @@ function Assert-ClaudeForegroundSettingsAgree([string]$WorktreePath) {
     throw "dispatch-lane: CLAUDE_FOREGROUND_POLICY_CONFLICT: refusing the Claude launch before any side effect; Claude settings env would override the foreground policy. $($claudeSettingsConflicts -join '; '). Correct those settings outside dispatch; dispatch never edits them."
   }
 }
-# Review and planning lanes are both read-only against provider state, so they
-# share the credential-isolation policy. They differ in what they may mutate:
+# Review, planning and decision lanes are all read-only against provider state,
+# so they share the credential-isolation policy. They differ in what they may
+# mutate:
 # review receives no provider credentials; its bounded mechanical remedies are
 # governed by contracts/review-v2.md. Planning owns GitHub issue recovery.
-$credentialIsolatedRoles = @("review", "planning")
+$credentialIsolatedRoles = @("review", "planning", "decision")
 $isCredentialIsolated = $LaneRole -in $credentialIsolatedRoles
 
 $reviewContractPath = Join-Path $PSScriptRoot "contracts/review-v2.md"
@@ -1013,6 +1021,16 @@ $environmentPolicy = if ($LaneRole -eq "review") {
     preservesNonProviderEnvironment = $true
     preservesGitHubAuthentication = $true
   }
+} elseif ($LaneRole -eq "decision") {
+  [ordered]@{
+    mode = "decision-isolation"
+    removedVariables = @($providerCredentialNames + $githubCredentialNames)
+    isolatedConfigRoots = @("APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR")
+    kubeconfigPolicy = "nonexistent-path-inside-isolated-temp-root"
+    preservesNonProviderEnvironment = $true
+    preservesGitHubAuthentication = $false
+    githubWriteAuthority = $false
+  }
 } else {
   [ordered]@{
     mode = "inherit"
@@ -1060,6 +1078,9 @@ function Get-HeavyVerificationPreamble([string]$Role, [int]$RoutingRow, [string]
   return "Heavy verification contract: product proof is exact-head hosted CI. Retain scoped pre-push checks and focused tests; local full/harness runs and focused DB diagnostics are optional, never publication or landing gates. A scoped refusal never escalates to a full gate: preserve and disclose the defect, never fabricate PASS. Controller authors retain baseline-aware controller-release-battery.ps1 proof; product CI is not controller release proof. Any eligible heavy reproduction uses '$Entrypoint', foreground and under unchanged exclusive admission, including direct Node, Playwright, full Vitest, script-battery and build commands. Exit 73 means not executed, not PASS or a consumed attempt. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
 }
 $gatePreamble = Get-HeavyVerificationPreamble $LaneRole $Row (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')
+$planReviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
+$planPlanningPreamble = if ($LaneRole -eq "planning") { $planningContractText.TrimEnd() + "`r`n`r`n" } else { "" }
+$planComposedPrompt = $gatePreamble + $boundedRetrievalPreamble + $planReviewPreamble + $planPlanningPreamble + [IO.File]::ReadAllText($promptResolved)
 $plan = [ordered]@{
   harness = $Harness
   routing = $dispatchRouting
@@ -1075,6 +1096,7 @@ $plan = [ordered]@{
   stdin = $promptResolved
   stdout = $stdoutPath
   stderr = $stderrPath
+  composedPrompt = $planComposedPrompt
   watchdogWatchPath = $watchHint
   environmentPolicy = $environmentPolicy
   reviewContract = if ($LaneRole -eq "review") {
@@ -1177,7 +1199,7 @@ try {
     if ($integrationOwners.health.status -cne 'ok' -or @($integrationOwners.activeLanes | Where-Object { $_.branch -ceq $integrationTarget.branch }).Count) { throw "INTEGRATION_OWNER_PENDING diagnostics=$(Get-DispatchBlockingDiagnostics $integrationOwners)" }
   }
   # Ledger admission must finish before publishing any launch resources.
-  if ($LaneRole -cin @('implementation','planning','review')) {
+  if ($LaneRole -cin @('implementation','planning','review','decision')) {
     $routingIssue = @{}
     if ($PSBoundParameters.ContainsKey('Issue')) { $routingIssue.Issue = $Issue }
     # Every role writes the v3 routing row with its five capacity fields.
@@ -1266,7 +1288,8 @@ try {
   $harnessPreamble = if ($Harness -eq "claude") { $claudeForegroundPreamble } else { "" }
   $reviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
   $planningPreamble = if ($LaneRole -eq "planning") { $planningContractText.TrimEnd() + "`r`n`r`n" } else { "" }
-  [IO.File]::WriteAllText($launchPromptFile, $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + [IO.File]::ReadAllText($promptResolved), [Text.UTF8Encoding]::new($false))
+  $decisionPreamble = ""
+  [IO.File]::WriteAllText($launchPromptFile, $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + $decisionPreamble + [IO.File]::ReadAllText($promptResolved), [Text.UTF8Encoding]::new($false))
   $startParameters = @{
     FilePath = $exe
     ArgumentList = @($launchArguments)
@@ -1326,17 +1349,24 @@ try {
     $reviewIsolationRoot = Join-Path $tempRoot "chase-sets-$LaneRole-$launchId"
     New-Item -ItemType Directory -Path $reviewIsolationRoot | Out-Null
 
-    foreach ($name in $providerCredentialNames) {
+    $credentialNamesToRemove = if ($LaneRole -eq "decision") {
+      @($providerCredentialNames + $githubCredentialNames)
+    } else {
+      @($providerCredentialNames)
+    }
+    foreach ($name in $credentialNamesToRemove) {
       $childEnvironment[$name] = $null
     }
     $childEnvironment["APPDATA"] = $reviewIsolationRoot
     $childEnvironment["XDG_CONFIG_HOME"] = $reviewIsolationRoot
     $childEnvironment["KUBECONFIG"] = Join-Path $reviewIsolationRoot "nonexistent-kubeconfig"
 
-    # gh defaults to %APPDATA%\GitHub CLI on Windows. Pin its original config
-    # before APPDATA is isolated so stored GitHub auth and GH_*/GITHUB_* token
-    # variables remain available to read-only review work.
-    if ($env:GH_CONFIG_DIR) {
+    # gh defaults to %APPDATA%\GitHub CLI on Windows. Review and planning pin
+    # their original config so read-only GitHub authentication remains
+    # available. Decision lanes receive an empty config root and no token.
+    if ($LaneRole -eq "decision") {
+      $childEnvironment["GH_CONFIG_DIR"] = Join-Path $reviewIsolationRoot "GitHub CLI"
+    } elseif ($env:GH_CONFIG_DIR) {
       $childEnvironment["GH_CONFIG_DIR"] = $env:GH_CONFIG_DIR
     } elseif ($env:APPDATA) {
       $childEnvironment["GH_CONFIG_DIR"] = Join-Path $env:APPDATA "GitHub CLI"

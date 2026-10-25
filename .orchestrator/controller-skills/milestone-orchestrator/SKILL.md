@@ -307,6 +307,7 @@ the launcher persists both in the watchdog spec. Set `-LaneRole` to:
 - `review`: no provider credentials; mutation is limited to the mechanical
   remedies and brief-body repairs that `contracts/review-v2.md` and §7 allow.
 - `planning`: read-only repo plus bounded GitHub planning mutations.
+- `decision`: read-only decision work with no planning-repair contract or GitHub write authority.
 
 Every prompt carries only:
 
@@ -988,7 +989,7 @@ blindly relaunches. Persist `ACKNOWLEDGED` with the same payload plus
 `dispatchReceiptIdentity` (the canonical dispatch row's raw SHA256). A pending
 container, lane-complete prose or launch intent is not a FINAL verdict.
 The claim caller launches the decision lane once through
-`dispatch-lane.ps1 -Issue <issue> -LaneRole planning` (or `review`).
+`dispatch-lane.ps1 -Issue <issue> -LaneRole decision`.
 The worktree leaf must equal the claimed `lane`, and the label must make the
 transcript equal the claimed `transcript`. That launcher's
 `watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row,
