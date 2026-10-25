@@ -25006,5 +25006,6 @@
       "exitCode": 1
     }
   ],
-  "schemaVersion": "controller-ci-durations/v1"
+  "schemaVersion": "controller-ci-durations/v1",
+  "shardCount": 32
 }

@@ -110,6 +110,28 @@ that was never observed. Record a full hosted run of the head under test
 gate runs so the next plan takes the slowest hosted observation per item. Records older than 30 days or changed dependencies cannot be
 used as fresh proof. No timeout, retry, skip, sampling or waiver is introduced.
 
+After any change to the runner or workflow (`controller-ci.ps1` or
+`.github/workflows/controller-battery.yml`), every whole item's records are
+`stale-recorded`, because those bytes are in every item's dependency closure,
+and an enforced candidate plan refuses them. The first hosted run after such a
+change is therefore a recording run:
+
+1. Push the change and dispatch a full run at its head with `-f role=baseline`
+   (no items). Its plan records the bound without enforcing it.
+2. Append that run's durations with `controller-ci-record-durations.ps1
+   -RecordPlanPath <plan> -ResultPath <final> -OutputPath
+   .orchestrator/controller-ci-durations.json -Append`. The recorder rewrites
+   the profile without `shardCount`, so then run `controller-ci-prediction.ps1
+   -EvidenceDirectory <evidence> -CalibrationPlanPath <recording plan>
+   -WriteProfile` to restore it; without it Plan falls back to 18 shards.
+   Commit only the profile. The profile is excluded from every digest, so this
+   commit leaves the new records current.
+3. Only then dispatch `role=candidate` runs, at the durations commit.
+
+The `controller-ci*` checks digest every tracked file except the profile, so
+any other commit after the recording run, documentation included, makes them
+`stale-recorded` again and needs a new recording run.
+
 The hosted inventory explicitly adds `check:controller-ci-coverage`,
 `check:controller-ci-sharding` and `check:controller-ci-record-durations` to the
 source battery's identities. Each is required and measured, not a replacement.
