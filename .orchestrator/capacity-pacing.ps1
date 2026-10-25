@@ -53,6 +53,9 @@ $script:PacingConfig = [ordered]@{
   fableShare = $null # Compatibility field; provider window capacity is not a policy share.
   statusMaxAgeMinutes = 30
   statusTimeoutSeconds = 3
+  # Live census deadline (#136): the 5 s Get-LiveDispatchOwnership default
+  # truncates under normal fleet load; a full census measured 9-18 s (#222).
+  censusDeadlineMs = 60000
   defaultStatusUrl = 'http://127.0.0.1:8318/api/status'
 }
 
@@ -324,7 +327,7 @@ function Get-PacingCensus([string]$Path, [string]$Runtime, [string]$Container, [
       $census = [IO.File]::ReadAllText([IO.Path]::GetFullPath($Path)) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
     } else {
       . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
-      $census = Get-LiveDispatchOwnership -RuntimeRoot $Runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $Container
+      $census = Get-LiveDispatchOwnership -RuntimeRoot $Runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $Container -DeadlineMs $script:PacingConfig.censusDeadlineMs
     }
   } catch { $result.reason = 'CENSUS_UNAVAILABLE:' + $_.Exception.Message; return $result }
   $lanes = Get-PacingProperty $census 'activeLanes'

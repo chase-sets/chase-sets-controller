@@ -641,6 +641,37 @@ try {
   Assert-DeletionMutant 'available-windows-optional' "if (-not (Get-PacingProperty `$account 'disabled') -and (Get-PacingProperty `$account 'status') -ceq 'available') { return `$result }" $f1Cases['available-windows-missing']
   Assert-DeletionMutant 'identity-optional' 'if ($null -eq $identity) { return $result }' $f2Cases['identity-missing']
   Assert-DeletionMutant 'duplicate-identity-summed' 'if ($identities.ContainsKey($identityKey)) { return $result }' $f2Cases['duplicate-exact']
+  # #136: the live census path passes the configured deadline, not the 5 s
+  # Get-LiveDispatchOwnership default that truncates under fleet load. Copies of
+  # the reducer run against a recording dispatch-ownership.ps1 in a child shell.
+  function Invoke-LiveCensusProbe([string]$Name, [scriptblock]$Edit) {
+    $dir = Join-Path $root ('live-census-' + $Name)
+    [void][IO.Directory]::CreateDirectory($dir)
+    $source = [IO.File]::ReadAllText($reducer)
+    if ($Edit) { $source = & $Edit $source }
+    [IO.File]::WriteAllText((Join-Path $dir 'capacity-pacing.ps1'), $source, $utf8)
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'routing-data.ps1'), (Join-Path $dir 'routing-data.ps1'))
+    $record = Join-Path $dir 'census-args.json'
+    $fake = @(
+      'function Get-LiveDispatchOwnership { param([string]$RuntimeRoot, [string]$TempRoot, [string]$ContainerRoot, [int]$MaxRecords = 64, [int]$DeadlineMs = 5000)',
+      "  [IO.File]::WriteAllText('$($record.Replace("'", "''"))', ([ordered]@{bound=@(`$PSBoundParameters.Keys | Sort-Object); deadlineMs=`$DeadlineMs; maxRecords=`$MaxRecords} | ConvertTo-Json -Compress))",
+      "  [pscustomobject]@{activeLanes=[object[]]@(); health=[pscustomobject]@{status='ok'}}",
+      '}'
+    ) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $dir 'dispatch-ownership.ps1'), $fake, $utf8)
+    $probe = ". '{0}' -Library; `$r = Get-PacingCensus '' '{1}' '{1}' @{{}}; `$r.status" -f (Join-Path $dir 'capacity-pacing.ps1').Replace("'", "''"), $dir.Replace("'", "''")
+    $status = & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command $probe
+    if ($LASTEXITCODE -ne 0) { throw "live census probe $Name exited $LASTEXITCODE" }
+    $captured = if (Test-Path -LiteralPath $record) { Get-Content -Raw -LiteralPath $record | ConvertFrom-Json } else { $null }
+    return [pscustomobject]@{status=(@($status) -join ''); args=$captured}
+  }
+  $live = Invoke-LiveCensusProbe 'candidate' $null
+  Assert-Pacing ($live.status -ceq 'ok' -and $null -ne $live.args) '#136 live census path reaches Get-LiveDispatchOwnership'
+  Assert-Pacing (@($live.args.bound) -contains 'DeadlineMs' -and $live.args.deadlineMs -eq 60000) "#136 live census passes the 60 s deadline (actual $($live.args | ConvertTo-Json -Compress))"
+  Assert-Pacing ($live.args.maxRecords -eq 64 -and @($live.args.bound) -notcontains 'MaxRecords') '#136 record cap stays the census default'
+  $defaultBounds = Invoke-LiveCensusProbe 'default-bounds-mutant' { param($s) $s.Replace(' -DeadlineMs $script:PacingConfig.censusDeadlineMs', '') }
+  $script:mutants += 1
+  Assert-Pacing ($null -ne $defaultBounds.args -and -not (@($defaultBounds.args.bound) -contains 'DeadlineMs')) '#136 mutant default-bounds (bare census call) is killed'
   Write-Output "PASS capacity-pacing assertions=$($script:assertions) mutants=$($script:mutants) survivors=0"
 } finally {
   $env:CHASE_SETS_ROUTING_DATA_ROOT = $oldRoot; $env:CHASE_SETS_ROUTING_LKG_PATH = $oldLkg
