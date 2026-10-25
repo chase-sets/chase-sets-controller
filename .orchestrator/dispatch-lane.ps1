@@ -241,15 +241,48 @@ function Get-DispatchAdmissionWorktreeRows(
         Path = $line.Substring("worktree ".Length)
         BranchRef = $null
         Detached = $false
+        Prunable = $false
       }
     } elseif ($null -ne $row -and $line -like "branch *") {
       $row.BranchRef = $line.Substring("branch ".Length)
     } elseif ($null -ne $row -and $line -ceq "detached") {
       $row.Detached = $true
+    } elseif ($null -ne $row -and $line -like "prunable*") {
+      $row.Prunable = $true
     }
   }
   if ($null -ne $row) { $rows += [pscustomobject]$row }
   return @($rows)
+}
+
+function Get-DispatchAdmissionNativeBranch(
+  [pscustomobject]$Row,
+  [string]$RequestedBranch
+) {
+  $pathExistedBeforeProbe =
+    [IO.Directory]::Exists([string]$Row.Path) -or [IO.File]::Exists([string]$Row.Path)
+  try {
+    return Get-DispatchRebaseBranch $Row.Path -RequestedBranch $RequestedBranch
+  } catch {
+    $pathExistsAfterProbe =
+      [IO.Directory]::Exists([string]$Row.Path) -or [IO.File]::Exists([string]$Row.Path)
+    $directoryWasAbsentBeforeAndAfter =
+      (-not $pathExistedBeforeProbe) -and (-not $pathExistsAfterProbe)
+    $directoryVanishedDuringProbe =
+      $pathExistedBeforeProbe -and (-not $pathExistsAfterProbe)
+    # A porcelain `prunable` marker is Git's inventory evidence that the
+    # registration is stale; require the path to still be absent. For an
+    # unmarked race, false Directory.Exists and File.Exists both before and
+    # after prove the path was absent rather than an existing directory with
+    # unreadable rebase state. A true-to-false transition proves a registered
+    # path vanished during this probe. Existing paths therefore keep strict
+    # errors.
+    if ($directoryWasAbsentBeforeAndAfter -or $directoryVanishedDuringProbe -or
+        ($Row.Prunable -and -not $pathExistsAfterProbe)) {
+      return $null
+    }
+    throw
+  }
 }
 
 function Assert-DispatchAdmissionExclusiveBranchAttachment(
@@ -259,7 +292,7 @@ function Assert-DispatchAdmissionExclusiveBranchAttachment(
   $rows = @(Get-DispatchAdmissionWorktreeRows $Identity.CanonicalWorktree $occupancyDiagnostic)
   $requestedBranch = if ($integrationResume) { $integrationResume.obligation.branch } else { $Identity.Branch }
   foreach ($row in @($rows | Where-Object { $_.Detached })) {
-    $nativeBranch = Get-DispatchRebaseBranch $row.Path -RequestedBranch $requestedBranch
+    $nativeBranch = Get-DispatchAdmissionNativeBranch $row $requestedBranch
     if ($nativeBranch -and $Identity.IdentityMode -ceq 'branch' -and $nativeBranch -ceq $Identity.Branch -and
         -not (Test-DispatchSameCanonicalPath $row.Path $Identity.CanonicalWorktree)) {
       throw 'dispatch-lane: admission-branch-occupancy: original branch is in native rebase in another worktree'

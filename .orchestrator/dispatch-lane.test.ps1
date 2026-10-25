@@ -294,6 +294,25 @@ if /I "%~3"=="rev-parse" if /I "%~4"=="--verify" if /I not "%~5"=="HEAD" (
     8 {
       Invoke-AdmissionFixtureGit $target @("checkout", "--detach", $headA) | Out-Null
     }
+    9 {
+      $foreign = Join-Path $caseRoot "missing-holder"
+      Invoke-AdmissionFixtureGit $target @("worktree", "add", "--detach", $foreign, $headA) | Out-Null
+      Remove-Item -LiteralPath $foreign -Recurse -Force
+    }
+    10 {
+      $foreign = Join-Path $caseRoot "unreadable-holder"
+      Invoke-AdmissionFixtureGit $target @("worktree", "add", "--detach", $foreign, $headA) | Out-Null
+      $gitWrapperRoot = Join-Path $caseRoot "git-wrapper"
+      New-Item -ItemType Directory -Path $gitWrapperRoot | Out-Null
+      $wrapper = @"
+@echo off
+if /I "%~4"=="rev-parse" if /I "%~5"=="--git-path" if /I "%~6"=="rebase-merge" (
+  exit /b 128
+)
+"$realGit" %*
+"@
+      Set-Content -LiteralPath (Join-Path $gitWrapperRoot "git.cmd") -Value $wrapper
+    }
   }
 
   [pscustomobject]@{
@@ -544,6 +563,8 @@ function Invoke-AdmissionContractControls {
     "6" = "clean current branch also held by a second worktree"
     "7" = "branch mode claimed tip does not equal resolved HEAD"
     "8" = "detached clean worktree at exact head, review role"
+    "9" = "registered detached row whose directory is missing and prunable"
+    "10" = "existing detached row whose native rebase state is unreadable"
   }
   $fixtures = @{}
   foreach ($row in $states.Keys) {
@@ -558,8 +579,10 @@ function Invoke-AdmissionContractControls {
   $baseSource = [IO.File]::ReadAllText((Join-Path $baseFixtureRoot '.orchestrator/dispatch-lane.ps1'))
   $cleanCall = 'Assert-DispatchAdmissionClean $worktreeResolved # ADMISSION_GUARD_CLEANLINESS'
   $occupancyCall = 'Assert-DispatchAdmissionExclusiveBranchAttachment $admissionIdentityBefore # ADMISSION_GUARD_EXCLUSIVE_BRANCH'
+  $nativeAdmissionCall = '$nativeBranch = Get-DispatchAdmissionNativeBranch $row $requestedBranch'
   Assert-True ([regex]::Matches($candidateSource, [regex]::Escape($cleanCall)).Count -eq 1) "cleanliness mutant removes exactly one load-bearing call"
   Assert-True ([regex]::Matches($candidateSource, [regex]::Escape($occupancyCall)).Count -eq 1) "occupancy mutant removes exactly one load-bearing call"
+  Assert-True ([regex]::Matches($candidateSource, [regex]::Escape($nativeAdmissionCall)).Count -eq 1) "missing-row mutant replaces exactly one admission probe"
 
   $subjects = [ordered]@{
     base = New-AdmissionLauncherSubject "base" $baseSource
@@ -570,11 +593,15 @@ function Invoke-AdmissionContractControls {
     occupancyMutant = New-AdmissionLauncherSubject "occupancy-mutant" (
       $candidateSource.Replace($occupancyCall, "# MUTANT_REMOVED_EXCLUSIVE_BRANCH_GUARD")
     )
+    missingRowMutant = New-AdmissionLauncherSubject "missing-row-mutant" (
+      $candidateSource.Replace($nativeAdmissionCall, '    $nativeBranch = Get-DispatchRebaseBranch $row.Path -RequestedBranch $requestedBranch # MUTANT_UNCONDITIONAL_MISSING_ROW_PROBE')
+    )
   }
 
   $unclean = "dispatch-lane: admission refused because the target worktree is not clean (admission-unclean-worktree); commit and relaunch"
   $identity = "dispatch-lane: admission refused because the target HEAD/index/worktree identity is inconsistent (admission-identity-inconsistency)"
   $occupancy = "dispatch-lane: admission refused because branch '$($fixtures["6"].Branch)' is attached to another worktree (admission-branch-occupancy): $([IO.Path]::GetFullPath($fixtures["6"].ForeignWorktree).TrimEnd('\','/'))"
+  $nativeUnknown = "dispatch-ownership: native operation unknown"
   $candidateExpected = @{
     "1" = [pscustomobject]@{ Outcome = "admitted"; Diagnostic = "none" }
     "2" = [pscustomobject]@{ Outcome = "refused"; Diagnostic = $unclean }
@@ -584,6 +611,8 @@ function Invoke-AdmissionContractControls {
     "6" = [pscustomobject]@{ Outcome = "refused"; Diagnostic = $occupancy }
     "7" = [pscustomobject]@{ Outcome = "refused"; Diagnostic = $identity }
     "8" = [pscustomobject]@{ Outcome = "admitted"; Diagnostic = "none" }
+    "9" = [pscustomobject]@{ Outcome = "admitted"; Diagnostic = "none" }
+    "10" = [pscustomobject]@{ Outcome = "refused"; Diagnostic = $nativeUnknown }
   }
   $observed = @{}
   foreach ($row in $states.Keys) {
@@ -653,12 +682,19 @@ function Invoke-AdmissionContractControls {
     $occupancyMutant["7"].Outcome -ceq "refused" -and
     $occupancyMutant["7"].Diagnostic -ceq $identity
   ) "occupancy mutant leaves identity control green"
+  $missingRowMutantResult = Invoke-AdmissionMatrixCase $subjects.missingRowMutant $fixtures["9"]
+  Assert-True (
+    $missingRowMutantResult.Outcome -ceq "refused" -and
+    $missingRowMutantResult.Diagnostic -ceq $nativeUnknown
+  ) "unconditional native probe mutant turns the missing-row admission red"
   Write-Output "MUTANT|name=cleanliness-guard-removal|turnedRed=rows-2,3,4,5|unrelatedGreen=rows-1,6,7,8"
   Write-Output "MUTANT|name=exclusive-branch-guard-removal|turnedRed=row-6|unrelatedGreen=rows-1,2,3,4,5,7,8"
+  Write-Output "MUTANT|name=unconditional-missing-row-probe|turnedRed=row-9|unrelatedGreen=row-10"
 
   Assert-AdmissionRefusalInert $subjects.candidate $fixtures["2"] $unclean
   Assert-AdmissionRefusalInert $subjects.candidate $fixtures["6"] $occupancy
   Assert-AdmissionRefusalInert $subjects.candidate $fixtures["7"] $identity
+  Assert-AdmissionRefusalInert $subjects.candidate $fixtures["10"] $nativeUnknown
 }
 
 function Invoke-FleetLauncherOrderingControls {
