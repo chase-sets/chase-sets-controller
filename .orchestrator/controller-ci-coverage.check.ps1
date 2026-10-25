@@ -145,7 +145,7 @@ $dispatchAssertionMoves=[ordered]@{
   'CommandAst:Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: installed Claude --help exit')
   'CommandAst:Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: hosted option check missing --disallowedTools')
 }
-$dispatchAssertionParts=@{'unscoped'=149;'dispatch-foundation'=7;'refusal-foundation'=50;'refusal-harness'=122}
+$dispatchAssertionParts=@{'unscoped'=152;'dispatch-foundation'=7;'refusal-foundation'=50;'refusal-harness'=122}
 function Assert-DispatchAssertionCensus([string]$Source,[string]$Baseline) {
   $before=Get-DispatchAssertionCensus $Baseline;$after=Get-DispatchAssertionCensus $Source
   foreach($key in $before.all.Keys){

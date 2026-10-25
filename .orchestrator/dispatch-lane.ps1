@@ -255,32 +255,49 @@ function Get-DispatchAdmissionWorktreeRows(
   return @($rows)
 }
 
+# Directory.Exists and File.Exists are also false for an existing path that
+# cannot be read (access denied, I/O error), so they cannot prove absence
+# (#218). Absence is proven only when the nearest existing ancestor lists
+# successfully and does not contain the next path component; any listing error
+# leaves the row unproven, and the caller stays strict.
+function Test-DispatchAdmissionPathAbsent(
+  [string]$Path,
+  [scriptblock]$ListEntries = { param($Directory) [IO.Directory]::EnumerateFileSystemEntries($Directory) }
+) {
+  try {
+    $child = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $parent = [IO.Path]::GetDirectoryName($child)
+    while ($parent) {
+      try {
+        $leaf = [IO.Path]::GetFileName($child)
+        foreach ($entry in @(& $ListEntries $parent)) {
+          if ([string]::Equals([IO.Path]::GetFileName(([string]$entry).TrimEnd('\', '/')), $leaf, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        return $true
+      } catch [IO.DirectoryNotFoundException] {
+        $child = $parent
+        $parent = [IO.Path]::GetDirectoryName($child)
+      }
+    }
+    return $false
+  } catch {
+    return $false
+  }
+}
+
 function Get-DispatchAdmissionNativeBranch(
   [pscustomobject]$Row,
   [string]$RequestedBranch
 ) {
-  $pathExistedBeforeProbe =
-    [IO.Directory]::Exists([string]$Row.Path) -or [IO.File]::Exists([string]$Row.Path)
   try {
     return Get-DispatchRebaseBranch $Row.Path -RequestedBranch $RequestedBranch
   } catch {
-    $pathExistsAfterProbe =
-      [IO.Directory]::Exists([string]$Row.Path) -or [IO.File]::Exists([string]$Row.Path)
-    $directoryWasAbsentBeforeAndAfter =
-      (-not $pathExistedBeforeProbe) -and (-not $pathExistsAfterProbe)
-    $directoryVanishedDuringProbe =
-      $pathExistedBeforeProbe -and (-not $pathExistsAfterProbe)
-    # A porcelain `prunable` marker is Git's inventory evidence that the
-    # registration is stale; require the path to still be absent. For an
-    # unmarked race, false Directory.Exists and File.Exists both before and
-    # after prove the path was absent rather than an existing directory with
-    # unreadable rebase state. A true-to-false transition proves a registered
-    # path vanished during this probe. Existing paths therefore keep strict
-    # errors.
-    if ($directoryWasAbsentBeforeAndAfter -or $directoryVanishedDuringProbe -or
-        ($Row.Prunable -and -not $pathExistsAfterProbe)) {
-      return $null
-    }
+    # A registered detached row whose directory is proven absent after the
+    # failed probe (pruned, removed by cleanup, or vanished mid-probe) holds no
+    # worktree and is not a claimant. Git still refuses to attach a branch that
+    # a prunable row records as rebasing (find_shared_symref). An existing or
+    # unprovable path keeps the strict native-operation error.
+    if (Test-DispatchAdmissionPathAbsent ([string]$Row.Path)) { return $null }
     throw
   }
 }

@@ -689,6 +689,27 @@ function Invoke-AdmissionContractControls {
   ) "unconditional native probe mutant turns the missing-row admission red"
   Write-Output "MUTANT|name=cleanliness-guard-removal|turnedRed=rows-2,3,4,5|unrelatedGreen=rows-1,6,7,8"
   Write-Output "MUTANT|name=exclusive-branch-guard-removal|turnedRed=row-6|unrelatedGreen=rows-1,2,3,4,5,7,8"
+  $absenceDefinition = [Management.Automation.Language.Parser]::ParseInput($candidateSource, [ref]$null, [ref]$null).Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-DispatchAdmissionPathAbsent' }, $true)
+  . ([scriptblock]::Create($absenceDefinition.Extent.Text))
+  $absenceRoot = Join-Path ([IO.Path]::GetTempPath()) ("dispatch-absence-" + [guid]::NewGuid().ToString("N"))
+  [void][IO.Directory]::CreateDirectory((Join-Path $absenceRoot "present"))
+  try {
+    $denied = { param($Directory) throw [UnauthorizedAccessException]::new("synthetic access denied") }
+    $ioError = { param($Directory) throw [IO.IOException]::new("synthetic I/O error") }
+    $absence = [ordered]@{
+      present = Test-DispatchAdmissionPathAbsent (Join-Path $absenceRoot "present")
+      missing = Test-DispatchAdmissionPathAbsent (Join-Path $absenceRoot "missing")
+      missingParent = Test-DispatchAdmissionPathAbsent (Join-Path $absenceRoot "gone\missing")
+      denied = Test-DispatchAdmissionPathAbsent (Join-Path $absenceRoot "missing") $denied
+      ioError = Test-DispatchAdmissionPathAbsent (Join-Path $absenceRoot "missing") $ioError
+    }
+    Assert-True (
+      $absence.present -eq $false -and $absence.missing -eq $true -and $absence.missingParent -eq $true -and
+      $absence.denied -eq $false -and $absence.ioError -eq $false
+    ) "missing-row absence is proven only by a successful ancestor listing; access-denied and I/O errors stay unproven ($(($absence.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ','))"
+  } finally {
+    [IO.Directory]::Delete($absenceRoot, $true)
+  }
   Write-Output "MUTANT|name=unconditional-missing-row-probe|turnedRed=row-9|unrelatedGreen=row-10"
 
   Assert-AdmissionRefusalInert $subjects.candidate $fixtures["2"] $unclean
