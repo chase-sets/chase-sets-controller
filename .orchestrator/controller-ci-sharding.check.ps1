@@ -154,7 +154,39 @@ function Assert-PlanBoundWired($Ast,[string]$Workflow){
   Assert-Ci ($Workflow.Contains("      role:`n        description: ") -and $Workflow.Contains("        type: choice`n        options: [candidate, baseline]`n        default: candidate`n")) 'workflow role input missing'
   Assert-Ci ($Workflow.Contains('          CI_ROLE: ${{ inputs.role || (github.event_name == ''push'' && ''baseline'') || ''candidate'' }}'+"`n") -and $Workflow.Contains('-Mode Plan ') -and $Workflow.Contains(' -Role $env:CI_ROLE ')) 'workflow does not pass role to Plan mode'
 }
+# #225: evaluate the workflow's CI_ROLE expression (the GitHub Actions subset it
+# uses: string literals, inputs.role, github.event_name, ==, &&, || and
+# parentheses, with JavaScript-style truthiness) for each trigger.
+function Resolve-CiWorkflowRole([string]$Workflow,[string]$EventName,[string]$InputRole){
+  $m=[regex]::Match($Workflow,'(?m)^          CI_ROLE: \$\{\{ (.+) \}\}$')
+  Assert-Ci $m.Success 'workflow CI_ROLE expression missing'
+  $tokens=@([regex]::Matches($m.Groups[1].Value,"'[^']*'|\|\||&&|==|\(|\)|[A-Za-z_][A-Za-z0-9_.]*|\S")|ForEach-Object Value)
+  $state=@{i=0}
+  $peek={if($state.i-lt$tokens.Count){$tokens[$state.i]}else{''}}
+  $or=$null;$and=$null;$cmp=$null;$atom=$null
+  $atom={
+    $t=&$peek;$state.i++
+    if($t-ceq'('){$v=&$or;Assert-Ci ((&$peek)-ceq')') 'workflow role expression: missing )';$state.i++;return ,$v}
+    if($t.StartsWith("'")){return ,$t.Substring(1,$t.Length-2)}
+    if($t-ceq'inputs.role'){return ,$InputRole}
+    if($t-ceq'github.event_name'){return ,$EventName}
+    throw "CONTROLLER_CI: unsupported workflow role token: $t"
+  }
+  $cmp={$l=&$atom;while((&$peek)-ceq'=='){$state.i++;$r=&$atom;$l=[bool]([string]$l-ieq[string]$r)};,$l}
+  $and={$l=&$cmp;while((&$peek)-ceq'&&'){$state.i++;$r=&$cmp;$l=if([string]$l-and$l-ne$false){$r}else{$l}};,$l}
+  $or={$l=&$and;while((&$peek)-ceq'||'){$state.i++;$r=&$and;$l=if([string]$l-and$l-ne$false){$l}else{$r}};,$l}
+  $value=&$or
+  Assert-Ci ($state.i-eq$tokens.Count) 'workflow role expression: trailing tokens'
+  [string]$value
+}
+function Assert-CiWorkflowRoles([string]$Workflow){
+  foreach($case in @(@('push','','baseline'),@('workflow_dispatch','','candidate'),@('workflow_dispatch','candidate','candidate'),@('workflow_dispatch','baseline','baseline'),@('push','candidate','candidate'))){
+    $actual=Resolve-CiWorkflowRole $Workflow $case[0] $case[1]
+    Assert-Ci ($actual-ceq$case[2]) "workflow role for $($case[0]) role='$($case[1])' is '$actual', expected $($case[2])"
+  }
+}
 Assert-PlanBoundWired $ciAst $workflowText
+Assert-CiWorkflowRoles $workflowText
 $ciText=$ciAst.Extent.Text
 foreach($wiringMutant in @(
   @('ci','$bound = Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000','$bound = if ([string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)) { Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000 } else { @{enforced=$false} }'),
@@ -174,6 +206,7 @@ foreach($wiringMutant in @(
   } else {
     Assert-Ci ($workflowText.Contains($wiringMutant[1])) "workflow wiring mutant anchor missing: $($wiringMutant[1])"
     Refuses-Sharding {Assert-PlanBoundWired $ciAst $workflowText.Replace($wiringMutant[1],$wiringMutant[2])}
+    if($wiringMutant[1].Contains('event_name')-or$wiringMutant[1].Contains("|| 'candidate' }}")){Refuses-Sharding {Assert-CiWorkflowRoles $workflowText.Replace($wiringMutant[1],$wiringMutant[2])}}
   }
 }
 Write-Output 'PASS plan bound: over-300 s, fallback, split-estimate and whole-item stale plans refused (stale part accepted); candidate on a foreign checkout enforced, baseline recorded unenforced; push runs plan as baseline; check/role/wiring mutants red'
