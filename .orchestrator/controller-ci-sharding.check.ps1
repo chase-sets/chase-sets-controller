@@ -82,6 +82,48 @@ try{
   Assert-Ci ((Split-Path -Parent $resolved)-ceq[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')) 'unsafe stale-part fixture cleanup'
   Remove-Item -LiteralPath $resolved -Recurse -Force
 }
+# Plan-mode bound (#123): a self-planned head refuses a plan whose largest shard
+# estimate exceeds 300 s or that rests on fallback/equal-split estimates.
+$boundTasks=@(@{identity='test:a';timingSource='recorded'},@{identity='test:b#x';timingSource='recorded-part'},@{identity='test:c#y';timingSource='stale-recorded-part'},@{identity='test:d';timingSource='stale-recorded'},@{identity='test:e';timingSource='local-only'})
+$boundShards=@(@{shard=0;estimatedMs=300000},@{shard=1;estimatedMs=120000})
+Assert-Ci ((Assert-CiPlanBound $boundShards $boundTasks 300000)-eq300000) 'plan bound refused an observed plan at the bound'
+Refuses-Sharding {Assert-CiPlanBound @(@{shard=0;estimatedMs=300001}) $boundTasks 300000}
+foreach($source in @('fallback','recorded-split-estimate','stale-recorded-split-estimate','fallback-split-estimate')){
+  Refuses-Sharding {Assert-CiPlanBound $boundShards (@($boundTasks)+@(@{identity="test:$source";timingSource=$source})) 300000}
+}
+$boundDefinition=(Get-Command Assert-CiPlanBound).Definition
+# Each mutant removes one check; the plan only that check refuses is then
+# accepted, so every refusal control above turns red against its mutant.
+foreach($boundMutant in @(
+  @{edit=@('-le $BoundMs','-le [long]::MaxValue');shards=@(@{shard=0;estimatedMs=300001});tasks=$boundTasks},
+  @{edit=@("-ceq 'fallback'","-ceq 'never'");shards=$boundShards;tasks=(@($boundTasks)+@(@{identity='test:f';timingSource='fallback'}))},
+  @{edit=@("EndsWith('-split-estimate'","EndsWith('-never'");shards=$boundShards;tasks=(@($boundTasks)+@(@{identity='test:g#z';timingSource='recorded-split-estimate'}))}
+)){
+  Assert-Ci ($boundDefinition.Contains($boundMutant.edit[0],[StringComparison]::Ordinal)) "plan bound mutant anchor missing: $($boundMutant.edit[0])"
+  Refuses-Sharding {Assert-CiPlanBound $boundMutant.shards $boundMutant.tasks 300000}
+  & {
+    . ([scriptblock]::Create("function Assert-CiPlanBound {`n$($boundDefinition.Replace($boundMutant.edit[0],$boundMutant.edit[1]))`n}"))
+    $accepted=$true;try{[void](Assert-CiPlanBound $boundMutant.shards $boundMutant.tasks 300000)}catch{$accepted=$false}
+    Assert-Ci $accepted "plan bound mutant survived: $($boundMutant.edit[0]) is not load-bearing"
+  }
+}
+$ciTokens=$null;$ciErrors=$null
+$ciAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci.ps1'),[ref]$ciTokens,[ref]$ciErrors)
+Assert-Ci ($ciErrors.Count-eq0) 'controller-ci parse failed'
+function Assert-PlanBoundWired($Ast){
+  $planBlock=@($Ast.EndBlock.Statements|Where-Object{$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -ceq "`$Mode -ceq 'Plan'"})
+  Assert-Ci ($planBlock.Count-eq1) 'Plan mode block missing'
+  $calls=@($planBlock[0].FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Assert-CiPlanBound'},$true))
+  Assert-Ci ($calls.Count-eq1-and$calls[0].Extent.Text-ceq'Assert-CiPlanBound $planShards $executionItems 300000') 'Plan mode does not enforce the shard bound'
+  $guard=$calls[0].Parent;while($guard-and$guard-isnot[Management.Automation.Language.IfStatementAst]){$guard=$guard.Parent}
+  Assert-Ci ($null-ne$guard-and$guard.Clauses[0].Item1.Extent.Text-ceq'$selfPlan') 'Plan bound is not keyed to the self-planned head'
+  Assert-Ci ($planBlock[0].Extent.Text.Contains('$selfPlan = [string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)')) 'self-plan selector changed'
+}
+Assert-PlanBoundWired $ciAst
+$ciText=$ciAst.Extent.Text
+Refuses-Sharding {Assert-PlanBoundWired ([Management.Automation.Language.Parser]::ParseInput($ciText.Replace('maxEstimatedMs=(Assert-CiPlanBound $planShards $executionItems 300000)','maxEstimatedMs=0'),[ref]$ciTokens,[ref]$ciErrors))}
+Refuses-Sharding {Assert-PlanBoundWired ([Management.Automation.Language.Parser]::ParseInput($ciText.Replace('$selfPlan = [string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)','$selfPlan = $false'),[ref]$ciTokens,[ref]$ciErrors))}
+Write-Output 'PASS plan bound: over-300 s, fallback and split-estimate plans refused; bound check mutants red; Plan mode wired for the self-planned head'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 Refuses-Sharding {Assert-SuiteSelection 'unknown' @('left','right') @{Part='unknown'} @('Case')}
 Refuses-Sharding {Assert-SuiteSelection 'left' @('left','right') @{Part='left';Case='all'} @('Case')}
@@ -91,4 +133,4 @@ foreach($entry in (Get-HeavySuitePartMap).GetEnumerator()){
 }
 Refuses-Sharding {Get-HeavySuitePartSelector 'legacy' @{Part='legacy';PrecursorOnly=$true}}
 if($EvidenceDirectory){Write-CiJson $receipts (Join-Path $EvidenceDirectory 'sharding-controls.json')}
-Write-Output 'PASS plan-bound 16..32, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'
+Write-Output 'PASS plan-bound 16..32, plan-mode 300 s bound, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'

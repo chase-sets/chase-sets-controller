@@ -106,19 +106,74 @@ $dispatchSource=[IO.File]::ReadAllText($dispatchPath).Replace("`r`n","`n")
 $dispatchExpected=@((Get-DispatchLanePartMap).Keys)
 $dispatchItem=$manifest.items|Where-Object identity -eq 'test:dispatch-lane.test.ps1'
 Assert-Ci ($null -ne $dispatchItem) 'dispatch-lane split mapping missing'
-Assert-Ci ((@($dispatchItem.parts.name|Sort-Object)-join ',') -ceq (@($dispatchExpected|Sort-Object)-join ',')) 'dispatch-lane part census changed'
+function Assert-DispatchPartNames($Names){
+  $expected=@((Get-DispatchLanePartMap).Keys)
+  Assert-Ci ((@($Names|Sort-Object)-join',')-ceq(@($expected|Sort-Object)-join',')) 'dispatch-lane part census changed'
+}
+Assert-DispatchPartNames @($dispatchItem.parts.name)
 $dispatchBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-lane.test.ps1"))).Replace("`r`n","`n")
 $baselineKeys=Get-DispatchCoverageKeys $dispatchBaseline
 $candidateKeys=Get-DispatchCoverageKeys $dispatchSource
 foreach($key in $baselineKeys){Assert-Ci ($candidateKeys -contains $key) "dispatch-lane baseline proof key lost: $key"}
+# Every base assertion command (Assert-*) and throw keeps its exact text and
+# multiplicity, so deleting an Assert-only block is red even though its command
+# name survives elsewhere. The listed base assertions moved with the installed
+# Claude probe or were replaced by the pinned historical fixture refusal; each
+# move is bound to its replacement. Per-part counts are lexical (the enclosing
+# & $runPart guard; code outside a guard, including helper functions, is
+# 'unscoped') and pinned, so moving assertions across parts is also red.
+function Get-DispatchAssertionCensus([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch assertion census parse failed'
+  $all=@{};$parts=@{}
+  foreach($node in @($ast.FindAll({param($n) ($n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -clike 'Assert-*') -or $n -is [Management.Automation.Language.ThrowStatementAst]},$true))){
+    $key=$node.GetType().Name+':'+$node.Extent.Text;$all[$key]=1+[int]$all[$key]
+    $part='unscoped';$p=$node.Parent
+    while($p){
+      if($p -is [Management.Automation.Language.IfStatementAst] -and $p.Clauses.Count -ge 1 -and $p.Clauses[0].Item1.Extent.Text -cmatch '^& \$runPart ''([a-z-]+)''$' -and
+        $p.Clauses[0].Item2.Extent.StartOffset -le $node.Extent.StartOffset -and $node.Extent.EndOffset -le $p.Clauses[0].Item2.Extent.EndOffset){$part=$Matches[1];break}
+      $p=$p.Parent
+    }
+    $parts[$part]=1+[int]$parts[$part]
+  }
+  return [pscustomobject]@{all=$all;parts=$parts}
+}
+$dispatchAssertionMoves=[ordered]@{
+  'ThrowStatementAst:throw "unable to materialize exact base launcher $baseObject"'=@('interrupted-integration-test-support.ps1','HISTORICAL_FIXTURE: blob mismatch')
+  'CommandAst:Assert-True ($claudeHelpExited) "installed Claude argument fixture exits without launching a model"'=@('dispatch-lane-installed-claude.test.ps1','$p.WaitForExit()')
+  'CommandAst:Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: installed Claude --help exit')
+  'CommandAst:Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: hosted option check missing --disallowedTools')
+}
+$dispatchAssertionParts=@{'unscoped'=146;'dispatch-foundation'=7;'refusal-foundation'=50;'refusal-harness'=122}
+function Assert-DispatchAssertionCensus([string]$Source,[string]$Baseline) {
+  $before=Get-DispatchAssertionCensus $Baseline;$after=Get-DispatchAssertionCensus $Source
+  foreach($key in $before.all.Keys){
+    if($dispatchAssertionMoves.Contains($key)){
+      $move=$dispatchAssertionMoves[$key]
+      Assert-Ci ([IO.File]::ReadAllText((Join-Path $PSScriptRoot $move[0])).Contains($move[1])) "dispatch moved assertion lost its replacement: $key"
+      continue
+    }
+    Assert-Ci ([int]$after.all[$key] -ge $before.all[$key]) "dispatch-lane base assertion lost: $key"
+  }
+  $actualParts=(@($after.parts.Keys|Sort-Object|ForEach-Object{"$_=$($after.parts[$_])"})-join',')
+  $expectedParts=(@($dispatchAssertionParts.Keys|Sort-Object|ForEach-Object{"$_=$($dispatchAssertionParts[$_])"})-join',')
+  Assert-Ci ($actualParts -ceq $expectedParts) "dispatch per-part assertion census changed: $actualParts"
+}
+Assert-DispatchAssertionCensus $dispatchSource $dispatchBaseline
+$assertOnly="`n  Assert-True (`$codex.laneRole -eq `"review`") `"omitted lane role defaults to review without prompting`"`n"
+Assert-Ci ($dispatchSource.Contains($assertOnly)) 'dispatch Assert-only mutant anchor missing'
+Assert-Ci (@(Get-DispatchCoverageKeys $dispatchSource.Replace($assertOnly,"`n")) -contains 'call:Assert-True') 'Assert-only mutant control: command-name keys alone stay green'
+Refuses-Coverage { Assert-DispatchAssertionCensus $dispatchSource.Replace($assertOnly,"`n") $dispatchBaseline }
+$hoisted=$dispatchSource.Replace($assertOnly,"`n").Replace("`n`$launcher = Join-Path","`n$($assertOnly.Trim())`n`$launcher = Join-Path")
+Refuses-Coverage { Assert-DispatchAssertionCensus $hoisted $dispatchBaseline }
+Write-Output "PASS dispatch assertion census: base Assert-*/throw multiset kept ($($dispatchAssertionMoves.Count) bound moves); per-part counts pinned; Assert-only deletion and cross-part move mutants refused"
 foreach($partName in $dispatchExpected){
   Assert-Ci ($dispatchSource.Contains("'$partName'")) "dispatch source selector missing: $partName"
-  Refuses-Coverage {
-    $remaining=@($dispatchItem.parts.name|Where-Object{$_ -ne $partName})
-    Assert-Ci ((@($remaining|Sort-Object)-join ',') -eq (@($dispatchExpected|Sort-Object)-join ',')) "dispatch part dropped: $partName"
-  }
+  Refuses-Coverage { Assert-DispatchPartNames @($dispatchItem.parts.name|Where-Object{$_ -cne $partName}) }
 }
-Refuses-Coverage { Assert-Ci ((@($dispatchItem.parts.name)+@('dispatch-incident-b-route-baseline')).Count -eq @($dispatchExpected).Count) 'dispatch part merged/duplicated' }
+Refuses-Coverage { Assert-DispatchPartNames (@($dispatchItem.parts.name)+@('dispatch-incident-b-route-baseline')) }
+Refuses-Coverage { Assert-DispatchPartNames (@($dispatchItem.parts.name|Where-Object{$_ -cnotin @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix')})+@('dispatch-incident-b-route')) }
 $dispatchCaseExpected=[ordered]@{
   'dispatch-foundation-verification-policy'='dispatch-foundation'
   'dispatch-foundation-routing'='dispatch-foundation'
@@ -157,12 +212,50 @@ Refuses-Coverage {
   $mutantOwners=Get-DispatchCaseOwners $mutant
   Assert-Ci (@($mutantOwners|Where-Object name -ceq 'dispatch-guard-pid').Count -eq 1) 'dispatch duplicate-execution mutant survived'
 }
+function Test-DispatchAstWithin($Node,$Container){ $Container.Extent.StartOffset -le $Node.Extent.StartOffset -and $Node.Extent.EndOffset -le $Container.Extent.EndOffset }
+# The real part gate is the enclosing `if (& $runPart '<part>')`; the case
+# helpers ignore their part argument. Each case's nearest enclosing if must be
+# exactly its own part guard, and no other part guard may enclose it.
+function Assert-DispatchCaseGuards([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch case guard source parse failed'
+  $guardPattern='^& \$runPart ''([a-z-]+)''$'
+  $isGuard={param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses.Count -ge 1 -and $n.Clauses[0].Item1.Extent.Text -cmatch $guardPattern}
+  $cases=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Invoke-DispatchMeasuredCase','Start-DispatchCase')},$true))
+  Assert-Ci ($cases.Count -eq $dispatchCaseExpected.Count) 'dispatch case census changed'
+  foreach($case in $cases){
+    Assert-Ci ($case.CommandElements.Count -ge 3 -and $case.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $case.CommandElements[2] -is [Management.Automation.Language.StringConstantExpressionAst]) 'dispatch case label is not a literal'
+    $name=[string]$case.CommandElements[1].Value;$part=[string]$case.CommandElements[2].Value
+    $nearest=$case.Parent; while($nearest -and $nearest -isnot [Management.Automation.Language.IfStatementAst]){$nearest=$nearest.Parent}
+    Assert-Ci ($null -ne $nearest -and $nearest.Clauses.Count -eq 1 -and $null -eq $nearest.ElseClause -and
+      $nearest.Clauses[0].Item1.Extent.Text -ceq "& `$runPart '$part'" -and (Test-DispatchAstWithin $case $nearest.Clauses[0].Item2)) "dispatch case is not gated by its own part guard: $name"
+    $outer=0; $p=$nearest.Parent; while($p){ if(& $isGuard $p){$outer++}; $p=$p.Parent }
+    Assert-Ci ($outer -eq 0) "dispatch case is enclosed by a second part guard: $name"
+  }
+  $guards=@($ast.FindAll($isGuard,$true))
+  Assert-Ci ($guards.Count -eq $cases.Count) 'dispatch part guard without exactly one gated case'
+}
+Assert-DispatchCaseGuards $dispatchSource
+$guardOmission="if (& `$runPart 'dispatch-guard-omission') {`n  Invoke-DispatchMeasuredCase 'dispatch-guard-omission' 'dispatch-guard-omission' { Test-TreeDeathOmissionStillRefuses }`n}"
+foreach($guardMutant in @(
+  @{name='swapped';edits=@(@("if (& `$runPart 'dispatch-guard-pid')","if (& `$runPart 'SWAP')"),@("if (& `$runPart 'dispatch-guard-omission')","if (& `$runPart 'dispatch-guard-pid')"),@("if (& `$runPart 'SWAP')","if (& `$runPart 'dispatch-guard-omission')"))},
+  @{name='duplicated';edits=@(,@($guardOmission,"if (& `$runPart 'dispatch-guard-pid') {`n$guardOmission`n}"))},
+  @{name='ungated';edits=@(,@("  if (& `$runPart 'dispatch-foundation') {`n    Invoke-DispatchMeasuredCase 'dispatch-foundation-publication'","  if (`$true) {`n    Invoke-DispatchMeasuredCase 'dispatch-foundation-publication'"))}
+)){
+  $mutantSource=$dispatchSource
+  foreach($edit in $guardMutant.edits){
+    Assert-Ci ($mutantSource.Contains($edit[0])) "dispatch $($guardMutant.name) guard mutant anchor missing"
+    $mutantSource=([regex]::new([regex]::Escape($edit[0]))).Replace($mutantSource,$edit[1].Replace('$','$$'),1)
+  }
+  Refuses-Coverage { Assert-DispatchCaseGuards $mutantSource }
+}
+Write-Output 'PASS dispatch case guards: every case sits directly under its own & $runPart guard; swapped, duplicated and ungated guard mutants refused'
 # Whole-run (no -Part / -Part all) dispatch-lane keeps the base carrier shape:
 # the 8102 test owns both literal dispatch carrier calls, guarded by the
 # whole-run selector with a DEFERRED single-part branch, and the base top-level
 # sequence. Single parts call carriers only through Invoke-7963ResumeCarriers
 # (MEASURED_LOAD -> exit 75), never Test-7963ResumeCarrier directly.
-function Test-DispatchAstWithin($Node,$Container){ $Container.Extent.StartOffset -le $Node.Extent.StartOffset -and $Node.Extent.EndOffset -le $Container.Extent.EndOffset }
 function Assert-DispatchCarrierShape([string]$Source,[string]$Baseline) {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
@@ -215,6 +308,35 @@ foreach($carrierMutant in @(
   Refuses-Coverage { Assert-DispatchCarrierShape $mutantSource $dispatchBaseHead }
 }
 Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guarded 8102 carrier calls; single parts through Invoke-7963ResumeCarriers -Part; 6 carrier mutants refused'
+# Historical fixtures are verified by their CRLF-normalized Git blob id computed
+# in process, so the pin holds with core.autocrlf true or false. A tampered copy
+# is refused; CRLF and LF copies of the same bytes are both accepted.
+& {
+  . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+  $fixtureControlRoot=Join-Path ([IO.Path]::GetTempPath()) ('historical-fixture-control-'+[guid]::NewGuid().ToString('N'))
+  try {
+    $controlFixtures=Join-Path $fixtureControlRoot 'fixtures'
+    [void][IO.Directory]::CreateDirectory($controlFixtures)
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-b3b4ac2') -Destination (Join-Path $controlFixtures 'historical-b3b4ac2') -Recurse
+    $target=Join-Path $controlFixtures 'historical-b3b4ac2/.orchestrator/dispatch-lane.ps1'
+    $crlf=[IO.File]::ReadAllBytes($target)
+    Assert-Ci ([Text.Encoding]::Latin1.GetString($crlf).Contains("`r`n")) 'historical fixture control expects CRLF working bytes'
+    [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-crlf') $controlFixtures)
+    [IO.File]::WriteAllBytes($target,[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($crlf).Replace("`r`n","`n")))
+    [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-lf') $controlFixtures)
+    $tampered=[byte[]]$crlf.Clone();$tampered[$tampered.Length-3]=$tampered[$tampered.Length-3] -bxor 0x20
+    [IO.File]::WriteAllBytes($target,$tampered)
+    $refused=$false
+    try { [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-tampered') $controlFixtures) } catch { $refused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: blob mismatch b3b4ac2/.orchestrator/dispatch-lane.ps1') }
+    Assert-Ci $refused 'tampered historical fixture control is RED'
+    Assert-Ci (-not (Test-Path -LiteralPath (Join-Path $fixtureControlRoot 'out-tampered/.orchestrator/dispatch-lane.ps1'))) 'tampered historical fixture was copied'
+  } finally {
+    $resolved=[IO.Path]::GetFullPath($fixtureControlRoot)
+    Assert-Ci ((Split-Path -Parent $resolved) -ceq [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')) 'unsafe historical fixture control cleanup'
+    if(Test-Path -LiteralPath $resolved){Remove-Item -LiteralPath $resolved -Recurse -Force}
+  }
+}
+Write-Output 'PASS historical fixture pins: in-process CRLF-normalized blob ids accept CRLF and LF copies; tampered fixture refused'
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'

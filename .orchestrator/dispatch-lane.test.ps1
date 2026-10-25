@@ -21,7 +21,6 @@ function Stop-DispatchCase([string]$Name,[Diagnostics.Stopwatch]$Timer) {
 $dispatchParts = @('all') + @((Get-DispatchLanePartMap).Keys)
 Assert-SuiteSelection $Part $dispatchParts $PSBoundParameters @('ValidatorOnly','FleetPreClosureOnly','NativeBranchOnly','OrdinaryOnly','ProductCensusOnly','CapacityOnly','RoutingIssueOnly','VerificationPolicyOnly','GuardRevision','PolicyMutant')
 $runPart = { param([string]$Name) -not $Part -or $Part -ceq 'all' -or $Part -ceq $Name }
-$runFoundation = & $runPart 'dispatch-foundation'
 $dispatchWholeRun = -not $Part -or $Part -ceq 'all'
 if ($VerificationPolicyOnly) {
   $source = if ($GuardRevision) { (@(& git -C (Split-Path -Parent $PSScriptRoot) show "${GuardRevision}:.orchestrator/dispatch-lane.ps1") -join "`n") } else { [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-lane.ps1')) }
@@ -50,8 +49,10 @@ if ($VerificationPolicyOnly) {
   if($skill -match 'ControllerBattery|ControllerPrecursor' -or $skill -notmatch 'separate controller thread'){throw 'product skill must leave controller verification to the controller thread'}
   return
 }
-if($runFoundation -and -not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){
-  Invoke-DispatchMeasuredCase 'dispatch-foundation-verification-policy' 'dispatch-foundation' { & $PSCommandPath -VerificationPolicyOnly }
+if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){
+  if (& $runPart 'dispatch-foundation') {
+    Invoke-DispatchMeasuredCase 'dispatch-foundation-verification-policy' 'dispatch-foundation' { & $PSCommandPath -VerificationPolicyOnly }
+  }
 }
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -118,13 +119,13 @@ if($CapacityOnly){
   & (Join-Path $PSScriptRoot 'dispatch-routing-data.test.ps1') -Case capacity-exemptions
   return
 }
-if ($ProductCensusOnly -or $runFoundation) {
+if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -and -not $NativeBranchOnly)) {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
-  if ($runFoundation) {
+  # -Part never combines with a legacy switch (Assert-SuiteSelection), so a
+  # -ProductCensusOnly run always passes this part guard.
+  if (& $runPart 'dispatch-foundation') {
     Invoke-DispatchMeasuredCase 'dispatch-foundation-publication' 'dispatch-foundation' { Test-PlatformSeatNativePublication }
-  } else {
-    Test-PlatformSeatNativePublication
   }
   if ($ProductCensusOnly) { return }
 }
@@ -1019,6 +1020,8 @@ try {
     $controls9382=@('installed-baseline','AC1-AC4-void-omitted')
     if([string]::IsNullOrWhiteSpace($env:GIT_ALTERNATE_OBJECT_DIRECTORIES)){
       Write-Output "LOCAL_PRIVATE_HISTORY #9382 installed-baseline skipped: GIT_ALTERNATE_OBJECT_DIRECTORIES is not configured (baseline=$prelogBaseline)"
+      # Hosted runners never configure the private-history alternates, so a hosted PASS does not include this control.
+      Write-Output "SKIPPED #9382 installed-baseline control: private history unavailable (GIT_ALTERNATE_OBJECT_DIRECTORIES unset); AC1-AC4-void-omitted still runs"
       $controls9382=@('AC1-AC4-void-omitted')
     }
     foreach($control9382 in $controls9382) {

@@ -152,6 +152,17 @@ function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
   return ,@($order)
 }
 
+# The hosted shard bound (#123): every shard estimate is built from hosted
+# observations of its own execution identity and fits the 300 s job bound.
+# Fallback and equal-weight split estimates are not observations.
+function Assert-CiPlanBound([object[]]$Shards, [object[]]$Tasks, [long]$BoundMs=300000) {
+  $unobserved = @($Tasks | Where-Object { $_.timingSource -ceq 'fallback' -or ([string]$_.timingSource).EndsWith('-split-estimate', [StringComparison]::Ordinal) })
+  Assert-Ci ($unobserved.Count -eq 0) "plan bound: unobserved timing estimate: $(@($unobserved | ForEach-Object { "$($_.identity)=$($_.timingSource)" }) -join ',')"
+  $maxMs = [long](($Shards | Measure-Object estimatedMs -Maximum).Maximum)
+  Assert-Ci ($maxMs -le $BoundMs) "plan bound: max shard estimatedMs=$maxMs exceeds $BoundMs"
+  return $maxMs
+}
+
 function ConvertTo-CiRequiredResults($Plan, [object[]]$Results) {
   if ($null -eq $Plan.executionItems) { return ,$Results }
   Assert-Ci (@($Plan.selected.identity | Select-Object -Unique).Count -eq @($Plan.selected).Count) 'duplicate required identity'

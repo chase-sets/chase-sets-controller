@@ -7,8 +7,13 @@ read-only, checkout credentials are not persisted, and no repository secrets
 are required. A calibrated plan raises the shard count from 16 until the LPT
 predicted maximum is at most 200000 ms, capped at 32. When no count meets that
 target, the cap is used if its predicted maximum is at most 300000 ms. Each
-execution shard must finish within 300000 ms. Legacy plans without `shardCount` still use exactly ten
-receipts. Tests within
+execution shard must finish within 300000 ms. Plan mode enforces that bound
+for the head under test (the runner head is the checkout or its
+`Source-Controller-Head`): it refuses a plan whose largest shard
+`estimatedMs` exceeds 300000 or whose items use `fallback` or
+`*-split-estimate` timings. A baseline or legacy checkout planned by a newer
+runner is a comparison run; its `planning.bound` records `enforced: false`.
+Legacy plans without `shardCount` still use exactly ten receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 
 ## Trigger and collect
@@ -86,12 +91,14 @@ Run `controller-ci-prediction.ps1 -EvidenceDirectory <evidence> -CalibrationPlan
 <plan> -WriteProfile` to replay N=16..32 and record the chosen N (above). No
 count within 300000 ms means stop for decomposition. Every estimate must be a
 hosted observation of that exact execution identity: `recorded`,
-`recorded-part`, `stale-recorded`, `stale-recorded-part` or `local-only`.
-Fallback and equal-weight `*-split-estimate` timings refuse. A split part with
-only stale records uses its own slowest stale observation; an equal-weight
-share of the whole suite is used only for a part that was never observed.
-Record both gate runs (`-Append`) so the next plan takes the slowest hosted
-observation per item. Records older than 30 days or changed dependencies cannot be
+`recorded-part`, `stale-recorded-part` or `local-only`. A whole item must
+be recorded at its current source and dependency set; whole-item
+`stale-recorded`, fallback and equal-weight `*-split-estimate` timings
+refuse. A split part with only stale records uses its own slowest stale
+observation; an equal-weight share of the whole suite is used only for a part
+that was never observed. Record a full hosted run of the head under test
+(`-Append`) so its records carry the current source digests, and record both
+gate runs so the next plan takes the slowest hosted observation per item. Records older than 30 days or changed dependencies cannot be
 used as fresh proof. No timeout, retry, skip, sampling or waiver is introduced.
 
 The hosted inventory explicitly adds `check:controller-ci-coverage`,
@@ -120,7 +127,20 @@ also listed in `ci.notHermetic`. Exact historical discriminator fixtures
 excluded from the public snapshot remain local-only. Model CLI/sandbox tests
 remain local-only; this workflow never installs or launches a model CLI.
 The classification lives in `Get-CiRestriction` and must be revisited when the
-candidate removes those dependencies. No test assertions, timeouts, product
+candidate removes those dependencies.
+
+Some controls inside hosted-PASS items still need private history and skip on
+hosted runners. In `dispatch-lane.test.ps1` (launcher setup shared by parts
+`refusal-foundation` and `refusal-harness`, and the whole run), the
+#9382 `installed-baseline` control reads launcher baseline
+`24a00072a5d10b93c290d805d900920e3a2aa84a` through
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`. Hosted runners leave that unset, so the
+control does not run and its log prints
+`SKIPPED #9382 installed-baseline control: ...` after the
+`LOCAL_PRIVATE_HISTORY` line. The same-input `AC1-AC4-void-omitted` mutant
+still runs. A hosted PASS for those parts therefore does not include the
+installed-baseline control; it runs only in a local battery with the
+alternates configured. No test assertions, timeouts, product
 files or local verifier locks are altered.
 
 A run with failures is FAIL. A run with only passing CI items plus exclusions

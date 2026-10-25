@@ -30,8 +30,8 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
-function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination) {
-  $fixtureRoot=Join-Path $PSScriptRoot "fixtures/historical-$Name"
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures')) {
+  $fixtureRoot=Join-Path $FixturesRoot "historical-$Name"
   $readme=Join-Path $fixtureRoot 'README.md'
   if(-not(Test-Path -LiteralPath $readme -PathType Leaf)){throw "HISTORICAL_FIXTURE: missing README for $Name"}
   $entries=@(Get-Content -LiteralPath $readme | ForEach-Object {
@@ -45,8 +45,8 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc9
   [IO.Directory]::CreateDirectory($Destination)|Out-Null
   foreach($entry in $entries){
     $source=Join-Path $fixtureRoot $entry.path
-    $actual=((& git.exe hash-object -- $source) -join '').Trim()
-    if($LASTEXITCODE-ne0-or$actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
+    $lf=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($source)).Replace("`r`n","`n")); $blobHash=[Security.Cryptography.IncrementalHash]::CreateHash('SHA1'); $blobHash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($lf.Length)`0")); $blobHash.AppendData($lf); $actual=[Convert]::ToHexString($blobHash.GetHashAndReset()).ToLowerInvariant(); $blobHash.Dispose() # CRLF-normalized Git blob id in process: independent of core.autocrlf
+    if($actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
     $target=Join-Path $Destination $entry.path
     [IO.Directory]::CreateDirectory((Split-Path -Parent $target))|Out-Null
     Copy-Item -LiteralPath $source -Destination $target -Force

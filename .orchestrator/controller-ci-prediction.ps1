@@ -12,8 +12,11 @@ $manifest=Get-Content (Join-Path $PSScriptRoot 'controller-ci-parts.json') -Raw|
 $root=Split-Path -Parent $PSScriptRoot
 # Every estimate must be a hosted observation of that exact execution identity
 # (the slowest one within 30 days); fallback and equal-weight split estimates
-# are not observations. Stale records are observations of earlier bytes.
-$observed=@('recorded','recorded-part','stale-recorded','stale-recorded-part','local-only')
+# are not observations. A whole item must be observed at its current source
+# and dependency set; only a split part may fall back to its own stale record
+# (stale-recorded-part), because a never-recorded part would otherwise get an
+# equal-weight share of the whole suite.
+$observed=@('recorded','recorded-part','stale-recorded-part','local-only')
 $targetMs=200000L;$boundMs=300000L;$maxShards=32
 $replays=@(foreach($count in 16..$maxShards){
   $tasks=New-CiAssignments $calibration.inventory '' $manifest $profile $root -ShardCount $count
