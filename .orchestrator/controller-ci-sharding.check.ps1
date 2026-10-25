@@ -82,12 +82,16 @@ try{
   Assert-Ci ((Split-Path -Parent $resolved)-ceq[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')) 'unsafe stale-part fixture cleanup'
   Remove-Item -LiteralPath $resolved -Recurse -Force
 }
-# Plan-mode bound (#123): a self-planned head refuses a plan whose largest shard
-# estimate exceeds 300 s or that rests on fallback/equal-split estimates.
-$boundTasks=@(@{identity='test:a';timingSource='recorded'},@{identity='test:b#x';timingSource='recorded-part'},@{identity='test:c#y';timingSource='stale-recorded-part'},@{identity='test:d';timingSource='stale-recorded'},@{identity='test:e';timingSource='local-only'})
+# Plan-mode bound ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within
+# the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
+# a candidate plan refuses a largest shard estimate over 300 s and any
+# fallback, equal-split or whole-item stale estimate; a split part's own stale
+# record stays accepted.
+$boundTasks=@(@{identity='test:a';timingSource='recorded'},@{identity='test:b#x';timingSource='recorded-part'},@{identity='test:c#y';timingSource='stale-recorded-part'},@{identity='test:e';timingSource='local-only'})
 $boundShards=@(@{shard=0;estimatedMs=300000},@{shard=1;estimatedMs=120000})
 Assert-Ci ((Assert-CiPlanBound $boundShards $boundTasks 300000)-eq300000) 'plan bound refused an observed plan at the bound'
 Refuses-Sharding {Assert-CiPlanBound @(@{shard=0;estimatedMs=300001}) $boundTasks 300000}
+Refuses-Sharding {Assert-CiPlanBound $boundShards (@($boundTasks)+@(@{identity='test:d';timingSource='stale-recorded'})) 300000}
 foreach($source in @('fallback','recorded-split-estimate','stale-recorded-split-estimate','fallback-split-estimate')){
   Refuses-Sharding {Assert-CiPlanBound $boundShards (@($boundTasks)+@(@{identity="test:$source";timingSource=$source})) 300000}
 }
@@ -97,6 +101,7 @@ $boundDefinition=(Get-Command Assert-CiPlanBound).Definition
 foreach($boundMutant in @(
   @{edit=@('-le $BoundMs','-le [long]::MaxValue');shards=@(@{shard=0;estimatedMs=300001});tasks=$boundTasks},
   @{edit=@("-ceq 'fallback'","-ceq 'never'");shards=$boundShards;tasks=(@($boundTasks)+@(@{identity='test:f';timingSource='fallback'}))},
+  @{edit=@("-ceq 'stale-recorded'","-ceq 'never-stale'");shards=$boundShards;tasks=(@($boundTasks)+@(@{identity='test:d';timingSource='stale-recorded'}))},
   @{edit=@("EndsWith('-split-estimate'","EndsWith('-never'");shards=$boundShards;tasks=(@($boundTasks)+@(@{identity='test:g#z';timingSource='recorded-split-estimate'}))}
 )){
   Assert-Ci ($boundDefinition.Contains($boundMutant.edit[0],[StringComparison]::Ordinal)) "plan bound mutant anchor missing: $($boundMutant.edit[0])"
@@ -107,23 +112,67 @@ foreach($boundMutant in @(
     Assert-Ci $accepted "plan bound mutant survived: $($boundMutant.edit[0]) is not load-bearing"
   }
 }
+# Role, not commit identity, decides enforcement. A candidate on a foreign
+# checkout (runner head differs from the checkout, as with --ref main
+# -f controller_head=<candidate>) is still bounded; only role=baseline is not.
+$foreignCheckout='a'*40;$foreignRunner='b'*40
+$overBound=@(@{shard=0;estimatedMs=300001})
+$candidateBound=Get-CiPlanBound 'candidate' $boundShards $boundTasks $foreignCheckout $foreignRunner 300000
+Assert-Ci ($candidateBound.role-ceq'candidate'-and$candidateBound.enforced-eq$true-and$candidateBound.maxEstimatedMs-eq300000-and$candidateBound.checkoutHead-ceq$foreignCheckout-and$candidateBound.runnerHead-ceq$foreignRunner) 'candidate plan bound not recorded as enforced'
+Refuses-Sharding {Get-CiPlanBound 'candidate' $overBound $boundTasks $foreignCheckout $foreignRunner 300000}
+Refuses-Sharding {Get-CiPlanBound 'candidate' $boundShards (@($boundTasks)+@(@{identity='test:d';timingSource='stale-recorded'})) $foreignCheckout $foreignRunner 300000}
+$baselineBound=Get-CiPlanBound 'baseline' $overBound (@($boundTasks)+@(@{identity='test:f';timingSource='fallback'})) $foreignCheckout $foreignRunner 300000
+Assert-Ci ($baselineBound.role-ceq'baseline'-and$baselineBound.enforced-eq$false-and$baselineBound.maxEstimatedMs-eq300001) 'baseline plan bound not recorded as unenforced'
+foreach($badRole in @('','self','Candidate','BASELINE')){Refuses-Sharding {Get-CiPlanBound $badRole $boundShards $boundTasks $foreignCheckout $foreignRunner 300000}}
+$roleDefinition=(Get-Command Get-CiPlanBound).Definition
+foreach($roleMutant in @(
+  @('$enforced = $Role -cne ''baseline''','$enforced = $Role -cne ''baseline'' -and $RunnerHead -ceq $CheckoutHead'),
+  @('$enforced = $Role -cne ''baseline''','$enforced = $false')
+)){
+  Assert-Ci ($roleDefinition.Contains($roleMutant[0],[StringComparison]::Ordinal)) 'plan role mutant anchor missing'
+  & {
+    . ([scriptblock]::Create("function Get-CiPlanBound {`n$($roleDefinition.Replace($roleMutant[0],$roleMutant[1]))`n}"))
+    $accepted=$true;try{[void](Get-CiPlanBound 'candidate' $overBound $boundTasks $foreignCheckout $foreignRunner 300000)}catch{$accepted=$false}
+    Assert-Ci $accepted "plan role mutant survived: $($roleMutant[1])"
+  }
+}
 $ciTokens=$null;$ciErrors=$null
 $ciAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci.ps1'),[ref]$ciTokens,[ref]$ciErrors)
 Assert-Ci ($ciErrors.Count-eq0) 'controller-ci parse failed'
-function Assert-PlanBoundWired($Ast){
+$workflowText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/controller-battery.yml')).Replace("`r`n","`n")
+function Assert-PlanBoundWired($Ast,[string]$Workflow){
+  $roleParameter=@($Ast.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Role'})
+  Assert-Ci ($roleParameter.Count-eq1-and$roleParameter[0].Extent.Text-ceq"[ValidateSet('candidate','baseline')][string]`$Role = 'candidate'") 'Plan role parameter/default changed'
   $planBlock=@($Ast.EndBlock.Statements|Where-Object{$_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -ceq "`$Mode -ceq 'Plan'"})
   Assert-Ci ($planBlock.Count-eq1) 'Plan mode block missing'
-  $calls=@($planBlock[0].FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Assert-CiPlanBound'},$true))
-  Assert-Ci ($calls.Count-eq1-and$calls[0].Extent.Text-ceq'Assert-CiPlanBound $planShards $executionItems 300000') 'Plan mode does not enforce the shard bound'
-  $guard=$calls[0].Parent;while($guard-and$guard-isnot[Management.Automation.Language.IfStatementAst]){$guard=$guard.Parent}
-  Assert-Ci ($null-ne$guard-and$guard.Clauses[0].Item1.Extent.Text-ceq'$selfPlan') 'Plan bound is not keyed to the self-planned head'
-  Assert-Ci ($planBlock[0].Extent.Text.Contains('$selfPlan = [string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)')) 'self-plan selector changed'
+  $calls=@($planBlock[0].FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -cin @('Get-CiPlanBound','Assert-CiPlanBound')},$true))
+  Assert-Ci ($calls.Count-eq1-and$calls[0].Extent.Text-ceq'Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000') 'Plan mode does not bound the plan by its role'
+  $guard=$calls[0].Parent;while($guard-and$guard-isnot[Management.Automation.Language.IfStatementAst]-and$guard-ne$planBlock[0]){$guard=$guard.Parent}
+  Assert-Ci ($guard-eq$planBlock[0]) 'Plan bound is conditional inside Plan mode'
+  Assert-Ci ($planBlock[0].Extent.Text.Contains('planning=@{algorithm=''LPT'';fallbackMs=30000;maxAgeDays=30;shards=$planShards;bound=$bound}')) 'Plan does not record its role/bound'
+  Assert-Ci (-not [regex]::IsMatch($planBlock[0].Extent.Text,'GITHUB_SHA\s*-c?(in|eq)|selfPlan')) 'Plan bound keyed to commit identity'
+  Assert-Ci ($Workflow.Contains("      role:`n        description: ") -and $Workflow.Contains("        type: choice`n        options: [candidate, baseline]`n        default: candidate`n")) 'workflow role input missing'
+  Assert-Ci ($Workflow.Contains('          CI_ROLE: ${{ inputs.role || ''candidate'' }}'+"`n") -and $Workflow.Contains('-Mode Plan ') -and $Workflow.Contains(' -Role $env:CI_ROLE ')) 'workflow does not pass role to Plan mode'
 }
-Assert-PlanBoundWired $ciAst
+Assert-PlanBoundWired $ciAst $workflowText
 $ciText=$ciAst.Extent.Text
-Refuses-Sharding {Assert-PlanBoundWired ([Management.Automation.Language.Parser]::ParseInput($ciText.Replace('maxEstimatedMs=(Assert-CiPlanBound $planShards $executionItems 300000)','maxEstimatedMs=0'),[ref]$ciTokens,[ref]$ciErrors))}
-Refuses-Sharding {Assert-PlanBoundWired ([Management.Automation.Language.Parser]::ParseInput($ciText.Replace('$selfPlan = [string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)','$selfPlan = $false'),[ref]$ciTokens,[ref]$ciErrors))}
-Write-Output 'PASS plan bound: over-300 s, fallback and split-estimate plans refused; bound check mutants red; Plan mode wired for the self-planned head'
+foreach($wiringMutant in @(
+  @('ci','$bound = Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000','$bound = if ([string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)) { Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000 } else { @{enforced=$false} }'),
+  @('ci','Get-CiPlanBound $Role $planShards','Get-CiPlanBound ''baseline'' $planShards'),
+  @('ci',"[string]`$Role = 'candidate'","[string]`$Role = 'baseline'"),
+  @('ci',';bound=$bound}','}'),
+  @('workflow',' -Role $env:CI_ROLE ',' '),
+  @('workflow',"        default: candidate`n","        default: baseline`n")
+)){
+  if($wiringMutant[0]-ceq'ci'){
+    Assert-Ci ($ciText.Contains($wiringMutant[1])) "plan wiring mutant anchor missing: $($wiringMutant[1])"
+    Refuses-Sharding {Assert-PlanBoundWired ([Management.Automation.Language.Parser]::ParseInput($ciText.Replace($wiringMutant[1],$wiringMutant[2]),[ref]$ciTokens,[ref]$ciErrors)) $workflowText}
+  } else {
+    Assert-Ci ($workflowText.Contains($wiringMutant[1])) "workflow wiring mutant anchor missing: $($wiringMutant[1])"
+    Refuses-Sharding {Assert-PlanBoundWired $ciAst $workflowText.Replace($wiringMutant[1],$wiringMutant[2])}
+  }
+}
+Write-Output 'PASS plan bound: over-300 s, fallback, split-estimate and whole-item stale plans refused (stale part accepted); candidate on a foreign checkout enforced, baseline recorded unenforced; check/role/wiring mutants red'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 Refuses-Sharding {Assert-SuiteSelection 'unknown' @('left','right') @{Part='unknown'} @('Case')}
 Refuses-Sharding {Assert-SuiteSelection 'left' @('left','right') @{Part='left';Case='all'} @('Case')}
@@ -133,4 +182,4 @@ foreach($entry in (Get-HeavySuitePartMap).GetEnumerator()){
 }
 Refuses-Sharding {Get-HeavySuitePartSelector 'legacy' @{Part='legacy';PrecursorOnly=$true}}
 if($EvidenceDirectory){Write-CiJson $receipts (Join-Path $EvidenceDirectory 'sharding-controls.json')}
-Write-Output 'PASS plan-bound 16..32, plan-mode 300 s bound, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'
+Write-Output 'PASS plan-bound 16..32, role-keyed plan-mode 300 s bound, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'

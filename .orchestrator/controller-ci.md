@@ -7,12 +7,17 @@ read-only, checkout credentials are not persisted, and no repository secrets
 are required. A calibrated plan raises the shard count from 16 until the LPT
 predicted maximum is at most 200000 ms, capped at 32. When no count meets that
 target, the cap is used if its predicted maximum is at most 300000 ms. Each
-execution shard must finish within 300000 ms. Plan mode enforces that bound
-for the head under test (the runner head is the checkout or its
-`Source-Controller-Head`): it refuses a plan whose largest shard
-`estimatedMs` exceeds 300000 or whose items use `fallback` or
-`*-split-estimate` timings. A baseline or legacy checkout planned by a newer
-runner is a comparison run; its `planning.bound` records `enforced: false`.
+execution shard must finish within 300000 ms. The workflow input `role`
+(`candidate`, the default, or `baseline`) is passed to Plan mode and decides
+enforcement; the runner ref and checkout are not consulted
+([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
+Unless the role is `baseline`, Plan refuses a plan whose largest shard
+`estimatedMs` exceeds 300000 or whose items use `fallback`, whole-item
+`stale-recorded` or `*-split-estimate` timings; `stale-recorded-part` is
+accepted. This holds for a candidate dispatched from `--ref main` against a
+foreign checkout. A `baseline` run is a comparison run. `planning.bound`
+records `role`, `enforced`, `boundMs`, `maxEstimatedMs`, `checkoutHead`
+and `runnerHead` for both roles.
 Legacy plans without `shardCount` still use exactly ten receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 
@@ -21,7 +26,7 @@ a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 Run these in the controller author worktree, not the product checkout:
 
 ```powershell
-gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref main -f controller_head=controller-8478-f2 -f product_sha=0f3e27ce77289a8dbc5c96d3889946a101dc3cea -f scope=full
+gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref main -f controller_head=controller-8478-f2 -f product_sha=0f3e27ce77289a8dbc5c96d3889946a101dc3cea -f scope=full -f role=candidate
 gh run list -R chase-sets/chase-sets-controller --workflow controller-battery.yml --limit 5 --json databaseId,headSha,status,conclusion,url
 gh run view <run-id> -R chase-sets/chase-sets-controller --json status,conclusion,jobs
 gh run download <run-id> -R chase-sets/chase-sets-controller -n controller-battery-result -D <empty-result-directory>
@@ -56,11 +61,15 @@ workflow ref: `controller_head` selects tested sources, not runner scripts.
 
 ```powershell
 git push origin HEAD
-gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref <candidate-branch> -f controller_head=<source-sha> -f product_sha=<immutable-product-sha> -f scope=full
+gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref <candidate-branch> -f controller_head=<baseline-tag-or-sha> -f product_sha=<immutable-product-sha> -f scope=full -f role=baseline
+gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref <candidate-branch> -f controller_head=<source-sha> -f product_sha=<immutable-product-sha> -f scope=full -f role=candidate
 ```
 
 The same candidate runner/workflow commit and product SHA must execute baseline
-and candidate sequentially for a gate pair. Keep every run ID, exact plan bytes,
+and candidate sequentially for a gate pair. The baseline passes
+`-f role=baseline`, so its plan records `enforced: false` and the base's
+shard sizes cannot fail its plan. The candidate passes `-f role=candidate`
+(also the default) and must satisfy the bound. Keep every run ID, exact plan bytes,
 raw item logs, shard receipts and final receipt. A green shard job is not proof
 that its items passed.
 
@@ -94,7 +103,7 @@ hosted observation of that exact execution identity: `recorded`,
 `recorded-part`, `stale-recorded-part` or `local-only`. A whole item must
 be recorded at its current source and dependency set; whole-item
 `stale-recorded`, fallback and equal-weight `*-split-estimate` timings
-refuse. A split part with only stale records uses its own slowest stale
+refuse, in prediction and in an enforced Plan. A split part with only stale records uses its own slowest stale
 observation; an equal-weight share of the whole suite is used only for a part
 that was never observed. Record a full hosted run of the head under test
 (`-Append`) so its records carry the current source digests, and record both
@@ -132,7 +141,9 @@ candidate removes those dependencies.
 Some controls inside hosted-PASS items still need private history and skip on
 hosted runners. In `dispatch-lane.test.ps1` (launcher setup shared by parts
 `refusal-foundation` and `refusal-harness`, and the whole run), the
-#9382 `installed-baseline` control reads launcher baseline
+`installed-baseline` control from
+[chase-sets#9382 \[controller\] A never-launched strict controller-review prelog strands its exact head: void it from launcher evidence and make the prepared v1 prelog exact](https://github.com/chase-sets/chase-sets/issues/9382)
+reads launcher baseline
 `24a00072a5d10b93c290d805d900920e3a2aa84a` through
 `GIT_ALTERNATE_OBJECT_DIRECTORIES`. Hosted runners leave that unset, so the
 control does not run and its log prints

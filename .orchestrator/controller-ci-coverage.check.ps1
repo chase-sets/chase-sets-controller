@@ -251,8 +251,47 @@ foreach($guardMutant in @(
   Refuses-Coverage { Assert-DispatchCaseGuards $mutantSource }
 }
 Write-Output 'PASS dispatch case guards: every case sits directly under its own & $runPart guard; swapped, duplicated and ungated guard mutants refused'
+# Legacy switch paths keep base semantics: every base if-condition that reads a
+# legacy switch keeps its exact text and multiplicity, and the verification
+# policy and publication cases sit under the base outer condition with only the
+# part guard added inside it.
+function Assert-DispatchSwitchConditions([string]$Source,[string]$Baseline) {
+  $switchPattern='\$(ValidatorOnly|FleetPreClosureOnly|NativeBranchOnly|OrdinaryOnly|ProductCensusOnly|CapacityOnly|RoutingIssueOnly|VerificationPolicyOnly)\b'
+  $parse={param([string]$Text) $tokens=$null;$errors=$null;$tree=[Management.Automation.Language.Parser]::ParseInput($Text,[ref]$tokens,[ref]$errors);Assert-Ci ($errors.Count -eq 0) 'dispatch switch source parse failed';$tree}
+  $before=& $parse $Baseline;$after=& $parse $Source
+  $census={param($Tree) $h=@{};foreach($if in @($Tree.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst]},$true))){foreach($clause in $if.Clauses){$text=$clause.Item1.Extent.Text;if($text -cmatch $switchPattern){$h[$text]=1+[int]$h[$text]}}};$h}
+  $baseConditions=& $census $before;$candidateConditions=& $census $after
+  $baseText=(@($baseConditions.Keys|Sort-Object|ForEach-Object{"$_ x$($baseConditions[$_])"})-join"`n");$candidateText=(@($candidateConditions.Keys|Sort-Object|ForEach-Object{"$_ x$($candidateConditions[$_])"})-join"`n")
+  Assert-Ci ($baseText -ceq $candidateText) "dispatch legacy switch conditions differ from base: $candidateText"
+  foreach($pin in @(@('& $PSCommandPath -VerificationPolicyOnly','dispatch-foundation-verification-policy'),@('Test-PlatformSeatNativePublication','dispatch-foundation-publication'))){
+    $baseCall=@($before.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.Extent.Text -ceq $pin[0]},$true))
+    Assert-Ci ($baseCall.Count -eq 1) "dispatch base switch anchor missing: $($pin[0])"
+    $baseIf=$baseCall[0].Parent;while($baseIf -isnot [Management.Automation.Language.IfStatementAst]){$baseIf=$baseIf.Parent}
+    $case=@($after.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Invoke-DispatchMeasuredCase' -and $n.CommandElements.Count -ge 2 -and $n.CommandElements[1].Extent.Text -ceq "'$($pin[1])'"},$true))
+    Assert-Ci ($case.Count -eq 1) "dispatch switch case missing: $($pin[1])"
+    $guard=$case[0].Parent;while($guard -isnot [Management.Automation.Language.IfStatementAst]){$guard=$guard.Parent}
+    $outer=$guard.Parent;while($outer -and $outer -isnot [Management.Automation.Language.IfStatementAst]){$outer=$outer.Parent}
+    Assert-Ci ($null -ne $outer -and $outer.Clauses.Count -eq 1 -and $outer.Clauses[0].Item1.Extent.Text -ceq $baseIf.Clauses[0].Item1.Extent.Text -and (Test-DispatchAstWithin $guard $outer.Clauses[0].Item2)) "dispatch $($pin[1]) outer switch condition differs from base"
+  }
+}
+Assert-DispatchSwitchConditions $dispatchSource $dispatchBaseline
+foreach($switchMutant in @(
+  @('if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -and -not $NativeBranchOnly)) {','if ($ProductCensusOnly -or (& $runPart ''dispatch-foundation'')) {'),
+  @('if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly -and -not $NativeBranchOnly)) {','if ($ProductCensusOnly -or (-not $ValidatorOnly -and -not $FleetPreClosureOnly)) {'),
+  @('if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $OrdinaryOnly -or $ProductCensusOnly)){','if(-not ($ValidatorOnly -or $FleetPreClosureOnly -or $NativeBranchOnly -or $ProductCensusOnly)){'),
+  @('if($RoutingIssueOnly){return}','if($RoutingIssueOnly -and $false){return}'),
+  # Hoists keep every condition text (census unchanged); only the outer pin sees them.
+  @("if(-not (`$ValidatorOnly -or `$FleetPreClosureOnly -or `$NativeBranchOnly -or `$OrdinaryOnly -or `$ProductCensusOnly)){`n  if (& `$runPart 'dispatch-foundation') {`n    Invoke-DispatchMeasuredCase 'dispatch-foundation-verification-policy' 'dispatch-foundation' { & `$PSCommandPath -VerificationPolicyOnly }`n  }`n}","if (& `$runPart 'dispatch-foundation') {`n  Invoke-DispatchMeasuredCase 'dispatch-foundation-verification-policy' 'dispatch-foundation' { & `$PSCommandPath -VerificationPolicyOnly }`n}`nif(-not (`$ValidatorOnly -or `$FleetPreClosureOnly -or `$NativeBranchOnly -or `$OrdinaryOnly -or `$ProductCensusOnly)){`n}"),
+  @("  if (& `$runPart 'dispatch-foundation') {`n    Invoke-DispatchMeasuredCase 'dispatch-foundation-publication' 'dispatch-foundation' { Test-PlatformSeatNativePublication }`n  }`n  if (`$ProductCensusOnly) { return }`n}","  if (`$ProductCensusOnly) { return }`n}`nif (& `$runPart 'dispatch-foundation') {`n  Invoke-DispatchMeasuredCase 'dispatch-foundation-publication' 'dispatch-foundation' { Test-PlatformSeatNativePublication }`n}")
+)){
+  Assert-Ci ($dispatchSource.Contains($switchMutant[0])) "dispatch switch mutant anchor missing: $($switchMutant[0])"
+  Refuses-Coverage { Assert-DispatchSwitchConditions $dispatchSource.Replace($switchMutant[0],$switchMutant[1]) $dispatchBaseline }
+}
+Write-Output 'PASS dispatch legacy switch conditions: base if-conditions kept exactly; verification-policy and publication under the base outer condition; 4 condition and 2 hoist mutants refused'
 # Whole-run (no -Part / -Part all) dispatch-lane keeps the base carrier shape:
-# the 8102 test owns both literal dispatch carrier calls, guarded by the
+# the test of [chase-sets#8102 Classify a fleet-load miss of the controller
+# battery's timed fixtures as MEASURED_LOAD, never FAIL or PASS](https://github.com/chase-sets/chase-sets/issues/8102)
+# owns both literal dispatch carrier calls, guarded by the
 # whole-run selector with a DEFERRED single-part branch, and the base top-level
 # sequence. Single parts call carriers only through Invoke-7963ResumeCarriers
 # (MEASURED_LOAD -> exit 75), never Test-7963ResumeCarrier directly.

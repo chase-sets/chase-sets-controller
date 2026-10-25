@@ -152,15 +152,30 @@ function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
   return ,@($order)
 }
 
-# The hosted shard bound (#123): every shard estimate is built from hosted
-# observations of its own execution identity and fits the 300 s job bound.
-# Fallback and equal-weight split estimates are not observations.
+# The hosted shard bound ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts
+# within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
+# every shard estimate is a hosted observation of its own execution identity
+# and the largest shard fits the 300 s job bound. Fallback, equal-weight split
+# and whole-item stale estimates are not observations of the planned bytes; a
+# split part may still use its own stale record (stale-recorded-part).
 function Assert-CiPlanBound([object[]]$Shards, [object[]]$Tasks, [long]$BoundMs=300000) {
-  $unobserved = @($Tasks | Where-Object { $_.timingSource -ceq 'fallback' -or ([string]$_.timingSource).EndsWith('-split-estimate', [StringComparison]::Ordinal) })
+  $unobserved = @($Tasks | Where-Object { $_.timingSource -ceq 'fallback' -or $_.timingSource -ceq 'stale-recorded' -or ([string]$_.timingSource).EndsWith('-split-estimate', [StringComparison]::Ordinal) })
   Assert-Ci ($unobserved.Count -eq 0) "plan bound: unobserved timing estimate: $(@($unobserved | ForEach-Object { "$($_.identity)=$($_.timingSource)" }) -join ',')"
   $maxMs = [long](($Shards | Measure-Object estimatedMs -Maximum).Maximum)
   Assert-Ci ($maxMs -le $BoundMs) "plan bound: max shard estimatedMs=$maxMs exceeds $BoundMs"
   return $maxMs
+}
+
+# The run's declared role decides enforcement, never which commit the runner
+# or checkout is: a candidate plan is bounded on any checkout, and only an
+# explicit baseline comparison run records the bound without enforcing it.
+function Get-CiPlanBound([string]$Role, [object[]]$Shards, [object[]]$Tasks, [string]$CheckoutHead, [string]$RunnerHead, [long]$BoundMs=300000) {
+  Assert-Ci ($Role -cin @('candidate','baseline')) "plan role must be candidate or baseline: '$Role'"
+  $enforced = $Role -cne 'baseline'
+  $bound = [ordered]@{role=$Role;enforced=$enforced;boundMs=$BoundMs;checkoutHead=$CheckoutHead;runnerHead=$RunnerHead}
+  if ($enforced) { $bound.maxEstimatedMs = Assert-CiPlanBound $Shards $Tasks $BoundMs }
+  else { $bound.maxEstimatedMs = [long](($Shards | Measure-Object estimatedMs -Maximum).Maximum); $bound.reason = 'baseline comparison run: bound recorded, not enforced' }
+  return $bound
 }
 
 function ConvertTo-CiRequiredResults($Plan, [object[]]$Results) {

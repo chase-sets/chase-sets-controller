@@ -7,7 +7,8 @@ param(
   [ValidateSet('full','impact')][string]$Scope = 'full',
   [string]$PlanPath,
   [string]$OutputDirectory,
-  [ValidateRange(0,31)][int]$Shard = 0
+  [ValidateRange(0,31)][int]$Shard = 0,
+  [ValidateSet('candidate','baseline')][string]$Role = 'candidate'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')
@@ -166,13 +167,10 @@ if ($Mode -ceq 'Plan') {
   $executionItems = New-CiAssignments $inventory $Items $manifest $profile $ControllerRoot -ShardCount $shardCount
   $planShards = @(0..($shardCount-1) | ForEach-Object { $n=$_; @{shard=$n;estimatedMs=[long](($executionItems | Where-Object shard -EQ $n | Measure-Object estimatedMs -Sum).Sum)} })
   $sourceHead = Get-CiSourceHead $ControllerRoot $checkoutHead
-  # The head under test plans itself (runner head = checkout or its source) and
-  # must fit the hosted shard bound from observed timings. A baseline or legacy
-  # checkout planned by a newer runner is a comparison run; its plan records
-  # that the bound was not enforced instead of refusing to plan.
-  $selfPlan = [string]$env:GITHUB_SHA -cin @($checkoutHead,$sourceHead)
-  $bound = if ($selfPlan) { [ordered]@{enforced=$true;boundMs=300000L;maxEstimatedMs=(Assert-CiPlanBound $planShards $executionItems 300000)} }
-    else { [ordered]@{enforced=$false;boundMs=300000L;reason='checkout is not the runner head (baseline or legacy comparison plan)'} }
+  # The workflow's explicit role input decides the bound: a candidate plan is
+  # bounded on any checkout and runner; only role=baseline (a comparison run)
+  # records the bound without enforcing it.
+  $bound = Get-CiPlanBound $Role $planShards $executionItems $checkoutHead ([string]$env:GITHUB_SHA) 300000
   $plan = [ordered]@{ schemaVersion='controller-ci-plan/v1'; controllerHead=$sourceHead
     checkoutHead=$checkoutHead; productSha=$ProductSha; runnerHead=$env:GITHUB_SHA; inventory=$inventory; selected=$selected
     executionItems=$executionItems; planning=@{algorithm='LPT';fallbackMs=30000;maxAgeDays=30;shards=$planShards;bound=$bound}
@@ -182,7 +180,7 @@ if ($Mode -ceq 'Plan') {
   Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
   $matrix = @{include=@(0..($shardCount-1) | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
   Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "matrix=$matrix`ncheckout_head=$checkoutHead"
-  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count) shards=$shardCount boundEnforced=$($bound.enforced) maxEstimatedMs=$((($planShards | Measure-Object estimatedMs -Maximum).Maximum))"
+  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count) shards=$shardCount role=$($bound.role) boundEnforced=$($bound.enforced) maxEstimatedMs=$((($planShards | Measure-Object estimatedMs -Maximum).Maximum))"
   return
 }
 
