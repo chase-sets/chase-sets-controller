@@ -241,15 +241,65 @@ function Get-DispatchAdmissionWorktreeRows(
         Path = $line.Substring("worktree ".Length)
         BranchRef = $null
         Detached = $false
+        Prunable = $false
       }
     } elseif ($null -ne $row -and $line -like "branch *") {
       $row.BranchRef = $line.Substring("branch ".Length)
     } elseif ($null -ne $row -and $line -ceq "detached") {
       $row.Detached = $true
+    } elseif ($null -ne $row -and $line -like "prunable*") {
+      $row.Prunable = $true
     }
   }
   if ($null -ne $row) { $rows += [pscustomobject]$row }
   return @($rows)
+}
+
+# Directory.Exists and File.Exists are also false for an existing path that
+# cannot be read (access denied, I/O error), so they cannot prove absence
+# (#218). Absence is proven only when the nearest existing ancestor lists
+# successfully and does not contain the next path component; any listing error
+# leaves the row unproven, and the caller stays strict.
+function Test-DispatchAdmissionPathAbsent(
+  [string]$Path,
+  [scriptblock]$ListEntries = { param($Directory) [IO.Directory]::EnumerateFileSystemEntries($Directory) }
+) {
+  try {
+    $child = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $parent = [IO.Path]::GetDirectoryName($child)
+    while ($parent) {
+      try {
+        $leaf = [IO.Path]::GetFileName($child)
+        foreach ($entry in @(& $ListEntries $parent)) {
+          if ([string]::Equals([IO.Path]::GetFileName(([string]$entry).TrimEnd('\', '/')), $leaf, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        return $true
+      } catch [IO.DirectoryNotFoundException] {
+        $child = $parent
+        $parent = [IO.Path]::GetDirectoryName($child)
+      }
+    }
+    return $false
+  } catch {
+    return $false
+  }
+}
+
+function Get-DispatchAdmissionNativeBranch(
+  [pscustomobject]$Row,
+  [string]$RequestedBranch
+) {
+  try {
+    return Get-DispatchRebaseBranch $Row.Path -RequestedBranch $RequestedBranch
+  } catch {
+    # A registered detached row whose directory is proven absent after the
+    # failed probe (pruned, removed by cleanup, or vanished mid-probe) holds no
+    # worktree and is not a claimant. Git still refuses to attach a branch that
+    # a prunable row records as rebasing (find_shared_symref). An existing or
+    # unprovable path keeps the strict native-operation error.
+    if (Test-DispatchAdmissionPathAbsent ([string]$Row.Path)) { return $null }
+    throw
+  }
 }
 
 function Assert-DispatchAdmissionExclusiveBranchAttachment(
@@ -259,7 +309,7 @@ function Assert-DispatchAdmissionExclusiveBranchAttachment(
   $rows = @(Get-DispatchAdmissionWorktreeRows $Identity.CanonicalWorktree $occupancyDiagnostic)
   $requestedBranch = if ($integrationResume) { $integrationResume.obligation.branch } else { $Identity.Branch }
   foreach ($row in @($rows | Where-Object { $_.Detached })) {
-    $nativeBranch = Get-DispatchRebaseBranch $row.Path -RequestedBranch $requestedBranch
+    $nativeBranch = Get-DispatchAdmissionNativeBranch $row $requestedBranch
     if ($nativeBranch -and $Identity.IdentityMode -ceq 'branch' -and $nativeBranch -ceq $Identity.Branch -and
         -not (Test-DispatchSameCanonicalPath $row.Path $Identity.CanonicalWorktree)) {
       throw 'dispatch-lane: admission-branch-occupancy: original branch is in native rebase in another worktree'

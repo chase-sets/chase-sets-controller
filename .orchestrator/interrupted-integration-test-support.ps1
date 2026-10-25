@@ -727,12 +727,12 @@ exit 0
         $expected=@('implementation','planning','review').IndexOf($role)+1
         Proof ($result.exit -eq 0 -and $count -eq $expected -and (RawState $f) -ceq $before -and (ScopeState $target) -ceq $targetState -and (ScopeState $f.repo) -ceq $siblingState) "8023 candidate ordinary $role launches exactly once body=$count target/sibling refs/index/files/metadata unchanged raw=$($result.resultPath)"
       }
-      $omission=Mutant '8023-ordinary-scope' 'dispatch-lane.ps1' 'Get-DispatchRebaseBranch $row.Path -RequestedBranch $requestedBranch' 'Get-DispatchRebaseBranch $row.Path'
+      $omission=Mutant '8023-ordinary-scope' 'dispatch-lane.ps1' 'Get-DispatchAdmissionNativeBranch $row $requestedBranch' 'Get-DispatchRebaseBranch $row.Path'
       if($omission){
       $result=Ordinary $omission 'planning' 'omitted-scope'
       Proof ($result.exit -ne 0 -and $result.stderr.Contains('native original branch moved') -and @(Get-Content $ordinary.entry).Count -eq 3) "8023 scope omission kills ordinary positive raw=$($result.resultPath)"
       }
-      $skip=Mutant '8023-skip-native' 'dispatch-lane.ps1' '$nativeBranch = Get-DispatchRebaseBranch $row.Path -RequestedBranch $requestedBranch' '$nativeBranch = $null # Synthetic unsafe detached bypass'
+      $skip=Mutant '8023-skip-native' 'dispatch-lane.ps1' '$nativeBranch = Get-DispatchAdmissionNativeBranch $row $requestedBranch' '$nativeBranch = $null # Synthetic unsafe detached bypass'
       $headName=Join-Path $f.repo '.git/rebase-merge/head-name'; $originalName=[IO.File]::ReadAllBytes($headName)
       foreach ($state in @('matching','matching-moved','missing','malformed','unreadable')) {
         $held=$null
