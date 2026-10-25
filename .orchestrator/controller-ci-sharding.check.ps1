@@ -152,7 +152,7 @@ function Assert-PlanBoundWired($Ast,[string]$Workflow){
   Assert-Ci ($planBlock[0].Extent.Text.Contains('planning=@{algorithm=''LPT'';fallbackMs=30000;maxAgeDays=30;shards=$planShards;bound=$bound}')) 'Plan does not record its role/bound'
   Assert-Ci (-not [regex]::IsMatch($planBlock[0].Extent.Text,'GITHUB_SHA\s*-c?(in|eq)|selfPlan')) 'Plan bound keyed to commit identity'
   Assert-Ci ($Workflow.Contains("      role:`n        description: ") -and $Workflow.Contains("        type: choice`n        options: [candidate, baseline]`n        default: candidate`n")) 'workflow role input missing'
-  Assert-Ci ($Workflow.Contains('          CI_ROLE: ${{ inputs.role || ''candidate'' }}'+"`n") -and $Workflow.Contains('-Mode Plan ') -and $Workflow.Contains(' -Role $env:CI_ROLE ')) 'workflow does not pass role to Plan mode'
+  Assert-Ci ($Workflow.Contains('          CI_ROLE: ${{ inputs.role || (github.event_name == ''push'' && ''baseline'') || ''candidate'' }}'+"`n") -and $Workflow.Contains('-Mode Plan ') -and $Workflow.Contains(' -Role $env:CI_ROLE ')) 'workflow does not pass role to Plan mode'
 }
 Assert-PlanBoundWired $ciAst $workflowText
 $ciText=$ciAst.Extent.Text
@@ -162,7 +162,11 @@ foreach($wiringMutant in @(
   @('ci',"[string]`$Role = 'candidate'","[string]`$Role = 'baseline'"),
   @('ci',';bound=$bound}','}'),
   @('workflow',' -Role $env:CI_ROLE ',' '),
-  @('workflow',"        default: candidate`n","        default: baseline`n")
+  @('workflow',"        default: candidate`n","        default: baseline`n"),
+  # #225: a push run has no inputs; it must plan as an unenforced baseline.
+  @('workflow'," || (github.event_name == 'push' && 'baseline') || 'candidate' }}"," || 'candidate' }}"),
+  @('workflow',"(github.event_name == 'push' && 'baseline')","(github.event_name == 'push' && 'candidate')"),
+  @('workflow',"(github.event_name == 'push' && 'baseline')","(github.event_name == 'workflow_dispatch' && 'baseline')")
 )){
   if($wiringMutant[0]-ceq'ci'){
     Assert-Ci ($ciText.Contains($wiringMutant[1])) "plan wiring mutant anchor missing: $($wiringMutant[1])"
@@ -172,7 +176,7 @@ foreach($wiringMutant in @(
     Refuses-Sharding {Assert-PlanBoundWired $ciAst $workflowText.Replace($wiringMutant[1],$wiringMutant[2])}
   }
 }
-Write-Output 'PASS plan bound: over-300 s, fallback, split-estimate and whole-item stale plans refused (stale part accepted); candidate on a foreign checkout enforced, baseline recorded unenforced; check/role/wiring mutants red'
+Write-Output 'PASS plan bound: over-300 s, fallback, split-estimate and whole-item stale plans refused (stale part accepted); candidate on a foreign checkout enforced, baseline recorded unenforced; push runs plan as baseline; check/role/wiring mutants red'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 Refuses-Sharding {Assert-SuiteSelection 'unknown' @('left','right') @{Part='unknown'} @('Case')}
 Refuses-Sharding {Assert-SuiteSelection 'left' @('left','right') @{Part='left';Case='all'} @('Case')}

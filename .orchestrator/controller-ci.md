@@ -17,7 +17,10 @@ Unless the role is `baseline`, Plan refuses a plan whose largest shard
 accepted. This holds for a candidate dispatched from `--ref main` against a
 foreign checkout. A `baseline` run is a comparison run. `planning.bound`
 records `role`, `enforced`, `boundMs`, `maxEstimatedMs`, `checkoutHead`
-and `runnerHead` for both roles.
+and `runnerHead` for both roles. A `push` run on `main` has no inputs and
+plans as `baseline`, so it is a recording run whose durations can be
+appended; a dispatch without `role` stays `candidate`
+([#225 [controller] Hosted battery push runs on main plan as enforced candidates and refuse stale records](https://github.com/chase-sets/chase-sets-controller/issues/225)).
 Legacy plans without `shardCount` still use exactly ten receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
 
