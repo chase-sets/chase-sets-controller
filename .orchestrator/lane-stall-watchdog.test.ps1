@@ -1,9 +1,30 @@
-param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control)
+param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control,[string]$Part='')
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+$SuitePartOwners=Get-HistoricalSuitePartOwners 'watchdog' ([IO.File]::ReadAllText($PSCommandPath))
+$watchdogParts=@((Get-LaneWatchdogPartMap).Keys)
+Assert-SuiteSelection $Part (@('all')+$watchdogParts) $PSBoundParameters @('BeforeFixControl','Row15MeasuredControl','AuthorityOnly','RetiredOnly','SonnetOnly','ExplicitRoutingOnly','CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','PolicyFallbackCase','WatchdogScript','Named8098Control','Named8186Control')
+if($Part -ceq 'all'){$Part=''}
+if($Part -eq 'watchdog-capacity'){$CapacityOnly=$true}
+$policyPartFamily=''
+if($Part -like 'watchdog-policy-*' -and $Part -notlike 'watchdog-policy-mutants-*'){
+  $PolicyFallbackOnly=$true
+  $policyPartFamily=switch($Part){'watchdog-policy-ac'{'ac'};'watchdog-policy-pos'{'pos'};default{(Get-LaneWatchdogPartMap)[$Part]}}
+}
+if($Part -like 'watchdog-policy-mutants-*'){$PolicyFallbackMutantsOnly=$true}
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
 $root=Join-Path ([IO.Path]::GetTempPath()) ('lane-watchdog-test-'+[guid]::NewGuid().ToString('N'))
+if($Part -in @('watchdog-historical','watchdog-ordinary','watchdog-successor')){
+  . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
+  switch($Part){
+    'watchdog-historical'{Test-7963ResumeCarrier 'watchdog'}
+    'watchdog-ordinary'{Test-9334OrdinaryCarrier 'ordinary-watchdog'}
+    'watchdog-successor'{Test-9334OrdinaryCarrier 'successor-watchdog'}
+  }
+  return
+}
 $runtime=Join-Path $root 'runtime';$worktree=Join-Path $root 'worktree';$history=Join-Path $runtime 'history.jsonl';$calls=Join-Path $runtime 'calls.txt'
 $watchdog=if($WatchdogScript){$WatchdogScript}else{Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1'}
 function Assert-True($Condition,[string]$Message){if(-not$Condition){throw "ASSERTION FAILED: $Message"}}
@@ -132,6 +153,7 @@ function Test-PolicyFallback {
     [IO.File]::WriteAllText($policyPath,($policy|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
   }
   function Invoke-PolicyCase([string]$CaseId,[hashtable]$CaseSlots,[scriptblock]$CaseBody){
+    if($policyPartFamily -and $CaseId.Split('/')[0] -cnotlike "$policyPartFamily*"){return}
     if($PolicyFallbackCase-and$CaseId.Split('/')[0]-cne$PolicyFallbackCase){return}
     try{Set-PolicySlots $CaseSlots;& $CaseBody|Out-Null;$passes.Add($CaseId);Write-Output "CASE PASS $CaseId"}
     catch{$failures.Add($CaseId);Write-Output "CASE FAIL $CaseId :: $($_.Exception.Message)"}
@@ -568,6 +590,7 @@ function Test-PolicyFallback {
     }
   }
   if($failures.Count-gt0){throw "ASSERTION FAILED: 9092 policy fallback cases failed: $($failures-join', ')"}
+  if($policyPartFamily){Write-Output "PASS 9092 policy fallback part $Part cases=$($passes.Count)";return}
   if($PolicyFallbackCase){Write-Output "PASS 9092 policy fallback case family $PolicyFallbackCase cases=$($passes.Count)";return}
   Write-Output 'PASS policy fallback v4.24: rows 1/2/8 move once to the other-harness slot in both directions and envelopes with a bound reservation; closed table precedence; relaunch 1, rows 9/11/12, off-slot route, unadmitted target and absent slot stay blocked'
   Write-Output 'PASS 9092 policy rows 7/14/15 and one policy move per lineage: policy-derived slots, a legacy lineage moving once to today''s slot, one- and two-link consumed chains, unlinked, missing, forged, deleted and four-field lineage evidence stay blocked'
@@ -628,6 +651,7 @@ function Test-PolicyFallbackMutants {
     @{name='provenance-family-unbound';case='g2f2-family-unbound';old='-or[string]$modelIdentity.family-cne[string]$selected.family';new=''},
     @{name='provenance-slot-unbound';case='g2f2-slot-harness';old='  if([string]$selected.slot-cne''explicit''-and([string]$selected.slot).Split(''.'')[0]-cne[string]$Continuation.harness){return $false}';new=''}
   )
+  if($Part -like 'watchdog-policy-mutants-*'){$mutants=@($mutants|Where-Object{$SuitePartOwners['mutant:'+$_.name] -ceq $Part})}
   foreach($m in $mutants){
     Assert-True (([regex]::Matches($source,[regex]::Escape($m.old))).Count-eq1) "9092 mutation anchor not unique: $($m.name)"
     $mutantPath=Join-Path $mutantRoot "9092-$($m.name).ps1";[IO.File]::WriteAllText($mutantPath,$source.Replace($m.old,$m.new),[Text.UTF8Encoding]::new($false))
@@ -684,11 +708,13 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
       }
     } finally { Remove-Item Env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK -ErrorAction SilentlyContinue }
   }
+  if(-not $Part){
   if(-not $CapacityOnly -and -not $BeforeFixControl -and -not $Row15MeasuredControl -and -not $Named8098Control -and -not $Named8186Control -and -not $PolicyFallbackOnly -and -not $PolicyFallbackMutantsOnly) {
     $beforeCapacity=Get-CallCount
     & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $PSCommandPath -CapacityOnly -WatchdogScript $watchdog
     Assert-True ($LASTEXITCODE -eq 0) 'isolated capacity watchdog cases failed'
     Assert-True ((Get-CallCount) -eq $beforeCapacity) 'capacity child changed parent dispatch fixture'
+  }
   }
   if($CapacityOnly) {
     foreach($entry in @(@(13,'low','medium'),@(10,'medium','high'),@(4,'medium','high'),@(5,'high','high'))) {
@@ -1450,10 +1476,8 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $ruledOld=New-Spec 'historical-opus-todd-placement' 'claude-opus-5' high 0 4 override-Todd
   $result=Invoke-Watchdog $ruledOld $ruledOld.spec.label
   Assert-True ($result.status-ceq'RETIRED_MODEL_REQUIRES_REDISPATCH'-and-not$result.relaunch) 'historical Todd placement lost predecessor refusal'
-  Test-SonnetCutover
-  Test-ExplicitRoutingRelaunch
-  Test-PolicyFallback
-  Test-PolicyFallbackMutants
+  if(-not $Part -or $Part -ceq 'watchdog-foundation') { Test-SonnetCutover; Test-ExplicitRoutingRelaunch }
+  if(-not $Part) { Test-PolicyFallback; Test-PolicyFallbackMutants }
   $same=New-Spec 'same-config';$sameResult=Invoke-Watchdog $same 'same';Assert-True ($sameResult.status-ceq'RELAUNCHED'-and$sameResult.model-ceq'gpt-6.1-sol'-and$sameResult.effort-ceq'high') 'dead owner was not relaunched same-config'
   $beforeDuplicate=@(Get-Content -LiteralPath $calls).Count;$duplicate=Invoke-Watchdog $same 'same-duplicate';Assert-True ($duplicate.status-ceq'DUPLICATE_SKIPPED'-and@(Get-Content -LiteralPath $calls).Count-eq$beforeDuplicate) 'confirmed relaunch was not duplicate-suppressed'
   $prose=New-Spec 'prose-quota' 'gpt-6-astra' 'high';Set-Content -LiteralPath $prose.partial -Value 'unmistakably synthetic task prose discusses quota policy';$proseResult=Invoke-Watchdog $prose 'prose-quota';Assert-True ($proseResult.status-ceq'RELAUNCHED'-and$proseResult.model-ceq'gpt-6-astra') 'ordinary report prose authorized provider fallback'
@@ -1525,9 +1549,11 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
 }
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
-Test-7963ResumeCarrier 'watchdog'
-Test-9334OrdinaryCarrier 'ordinary-watchdog'
-Test-9334OrdinaryCarrier 'successor-watchdog'
+if(-not $Part){
+  Test-7963ResumeCarrier 'watchdog'
+  Test-9334OrdinaryCarrier 'ordinary-watchdog'
+  Test-9334OrdinaryCarrier 'successor-watchdog'
+}
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }

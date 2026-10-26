@@ -449,10 +449,10 @@ function Invoke-ReaderInventory {
     'invoke-heavy-verifier.test.ps1'=@(313,631,1108,1152,1164,1213,1217,1228,1253,1335,1772,1852,1862,1876,2170,2175,2194,2200,2427,2434,2446,2449,2459,2470,2492,2497,2509,2514,2531,2545)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(962)
+    'interrupted-integration-test-support.ps1'=@(978)
     'landed-integration-evidence-test-support.ps1'=@(219)
     'landed-integration-r3.test.ps1'=@(42)
-    'lane-stall-watchdog.test.ps1'=@(505,551,554)
+    'lane-stall-watchdog.test.ps1'=@(527,573,576)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(134,197,236)
   }
@@ -493,6 +493,8 @@ function Invoke-ReaderInventory {
   $historicalSites=[ordered]@{
     '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/dispatch-ownership.ps1'=@(258)
     '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
+    '.orchestrator/fixtures/historical-aa62899/.orchestrator/dispatch-ownership.ps1'=@(514)
+    '.orchestrator/fixtures/historical-aa62899/.orchestrator/landed-integration-evidence.psm1'=@(993)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/dispatch-ownership.ps1'=@(278)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/invoke-heavy-verifier.ps1'=@(693,696,1017,1067)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/landed-integration-evidence.psm1'=@(924)

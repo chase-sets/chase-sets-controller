@@ -69,7 +69,7 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
   }
   Assert-Ci ($seen.Count-eq$pins.Count) 'missing conservation source'
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq6-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  Assert-Ci (@($Manifest.items).Count-eq8-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
@@ -347,9 +347,9 @@ foreach($carrierMutant in @(
   Refuses-Coverage { Assert-DispatchCarrierShape $mutantSource $dispatchBaseHead }
 }
 Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guarded 8102 carrier calls; single parts through Invoke-7963ResumeCarriers -Part; 6 carrier mutants refused'
-# Historical fixtures are verified by their CRLF-normalized Git blob id computed
-# in process, so the pin holds with core.autocrlf true or false. A tampered copy
-# is refused; CRLF and LF copies of the same bytes are both accepted.
+# Historical fixtures are verified by their raw Git blob ids computed in process.
+# The tracked * -text policy keeps the public fixture bytes stable. A tampered
+# copy and a line-ending-mutated copy are refused.
 & {
   . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
   $fixtureControlRoot=Join-Path ([IO.Path]::GetTempPath()) ('historical-fixture-control-'+[guid]::NewGuid().ToString('N'))
@@ -357,25 +357,146 @@ Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guard
     $controlFixtures=Join-Path $fixtureControlRoot 'fixtures'
     [void][IO.Directory]::CreateDirectory($controlFixtures)
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-b3b4ac2') -Destination (Join-Path $controlFixtures 'historical-b3b4ac2') -Recurse
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-aa62899') -Destination (Join-Path $controlFixtures 'historical-aa62899') -Recurse
+    $successorModuleRoot=New-HistoricalDispatchFixture 'aa62899' (Join-Path $fixtureControlRoot 'out-successor') $controlFixtures
+    $successorModule=Import-Module (Join-Path $successorModuleRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
+    Remove-Module $successorModule -Force
     $target=Join-Path $controlFixtures 'historical-b3b4ac2/.orchestrator/dispatch-lane.ps1'
-    $crlf=[IO.File]::ReadAllBytes($target)
-    Assert-Ci ([Text.Encoding]::Latin1.GetString($crlf).Contains("`r`n")) 'historical fixture control expects CRLF working bytes'
-    [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-crlf') $controlFixtures)
-    [IO.File]::WriteAllBytes($target,[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($crlf).Replace("`r`n","`n")))
+    $lf=[IO.File]::ReadAllBytes($target)
+    Assert-Ci (-not [Text.Encoding]::Latin1.GetString($lf).Contains("`r`n")) 'historical fixture control expects LF working bytes'
     [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-lf') $controlFixtures)
-    $tampered=[byte[]]$crlf.Clone();$tampered[$tampered.Length-3]=$tampered[$tampered.Length-3] -bxor 0x20
+    $crlf=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($lf).Replace("`n","`r`n"))
+    [IO.File]::WriteAllBytes($target,$crlf)
+    $lineEndingRefused=$false
+    try { [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-crlf') $controlFixtures) } catch { $lineEndingRefused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: blob mismatch b3b4ac2/.orchestrator/dispatch-lane.ps1') }
+    Assert-Ci $lineEndingRefused 'line-ending-mutated historical fixture was accepted'
+    $tampered=[byte[]]$lf.Clone();$tampered[$tampered.Length-3]=$tampered[$tampered.Length-3] -bxor 0x20
     [IO.File]::WriteAllBytes($target,$tampered)
     $refused=$false
     try { [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-tampered') $controlFixtures) } catch { $refused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: blob mismatch b3b4ac2/.orchestrator/dispatch-lane.ps1') }
     Assert-Ci $refused 'tampered historical fixture control is RED'
     Assert-Ci (-not (Test-Path -LiteralPath (Join-Path $fixtureControlRoot 'out-tampered/.orchestrator/dispatch-lane.ps1'))) 'tampered historical fixture was copied'
+    [IO.File]::Delete($target)
+    $missingRefused=$false
+    try { [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $fixtureControlRoot 'out-missing') $controlFixtures) } catch { $missingRefused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: read set changed for b3b4ac2') }
+    Assert-Ci $missingRefused 'one-file-removed historical fixture was accepted'
   } finally {
     $resolved=[IO.Path]::GetFullPath($fixtureControlRoot)
     Assert-Ci ((Split-Path -Parent $resolved) -ceq [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')) 'unsafe historical fixture control cleanup'
     if(Test-Path -LiteralPath $resolved){Remove-Item -LiteralPath $resolved -Recurse -Force}
   }
 }
-Write-Output 'PASS historical fixture pins: in-process CRLF-normalized blob ids accept CRLF and LF copies; tampered fixture refused'
+Write-Output 'PASS historical fixture pins: raw Git blob ids accept pinned LF bytes; missing-file, line-ending and one-byte mutations refused'
+Write-Output 'PASS successor fixture pins: four aa62899 raw Git blobs materialize and import without the private object database'
+function Assert-CarrierPartContract([string]$Path,$Item,[string[]]$CarrierCalls) {
+  $source=[IO.File]::ReadAllText($Path).Replace("`r`n","`n")
+  $expected=@($Item.parts.name)
+  Assert-Ci ((@($expected|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $Path)|Sort-Object)-join',')) "carrier part census changed: $($Item.identity)"
+  foreach($name in $expected){
+    $selectorPresent=$source.Contains("'$name'")
+    if(-not $selectorPresent -and $Item.identity -ceq 'test:lane-stall-watchdog.test.ps1' -and $name -like 'watchdog-policy-*'){
+      $selectorPresent=$source.Contains("`$Part -like 'watchdog-policy-*'")
+    }
+    Assert-Ci $selectorPresent "carrier part selector missing: $($Item.identity) $name"
+    Refuses-Coverage { Assert-Ci ((@($expected|Where-Object{$_-cne$name}|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $Path)|Sort-Object)-join',')) "carrier dropped part survived: $name" }
+  }
+  foreach($call in $CarrierCalls){ Assert-Ci (([regex]::Matches($source,[regex]::Escape($call))).Count -eq 1) "carrier arm missing or duplicated: $call" }
+}
+$rebasePath=Join-Path $PSScriptRoot 'rebase-integration.test.ps1'
+$watchdogPath=Join-Path $PSScriptRoot 'lane-stall-watchdog.test.ps1'
+$rebaseItem=$manifest.items|Where-Object identity -eq 'test:rebase-integration.test.ps1'
+$watchdogItem=$manifest.items|Where-Object identity -eq 'test:lane-stall-watchdog.test.ps1'
+Assert-Ci ($null -ne $rebaseItem -and $null -ne $watchdogItem) 'historical carrier split mappings missing'
+Assert-CarrierPartContract $rebasePath $rebaseItem @(
+  "Test-7963ResumeCarrier 'rebase'",
+  "Test-9334OrdinaryCarrier 'ordinary-rebase' -Part 'ordinary-rebase-live'",
+  "Test-9334OrdinaryCarrier 'ordinary-rebase' -Part 'ordinary-rebase-retry'",
+  "Test-9334OrdinaryCarrier 'successor-rebase'",
+  "Test-9334OrdinaryCarrier 'successor-publication'",
+  "Test-9334OrdinaryCarrier 'successor-amend'")
+Assert-CarrierPartContract $watchdogPath $watchdogItem @()
+Assert-Ci (([regex]::Matches([IO.File]::ReadAllText($watchdogPath),[regex]::Escape("Test-7963ResumeCarrier 'watchdog'")).Count -eq 2) -and
+  ([regex]::Matches([IO.File]::ReadAllText($watchdogPath),[regex]::Escape("Test-9334OrdinaryCarrier 'ordinary-watchdog'")).Count -eq 2)) 'watchdog historical/ordinary carrier arms missing or duplicated'
+Assert-Ci (([regex]::Matches([IO.File]::ReadAllText($watchdogPath),[regex]::Escape("Test-9334OrdinaryCarrier 'successor-watchdog'")).Count -eq 2)) 'watchdog successor carrier arms missing or duplicated'
+$rebaseText=[IO.File]::ReadAllText($rebasePath)
+foreach($name in @($rebaseItem.parts.name)){ Assert-Ci ($rebaseText.Contains("& `$runPart '$name'") -or $rebaseText.Contains("`$Part -ceq '$name'")) "rebase carrier guard dropped: $name" }
+Assert-Ci (([IO.File]::ReadAllText($watchdogPath).Contains("if(-not `$Part){"))) 'watchdog legacy carrier whole-run guard dropped'
+Refuses-Coverage { Assert-CarrierPartContract $rebasePath ([pscustomobject]@{parts=@($rebaseItem.parts|Where-Object name -cne 'rebase-amend');identity=$rebaseItem.identity}) @() }
+Refuses-Coverage { Assert-CarrierPartContract $watchdogPath ([pscustomobject]@{parts=@($watchdogItem.parts|Where-Object name -cne 'watchdog-historical');identity=$watchdogItem.identity}) @() }
+Write-Output 'PASS historical carrier part ownership: rebase and watchdog selectors, carrier arms, legacy whole-run guard, and dropped-part mutants refused'
+function Get-CarrierProofCensus([string]$Source){
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'historical carrier proof source parse failed'
+  $keys=@{}
+  foreach($node in $ast.FindAll({param($n)
+    ($n -is [Management.Automation.Language.CommandAst] -and ($n.GetCommandName() -clike 'Assert-*' -or $n.GetCommandName() -clike 'Proof*')) -or
+    $n -is [Management.Automation.Language.ThrowStatementAst] -or $n -is [Management.Automation.Language.HashtableAst] -or
+    $n -is [Management.Automation.Language.BinaryExpressionAst] -or $n -is [Management.Automation.Language.UnaryExpressionAst]
+  },$true)){
+    $key=$node.GetType().Name+':'+$node.Extent.Text
+    $keys[$key]=1+[int]$keys[$key]
+  }
+  return $keys
+}
+function Assert-CarrierProofCensus([string]$Source,[string]$Baseline){
+  $before=Get-CarrierProofCensus $Baseline;$after=Get-CarrierProofCensus $Source
+  foreach($key in $before.Keys){Assert-Ci ([int]$after[$key] -ge $before[$key]) "historical carrier baseline predicate/assertion/mutant lost: $key"}
+  $tokens=$null;$errors=$null
+  $beforeAst=[Management.Automation.Language.Parser]::ParseInput($Baseline,[ref]$tokens,[ref]$errors)
+  $afterAst=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  if($beforeAst.ParamBlock){
+    for($i=0;$i-lt$beforeAst.ParamBlock.Parameters.Count;$i++){
+      Assert-Ci ($beforeAst.ParamBlock.Parameters[$i].Extent.Text -ceq $afterAst.ParamBlock.Parameters[$i].Extent.Text) 'historical carrier legacy parameter/default/order changed'
+    }
+  }
+}
+function Assert-CarrierOwnerMap([object[]]$Entries,$Expected,[string[]]$Parts){
+  Assert-Ci ($Entries.Count -eq $Expected.Count) 'historical suite owner map cardinality changed'
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($entry in $Entries){
+    Assert-Ci ($seen.Add([string]$entry.Key) -and $Expected.Contains($entry.Key) -and
+      $entry.Value -ceq $Expected[$entry.Key] -and $entry.Value -cin $Parts) "historical suite proof key missing/duplicated/misowned: $($entry.Key)"
+  }
+}
+# These blobs are the issue's dispatch baseline, not private product history.
+# Keep the older six-suite conservation base above unchanged.
+$carrierBaselineBlobs=@{
+  'rebase-integration.test.ps1'='0a3350f8a51a32c1b9ee16447c1e6829f10a41c1'
+  'lane-stall-watchdog.test.ps1'='bc137a8ffc0b4dbc16766e06dd2a1db3838b3e8e'
+  'interrupted-integration-test-support.ps1'='371e2aa2dcbdeb34b5568878c96811eea4ba99b1'
+}
+$carrierOwnerCounts=@{
+  rebase=@{'rebase-foundation'=23;'rebase-historical'=1;'rebase-ordinary-live'=1;'rebase-ordinary-retry'=1;'rebase-successor'=1;'rebase-publication'=1;'rebase-amend'=1}
+  watchdog=@{'watchdog-foundation'=163;'watchdog-capacity'=4;'watchdog-historical'=1;'watchdog-ordinary'=1;'watchdog-successor'=1
+    'watchdog-policy-ac'=12;'watchdog-policy-protected'=1;'watchdog-policy-consumed'=2;'watchdog-policy-unlinked'=6
+    'watchdog-policy-authentication'=32;'watchdog-policy-scalars'=13;'watchdog-policy-joins'=7;'watchdog-policy-legacy'=1
+    'watchdog-policy-pos'=12;'watchdog-policy-mutants-admission'=8;'watchdog-policy-mutants-lineage'=4
+    'watchdog-policy-mutants-envelope'=4;'watchdog-policy-mutants-history'=4;'watchdog-policy-mutants-binding'=9;'watchdog-policy-mutants-joins'=6}
+}
+foreach($leaf in $carrierBaselineBlobs.Keys){
+  $baseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$carrierBaselineBlobs[$leaf]))
+  $candidate=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf))
+  Assert-CarrierProofCensus $candidate $baseline
+  if($leaf -cne 'interrupted-integration-test-support.ps1'){
+    $suite=if($leaf -ceq 'rebase-integration.test.ps1'){'rebase'}else{'watchdog'}
+    $expectedOwners=Get-HistoricalSuitePartOwners $suite $baseline
+    $owners=Get-HistoricalSuitePartOwners $suite $candidate
+    $entries=@($owners.GetEnumerator())
+    $parts=Get-SuiteExpectedParts (Join-Path $PSScriptRoot $leaf)
+    Assert-CarrierOwnerMap $entries $expectedOwners $parts
+    Assert-Ci ($carrierOwnerCounts[$suite].Count -eq $parts.Count) 'historical suite has an unowned part'
+    foreach($part in $parts){Assert-Ci (@($entries|Where-Object Value -ceq $part).Count -eq $carrierOwnerCounts[$suite][$part]) "historical suite owner census changed: $part"}
+    Refuses-Coverage { Assert-CarrierOwnerMap $entries[1..($entries.Count-1)] $expectedOwners $parts }
+    Refuses-Coverage { Assert-CarrierOwnerMap (@($entries[0])+@($entries[0])+@($entries[2..($entries.Count-1)])) $expectedOwners $parts }
+    if($suite -ceq 'watchdog'){Assert-Ci (@($entries|Where-Object Key -clike 'mutant:*').Count -eq 35) 'watchdog policy mutant ownership census changed'}
+    Write-Output "PASS $suite SuitePartOwners: keys=$($owners.Count); baseline ownership retained; dropped-key and duplicated-key mutants refused"
+  }
+  $needle=if($leaf -ceq 'interrupted-integration-test-support.ps1'){"Proof9334 (`$live.seed.exit-eq0-and(Test-Path -LiteralPath `$live.capturePath))"}else{'Assert-True '}
+  Assert-Ci ($candidate.Contains($needle)) "carrier dropped-proof mutant anchor missing: $leaf"
+  Refuses-Coverage { Assert-CarrierProofCensus ($candidate.Replace($needle,'REMOVED-PROOF ')) $baseline }
+}
+Write-Output 'PASS historical carrier baseline blobs: assertion/throw, predicate and mutant-table multisets retained in both suites and support; dropped-proof mutants refused'
 function Assert-BoardSplitContract([string]$Source){
   Assert-Ci ($Source.Contains("param([ValidateSet('all','candidate','baseline','issue-scan','no-linkage','ten-item','ten-item-scan')][string]`$Arm = 'all')")) 'board selector census changed'
   Assert-Ci ($Source.Contains("`$arms = if (`$Arm -eq 'all') { @('candidate','baseline','issue-scan','no-linkage','ten-item') } else { @(`$Arm) }")) 'legacy board all-arm order changed'
