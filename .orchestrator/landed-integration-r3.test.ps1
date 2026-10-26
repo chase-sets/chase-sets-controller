@@ -500,8 +500,8 @@ try{
   Test-R3PriorTeardown
   Test-R3CensusLatency
   Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs
-  foreach($control in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
-    try{& $control.body;Write-Output "CONTROL $($control.name) PASS"}catch{$failures.Add("$($control.name): $($_.Exception.Message)");Write-Output "CONTROL $($control.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
+  foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
+    try{& $controlCase.body;Write-Output "CONTROL $($controlCase.name) PASS"}catch{$failures.Add("$($controlCase.name): $($_.Exception.Message)");Write-Output "CONTROL $($controlCase.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
   }
   Assert-SyntheticIntegrationWitnesses $fixtureRoot
   if($failures.Count-gt0){throw "R3 controls failed: $($failures -join ' | ')"}
