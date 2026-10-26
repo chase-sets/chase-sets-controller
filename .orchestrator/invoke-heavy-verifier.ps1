@@ -1807,16 +1807,6 @@ function Assert-QueuePathSafe([string]$Path) {
   }
 }
 function Get-QueueClaimant {
-  if ($hasControllerBatteryClaimant) {
-    if ((Get-ProcessIdentityState $ControllerBatteryClaimantPid $ControllerBatteryClaimantStartUtc) -cne 'live') {
-      throw 'heavy-verifier: verify queue claimant identity is unavailable'
-    }
-    return [pscustomobject]@{
-      Key = "battery:$ControllerBatteryClaimantPid`:$ControllerBatteryClaimantStartUtc"
-      Pid = $ControllerBatteryClaimantPid; StartIdentity = $ControllerBatteryClaimantStartUtc
-      ChildPid = $null; ChildStartIdentity = $null; CommandIdentity = $commandIdentity
-    }
-  }
   if ($callerBinding.Record) {
     $record = $callerBinding.Record
     $claimPid = if ($record.childPid) { [int]$record.childPid } else { [int]$record.launcherPid }
@@ -1835,6 +1825,16 @@ function Get-QueueClaimant {
       ChildPid = if ($record.childPid) { [int]$record.childPid } else { $null }
       ChildStartIdentity = if ($record.childPid) { [string]$record.childStartIdentity } else { $null }
       CommandIdentity = if ($isControllerSlot) { $commandIdentity } else { $null }
+    }
+  }
+  if ($hasControllerBatteryClaimant) {
+    if ((Get-ProcessIdentityState $ControllerBatteryClaimantPid $ControllerBatteryClaimantStartUtc) -cne 'live') {
+      throw 'heavy-verifier: verify queue claimant identity is unavailable'
+    }
+    return [pscustomobject]@{
+      Key = "battery:$ControllerBatteryClaimantPid`:$ControllerBatteryClaimantStartUtc"
+      Pid = $ControllerBatteryClaimantPid; StartIdentity = $ControllerBatteryClaimantStartUtc
+      ChildPid = $null; ChildStartIdentity = $null; CommandIdentity = $commandIdentity
     }
   }
   try {
