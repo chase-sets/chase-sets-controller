@@ -30,7 +30,18 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
-function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures')) {
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
+  if($UseArchive){
+    if($Name-cnotin @('b3b4ac2','aa62899')){throw "HISTORICAL_FIXTURE: archive source is only supported for b3b4ac2 or aa62899, got $Name"}
+    $sourceRoot=Split-Path -Parent $PSScriptRoot;$archive=Join-Path $Destination "historical-$Name.tar"
+    [IO.Directory]::CreateDirectory($Destination)|Out-Null
+    $archiveOutput=@(& git.exe --no-optional-locks -C $sourceRoot archive --format=tar -o $archive $Name .orchestrator 2>&1)
+    if($LASTEXITCODE-ne0){throw "HISTORICAL_FIXTURE: git archive failed: $($archiveOutput-join"`n")"}
+    $extractOutput=@(& tar.exe -xf $archive -C $Destination 2>&1)
+    if($LASTEXITCODE-ne0){throw "HISTORICAL_FIXTURE: archive extraction failed: $($extractOutput-join"`n")"}
+    Remove-Item -LiteralPath $archive -Force
+    return (Join-Path $Destination '.orchestrator')
+  }
   $fixtureRoot=Join-Path $FixturesRoot "historical-$Name"
   $readme=Join-Path $fixtureRoot 'README.md'
   if(-not(Test-Path -LiteralPath $readme -PathType Leaf)){throw "HISTORICAL_FIXTURE: missing README for $Name"}
@@ -70,7 +81,10 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   # Candidate admission must reject that selector; never relax production
   # validation just to construct a historical stopped-attempt fixture.
   $historicalRoot = Join-Path $root 'pre-migration'
-  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
+  $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
+  if([string]::IsNullOrWhiteSpace($historicalSource)){$historicalSource='fixture'}
+  if($historicalSource-cnotin @('fixture','archive')){throw "HISTORICAL_FIXTURE: unknown test source '$historicalSource'"}
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive')); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
@@ -1473,7 +1487,8 @@ exit $LASTEXITCODE
     $baseline=Join-Path $f.case 'baseline-9411'
     if(-not(Test-Path -LiteralPath $baseline)){
       [IO.Directory]::CreateDirectory($baseline)|Out-Null
-      [void](New-HistoricalDispatchFixture 'aa62899' $baseline)
+      $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
+      [void](New-HistoricalDispatchFixture 'aa62899' $baseline -UseArchive:($historicalSource-ceq'archive'))
     }
     return $baseline
   }
