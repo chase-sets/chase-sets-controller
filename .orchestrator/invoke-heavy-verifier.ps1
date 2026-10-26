@@ -53,6 +53,10 @@ param(
   [Parameter(ParameterSetName = "Attach", DontShow)]
   [string[]]$CommandArgumentList,
   [Parameter(DontShow)][string]$ContainerRoot,
+  [Parameter(DontShow)][ValidatePattern('^[a-f0-9]{64}$')][string]$QuarantineQueue,
+  # Queue-only fault/clock/probe controls, confined to the existing temp fixture
+  # surface. They never replace caller eligibility or lock-owner probes.
+  [Parameter(DontShow)][string]$TestQueueFixture,
   [Parameter(DontShow)][switch]$TestCancelAfterAcquisition,
   [Parameter(DontShow)][switch]$TestReplaceOwnerBeforeCleanup,
   [Parameter(DontShow)][switch]$TestReplaceOwnerBeforeReclaim,
@@ -112,6 +116,7 @@ $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isWorkspaceDbTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceDbTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
+$isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture)
 $isBudgetedWorkspaceDb = $isWorkspaceDbTest
 $isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
@@ -127,6 +132,7 @@ $script:admissionPendingSequence = 0
 $admissionRoot = $null
 $attachedDeadTreeProven = $false
 $admissionCleanupDiagnostic = 'not-attempted'
+$script:quarantineCompleted = $false
 
 function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $null) {
   if (-not $isAttachedAdmission -or -not $admissionResultFull) { return }
@@ -190,7 +196,10 @@ trap {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
-  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal)) {
+  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: verify queue', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: unable to persist queue', [StringComparison]::Ordinal)) {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
@@ -231,13 +240,21 @@ if ($isAttachedAdmission) {
 
 $container = [IO.Path]::GetFullPath($(if ($ContainerRoot) { $ContainerRoot } else { Split-Path -Parent $PSScriptRoot })).TrimEnd('\','/')
 $worktreeFull = [IO.Path]::GetFullPath($Worktree).TrimEnd('\','/')
-if ($CommandPath -or $CommandArgumentList -or ($isDiagnostic -and $PSBoundParameters.ContainsKey('ContainerRoot'))) {
+if ($CommandPath -or $CommandArgumentList -or $TestQueueFixture -or ($isDiagnostic -and $PSBoundParameters.ContainsKey('ContainerRoot'))) {
   $fixtureTemp = if ($IsWindows) {
     [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp')).TrimEnd('\','/')
   } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') }
   if (-not $container.StartsWith($fixtureTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "heavy-verifier: arbitrary commands are fixture-only; use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest"
   }
+}
+$queueFixture = $null
+if ($TestQueueFixture) {
+  $fixturePath = [IO.Path]::GetFullPath($TestQueueFixture)
+  if (-not $fixturePath.StartsWith($container + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'heavy-verifier: verify queue fixture must be inside its temporary container'
+  }
+  $queueFixture = Get-Content -LiteralPath $fixturePath -Raw | ConvertFrom-Json -DateKind String
 }
 if ($worktreeFull -eq $container -or -not $worktreeFull.StartsWith($container + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $worktreeFull -PathType Container)) {
   throw "heavy-verifier: worktree must be an existing child of the container root"
@@ -1273,6 +1290,12 @@ if ($isControllerFixture) {
 $lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "controller-verify-lock.d" } else { "verify-lock.d" }
 $lockPath = Join-Path $container (".orchestrator\" + $lockDirectoryName)
 $ownerPath = Join-Path $lockPath "owner.json"
+$queuePath = Join-Path $container ".orchestrator\verify-queue.json"
+$queueRecoveryPath = Join-Path $container ".orchestrator\verify-queue.recovery"
+$queueRecordRoot = Join-Path $container ".orchestrator\verify-queue-quarantine"
+$queueRetentionSeconds = 600
+$queueMaximumTickets = 128
+$queueMaximumBytes = 256 * 1024
 $process = Get-Process -Id $PID -ErrorAction Stop
 $started = $process.StartTime.ToUniversalTime().ToString("o")
 $pnpmScript = $null
@@ -1707,6 +1730,332 @@ function Test-PossibleOwnedChild($Record, [switch]$GuardedRootOnly) {
     return $false
   } catch {
     return $null
+  }
+}
+function Get-QueueSha256([byte[]]$Bytes) {
+  return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
+}
+function Read-QueueContent([string]$Path) {
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+  try {
+    $size = $stream.Length
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+    $bytes = $null
+    if ($size -le $queueMaximumBytes) {
+      $bytes = [byte[]]::new([int]$size); $stream.Position = 0; $stream.ReadExactly($bytes)
+      if ((Get-QueueSha256 $bytes) -cne $hash) { throw 'changed-during-read' }
+    }
+    if ($stream.Length -ne $size) { throw 'changed-during-read' }
+    return [pscustomobject]@{Bytes=$bytes;Size=$size;Hash=$hash}
+  } finally { $stream.Dispose() }
+}
+function Get-QueueFileIdentity([string]$Path) {
+  if (-not ('ChaseSets.QueueFiles' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace ChaseSets {
+  public static class QueueFiles {
+    [StructLayout(LayoutKind.Sequential)] struct Info {
+      public uint Attributes; public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+      public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern SafeFileHandle CreateFileW(string p, uint a, uint s, IntPtr security, uint d, uint f, IntPtr t);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetFileInformationByHandle(SafeFileHandle h, out Info i);
+    public static string Identity(string path) {
+      using (var h = CreateFileW(path, 0x80, 7, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero)) {
+        Info i;
+        if (h.IsInvalid || !GetFileInformationByHandle(h, out i)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if ((i.Attributes & 0x410) != 0 || i.Links != 1) throw new System.IO.IOException("unsafe-file");
+        return i.Volume.ToString("x8") + ":" + i.IndexHigh.ToString("x8") + i.IndexLow.ToString("x8");
+      }
+    }
+  }
+}
+'@
+  }
+  return [ChaseSets.QueueFiles]::Identity($Path)
+}
+function Assert-QueuePathSafe([string]$Path) {
+  for ($parent = Split-Path -Parent $Path; $parent; $parent = Split-Path -Parent $parent) {
+    if (-not (Test-SafeDirectory $parent)) { throw 'unsafe-parent' }
+  }
+  if (Test-PathEntry $Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      throw 'unsafe-file'
+    }
+  }
+}
+function Get-QueueClaimant {
+  if ($callerBinding.Record) {
+    $record = $callerBinding.Record
+    $claimPid = if ($record.childPid) { [int]$record.childPid } else { [int]$record.launcherPid }
+    $start = if ($record.childPid) { [string]$record.childStartIdentity } else { [string]$record.launcherStartIdentity }
+    if ([string]::IsNullOrWhiteSpace([string]$record.launchId) -or $claimPid -le 0 -or -not (Test-UtcIdentity $start)) {
+      throw 'heavy-verifier: verify queue claimant identity is unavailable'
+    }
+    return [pscustomobject]@{
+      Key = "launch:$($record.launchId)"
+      Pid = $claimPid; StartIdentity = $start
+      ChildPid = if ($record.childPid) { [int]$record.childPid } else { $null }
+      ChildStartIdentity = if ($record.childPid) { [string]$record.childStartIdentity } else { $null }
+    }
+  }
+  try {
+    $rootPid = if ($isAttachedAdmission) { $GuardedPid } else { $PID }
+    $rootStart = if ($isAttachedAdmission) { $GuardedProcessStartUtc } else { (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') }
+    $rootRow = @(Get-CimInstance Win32_Process -Filter "ProcessId = $rootPid" -ErrorAction Stop)
+    if ($rootRow.Count -ne 1) { throw 'admitted root parent is ambiguous' }
+    $parentId = [int]$rootRow[0].ParentProcessId
+    $parent = Get-Process -Id $parentId -ErrorAction Stop
+    $start = $parent.StartTime.ToUniversalTime().ToString('o')
+    if ((Get-ProcessIdentityState $rootPid $rootStart) -cne 'live' -or
+        (Get-ProcessIdentityState $parentId $start) -cne 'live' -or
+        $parent.StartTime.ToUniversalTime() -gt [DateTimeOffset]::Parse($rootStart).UtcDateTime) { throw 'parent identity changed' }
+    return [pscustomobject]@{ Key = "parent:$parentId`:$start"; Pid = $parentId; StartIdentity = $start; ChildPid = $null; ChildStartIdentity = $null }
+  } catch {
+    throw "heavy-verifier: verify queue claimant identity is unavailable: $($_.Exception.Message)"
+  }
+}
+function Test-PossibleQueueDescendant($Ticket) {
+  return Test-PossibleOwnedChild ([pscustomobject]@{
+    pid = $Ticket.pid; processStartUtc = $Ticket.startIdentity; startedUtc = $Ticket.startIdentity
+    state = if ($Ticket.childPid) { 'started' } else { 'launching' }
+    childPid = $Ticket.childPid; childProcessStartUtc = $Ticket.childStartIdentity
+  })
+}
+function Get-QueueNow {
+  if ($queueFixture.now) { return [DateTimeOffset]::Parse($queueFixture.now) }
+  return [DateTimeOffset]::UtcNow
+}
+function Test-QueueUtc($Value) {
+  if ($Value -isnot [string]) { return $false }
+  $parsed = [DateTimeOffset]::MinValue
+  return [DateTimeOffset]::TryParseExact($Value, 'o', [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed) -and $parsed.Offset -eq [TimeSpan]::Zero
+}
+function Test-QueueTicketRetained($Ticket, [DateTimeOffset]$Now) {
+  $presented = [DateTimeOffset]::Parse([string]$Ticket.presentedUtc).ToUniversalTime()
+  if (($Now - $presented).TotalSeconds -gt $queueRetentionSeconds) { return $false }
+  $state = Get-ProcessIdentityState $Ticket.pid ([string]$Ticket.startIdentity)
+  $probe = @($queueFixture.probes | Where-Object { $_.pid -eq $Ticket.pid -and $_.startIdentity -ceq $Ticket.startIdentity } | Select-Object -First 1)
+  if ($probe.Count -eq 1) { $state = $probe[0].state }
+  if ($state -in @('live','ambiguous')) { return $true }
+  if ($state -in @('dead','reused')) {
+    $descendant = Test-PossibleQueueDescendant $Ticket
+    if ($probe.Count -eq 1) { $descendant = $probe[0].descendant }
+    return $false -ne $descendant
+  }
+  return $true
+}
+function Read-VerifyQueue {
+  $bytes = $null; $size = 'unknown'; $hash = 'unknown'
+  try {
+    Assert-QueuePathSafe $queuePath
+    if (-not (Test-PathEntry $queuePath)) {
+      return [pscustomobject]@{ Exists = $false; Raw = $null; Bytes = [byte[]]@(); Hash = $null; Identity = $null; NextTicket = 1L; Tickets = @() }
+    }
+    $identity = Get-QueueFileIdentity $queuePath
+    $content = Read-QueueContent $queuePath; $bytes = $content.Bytes; $size = $content.Size; $hash = $content.Hash
+    if ($size -gt $queueMaximumBytes) { throw 'over-capacity' }
+    $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    $doc = Read-NativeJson $raw $queueMaximumBytes
+    Assert-NativeObject $doc @('schemaVersion','fileIdentity','nextTicket','tickets')
+    if ($doc.fileIdentity -isnot [string] -or $doc.fileIdentity -cne $identity -or (Get-QueueFileIdentity $queuePath) -cne $identity) { throw 'replaced-file' }
+    if (($doc.schemaVersion -isnot [int] -and $doc.schemaVersion -isnot [long]) -or $doc.schemaVersion -ne 1 -or ($doc.nextTicket -isnot [int] -and $doc.nextTicket -isnot [long]) -or
+        $doc.nextTicket -lt 1 -or $doc.nextTicket -ge [long]::MaxValue -or
+        $doc.tickets -isnot [array] -or $doc.tickets.Count -gt $queueMaximumTickets) { throw 'malformed-schema-or-capacity' }
+    $numbers = [Collections.Generic.HashSet[long]]::new(); $claimants = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $previous = 0L
+    foreach ($ticket in @($doc.tickets)) {
+      $keys = (@($ticket.PSObject.Properties.Name) | Sort-Object) -join ','
+      if ($keys -cne 'childPid,childStartIdentity,claimantKey,number,pid,presentedUtc,startIdentity' -or
+          $ticket.number -isnot [int] -and $ticket.number -isnot [long] -or $ticket.number -lt 1 -or
+          $ticket.number -le $previous -or $ticket.number -ge $doc.nextTicket -or
+          -not $numbers.Add([long]$ticket.number) -or $ticket.claimantKey -isnot [string] -or $ticket.claimantKey.Length -lt 3 -or $ticket.claimantKey.Length -gt 256 -or
+          -not $claimants.Add($ticket.claimantKey) -or -not (Test-PositivePid $ticket.pid) -or
+          -not (Test-QueueUtc $ticket.startIdentity) -or -not (Test-QueueUtc $ticket.presentedUtc)) { throw 'malformed-ticket' }
+      if ($null -ne $ticket.childPid -and (-not (Test-PositivePid $ticket.childPid) -or -not (Test-QueueUtc $ticket.childStartIdentity))) { throw 'malformed-child-ticket' }
+      if ($null -eq $ticket.childPid -and $null -ne $ticket.childStartIdentity) { throw 'malformed-child-ticket' }
+      $previous = [long]$ticket.number
+    }
+    $ordered = @($doc.tickets | Sort-Object number)
+    for ($i = 1; $i -lt $ordered.Count; $i++) { if ($ordered[$i - 1].number -ge $ordered[$i].number) { throw 'ticket-order' } }
+    return [pscustomobject]@{ Exists = $true; Raw = $raw; Bytes = $bytes; Hash = $hash; Identity = $identity; NextTicket = [long]$doc.nextTicket; Tickets = $ordered }
+  } catch {
+    throw "heavy-verifier: verify queue invalid (path=$queuePath size=$size sha256=$hash reason=$($_.Exception.Message))"
+  }
+}
+function Write-VerifyQueue($Queue, [switch]$CreateNew) {
+  Assert-QueuePathSafe $queuePath
+  $temporary = "$queuePath.$([guid]::NewGuid().ToString('N')).tmp"
+  try {
+    $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+    $identity = Get-QueueFileIdentity $temporary
+    $doc = [ordered]@{ schemaVersion = 1; fileIdentity = $identity; nextTicket = [long]$Queue.NextTicket; tickets = @($Queue.Tickets) }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($doc | ConvertTo-Json -Compress -Depth 10))
+    if ($bytes.Length -gt $queueMaximumBytes -or $Queue.Tickets.Count -gt $queueMaximumTickets) { $stream.Dispose(); throw 'heavy-verifier: verify queue over-capacity before publication' }
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if ($CreateNew -or -not $Queue.Exists) { [IO.File]::Move($temporary, $queuePath) }
+    else {
+      Assert-VerifyQueueUnchanged $Queue
+      Initialize-OwnerRename
+      $destination = [ChaseSets.HeavyAdmission.OwnerRename]::OpenDestination($queuePath)
+      try {
+        Assert-VerifyQueueUnchanged $Queue
+        [ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporary, $queuePath, $destination)
+      } finally { $destination.Dispose() }
+    }
+  } finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue } }
+}
+function Assert-VerifyQueueUnchanged($Queue) {
+  $current = Read-VerifyQueue
+  if ($Queue.Exists -ne $current.Exists -or $Queue.Hash -cne $current.Hash -or $Queue.Identity -cne $current.Identity) { throw "heavy-verifier: verify queue changed during admission (path=$queuePath size=$($current.Bytes.Length) sha256=$($current.Hash) reason=replaced)" }
+}
+function Read-VerifyQueueBytes {
+  $size = 'unknown'; $hash = 'unknown'
+  try {
+    Assert-QueuePathSafe $queuePath
+    $identity = Get-QueueFileIdentity $queuePath
+    $content = Read-QueueContent $queuePath; $bytes = $content.Bytes; $size = $content.Size; $hash = $content.Hash
+    if ((Get-QueueFileIdentity $queuePath) -cne $identity) { throw 'replaced-file' }
+    return [pscustomobject]@{ Bytes = $bytes; Size = $size; Hash = $hash; Identity = $identity; WrittenUtcTicks = (Get-Item -LiteralPath $queuePath -Force).LastWriteTimeUtc.Ticks }
+  } catch { throw "heavy-verifier: verify queue invalid (path=$queuePath size=$size sha256=$hash reason=$($_.Exception.Message))" }
+}
+function Get-QueueTicketContext {
+  if (-not $isProductSlot) { return $null }
+  if (Test-PathEntry $queueRecoveryPath) { throw "heavy-verifier: verify queue recovery marker present ($queueRecoveryPath)" }
+  $claimant = Get-QueueClaimant
+  $queue = Read-VerifyQueue
+  $now = Get-QueueNow
+  $retained = @($queue.Tickets | Where-Object { Test-QueueTicketRetained $_ $now })
+  $changed = $retained.Count -ne $queue.Tickets.Count
+  $queue.Tickets = $retained
+  $ticket = $queue.Tickets | Where-Object { $_.claimantKey -ceq $claimant.Key -and $_.pid -eq $claimant.Pid -and $_.startIdentity -ceq $claimant.StartIdentity } | Select-Object -First 1
+  if ($ticket) { $ticket.presentedUtc = $now.ToString('o'); $changed = $true }
+  else {
+    if ($queue.Tickets.Count -ge $queueMaximumTickets) { throw "heavy-verifier: verify queue invalid (path=$queuePath size=$($queue.Bytes.Length) sha256=$($queue.Hash) reason=over-capacity)" }
+    $ticket = [pscustomobject]@{ number = $queue.NextTicket; claimantKey = $claimant.Key; pid = $claimant.Pid; startIdentity = $claimant.StartIdentity; childPid = $claimant.ChildPid; childStartIdentity = $claimant.ChildStartIdentity; presentedUtc = $now.ToString('o') }
+    $queue.NextTicket++
+    $queue.Tickets += $ticket; $changed = $true
+  }
+  if ($changed) { Assert-VerifyQueueUnchanged $queue; Write-VerifyQueue $queue; $queue = Read-VerifyQueue }
+  $position = 1 + @($queue.Tickets | Where-Object number -LT $ticket.number).Count
+  return [pscustomobject]@{ Queue = $queue; Ticket = $ticket; Position = $position; IsHead = $position -eq 1; Claimant = $claimant }
+}
+function Remove-QueueTicket($Context) {
+  if ($queueFixture.failRemoval) { throw 'heavy-verifier: verify queue injected admission persistence failure' }
+  $queue = Read-VerifyQueue
+  $match = @($queue.Tickets | Where-Object number -eq $Context.Ticket.number)
+  if ($match.Count -ne 1 -or $match[0].claimantKey -cne $Context.Ticket.claimantKey) { throw "heavy-verifier: verify queue ticket changed (ticket=$($Context.Ticket.number))" }
+  $queue.Tickets = @($queue.Tickets | Where-Object number -ne $Context.Ticket.number)
+  Assert-VerifyQueueUnchanged $Context.Queue
+  Write-VerifyQueue $queue
+}
+function Invoke-QueueQuarantine {
+  if (-not $QuarantineQueue) { return }
+  if (-not $isHostVerifier -or $isAttachedAdmission -or $callerBinding.Record -or $env:CHASE_SETS_HEAVY_SLOT_ID -or $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT) { throw 'heavy-verifier: verify queue quarantine is host-only and unbound' }
+  try {
+    Assert-QueuePathSafe $queueRecoveryPath
+    if (-not (Test-PathEntry $queueRecoveryPath)) {
+      $queue = Read-VerifyQueueBytes
+      if ($queue.Hash -cne $QuarantineQueue) { throw 'requested-hash-mismatch' }
+      $invalid = $null
+      try { $null = Read-VerifyQueue } catch { $invalid = $_.Exception.Message }
+      if (-not $invalid) { throw 'queue-is-valid' }
+      $now = Get-QueueNow
+      $record = Join-Path $queueRecordRoot "$QuarantineQueue-$($now.UtcDateTime.ToString('yyyyMMddTHHmmssfffffffZ'))"
+      $marker = [ordered]@{ schemaVersion = 1; path = $queuePath; identity = $queue.Identity; writtenUtcTicks = $queue.WrittenUtcTicks; size = $queue.Size; sha256 = $queue.Hash; reason = $invalid; wrapperUtc = $now.ToString('o'); record = $record }
+      Write-QueueEvidence $queueRecoveryPath ($marker | ConvertTo-Json -Compress)
+      throw "pending ($queueRecoveryPath)"
+    }
+    $marker = Read-NativeJson ([IO.File]::ReadAllText($queueRecoveryPath)) 8192
+    Assert-NativeObject $marker @('schemaVersion','path','identity','writtenUtcTicks','size','sha256','reason','wrapperUtc','record')
+    if ($marker.schemaVersion -ne 1 -or $marker.sha256 -cne $QuarantineQueue -or $marker.path -cne $queuePath -or
+        (Split-Path -Parent $marker.record) -cne $queueRecordRoot -or
+        (Split-Path -Leaf $marker.record) -cnotmatch "^$QuarantineQueue-[0-9]{8}T[0-9]{13}Z$" -or
+        -not (Test-UtcIdentity $marker.wrapperUtc)) { throw 'marker-authority-mismatch' }
+    if (((Get-QueueNow) - [DateTimeOffset]::Parse($marker.wrapperUtc)).TotalSeconds -le $queueRetentionSeconds) { throw 'pending: quiescent-boundary' }
+    $record = [string]$marker.record
+    if (Test-PathEntry $queueRecordRoot) { if (-not (Test-SafeDirectory $queueRecordRoot)) { throw 'unsafe-record-root' } }
+    else { [void][IO.Directory]::CreateDirectory($queueRecordRoot) }
+    if (Test-PathEntry $record) { if (-not (Test-SafeDirectory $record)) { throw 'unsafe-record' } }
+    else { [void][IO.Directory]::CreateDirectory($record) }
+    $recordQueue = Join-Path $record 'verify-queue.json'
+    if (-not (Test-PathEntry $recordQueue)) {
+      Invoke-QueueFixtureBarrier 'beforeMove'
+      $queue = Read-VerifyQueueBytes
+      if ($queue.Identity -cne $marker.identity -or $queue.Hash -cne $marker.sha256 -or $queue.Size -ne $marker.size -or $queue.WrittenUtcTicks -ne $marker.writtenUtcTicks) { throw 'source-changed' }
+      # The marker forbids presentations for >R. A future-dated presentation
+      # cannot be proved stale and therefore cannot be reset.
+      try { $untrusted = Read-NativeJson ([Text.Encoding]::UTF8.GetString($queue.Bytes)) $queueMaximumBytes } catch { $untrusted = $null }
+      foreach ($ticket in @($untrusted.tickets)) {
+        if ($ticket -and (-not (Test-UtcIdentity $ticket.presentedUtc) -or
+            ((Get-QueueNow) - [DateTimeOffset]::Parse($ticket.presentedUtc)).TotalSeconds -le $queueRetentionSeconds)) { throw 'possible-live-ticket' }
+      }
+      [IO.File]::Move($queuePath, $recordQueue)
+    }
+    Assert-QueuePathSafe $recordQueue
+    $moved = Read-QueueContent $recordQueue
+    if ((Get-QueueFileIdentity $recordQueue) -cne $marker.identity -or $moved.Size -ne $marker.size -or (Get-Item -LiteralPath $recordQueue -Force).LastWriteTimeUtc.Ticks -ne $marker.writtenUtcTicks -or $moved.Hash -cne $marker.sha256) { throw 'record-readback-mismatch' }
+    Stop-QueueRecoveryFixture 'moved'
+    $proofPath = Join-Path $record 'empty-proof.json'
+    $stage = Join-Path $record 'empty.queue'
+    if (-not (Test-PathEntry $proofPath)) {
+      if (Test-PathEntry $queuePath) { throw 'unexpected-queue-after-rename' }
+      if (-not (Test-PathEntry $stage)) {
+        Write-QueueEvidence $stage '{}'
+        $empty = @{schemaVersion=1;fileIdentity=(Get-QueueFileIdentity $stage);nextTicket=1;tickets=@()}
+        # This stage is private evidence, not the published queue or marker.
+        $stream = [IO.File]::Open($stage,[IO.FileMode]::Truncate,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        try { $bytes=[Text.Encoding]::UTF8.GetBytes(($empty|ConvertTo-Json -Compress)); $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+      }
+      Assert-QueuePathSafe $stage
+      $stagedEmpty = Read-NativeJson ([IO.File]::ReadAllText($stage)) 8192
+      Assert-NativeObject $stagedEmpty @('schemaVersion','fileIdentity','nextTicket','tickets')
+      if ($stagedEmpty.schemaVersion -ne 1 -or $stagedEmpty.nextTicket -ne 1 -or $stagedEmpty.tickets -isnot [array] -or
+          $stagedEmpty.tickets.Count -ne 0 -or $stagedEmpty.fileIdentity -cne (Get-QueueFileIdentity $stage)) { throw 'empty-stage-invalid' }
+      $raw = [IO.File]::ReadAllText($stage)
+      Write-QueueEvidence $proofPath $raw
+    }
+    Assert-QueuePathSafe $proofPath
+    $proof = [IO.File]::ReadAllBytes($proofPath)
+    Stop-QueueRecoveryFixture 'prepared'
+    if (-not (Test-PathEntry $queuePath)) {
+      Assert-QueuePathSafe $stage
+      if ((Get-QueueSha256 ([IO.File]::ReadAllBytes($stage))) -cne (Get-QueueSha256 $proof)) { throw 'empty-stage-readback-mismatch' }
+      [IO.File]::Move($stage, $queuePath)
+    }
+    Stop-QueueRecoveryFixture 'published'
+    $emptyQueue = Read-VerifyQueue
+    if ($emptyQueue.Hash -cne (Get-QueueSha256 $proof) -or $emptyQueue.Tickets.Count -ne 0 -or $emptyQueue.NextTicket -ne 1) { throw 'empty-queue-readback-mismatch' }
+    Stop-QueueRecoveryFixture 'readback'
+    [IO.File]::Delete($queueRecoveryPath)
+    Write-Output "heavy-verifier: verify queue recovery completed (record=$record)"
+    $script:quarantineCompleted = $true
+  } catch { throw "heavy-verifier: verify queue recovery refused: $($_.Exception.Message)" }
+}
+function Write-QueueEvidence([string]$Path,[string]$Raw) {
+  Assert-QueuePathSafe $Path
+  $stream = [IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  try { $bytes=[Text.Encoding]::UTF8.GetBytes($Raw); $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+function Stop-QueueRecoveryFixture([string]$Step) {
+  if ($queueFixture.stop -ceq $Step) { throw "fixture-stop:$Step" }
+}
+function Invoke-QueueFixtureBarrier([string]$Step) {
+  if ($queueFixture.barrier -ceq $Step) {
+    [IO.File]::WriteAllText(($TestQueueFixture + '.ready'),$Step)
+    $deadline=[DateTime]::UtcNow.AddSeconds(30)
+    while (-not [IO.File]::Exists($TestQueueFixture + '.continue')) {
+      if ([DateTime]::UtcNow -gt $deadline) { throw 'fixture-barrier-timeout' }
+      Start-Sleep -Milliseconds 20
+    }
   }
 }
 function Test-ReclaimableOwner($Record) {
@@ -2282,14 +2631,41 @@ try {
     $mutexHeld = $true
   }
   $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+  if ($isProductSlot -and ($env:CHASE_SETS_HEAVY_SLOT_ID -or $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT)) {
+    throw 'heavy-verifier: caller eligibility: inherited heavy token must use nested continuation'
+  }
+  if ($QuarantineQueue) {
+    Invoke-QueueQuarantine
+  }
+  if ($script:quarantineCompleted) { return }
+  $queueContext = $null
+  if ($isProductSlot) {
+    $queueContext = Get-QueueTicketContext
+    if (-not $queueContext.IsHead) {
+      $reserved = -not (Test-Path -LiteralPath $lockPath)
+      throw "heavy-verifier: queued; ticket=$($queueContext.Ticket.number) position=$($queueContext.Position) reserved=$($reserved); retry within $queueRetentionSeconds seconds"
+    }
+  }
+  $queueLockCreated = $false
   try {
     New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
+    $queueLockCreated = $true
   } catch {
     if (-not (Invoke-StaleLockReclamation)) { Describe-ExistingLock }
     try {
       New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
+      $queueLockCreated = $true
     } catch {
       Describe-ExistingLock
+    }
+  }
+  if ($queueContext) {
+    try { Remove-QueueTicket $queueContext }
+    catch {
+      if ($queueLockCreated -and (Test-SafeDirectory $lockPath) -and -not (Test-Path -LiteralPath $ownerPath)) {
+        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+      }
+      throw "heavy-verifier: unable to persist queue admission; owner was released: $($_.Exception.Message)"
     }
   }
 } finally {
