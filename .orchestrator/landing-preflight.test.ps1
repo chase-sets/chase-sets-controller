@@ -705,6 +705,52 @@ function Test-SyntheticScopeCollector {
     Assert-True ($bypass.proven -eq $true) "mutant $($mutant.name) bypasses intended clause with all other facts valid"
     Write-Output "KILLED scope mutant=$($mutant.name) intended-clause=$($case.reason)"
   }
+  # Issue #43: Change Scope reduces over the exact head; foreign-head runs
+  # neither admit nor supersede, and a run without a head still refuses.
+  $exactOlder = Copy-TestValue $check
+  $exactOlder.databaseId = $jobId - 1
+  $exactOlder.completedAt = '2030-01-01T00:00:01Z'
+  $exactNewestRed = Copy-TestValue $check
+  $exactNewestRed.conclusion = 'FAILURE'
+  $foreignNewerRed = Copy-TestValue $check
+  $foreignNewerRed.databaseId = $jobId + 1
+  $foreignNewerRed.completedAt = '2030-01-01T00:00:03Z'
+  $foreignNewerRed.conclusion = 'FAILURE'
+  $foreignNewerRed.headSha = $headB
+  $foreignNewerGreen = Copy-TestValue $foreignNewerRed
+  $foreignNewerGreen.conclusion = 'SUCCESS'
+  $foreignSameJob = Copy-TestValue $check
+  $foreignSameJob.headSha = $headB
+  $headlessScope = Copy-TestValue $check
+  $headlessScope.Remove('headSha')
+  $nonStringHeadScope = Copy-TestValue $check
+  $nonStringHeadScope.headSha = 42
+  $mixedScopeGreen = Invoke-ScopeCollectorControl $job $run @($exactOlder, $check, $foreignNewerRed) $log
+  Assert-True ($mixedScopeGreen.proven -eq $true -and $mixedScopeGreen.classification -ceq 'non-deployable' -and
+    $mixedScopeGreen.checkCandidateCount -eq 1) "issue #43 mixed-head Change Scope with exact-head latest success did not prove scope (actual=$($mixedScopeGreen.reason))"
+  $mixedScopeRed = Invoke-ScopeCollectorControl $job $run @($exactOlder, $exactNewestRed, $foreignNewerGreen) $log
+  Assert-True ($mixedScopeRed.proven -eq $false -and $mixedScopeRed.reason -ceq 'CHANGE_SCOPE_CHECK_INCOMPLETE') `
+    "issue #43 a newer foreign-head Change Scope success masked the exact-head latest failure (actual=$($mixedScopeRed.reason))"
+  foreach ($scopeHeadRefusal in @(
+      [ordered]@{ name = 'foreign-only'; checks = @($foreignSameJob) },
+      [ordered]@{ name = 'foreign-only-many'; checks = @($foreignSameJob, $foreignNewerGreen) },
+      [ordered]@{ name = 'missing-head'; checks = @($exactOlder, $headlessScope) },
+      [ordered]@{ name = 'non-string-head'; checks = @($exactOlder, $nonStringHeadScope) }
+    )) {
+    $scopeHeadResult = Invoke-ScopeCollectorControl $job $run $scopeHeadRefusal.checks $log
+    Assert-True ($scopeHeadResult.proven -eq $false -and $scopeHeadResult.classification -ceq 'deployable' -and
+      $scopeHeadResult.reason -ceq 'CHANGE_SCOPE_CHECK_HEAD_MISMATCH') `
+      "issue #43 $($scopeHeadRefusal.name) Change Scope control was not refused (actual=$($scopeHeadResult.reason))"
+  }
+  $headFilterClause = '$matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })'
+  $scopeHeadBypass = Invoke-ScopeCollectorControl $job $run @($foreignSameJob) $log 'Reduce-RequiredCheckObservations' $headFilterClause '$matching = @($matching)'
+  $scopeHeadMasked = Invoke-ScopeCollectorControl $job $run @($exactOlder, $check, $foreignNewerRed) $log 'Reduce-RequiredCheckObservations' $headFilterClause '$matching = @($matching)'
+  Assert-True ($scopeHeadBypass.proven -eq $true -and
+    $scopeHeadMasked.proven -eq $false -and $scopeHeadMasked.reason -ceq 'CHANGE_SCOPE_CHECK_INCOMPLETE') `
+    "mutant drop-exact-head-filter bypasses the Change Scope head filter (foreign-only=$($scopeHeadBypass.reason) mixed=$($scopeHeadMasked.reason))"
+  Write-Output 'KILLED scope mutant=drop-exact-head-filter intended-clause=CHANGE_SCOPE_CHECK_HEAD_MISMATCH'
+  Write-Output 'PASS change-scope exact-head reduction mixed-head-green mixed-head-red foreign-only missing-head non-string-head'
+
   $double = $log + "`n" + $log
   $ambiguous = Invoke-ScopeCollectorControl $job $run $check $double
   Assert-True ($ambiguous.reason -ceq 'CHANGE_SCOPE_OUTPUT_AMBIGUOUS') 'collector duplicate maps refused'
@@ -1953,10 +1999,64 @@ try {
     $differentHead = Copy-TestValue $latestSuccess
     $differentHead.headSha = $headB
     $differentHeadResult = Invoke-RequiredCheckFixture @($supersededFailure, $differentHead)
-    Assert-True ($differentHeadResult.status -ceq 'unknown' -and
-      $differentHeadResult.reason -ceq 'REQUIRED_CHECK_HEAD_MISMATCH' -and
-      $differentHeadResult.mutationCount -eq 0) `
-      'issue #43 newer success from a different head was trusted'
+    $differentHeadReduction = $differentHeadResult.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($differentHeadResult.status -ceq 'refused' -and
+      $differentHeadResult.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $differentHeadResult.mutationCount -eq 0 -and
+      $differentHeadReduction.selected.databaseId -eq [long]9000000000000201 -and
+      $differentHeadReduction.foreignHead.Count -eq 1 -and
+      $differentHeadReduction.foreignHead[0].databaseId -eq [long]9000000000000203 -and
+      $differentHeadReduction.foreignHead[0].headSha -ceq $headB) `
+      'issue #43 newer success from a different head was trusted over the exact-head failure'
+
+    # Mixed heads reduce over the exact head only: a foreign-head run can
+    # neither admit nor supersede, and every run must name a 40-hex head.
+    $foreignNewerFailure = New-SyntheticRequiredCheckProjection 9000000000000221 '2030-02-04T00:00:00Z' 'COMPLETED' 'FAILURE'
+    $foreignNewerFailure.headSha = $headB
+    $foreignNewerSuccess = New-SyntheticRequiredCheckProjection 9000000000000222 '2030-02-04T00:00:00Z'
+    $foreignNewerSuccess.headSha = $headB
+    $exactOlderSuccess = New-SyntheticRequiredCheckProjection 9000000000000231 '2030-02-01T00:00:00Z'
+    $exactNewestFailure = New-SyntheticRequiredCheckProjection 9000000000000232 '2030-02-03T00:00:00Z' 'COMPLETED' 'FAILURE'
+    $headlessSuccess = Copy-TestValue $latestSuccess
+    $headlessSuccess.Remove('headSha')
+    $nonStringHeadSuccess = Copy-TestValue $latestSuccess
+    $nonStringHeadSuccess.headSha = 42
+    $mixedHeadGreen = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess, $foreignNewerFailure)
+    $mixedHeadGreenReduction = $mixedHeadGreen.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($mixedHeadGreen.status -ceq 'eligible' -and
+      $mixedHeadGreen.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+      $mixedHeadGreen.mutationCount -eq 0 -and
+      $mixedHeadGreenReduction.matchCount -eq 3 -and
+      $mixedHeadGreenReduction.selected.databaseId -eq [long]9000000000000203 -and
+      $mixedHeadGreenReduction.superseded.Count -eq 2 -and
+      $mixedHeadGreenReduction.foreignHead.Count -eq 1 -and
+      $mixedHeadGreenReduction.foreignHead[0].databaseId -eq [long]9000000000000221) `
+      "issue #43 mixed heads with an exact-head latest success did not admit (observed=$($mixedHeadGreen | ConvertTo-Json -Compress -Depth 20))"
+    $mixedHeadRed = Invoke-RequiredCheckFixture @($exactOlderSuccess, $exactNewestFailure, $foreignNewerSuccess)
+    $mixedHeadRedReduction = $mixedHeadRed.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($mixedHeadRed.status -ceq 'refused' -and
+      $mixedHeadRed.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $mixedHeadRed.mutationCount -eq 0 -and
+      $mixedHeadRedReduction.selected.databaseId -eq [long]9000000000000232 -and
+      $mixedHeadRedReduction.foreignHead.Count -eq 1) `
+      'issue #43 a newer foreign-head success masked the exact-head latest failure'
+    foreach ($headRefusal in @(
+        [ordered]@{ name = 'foreign-only'; checks = @($foreignNewerFailure, $foreignNewerSuccess) },
+        [ordered]@{ name = 'foreign-only-success'; checks = @($foreignNewerSuccess) },
+        [ordered]@{ name = 'missing-head'; checks = @($supersededFailure, $headlessSuccess) },
+        [ordered]@{ name = 'non-string-head'; checks = @($supersededFailure, $nonStringHeadSuccess) }
+      )) {
+      $headRefusalResult = Invoke-RequiredCheckFixture $headRefusal.checks
+      Assert-True ($headRefusalResult.status -ceq 'unknown' -and
+        $headRefusalResult.reason -ceq 'REQUIRED_CHECK_HEAD_MISMATCH' -and
+        $headRefusalResult.mutationCount -eq 0) `
+        "issue #43 $($headRefusal.name) required-check control was not refused (observed=$($headRefusalResult.status)/$($headRefusalResult.reason))"
+    }
+    $mixedHeadDirect = Invoke-RequiredCheckFixture @($exactOlderSuccess, $exactNewestFailure, $foreignNewerSuccess) $null 'Apply' 'SUCCESS' 'failure'
+    Assert-True ($mixedHeadDirect.status -ceq 'refused' -and
+      $mixedHeadDirect.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $mixedHeadDirect.mutationCount -eq 0) `
+      'direct-enqueue qualification trusted a foreign-head success over the exact-head latest failure'
 
     $directQualification = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess) $null 'Apply' 'FAILURE' 'failure'
     Assert-True ($directQualification.status -ceq 'enqueued' -and
@@ -1964,15 +2064,28 @@ try {
       $directQualification.mutationCount -eq 1) `
       'direct-enqueue qualification did not use reduced exact-head required checks'
 
-    $aggregateMutantSource = [IO.File]::ReadAllText($preflight).Replace("`r`n", "`n")
-    $aggregateMutantAnchor = '  foreach ($issue in @($pull.closingIssues)) {'
-    Assert-True (-not $aggregateMutantSource.Contains('CHECK_ROLLUP_NOT_GREEN', [StringComparison]::Ordinal)) `
+    $preflightSourceForMutants = [IO.File]::ReadAllText($preflight).Replace("`r`n", "`n")
+    Assert-True (-not $preflightSourceForMutants.Contains('CHECK_ROLLUP_NOT_GREEN', [StringComparison]::Ordinal)) `
       'aggregate rollup gate was not removed from Apply'
-    $aggregateMutantSource = $aggregateMutantSource.Replace($aggregateMutantAnchor,
-      '  if ([string]$pull.statusRollupState -cne "SUCCESS") { return [pscustomobject][ordered]@{ status = "refused"; reason = "CHECK_ROLLUP_NOT_GREEN" } }' + "`n" + $aggregateMutantAnchor)
-    $aggregateMutantSource = $aggregateMutantSource.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
-    $aggregateMutantPath = Join-Path $testRoot 'landing-preflight-aggregate-rollup-mutant.ps1'
-    [IO.File]::WriteAllText($aggregateMutantPath, $aggregateMutantSource, [Text.UTF8Encoding]::new($false))
+    # Each mutant must reach exactly one intended clause, then run as a whole preflight.
+    $newPreflightMutant = {
+      param([string]$Name, [string]$Before, [string]$After)
+      $occurrences = [regex]::Matches($preflightSourceForMutants, [regex]::Escape($Before)).Count
+      Assert-True ($occurrences -eq 1) "mutant $Name reaches exactly one intended clause (occurrences=$occurrences)"
+      $mutantSource = $preflightSourceForMutants.Replace($Before, $After)
+      $mutantSource = $mutantSource.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+      $mutantPath = Join-Path $testRoot "landing-preflight-$Name-mutant.ps1"
+      [IO.File]::WriteAllText($mutantPath, $mutantSource, [Text.UTF8Encoding]::new($false))
+      $mutantPath
+    }
+    $nonHoldIssueAnchor = '  foreach ($issue in @($pull.closingIssues)) {' + "`n" + '    if ($issue.blockersComplete -ne $true) {'
+    $directIssueAnchor = '  foreach ($issue in @($pull.closingIssues)) {' + "`n" + '    if ($issue.blockersComplete -ne $true -or'
+    $headFilterClause = '    $matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })'
+    $aggregateMutantPath = & $newPreflightMutant 'aggregate-rollup' $nonHoldIssueAnchor (
+      '  if ([string]$pull.statusRollupState -cne "SUCCESS") { return [pscustomobject][ordered]@{ status = "refused"; reason = "CHECK_ROLLUP_NOT_GREEN" } }' + "`n" + $nonHoldIssueAnchor)
+    $directAggregateMutantPath = & $newPreflightMutant 'direct-aggregate-rollup' $directIssueAnchor (
+      '  if ([string]$pull.statusRollupState -cne "SUCCESS") { return $false }' + "`n" + $directIssueAnchor)
+    $headFilterMutantPath = & $newPreflightMutant 'drop-exact-head-filter' $headFilterClause '    $matching = @($matching)'
     $originalPreflight = $preflight
     try {
       $preflight = $aggregateMutantPath
@@ -1982,7 +2095,27 @@ try {
         $aggregateMutant.mutationCount -eq 0) `
         'aggregate-rollup mutant survived the issue #43 superseded-suite fixture'
       Write-Output 'KILLED required-check mutant=aggregate-rollup-gate'
+
+      # The red-rollup direct-enqueue positive above (enqueued under rollup
+      # FAILURE) is the control that must turn red under this mutant.
+      $preflight = $directAggregateMutantPath
+      $directAggregateMutant = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess) $null 'Apply' 'FAILURE' 'failure'
+      Assert-True ($directAggregateMutant.status -ceq 'refused' -and
+        $directAggregateMutant.reason -ceq 'DEPLOY_UNHEALTHY' -and
+        $directAggregateMutant.mutationCount -eq 0) `
+        "direct-aggregate-rollup mutant survived the issue #43 direct-enqueue fixture (observed=$($directAggregateMutant.status)/$($directAggregateMutant.reason))"
+      Write-Output 'KILLED required-check mutant=direct-aggregate-rollup-gate intended-clause=Test-DirectLandingAuthorityComplete'
+
+      $preflight = $headFilterMutantPath
+      $headFilterForeignOnly = Invoke-RequiredCheckFixture @($foreignNewerSuccess)
+      $headFilterMixedGreen = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess, $foreignNewerFailure)
+      Assert-True ($headFilterForeignOnly.status -ceq 'eligible' -and
+        $headFilterMixedGreen.status -ceq 'refused' -and
+        $headFilterMixedGreen.reason -ceq 'REQUIRED_CHECK_NOT_GREEN') `
+        "drop-exact-head-filter mutant did not expose the head filter (foreign-only=$($headFilterForeignOnly.status)/$($headFilterForeignOnly.reason) mixed=$($headFilterMixedGreen.status)/$($headFilterMixedGreen.reason))"
+      Write-Output 'KILLED required-check mutant=drop-exact-head-filter intended-clause=REQUIRED_CHECK_HEAD_MISMATCH'
     } finally { $preflight = $originalPreflight }
+    Write-Output 'PASS required-check exact-head reduction mixed-head-green mixed-head-red foreign-only missing-head non-string-head direct-enqueue'
 
     foreach ($newestConclusion in @('FAILURE', 'CANCELLED', 'TIMED_OUT')) {
       $newest = New-SyntheticRequiredCheckProjection 9000000000000102 '2030-01-02T00:00:00Z' 'COMPLETED' $newestConclusion
