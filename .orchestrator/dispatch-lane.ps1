@@ -1031,7 +1031,11 @@ $environmentPolicy = if ($LaneRole -eq "review") {
     preservesGitHubAuthentication = $false
     githubWriteAuthority = $false
     gitCredentialPolicy = "credential.helper=;GIT_TERMINAL_PROMPT=0;GCM_INTERACTIVE=never"
-    neutralizedVariables = @("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE")
+    neutralizedVariables = @("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE", "GIT_CONFIG_PARAMETERS", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND")
+    # Same-user default-path isolation: a child that deliberately re-points
+    # GH_CONFIG_DIR or re-enables a credential helper can still reach stored
+    # credentials. Decision prompts carry their GitHub evidence as files.
+    enforcement = "default-path-isolation"
   }
 } else {
   [ordered]@{
@@ -1075,7 +1079,7 @@ if ($admissionIdentityMode -eq "branch") {
 
 function Get-HeavyVerificationPreamble([string]$Role, [int]$RoutingRow, [string]$Entrypoint) {
   if ($Role -cne 'implementation' -or $RoutingRow -eq 13) {
-    return "Heavy verification contract: planning, review, decision and row-13 documentation lanes use evidence inspection and cheap focused checks only. Heavy commands refuse with exit 73 before reservation; this is non-execution, not PASS or a consumed attempt. Return heavy reproduction to the host for an attributed implementation/verifier lane. Controller reviewers rerun changed tests directly, never through ControllerBattery or ControllerPrecursor.`r`n`r`n"
+    return "Heavy verification contract: planning, review and row-13 documentation lanes use evidence inspection and cheap focused checks only. Heavy commands refuse with exit 73 before reservation; this is non-execution, not PASS or a consumed attempt. Return heavy reproduction to the host for an attributed implementation/verifier lane. Controller reviewers rerun changed tests directly, never through ControllerBattery or ControllerPrecursor.`r`n`r`n"
   }
   return "Heavy verification contract: product proof is exact-head hosted CI. Retain scoped pre-push checks and focused tests; local full/harness runs and focused DB diagnostics are optional, never publication or landing gates. A scoped refusal never escalates to a full gate: preserve and disclose the defect, never fabricate PASS. Controller authors retain baseline-aware controller-release-battery.ps1 proof; product CI is not controller release proof. Any eligible heavy reproduction uses '$Entrypoint', foreground and under unchanged exclusive admission, including direct Node, Playwright, full Vitest, script-battery and build commands. Exit 73 means not executed, not PASS or a consumed attempt. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
 }
@@ -1373,6 +1377,13 @@ try {
       $childEnvironment["GIT_CONFIG_VALUE_0"] = ""
       $childEnvironment["GIT_TERMINAL_PROMPT"] = "0"
       $childEnvironment["GCM_INTERACTIVE"] = "never"
+      # Command-scope config, askpass helpers and an SSH agent would otherwise
+      # re-supply credentials; SSH runs in batch mode with no identities.
+      $childEnvironment["GIT_CONFIG_PARAMETERS"] = $null
+      $childEnvironment["GIT_ASKPASS"] = $null
+      $childEnvironment["SSH_ASKPASS"] = $null
+      $childEnvironment["SSH_AUTH_SOCK"] = $null
+      $childEnvironment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none"
     } elseif ($env:GH_CONFIG_DIR) {
       $childEnvironment["GH_CONFIG_DIR"] = $env:GH_CONFIG_DIR
     } elseif ($env:APPDATA) {

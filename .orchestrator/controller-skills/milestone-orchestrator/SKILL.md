@@ -307,7 +307,9 @@ the launcher persists both in the watchdog spec. Set `-LaneRole` to:
 - `review`: no provider credentials; mutation is limited to the mechanical
   remedies and brief-body repairs that `contracts/review-v2.md` and §7 allow.
 - `planning`: read-only repo plus bounded GitHub planning mutations.
-- `decision`: read-only decision work with no planning-repair contract or GitHub write authority.
+- `decision`: read-only decision work with no planning-repair contract and no
+  GitHub credentials, so `gh` and private-repo reads fail too. Put the issue,
+  PR and CI evidence the decision needs into files named in the prompt.
 
 Every prompt carries only:
 
