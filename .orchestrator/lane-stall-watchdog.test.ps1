@@ -733,7 +733,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   if($SonnetOnly){Test-SonnetCutover;return}
   if($PolicyFallbackOnly){Test-PolicyFallback;return}
   if($PolicyFallbackMutantsOnly){Test-PolicyFallbackMutants;return}
-  # 8186: planning/review lanes are observed on dispatch-lane's own envelope and never recovered here.
+  # 8186: planning/review/decision lanes are observed on dispatch-lane's own envelope and never recovered here.
   function New-RoleSpec([string]$Label,[string]$Role,[int]$Row=0,[string]$Placement='',[string]$Model='claude-opus-5-5',[string]$Effort='medium',[string]$State='exited',$ExitCode=1,[string]$Branch='synthetic/branch'){
     $item=New-Spec $Label $Model $Effort 0 $Row $Placement
     $item.spec.laneRole=$Role;$item.spec.branch=$Branch;$item.spec.state=$State
@@ -769,6 +769,8 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
       Assert-ObservationOnly (Invoke-RoleWatchdog $planningCase 'r8186-planning-case') planning 'dispatch-lane case-insensitive placement was refused for planning'
       $planningCodex=New-RoleSpec 'r8186-planning-codex' planning 15 'measured' 'gpt-6-astra' 'xhigh'
       Assert-ObservationOnly (Invoke-RoleWatchdog $planningCodex 'r8186-planning-codex') planning 'planning row 15 codex envelope was refused'
+      $decision=New-RoleSpec 'r8186-decision-row0' decision 0 ''
+      Assert-ObservationOnly (Invoke-RoleWatchdog $decision 'r8186-decision-row0') decision 'decision row 0 envelope was refused'
       # Domain closure comes from dispatch-lane, not the implementation route table.
       foreach($case in @(
         @('row16',{param($i)$i.spec.row=[long]16},'^WATCHDOG_UNKNOWN_SPEC_INVALID'),

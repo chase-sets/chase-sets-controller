@@ -196,9 +196,9 @@ function Test-CapacityClosedEvidence {
 }
 function Test-CapacityQuarantine {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
-  # Planning and review flip rows calibrate like implementation flips (#9282); an unflipped role v3 row is an
+  # Planning, review and decision flip rows calibrate like implementation flips (#9282); an unflipped role v3 row is an
   # ordinary-cohort calibration record; an unknown role is still quarantined.
-  foreach($case in @('valid-with-history','missing-kind','extra-author-model','wrong-kind','review-role','planning-role','planning-role-unflipped',
+  foreach($case in @('valid-with-history','missing-kind','extra-author-model','wrong-kind','review-role','planning-role','decision-role','planning-role-unflipped','decision-role-unflipped',
       'unknown-role','marker-extra-author','missing-transcript','unmatched-transcript','ambiguous-branch','ambiguous-issue')) {
     Reset-Fixtures
     $events=[Collections.Generic.List[object]]::new();$costs=[Collections.Generic.List[object]]::new()
@@ -225,7 +225,9 @@ function Test-CapacityQuarantine {
         'wrong-kind' {$d.kind='verify-complete'}
         'review-role' {$d.laneRole='review'}
         'planning-role' {$d.laneRole='planning'}
+        'decision-role' {$d.laneRole='decision'}
         'planning-role-unflipped' {$d.laneRole='planning';$d.capacityFlip=$null}
+        'decision-role-unflipped' {$d.laneRole='decision';$d.capacityFlip=$null}
         'unknown-role' {$d.laneRole='synthetic-unsupported'}
         'marker-extra-author' {$d.Remove('dispatchRoutingSchema');$d.authorModel=$d.model}
         'missing-transcript' {$d.Remove('transcript')}
@@ -244,15 +246,15 @@ function Test-CapacityQuarantine {
       Set-Content $ledgerPath -Value @($costs|ForEach-Object{$_|ConvertTo-Json -Compress})
       Invoke-Refresh|Out-Null;$m=Get-Matrix
       $key="row4`u{001f}claude-opus-5-5`u{001f}medium";$modelKey="row4`u{001f}claude-opus-5-5"
-      if($case -ceq 'planning-role-unflipped'){
+      if($case -in @('planning-role-unflipped','decision-role-unflipped')){
         Assert-True ($m.measuredAt.byRowConfig.$key.runs -eq 3 -and $m.measuredAt.blockRateByRowConfig.$key.reviews -eq 3) "unflipped planning v3 row calibrates in the ordinary cohort reverse=$reverse"
       } else {
         Assert-True ($null -eq $m.measuredAt.byRowConfig.$key -and $null -eq $m.measuredAt.blockRateByRowConfig.$key) "quarantine ordinary excluded $case reverse=$reverse"
       }
-      if($case -in @('valid-with-history','review-role','planning-role')){
+      if($case -in @('valid-with-history','review-role','planning-role','decision-role')){
         Assert-True ($m.measuredAt.capacityFlipped.byRowConfig.$key.runs -eq 3 -and
           @($m.measuredAt.capacityIdentity.PSObject.Properties.Value|Where-Object{$_ -ne 0}).Count -eq 0) "quarantine valid exact transcript retains flipped costs $case"
-      } elseif($case -ceq 'planning-role-unflipped'){
+      } elseif($case -in @('planning-role-unflipped','decision-role-unflipped')){
         Assert-True ($null -eq $m.measuredAt.capacityFlipped.byRowConfig.$key -and $m.measuredAt.byRowModel.$modelKey.runs -eq 3 -and
           @($m.measuredAt.capacityIdentity.PSObject.Properties.Value|Where-Object{$_ -ne 0}).Count -eq 0) 'unflipped planning row stays outside the flipped cohort'
       } else {
@@ -260,9 +262,9 @@ function Test-CapacityQuarantine {
         $suffix=if($case -like 'ambiguous-*'){'Ambiguous'}else{'Unresolved'}
         Assert-True ($m.measuredAt.capacityIdentity."costRows$suffix" -eq 3) "quarantine cost diagnostics $case reverse=$reverse"
       }
-      if($case -in @('valid-with-history','unmatched-transcript','review-role','planning-role')){
+      if($case -in @('valid-with-history','unmatched-transcript','review-role','planning-role','decision-role')){
         Assert-True ($m.measuredAt.capacityFlipped.blockRateByRowConfig.$key.reviews -eq 3) "quarantine valid review join $case"
-      } elseif($case -ceq 'planning-role-unflipped'){
+      } elseif($case -in @('planning-role-unflipped','decision-role-unflipped')){
         Assert-True ($null -eq $m.measuredAt.capacityFlipped.blockRateByRowConfig.$key) 'unflipped planning reviews stay outside the flipped cohort'
       } else {
         Assert-True ($null -eq $m.measuredAt.capacityFlipped.blockRateByRowConfig.$key -and
@@ -334,7 +336,7 @@ function Test-CapacityCalibration {
       @{name='last-dispatch-wins';old='$origin=$roots[0]';new='$origin=@($unique.Values|Sort-Object ts)[-1]';assertion='flipped cost cohort'},
       @{name='missing-status-ordinary';old='modern=(@($rows|Where-Object{Test-CapacityRoutingRecord $_}).Count -gt 0)';new='modern=(@($rows|Where-Object{$_.PSObject.Properties[''capacityForecastStatus'']}).Count -gt 0)';assertion='closed evidence excluded missing-capacityForecastStatus'},
       @{name='partial-evidence-dedup';old='$identity=ConvertTo-CapacityCanonicalValue $e | ConvertTo-Json -Depth 100 -Compress';new='$identity=@($e.ts,$e.transcript,$e.head,$e.capacityForecastStatus,(ConvertTo-CapacityCanonicalValue $e.capacityFlip|ConvertTo-Json -Depth 12 -Compress)) -join "`u{001f}"';assertion='closed evidence excluded conflicting-shadow'},
-      @{name='quarantine-after-author-filter';old="if(-not (Test-CapacityRoutingRecord `$e) -and (`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning') -or `$e.authorModel)){continue}";new="if(`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning') -or `$e.authorModel){continue}";assertion='quarantine ordinary excluded missing-kind';quarantineOnly=$true},
+      @{name='quarantine-after-author-filter';old="if(-not (Test-CapacityRoutingRecord `$e) -and (`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning','decision') -or `$e.authorModel)){continue}";new="if(`$e.kind -cne 'dispatch' -or `$e.laneRole -cin @('review','planning','decision') -or `$e.authorModel){continue}";assertion='quarantine ordinary excluded missing-kind';quarantineOnly=$true},
       @{name='legacy-issue-fallback';old='foreach($branch in $capacityModernBranches){';new='foreach($branch in @()){';assertion='quarantine ordinary excluded missing-transcript';quarantineOnly=$true}
     )){
       Assert-True ($source.Contains($mutation.old)) "calibration mutation seam $($mutation.name)"

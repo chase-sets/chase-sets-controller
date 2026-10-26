@@ -385,6 +385,7 @@ function Invoke-AdmissionMatrixCase(
       # selector rather than mutating the archived admission control.
       $selection=if($Subject.Name-ceq'base'){'gpt-5.6-sol'}else{'gpt-6.1-sol'}
       $parameters=@{Harness='codex';Model=$selection;Effort='high';LaneRole=$LaneRole;PromptFile=$prompt;Worktree=$Fixture.Worktree;Label=$label;DryRun=$true;ExecutablePath=$Subject.FakeHarness;TestRuntimeRoot=$runtime;TestTempRoot=$providerTemp}
+      if ($LaneRole -ceq 'decision') { $parameters.Issue = 223 }
       if((Get-Command $Subject.Launcher).Parameters.ContainsKey('Row')){$parameters.Row=4;$parameters.Placement='provisional'}
       $json = & $Subject.Launcher @parameters
       $plan = ($json -join "`n") | ConvertFrom-Json
@@ -795,7 +796,7 @@ exit $LASTEXITCODE
   Write-Output 'BYPASS|shape=lane-launched-without-fleet-check|mutantChildStarted=true|production=denied'
 
   $roleSubject=New-AdmissionLauncherSubject 'fleet-role-matrix' $candidateSource
-  foreach($role in @('review','planning','implementation')){
+  foreach($role in @('review','planning','decision','implementation')){
     $receipt=Invoke-OrderingSubject $roleSubject $role -PlantLease
     Assert-True ($receipt.exitCode-ne0-and-not$receipt.started) "fleet lease denies $role lane before child creation"
     Clear-OrderingLease $receipt
@@ -1271,6 +1272,14 @@ try {
   $implementationOwner = New-OwnershipFixture -LaneRole "implementation"
   Invoke-DispatchOwnershipScavenge $ownershipRoot $providerTempRoot $deadResolver | Out-Null
   Assert-True (-not (Test-Path -LiteralPath $implementationOwner.recordPath)) "implementation record cleanup removes its generated prompt without inventing a provider root"
+  foreach ($isolatedRole in @('planning','decision')) {
+    $isolatedOwner = New-OwnershipFixture -LaneRole $isolatedRole
+    Assert-True (Remove-DispatchLaunchResources $isolatedOwner.recordPath $isolatedOwner.record $ownershipRoot $providerTempRoot) "$isolatedRole cleanup accepts its exact owner record"
+    Assert-True (-not (Test-Path -LiteralPath $isolatedOwner.recordPath) -and
+      -not (Test-Path -LiteralPath $isolatedOwner.promptPath) -and
+      -not (Test-Path -LiteralPath $isolatedOwner.isolationRoot)) "$isolatedRole cleanup removes its launch record, prompt and isolation root"
+    Write-Output "ROLE_FENCE|cleanup=$isolatedRole|record=removed|prompt=removed|isolation-root=removed"
+  }
 
   if ($ValidatorOnly) {
     Write-Output "PASS dispatch-lane direct ownership validator"
@@ -1859,20 +1868,10 @@ exit $LASTEXITCODE
   # --- decision role: no planning-repair contract and no GitHub write authority --
   $decisionSource = [IO.File]::ReadAllText($launcher)
   Assert-True ($decisionSource -match 'ValidateSet\("implementation", "review", "planning", "decision"\)') "decision role is admitted by the launcher ValidateSet"
-  $decisionPlan = [pscustomobject]@{
-    laneRole = 'decision'
-    composedPrompt = $expectedDeniedPreamble + $expectedRetrievalPreamble + $originalPrompt
-    reviewContract = $null
-    planningContract = $null
-    environmentPolicy = [pscustomobject]@{
-      mode = 'decision-isolation'
-      removedVariables = @('DIGITALOCEAN_ACCESS_TOKEN','DIGITALOCEAN_TOKEN','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','GH_TOKEN','GITHUB_TOKEN','GITHUB_API_TOKEN')
-      isolatedConfigRoots = @('APPDATA','XDG_CONFIG_HOME','GH_CONFIG_DIR')
-      kubeconfigPolicy = 'nonexistent-path-inside-isolated-temp-root'
-      preservesGitHubAuthentication = $false
-      githubWriteAuthority = $false
-    }
-  }
+  $decisionPlan = & $launcher -Harness codex -Model gpt-6.1-sol -Effort high `
+    -LaneRole decision -PromptFile $prompt -Worktree $worktree `
+    -Label "test-decision-plan-$([guid]::NewGuid())" -DryRun `
+    -ExecutablePath $fakeExe | ConvertFrom-Json
   Assert-True ($decisionPlan.laneRole -eq "decision") "decision role is admitted explicitly"
   Assert-True ($decisionPlan.composedPrompt -ceq ($expectedDeniedPreamble + $expectedRetrievalPreamble + $originalPrompt) -and
     $decisionPlan.composedPrompt -notmatch 'PLANNING_CONTRACT_VERSION|planning-repair/v1') "decision dry-run composed prompt carries no planning-repair contract"
@@ -1892,17 +1891,27 @@ exit $LASTEXITCODE
     Assert-True (@($decisionPlan.environmentPolicy.removedVariables) -contains $credentialName) "decision policy removes $credentialName"
   }
   Assert-True (@($decisionPlan.environmentPolicy.isolatedConfigRoots) -contains "GH_CONFIG_DIR") "decision policy isolates GitHub CLI config"
+  Assert-True ($decisionPlan.environmentPolicy.gitCredentialPolicy -eq "credential.helper=;GIT_TERMINAL_PROMPT=0;GCM_INTERACTIVE=never") "decision policy disables Git credential helpers and interactive fallback"
+  foreach ($variable in @("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE")) {
+    Assert-True (@($decisionPlan.environmentPolicy.neutralizedVariables) -contains $variable) "decision policy neutralizes $variable"
+  }
 
   $decisionSource = [IO.File]::ReadAllText($launcher)
-  $decisionPreambleNeedle = '$decisionPreamble = ""'
-  Assert-True ([regex]::Matches($decisionSource, [regex]::Escape($decisionPreambleNeedle)).Count -eq 1) "decision prompt seam is unique"
+  Assert-True ($decisionSource -notmatch '\$decisionPreamble\s*=') "decision has no dead prompt seam"
   $decisionMutantSource = $decisionSource.Replace(
-    $decisionPreambleNeedle,
-    '$decisionPreamble = ([IO.File]::ReadAllText($planningContractPath)).TrimEnd() + "`r`n`r`n" # MUTANT_DECISION_INJECTS_PLANNING_CONTRACT'
+    '$planningPreamble = if ($LaneRole -eq "planning")',
+    '$planningPreamble = if ($LaneRole -in @("planning", "decision"))'
+  ).Replace(
+    '$planningContractText.TrimEnd()',
+    '$planningContractText.TrimEnd() + "MUTANT_DECISION_INJECTS_PLANNING_CONTRACT"'
   )
   $decisionMutantPlan = New-AdmissionLauncherSubject "decision-contract-mutant" $decisionMutantSource
   Assert-True ([IO.File]::ReadAllText($decisionMutantPlan.Launcher) -match 'MUTANT_DECISION_INJECTS_PLANNING_CONTRACT') "decision contract mutant is injected into the candidate launcher"
-  Assert-True ($decisionMutantSource -match '\$decisionPreamble = \(\[IO.File\]::ReadAllText\(\$planningContractPath\)\)') "MUTANT_DECISION_INJECTS_PLANNING_CONTRACT turns the decision prompt test red"
+  $decisionMutantPlanResult = & $decisionMutantPlan.Launcher -Harness codex -Model gpt-6.1-sol -Effort high `
+    -LaneRole decision -PromptFile $prompt -Worktree $worktree `
+    -Label "test-decision-contract-mutant-$([guid]::NewGuid())" -DryRun `
+    -ExecutablePath $decisionMutantPlan.FakeHarness | ConvertFrom-Json
+  Assert-True ($decisionMutantPlanResult.composedPrompt -match 'PLANNING_CONTRACT_VERSION|planning-repair/v1') "MUTANT_DECISION_INJECTS_PLANNING_CONTRACT turns the decision prompt test red"
   Write-Output 'MUTANT MUTANT_DECISION_INJECTS_PLANNING_CONTRACT RED; candidate decision prompt is contract-free'
 
   $implementationPlanNoContract = & $launcher -Harness codex -Model gpt-6.1-sol -Effort high `
@@ -2027,6 +2036,9 @@ foreach (`$credentialName in (`$env:DISPATCH_TEST_CREDENTIAL_NAMES -split ",")) 
 }
 `$defaultDoctlConfigVisible = Test-Path -LiteralPath (Join-Path `$env:APPDATA "doctl\config.yaml")
 `$githubTokenPreserved = `$env:GITHUB_TOKEN -ceq "synthetic-github-token-marker"
+`$gitCredentialHelperDisabled = `$env:GIT_CONFIG_COUNT -ceq "1" -and `$env:GIT_CONFIG_KEY_0 -ceq "credential.helper" -and [string]::IsNullOrEmpty(`$env:GIT_CONFIG_VALUE_0)
+`$gitTerminalPromptDisabled = `$env:GIT_TERMINAL_PROMPT -ceq "0"
+`$gcmInteractiveDisabled = `$env:GCM_INTERACTIVE -ceq "never"
 `$githubConfigRoot = if (`$env:GH_CONFIG_DIR) { `$env:GH_CONFIG_DIR } else { Join-Path `$env:APPDATA "GitHub CLI" }
 `$githubConfigPreserved = Test-Path -LiteralPath (Join-Path `$githubConfigRoot "hosts.yml")
 `$kubeConfigPresent = Test-Path "Env:KUBECONFIG"
@@ -2068,6 +2080,9 @@ if (`$kubeConfigPresent) {
   kubeConfigUsesIsolatedRoot = `$kubeConfigUsesIsolatedRoot
   githubTokenPreserved = `$githubTokenPreserved
   githubConfigPreserved = `$githubConfigPreserved
+  gitCredentialHelperDisabled = `$gitCredentialHelperDisabled
+  gitTerminalPromptDisabled = `$gitTerminalPromptDisabled
+  gcmInteractiveDisabled = `$gcmInteractiveDisabled
   doctlExitCode = `$child.ExitCode
   isolationRoot = `$env:APPDATA
 } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath `$env:DISPATCH_CHILD_RESULT
@@ -2089,6 +2104,9 @@ $launchParameters = @{
 }
 if (Test-Path "Env:DISPATCH_TEST_LANE_ROLE") {
   $launchParameters["LaneRole"] = $env:DISPATCH_TEST_LANE_ROLE
+  if ($env:DISPATCH_TEST_LANE_ROLE -eq 'decision') {
+    $launchParameters['Issue'] = 223
+  }
   if ($env:DISPATCH_TEST_LANE_ROLE -eq 'implementation') {
     $launchParameters['Row'] = 4
     $launchParameters['Placement'] = 'provisional'
@@ -2122,9 +2140,11 @@ exit $LASTEXITCODE
     [string]$Label,
     [string]$ResultPath,
     [string]$ProviderProbePath,
-    [int]$ChildExitCode
+    [int]$ChildExitCode,
+    [string]$LauncherPath = ""
   ) {
     $scenarioEnvironment = $baseScenarioEnvironment.Clone()
+    if ($LauncherPath) { $scenarioEnvironment["DISPATCH_TEST_LAUNCHER"] = $LauncherPath }
     $scenarioEnvironment["DISPATCH_TEST_LANE_ROLE"] = if ($LaneRole) { $LaneRole } else { $null }
     $scenarioEnvironment["DISPATCH_TEST_LABEL"] = $Label
     $scenarioEnvironment["DISPATCH_CHILD_RESULT"] = $ResultPath
@@ -2169,6 +2189,49 @@ exit $LASTEXITCODE
   Assert-True ((Get-Content -Raw -LiteralPath $reviewProviderProbe).Trim() -eq "installed-blocked") "native doctl.exe resolution drift remains unauthorized"
   Assert-True (-not (Test-Path -LiteralPath $reviewChild.isolationRoot)) "review isolation root is cleaned after child success"
   Assert-True (-not (Test-Path -LiteralPath $shimMarker)) "Git Bash doctl.cmd shim was not mistaken for native resolution proof"
+
+  # Decision admission must be exercised through a fresh pwsh process and a
+  # unique launcher path. This avoids PowerShell's stale parameter metadata
+  # cache and proves the real watchdog envelope plus v3 routing ledger row.
+  $decisionSubject = New-AdmissionLauncherSubject "decision-live-$([guid]::NewGuid())" ([IO.File]::ReadAllText($launcher))
+  Assert-True ([IO.File]::ReadAllText($decisionSubject.Launcher) -match 'ValidateSet\("implementation", "review", "planning", "decision"\)') "fresh decision launcher contains the admitted role"
+  $decisionLabel = "test-decision-child-$([guid]::NewGuid())"
+  $decisionResult = Join-Path $testRoot "decision-child-result.json"
+  $decisionProviderProbe = Join-Path $testRoot "decision-installed-doctl-result.txt"
+  $launcherOutputFiles += Join-Path $ownershipRoot "$decisionLabel.jsonl"
+  $launcherOutputFiles += Join-Path $ownershipRoot "$decisionLabel.err.log"
+  $decisionProcess = Invoke-IncidentScenario -LaneRole "decision" -Label $decisionLabel `
+    -ResultPath $decisionResult -ProviderProbePath $decisionProviderProbe -ChildExitCode 0 `
+    -LauncherPath $decisionSubject.Launcher
+  Assert-True ($decisionProcess.ExitCode -eq 0) "fresh decision child exits successfully"
+  $decisionChild = Get-Content -Raw -LiteralPath $decisionResult | ConvertFrom-Json
+  foreach ($credentialName in $syntheticProviderVariables) {
+    Assert-True (-not $decisionChild.credentialPresence.$credentialName) "decision child cannot observe $credentialName"
+  }
+  Assert-True (-not $decisionChild.githubTokenPreserved -and -not $decisionChild.githubConfigPreserved) "decision child cannot observe GitHub token or CLI authentication"
+  Assert-True ($decisionChild.gitCredentialHelperDisabled -and $decisionChild.gitTerminalPromptDisabled -and $decisionChild.gcmInteractiveDisabled) "decision child disables Git credential helpers and interactive fallback"
+  Assert-True (-not (Test-Path -LiteralPath $decisionChild.isolationRoot)) "decision isolation root is cleaned after child success"
+  Assert-True ((Get-Content -Raw -LiteralPath $decisionProviderProbe).Trim() -eq "installed-blocked") "decision child cannot use provider credentials"
+  $decisionLedgerPath = Join-Path $ownershipRoot 'dispatch-log.jsonl'
+  $decisionLedgerRows = @(Get-Content -LiteralPath $decisionLedgerPath | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json -DateKind String })
+  $decisionLedger = @($decisionLedgerRows | Where-Object { $_.label -ceq $decisionLabel })
+  Assert-True ($decisionLedger.Count -eq 1 -and $decisionLedger[0].laneRole -ceq 'decision' -and
+    $decisionLedger[0].dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') "decision launch writes one v3 routing ledger row"
+  $decisionWatchdogPath = Join-Path $ownershipRoot "watchdog-lane-$decisionLabel.json"
+  Assert-True (Test-Path -LiteralPath $decisionWatchdogPath -PathType Leaf) "decision launch leaves its watchdog envelope"
+  $decisionObservationPath = Join-Path $testRoot 'decision-observation.json'
+  [ordered]@{ ownerState = 'dead'; descendantState = 'none'; transcriptStopped = $true;
+    observedAt = [datetimeoffset]::UtcNow.AddSeconds(-1).ToString('o'); nowUtc = [datetimeoffset]::UtcNow.ToString('o') } |
+    ConvertTo-Json -Compress | Set-Content -LiteralPath $decisionObservationPath
+  $decisionDispatchStub = Join-Path $testRoot 'no-decision-dispatch.ps1'
+  Set-Content -LiteralPath $decisionDispatchStub -Value 'exit 1'
+  $decisionWatchdog = & (Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1') -Label $decisionLabel `
+    -RuntimeRoot $ownershipRoot -HistoryPath (Join-Path $ownershipRoot 'dispatch-log.jsonl') `
+    -TranscriptPath (Join-Path $ownershipRoot "$decisionLabel.jsonl") `
+    -ObservationFixture $decisionObservationPath -DispatchScript $decisionDispatchStub -SynchronousDispatch 2>&1
+  # The successful terminal path proves the decision role passed the watchdog
+  # role/spec validator before returning terminal success.
+  Assert-True (($decisionWatchdog -join "`n") -match '"status":"TERMINAL_SUCCESS"') "decision watchdog accepts the live launch envelope"
 
   $failureLabel = "test-review-failure-$([guid]::NewGuid())"
   $failureResult = Join-Path $testRoot "review-failure-result.json"
