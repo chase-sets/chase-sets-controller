@@ -45,9 +45,11 @@ function Get-CiRestriction([string]$Identity, [string]$Root) {
   if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1') {
     return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture.' }
   }
-  if ($Identity -cin @('test:dispatch-ownership.test.ps1','test:rebase-integration.test.ps1',
-      'test:lane-stall-watchdog.test.ps1','test:landed-integration-r3.test.ps1')) {
-    return @{ classification='LOCAL_ONLY'; reason='Native carrier reads parent host fleet via interrupted-integration-test-support.ps1:45,149,206,533,535; depends on excluded historical commit b3b4ac2.'; notHermetic=$true }
+  if ($Identity -ceq 'test:dispatch-ownership.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Native ownership carrier reads the live ownership census via interrupted-integration-test-support.ps1:960.'; notHermetic=$true }
+  }
+  if ($Identity -ceq 'test:landed-integration-r3.test.ps1') {
+    return @{ classification='LOCAL_ONLY'; reason='Native R3 retained carrier measures parent fleet load via interrupted-integration-test-support.ps1:614,616,622.'; notHermetic=$true }
   }
   $history = @{
     'discriminator:issue-6289' = @('50e3695074960ed988996860ff9bf8a45d6b8bea','e396120d26a766e467e0d01052939d6abf945e21')

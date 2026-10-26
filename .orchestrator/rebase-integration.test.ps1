@@ -1,4 +1,11 @@
+param([string]$Part='all')
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+$SuitePartOwners=Get-HistoricalSuitePartOwners 'rebase' ([IO.File]::ReadAllText($PSCommandPath))
+$rebaseParts=@('rebase-foundation','rebase-historical','rebase-ordinary-live','rebase-ordinary-retry','rebase-successor','rebase-publication','rebase-amend')
+Assert-SuiteSelection $Part (@('all')+$rebaseParts) $PSBoundParameters @()
+if($Part -ceq 'all'){$Part=''}
+$runPart={param([string]$Name) -not $Part -or $Part -ceq $Name}
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
@@ -10,6 +17,7 @@ function Initialize-Repo([string]$Path){New-Item -ItemType Directory -Path $Path
 function Write-Commit([string]$Path,[string]$File,[string]$Value,[string]$Message){Set-Content -LiteralPath (Join-Path $Path $File) -Value $Value;Invoke-TestGit $Path @('add','--',$File)|Out-Null;Invoke-TestGit $Path @('commit','-m',$Message)|Out-Null;Invoke-TestGit $Path @('rev-parse','HEAD')}
 function Write-History([string]$Path,[object[]]$Rows){$text=($Rows|ForEach-Object{$_|ConvertTo-Json -Compress -Depth 10})-join[Environment]::NewLine;[IO.File]::WriteAllText($Path,$text+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))}
 try{
+  if (& $runPart 'rebase-foundation') {
   Initialize-Repo $repo;$base=Write-Commit $repo 'base.txt' 'base' 'base';Invoke-TestGit $repo @('checkout','-b','synthetic/feature')|Out-Null;$reviewed=Write-Commit $repo 'feature.txt' 'feature' 'feature patch'
   $branchArgs=@{Pr=900001;ReviewedHead=$reviewed;NewBase=$reviewed;SourcePassReceiptIdentity='ABSENT_REVIEW_REQUIRED';IntegrationLane='synthetic-branch-control';Worktree=$repo;HistoryPath=$history;NoPush=$true}
   $branchCli=@('-Pr','900001','-ReviewedHead',$reviewed,'-NewBase',$reviewed,'-SourcePassReceiptIdentity','ABSENT_REVIEW_REQUIRED','-IntegrationLane','synthetic-branch-control','-Worktree',$repo,'-HistoryPath',$history,'-NoPush')
@@ -83,16 +91,19 @@ try{
   $conflictOutput=@(& pwsh -NoProfile -NonInteractive -File $integration -Pr 900003 -ReviewedHead $conflictHead -NewBase $conflictNewBase -SourcePassReceiptIdentity ABSENT_REVIEW_REQUIRED -IntegrationLane synthetic-conflict-integration -Worktree $conflictRepo -HistoryPath (Join-Path $root 'conflict-history.jsonl') -NoPush);$conflictCode=$LASTEXITCODE;$conflict=($conflictOutput-join"`n")|ConvertFrom-Json -DateKind String
   Assert-True ($conflictCode-eq2-and$conflict.status-ceq'DELTA_REQUIRED'-and$conflict.reason-ceq'REBASE_CONFLICT'-and-not(Test-Path (Join-Path $root 'conflict-history.jsonl'))) 'conflict fabricated continuation or REVIEW_REQUIRED authority'
   Write-Output 'PASS rebase attached own-branch preservation, absent-PASS REVIEW_REQUIRED, unique acyclic two-hop continuation, immutable source PASS, immediate predecessor, stable patch chain, and wrong/fork/patch/conflict controls'
+  }
 }finally{
   $resolved=[IO.Path]::GetFullPath($root);$temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/');if((Split-Path -Parent $resolved).TrimEnd('\','/')-ne$temp-or(Split-Path -Leaf $resolved)-notlike'rebase-integration-test-*'){throw "unsafe test cleanup: $resolved"};Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
-Test-7963ResumeCarrier 'rebase'
-Test-9334OrdinaryCarrier 'ordinary-rebase'
-Test-9334OrdinaryCarrier 'successor-rebase'
-Test-9334OrdinaryCarrier 'successor-publication'
-Test-9334OrdinaryCarrier 'successor-amend'
+if (& $runPart 'rebase-historical') { Test-7963ResumeCarrier 'rebase' }
+if(-not $Part){Test-9334OrdinaryCarrier 'ordinary-rebase'}
+if ($Part -ceq 'rebase-ordinary-live') { Test-9334OrdinaryCarrier 'ordinary-rebase' -Part 'ordinary-rebase-live' }
+if ($Part -ceq 'rebase-ordinary-retry') { Test-9334OrdinaryCarrier 'ordinary-rebase' -Part 'ordinary-rebase-retry' }
+if (& $runPart 'rebase-successor') { Test-9334OrdinaryCarrier 'successor-rebase' }
+if (& $runPart 'rebase-publication') { Test-9334OrdinaryCarrier 'successor-publication' }
+if (& $runPart 'rebase-amend') { Test-9334OrdinaryCarrier 'successor-amend' }
 } finally {
   Exit-RoutingDataTestScope $routingTestScope
 }
