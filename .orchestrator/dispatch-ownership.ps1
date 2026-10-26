@@ -375,7 +375,7 @@ function Test-DispatchRoutingProvenance($Record) {
 function Get-DispatchRoutingLedgerKeys([string]$Schema, $Row = $null) {
   $keys = @('ts','kind','dispatchRoutingSchema','attemptId','label','lane','laneRole','transcript','harness','model','effort','row','placement','worktree','branch','head')
   if ($null -ne $Row -and $null -ne $Row.PSObject.Properties['issue']) { $keys += 'issue' }
-  # A planning or review row dispatched without placement carries the logger's
+  # A planning, review or decision row dispatched without placement carries the logger's
   # closed placementSource beside its null placement (#9282 role v3 rows).
   if ($Schema -ceq 'watchdog-dispatch-routing/v3' -and $null -ne $Row -and $null -ne $Row.PSObject.Properties['placementSource']) { $keys += 'placementSource' }
   if ($Schema -ceq 'watchdog-dispatch-routing/v1') { return $keys }

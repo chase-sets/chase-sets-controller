@@ -524,7 +524,7 @@ if($DispatchRoutingSchema){
 }elseif($dispatchRoutingFieldsPresent){throw 'dispatch routing fields require -DispatchRoutingSchema watchdog-dispatch-routing/v1'}
 $capacityFields=@('CapacityForecastStatus','CapacityDecisionDigest','CapacityFlip','CapacityShadowFlip','CapacityFlipSkip')
 if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') {
-  # v3 is the routing row for every role (implementation, planning, review);
+  # v3 is the routing row for every role (implementation, planning, review, decision);
   # the five capacity fields are always present and validated.
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   if (@($capacityFields | Where-Object {-not $PSBoundParameters.ContainsKey($_)}).Count) { throw 'CAPACITY_EVIDENCE_INVALID: five fields required' }

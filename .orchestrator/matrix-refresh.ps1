@@ -307,9 +307,9 @@ $capacityIdentity=[ordered]@{costRowsUnresolved=0;costRowsAmbiguous=0;reviewRows
 foreach($e in $dispatch) {
   # Capacity-era declarations must reach quarantine even when their author shape is invalid.
   # Legacy role rows without capacity fields are not author-shaped cost origins; every v3 row
-  # (implementation, planning, review) is a calibration record: active flips calibrate in the
+  # (implementation, planning, review, decision) is a calibration record: active flips calibrate in the
   # flipped cohort, everything else in the ordinary cohort (#9282).
-  if(-not (Test-CapacityRoutingRecord $e) -and ($e.kind -cne 'dispatch' -or $e.laneRole -cin @('review','planning') -or $e.authorModel)){continue}
+  if(-not (Test-CapacityRoutingRecord $e) -and ($e.kind -cne 'dispatch' -or $e.laneRole -cin @('review','planning','decision') -or $e.authorModel)){continue}
   $model=Get-CanonicalModel $e.model
   $effort=Get-CanonicalEffort $(if($e.effortUsed){$e.effortUsed}else{$e.effort})
   if((-not $model -or -not $effort) -and -not (Test-CapacityRoutingRecord $e)){continue}
@@ -329,7 +329,7 @@ foreach($key in $capacityGroups.Keys) {
   $invalidRouting=$false
   if($group.modern) {
     $invalidRouting=@($rows|Where-Object{
-      (Test-CapacityRoutingRecord $_) -and ($_.kind -cne 'dispatch' -or $_.laneRole -cnotin @('implementation','planning','review') -or
+      (Test-CapacityRoutingRecord $_) -and ($_.kind -cne 'dispatch' -or $_.laneRole -cnotin @('implementation','planning','review','decision') -or
         $_.dispatchRoutingSchema -cne 'watchdog-dispatch-routing/v3' -or -not (Test-DispatchRoutingLedgerEvidence $_))
     }).Count -gt 0
     foreach($e in $rows){
@@ -440,7 +440,8 @@ function Get-CapacityReviewGroup($Receipt,[string]$Model,[string]$Effort) {
 
 $effortByTranscript = @{}
 # Author-shaped dispatches (implementation/planning, or legacy rows that name
-# no author) keyed by issue + exact model, as (ts, effort) pairs. A review
+# no author) keyed by issue + exact model, as (ts, effort) pairs. Decision
+# dispatches are issue-rooted but read-only and therefore are not authors. A review
 # receipt without `authorEffort` resolves its author's effort from this only
 # when every author dispatch up to the receipt's own instant agrees.
 $authorDispatchEfforts = @{}
