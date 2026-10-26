@@ -131,6 +131,7 @@ function New-ProductionGraphFixture {
                             workflowRun = [ordered]@{
                               workflow = [ordered]@{ databaseId = [long]9007199254740003 }
                             }
+                            commit = [ordered]@{ oid = $headA }
                           }
                         })
                     }
@@ -158,9 +159,13 @@ function New-ProductionGraphFixture {
 }
 
 function New-Captured7730ProductionGraphFixture {
-  @'
+  $captured = @'
 {"data":{"repository":{"pullRequest":{"id":"PR_kwDORKgVcc8AAAABCkZIcQ","number":7730,"state":"OPEN","isDraft":false,"headRefOid":"47c44ad0235c7d0e8843974eee7583e90c9aab01","baseRefName":"main","mergeQueueEntry":null,"baseRef":{"name":"main","branchProtectionRule":{"requiresStatusChecks":true,"requiredStatusCheckContexts":["PR Required"]}},"commits":{"totalCount":3,"nodes":[{"commit":{"oid":"47c44ad0235c7d0e8843974eee7583e90c9aab01","statusCheckRollup":{"state":"SUCCESS","contexts":{"totalCount":61,"pageInfo":{"hasNextPage":false,"endCursor":"NjE"},"nodes":[{"__typename":"CheckRun","name":"PR Scope (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864356548,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161586687/job/101864356548","completedAt":"2026-09-07T21:01:41Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"PR Scope (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101877501243,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163667768/job/101877501243","completedAt":"2026-09-07T22:17:43Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"PR Scope (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870407942,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671092/job/101870407942","completedAt":"2026-09-07T21:35:28Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"Known Failure Guard","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864470903,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864470903","completedAt":"2026-09-07T21:02:12Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Known Failure Guard","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870397977,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870397977","completedAt":"2026-09-07T21:35:17Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Discover Preview Cleanup","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870392148,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870392148","completedAt":"2026-09-07T21:35:38Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Risk Review (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864356353,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161586696/job/101864356353","completedAt":"2026-09-07T21:01:38Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318560891}}}},{"__typename":"CheckRun","name":"Risk Review (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101877503285,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163667769/job/101877503285","completedAt":"2026-09-07T22:17:41Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318560891}}}},{"__typename":"CheckRun","name":"Risk Review (Advisory)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870406602,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163670953/job/101870406602","completedAt":"2026-09-07T21:35:23Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318560891}}}},{"__typename":"CheckRun","name":"Release Qualification Scope Advisory","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864471708,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864471708","completedAt":"2026-09-07T21:02:08Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Release Qualification Scope Advisory","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870399023,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870399023","completedAt":"2026-09-07T21:35:13Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Discover Stale Verification Namespaces","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870392721,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870392721","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Scope Policy Check","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864356250,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161586687/job/101864356250","completedAt":"2026-09-07T21:01:36Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"Scope Policy Check","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101877501412,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163667768/job/101877501412","completedAt":"2026-09-07T22:17:40Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"Scope Policy Check","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870407807,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671092/job/101870407807","completedAt":"2026-09-07T21:35:25Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":318645295}}}},{"__typename":"CheckRun","name":"Discover Stale Verification Webhooks","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870392758,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870392758","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Change Scope","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864485563,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864485563","completedAt":"2026-09-07T21:02:29Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Change Scope","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870411028,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870411028","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Discover Stale Gate Namespaces","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870392941,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870392941","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Static Checks","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864538753,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864538753","completedAt":"2026-09-07T21:07:43Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Static Checks","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478303,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478303","completedAt":"2026-09-07T21:39:22Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Typecheck","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864538791,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864538791","completedAt":"2026-09-07T21:03:22Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Typecheck","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478267,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478267","completedAt":"2026-09-07T21:36:27Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Destroy Preview (7730, main, 47c44ad0235c7d0e8843974eee7583e90c9aab01, chase-sets-pr-7730-postgres)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870475837,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870475837","completedAt":"2026-09-07T21:36:26Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Destroy Stale Verification Namespace","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870393051,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870393051","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Unit Tests","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864538829,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864538829","completedAt":"2026-09-07T21:11:37Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Unit Tests","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478369,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478369","completedAt":"2026-09-07T21:45:49Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Delete Stale Verification Webhooks","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870392956,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870392956","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"DB Profile Tests","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101864538824,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864538824","completedAt":"2026-09-07T21:17:37Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"DB Profile Tests","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478292,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478292","completedAt":"2026-09-07T21:51:53Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (${{ matrix.suite_batch }})","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539519,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539519","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Destroy Stale Gate Namespace","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870393332,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870393332","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"E2E Tests (catalog_admin_integrations,admin_auth)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478367,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478367","completedAt":"2026-09-07T21:40:41Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (catalog_admin_modeling,admin_platform)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478383,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478383","completedAt":"2026-09-07T21:41:57Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (marketplace_checkout,admin_support)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478378,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478378","completedAt":"2026-09-07T21:41:24Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (marketplace_browse,marketplace_account)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478349,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478349","completedAt":"2026-09-07T21:41:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (admin_commerce,admin_access)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478414,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478414","completedAt":"2026-09-07T21:41:22Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"E2E Tests (marketplace_seller,admin_growth)","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478373,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478373","completedAt":"2026-09-07T21:40:23Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Build","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539441,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539441","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Report Gate Sweep Totals","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870393486,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163669055/job/101870393486","completedAt":"2026-09-07T21:35:11Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":276835693}}}},{"__typename":"CheckRun","name":"Build","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478398,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478398","completedAt":"2026-09-07T21:36:33Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Docker Image Build","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539094,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539094","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Docker Image Build","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101870478493,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870478493","completedAt":"2026-09-07T21:37:33Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Workflow Lint","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539098,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539098","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Workflow Lint","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870479455,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870479455","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Preview Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539393,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539393","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Preview Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870479192,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870479192","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Production Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539126,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539126","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Production Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870479111,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870479111","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Staging Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539616,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539616","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Staging Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870479314,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870479314","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Observability Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101864539487,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101864539487","completedAt":"2026-09-07T21:02:30Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Terraform Observability Plan","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101870479357,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101870479357","completedAt":"2026-09-07T21:35:39Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Compose Boot Smoke / Compose Boot Smoke | target=74f2efc22acc342228301385640279759fddf711 | base=3890ed724d52fec9deab2f7cc9ff64ebfd447042 | event=pull_request | ref=refs/pull/7730/merge | trigger=74f2efc22acc342228301385640279759fddf711","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101866220037,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101866220037","completedAt":"2026-09-07T21:17:51Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Compose Boot Smoke / Compose Boot Smoke | target=74f2efc22acc342228301385640279759fddf711 | base=3890ed724d52fec9deab2f7cc9ff64ebfd447042 | event=pull_request | ref=refs/pull/7730/merge | trigger=74f2efc22acc342228301385640279759fddf711","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101872166467,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101872166467","completedAt":"2026-09-07T21:50:33Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Deploy Preview and Smoke","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101867323205,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101867323205","completedAt":"2026-09-07T21:17:38Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"Deploy Preview and Smoke","status":"COMPLETED","conclusion":"SKIPPED","databaseId":101873180823,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101873180823","completedAt":"2026-09-07T21:51:53Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"PR Required","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101867362343,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101867362343","completedAt":"2026-09-07T21:17:58Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"PR Required","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101873180043,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101873180043","completedAt":"2026-09-07T21:51:57Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"PR Release Status","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101867382518,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34161589249/job/101867382518","completedAt":"2026-09-07T21:18:09Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}},{"__typename":"CheckRun","name":"PR Release Status","status":"COMPLETED","conclusion":"SUCCESS","databaseId":101873192943,"detailsUrl":"https://github.com/chase-sets/chase-sets/actions/runs/34163671068/job/101873192943","completedAt":"2026-09-07T21:52:09Z","checkSuite":{"app":{"databaseId":15368},"workflowRun":{"workflow":{"databaseId":274293632}}}}]}}}}]},"closingIssuesReferences":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":"MQ"},"nodes":[{"number":7182,"state":"OPEN","blockedBy":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":"MQ"},"nodes":[{"number":7179,"state":"CLOSED"}]}}]}}}}}
 '@ | ConvertFrom-Json -AsHashtable -DateKind String
+  foreach ($context in @($captured.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes)) {
+    $context.checkSuite.commit = [ordered]@{ oid = [string]$captured.data.repository.pullRequest.headRefOid }
+  }
+  $captured
 }
 
 function New-RealDeployRunFixture {
@@ -623,7 +628,12 @@ function Test-SyntheticScopeCollector {
   $jobId = [long]8007199254797972
   $runId = [long]9007199254797972
   $url = "https://github.com/synthetic-7972/synthetic-7972/actions/runs/$runId/job/$jobId"
-  $check = [pscustomobject]@{ databaseId = $jobId; status = 'COMPLETED'; conclusion = 'SUCCESS'; detailsUrl = $url }
+  $check = [pscustomobject]@{
+    schemaVersion = 'required-check-observation/v1'; valid = $true; reason = 'REQUIRED_CHECK_IDENTITY_VALID'
+    nodeType = 'CheckRun'; name = 'Change Scope'; databaseId = $jobId; status = 'COMPLETED'; conclusion = 'SUCCESS'
+    detailsUrl = $url; completedAt = '2030-01-01T00:00:02Z'; headSha = $headA
+    producer = [ordered]@{ appDatabaseId = [long]15368; workflowDatabaseId = [long]274293632 }
+  }
   $job = [ordered]@{
     id = $jobId; run_id = $runId; name = 'Change Scope'; status = 'completed'; conclusion = 'success'
     html_url = $url; head_sha = $headA; run_attempt = 1
@@ -695,6 +705,52 @@ function Test-SyntheticScopeCollector {
     Assert-True ($bypass.proven -eq $true) "mutant $($mutant.name) bypasses intended clause with all other facts valid"
     Write-Output "KILLED scope mutant=$($mutant.name) intended-clause=$($case.reason)"
   }
+  # Issue #43: Change Scope reduces over the exact head; foreign-head runs
+  # neither admit nor supersede, and a run without a head still refuses.
+  $exactOlder = Copy-TestValue $check
+  $exactOlder.databaseId = $jobId - 1
+  $exactOlder.completedAt = '2030-01-01T00:00:01Z'
+  $exactNewestRed = Copy-TestValue $check
+  $exactNewestRed.conclusion = 'FAILURE'
+  $foreignNewerRed = Copy-TestValue $check
+  $foreignNewerRed.databaseId = $jobId + 1
+  $foreignNewerRed.completedAt = '2030-01-01T00:00:03Z'
+  $foreignNewerRed.conclusion = 'FAILURE'
+  $foreignNewerRed.headSha = $headB
+  $foreignNewerGreen = Copy-TestValue $foreignNewerRed
+  $foreignNewerGreen.conclusion = 'SUCCESS'
+  $foreignSameJob = Copy-TestValue $check
+  $foreignSameJob.headSha = $headB
+  $headlessScope = Copy-TestValue $check
+  $headlessScope.Remove('headSha')
+  $nonStringHeadScope = Copy-TestValue $check
+  $nonStringHeadScope.headSha = 42
+  $mixedScopeGreen = Invoke-ScopeCollectorControl $job $run @($exactOlder, $check, $foreignNewerRed) $log
+  Assert-True ($mixedScopeGreen.proven -eq $true -and $mixedScopeGreen.classification -ceq 'non-deployable' -and
+    $mixedScopeGreen.checkCandidateCount -eq 1) "issue #43 mixed-head Change Scope with exact-head latest success did not prove scope (actual=$($mixedScopeGreen.reason))"
+  $mixedScopeRed = Invoke-ScopeCollectorControl $job $run @($exactOlder, $exactNewestRed, $foreignNewerGreen) $log
+  Assert-True ($mixedScopeRed.proven -eq $false -and $mixedScopeRed.reason -ceq 'CHANGE_SCOPE_CHECK_INCOMPLETE') `
+    "issue #43 a newer foreign-head Change Scope success masked the exact-head latest failure (actual=$($mixedScopeRed.reason))"
+  foreach ($scopeHeadRefusal in @(
+      [ordered]@{ name = 'foreign-only'; checks = @($foreignSameJob) },
+      [ordered]@{ name = 'foreign-only-many'; checks = @($foreignSameJob, $foreignNewerGreen) },
+      [ordered]@{ name = 'missing-head'; checks = @($exactOlder, $headlessScope) },
+      [ordered]@{ name = 'non-string-head'; checks = @($exactOlder, $nonStringHeadScope) }
+    )) {
+    $scopeHeadResult = Invoke-ScopeCollectorControl $job $run $scopeHeadRefusal.checks $log
+    Assert-True ($scopeHeadResult.proven -eq $false -and $scopeHeadResult.classification -ceq 'deployable' -and
+      $scopeHeadResult.reason -ceq 'CHANGE_SCOPE_CHECK_HEAD_MISMATCH') `
+      "issue #43 $($scopeHeadRefusal.name) Change Scope control was not refused (actual=$($scopeHeadResult.reason))"
+  }
+  $headFilterClause = '$matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })'
+  $scopeHeadBypass = Invoke-ScopeCollectorControl $job $run @($foreignSameJob) $log 'Reduce-RequiredCheckObservations' $headFilterClause '$matching = @($matching)'
+  $scopeHeadMasked = Invoke-ScopeCollectorControl $job $run @($exactOlder, $check, $foreignNewerRed) $log 'Reduce-RequiredCheckObservations' $headFilterClause '$matching = @($matching)'
+  Assert-True ($scopeHeadBypass.proven -eq $true -and
+    $scopeHeadMasked.proven -eq $false -and $scopeHeadMasked.reason -ceq 'CHANGE_SCOPE_CHECK_INCOMPLETE') `
+    "mutant drop-exact-head-filter bypasses the Change Scope head filter (foreign-only=$($scopeHeadBypass.reason) mixed=$($scopeHeadMasked.reason))"
+  Write-Output 'KILLED scope mutant=drop-exact-head-filter intended-clause=CHANGE_SCOPE_CHECK_HEAD_MISMATCH'
+  Write-Output 'PASS change-scope exact-head reduction mixed-head-green mixed-head-red foreign-only missing-head non-string-head'
+
   $double = $log + "`n" + $log
   $ambiguous = Invoke-ScopeCollectorControl $job $run $check $double
   Assert-True ($ambiguous.reason -ceq 'CHANGE_SCOPE_OUTPUT_AMBIGUOUS') 'collector duplicate maps refused'
@@ -907,6 +963,7 @@ function New-SyntheticRequiredCheckProjection(
       appDatabaseId = $AppDatabaseId
       workflowDatabaseId = $WorkflowDatabaseId
     }
+    headSha = $headA
   }
 }
 
@@ -930,6 +987,7 @@ function New-SyntheticRequiredCheckRawNode(
       workflowRun = [ordered]@{
         workflow = [ordered]@{ databaseId = $WorkflowDatabaseId }
       }
+      commit = [ordered]@{ oid = $headA }
     }
   }
 }
@@ -952,11 +1010,15 @@ function New-SyntheticStatusContextProjection([string]$State = 'SUCCESS') {
 function Invoke-RequiredCheckFixture(
   [object[]]$InitialChecks,
   [object[]]$FinalChecks = $null,
-  [string]$Action = 'Report'
+  [string]$Action = 'Report',
+  [string]$RollupState = 'SUCCESS',
+  [string]$DeployConclusion = 'success'
 ) {
   $source = Get-Content -LiteralPath $fixture -Raw | ConvertFrom-Json -AsHashtable -DateKind String
   $initial = Copy-TestValue $source.scenarios.eligible.observations[0]
   $initial.pr.checks = [object[]]@($InitialChecks)
+  $initial.pr.statusRollupState = $RollupState
+  $initial.deploy.conclusion = $DeployConclusion
   $observations = [Collections.Generic.List[object]]::new()
   $observations.Add($initial)
   if ($Action -ceq 'Apply') {
@@ -1335,7 +1397,8 @@ Assert-True ($productionErrors.Count -eq 0) "landing-preflight production functi
 foreach ($functionName in @(
     "Get-Sha256", "Get-ObjectKeys", "Get-ObjectValue", "Test-ExactKeys", "Test-ObjectProperty",
     "Test-JsonTokenClosure", "ConvertFrom-ClosedJson", "Get-ChangeScopeOutputMaps",
-    "Test-RequiredCheckInstant", "New-FailClosedChangeScopeObservation", "Get-HostedChangeScopeObservation",
+    "Test-RequiredCheckInstant", "ConvertTo-RequiredCheckProvenance", "New-RequiredCheckReduction",
+    "Reduce-RequiredCheckObservations", "New-FailClosedChangeScopeObservation", "Get-HostedChangeScopeObservation",
     "ConvertTo-CanonicalJson", "Get-ObservedType", "New-FieldEvidence", "Get-ScalarFieldEvidence",
     "Get-NestedObjectFieldEvidence", "ConvertTo-QueueEntryObservation", "Get-StableEntryConjuncts",
     "New-EnqueueMutationResult", "Get-RetryConsumptionRefName", "Test-RetryAttemptPolicy", "ConvertTo-RemoteRefObservation",
@@ -1909,6 +1972,151 @@ try {
       $pairReduction.superseded[0].databaseId -eq [long]9000000000000101) `
       'same-producer terminal success observations did not select newest before outcome with bounded provenance'
 
+    $supersededFailure = New-SyntheticRequiredCheckProjection 9000000000000201 '2030-02-01T00:00:00Z' 'COMPLETED' 'FAILURE'
+    $supersededCancelled = New-SyntheticRequiredCheckProjection 9000000000000202 '2030-02-02T00:00:00Z' 'COMPLETED' 'CANCELLED'
+    $latestSuccess = New-SyntheticRequiredCheckProjection 9000000000000203 '2030-02-03T00:00:00Z'
+    $issue43Fixture = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess)
+    $issue43Reduction = $issue43Fixture.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($issue43Fixture.status -ceq 'eligible' -and
+      $issue43Fixture.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+      $issue43Reduction.selected.databaseId -eq [long]9000000000000203 -and
+      $issue43Reduction.superseded.Count -eq 2 -and
+      @($issue43Reduction.superseded.databaseId) -contains [long]9000000000000201 -and
+      @($issue43Reduction.superseded.databaseId) -contains [long]9000000000000202) `
+      'issue #43 superseded failure and cancelled trigger did not reduce to the latest exact-head success'
+
+    foreach ($latestControl in @(
+        [ordered]@{ name = 'failure'; value = (New-SyntheticRequiredCheckProjection 9000000000000213 '2030-02-03T00:00:00Z' 'COMPLETED' 'FAILURE'); reason = 'REQUIRED_CHECK_NOT_GREEN' },
+        [ordered]@{ name = 'pending'; value = (New-SyntheticRequiredCheckProjection 9000000000000214 $null 'PENDING' $null); reason = 'REQUIRED_CHECK_NONTERMINAL' },
+        [ordered]@{ name = 'cancelled'; value = (New-SyntheticRequiredCheckProjection 9000000000000215 '2030-02-03T00:00:00Z' 'COMPLETED' 'CANCELLED'); reason = 'REQUIRED_CHECK_NOT_GREEN' }
+      )) {
+      $latestControlResult = Invoke-RequiredCheckFixture @($supersededFailure, $latestControl.value)
+      Assert-True ($latestControlResult.status -ceq 'refused' -and
+        $latestControlResult.reason -ceq $latestControl.reason -and
+        $latestControlResult.mutationCount -eq 0) `
+        "issue #43 latest $($latestControl.name) control was admitted"
+    }
+    $differentHead = Copy-TestValue $latestSuccess
+    $differentHead.headSha = $headB
+    $differentHeadResult = Invoke-RequiredCheckFixture @($supersededFailure, $differentHead)
+    $differentHeadReduction = $differentHeadResult.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($differentHeadResult.status -ceq 'refused' -and
+      $differentHeadResult.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $differentHeadResult.mutationCount -eq 0 -and
+      $differentHeadReduction.selected.databaseId -eq [long]9000000000000201 -and
+      $differentHeadReduction.foreignHead.Count -eq 1 -and
+      $differentHeadReduction.foreignHead[0].databaseId -eq [long]9000000000000203 -and
+      $differentHeadReduction.foreignHead[0].headSha -ceq $headB) `
+      'issue #43 newer success from a different head was trusted over the exact-head failure'
+
+    # Mixed heads reduce over the exact head only: a foreign-head run can
+    # neither admit nor supersede, and every run must name a 40-hex head.
+    $foreignNewerFailure = New-SyntheticRequiredCheckProjection 9000000000000221 '2030-02-04T00:00:00Z' 'COMPLETED' 'FAILURE'
+    $foreignNewerFailure.headSha = $headB
+    $foreignNewerSuccess = New-SyntheticRequiredCheckProjection 9000000000000222 '2030-02-04T00:00:00Z'
+    $foreignNewerSuccess.headSha = $headB
+    $exactOlderSuccess = New-SyntheticRequiredCheckProjection 9000000000000231 '2030-02-01T00:00:00Z'
+    $exactNewestFailure = New-SyntheticRequiredCheckProjection 9000000000000232 '2030-02-03T00:00:00Z' 'COMPLETED' 'FAILURE'
+    $headlessSuccess = Copy-TestValue $latestSuccess
+    $headlessSuccess.Remove('headSha')
+    $nonStringHeadSuccess = Copy-TestValue $latestSuccess
+    $nonStringHeadSuccess.headSha = 42
+    $mixedHeadGreen = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess, $foreignNewerFailure)
+    $mixedHeadGreenReduction = $mixedHeadGreen.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($mixedHeadGreen.status -ceq 'eligible' -and
+      $mixedHeadGreen.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+      $mixedHeadGreen.mutationCount -eq 0 -and
+      $mixedHeadGreenReduction.matchCount -eq 3 -and
+      $mixedHeadGreenReduction.selected.databaseId -eq [long]9000000000000203 -and
+      $mixedHeadGreenReduction.superseded.Count -eq 2 -and
+      $mixedHeadGreenReduction.foreignHead.Count -eq 1 -and
+      $mixedHeadGreenReduction.foreignHead[0].databaseId -eq [long]9000000000000221) `
+      "issue #43 mixed heads with an exact-head latest success did not admit (observed=$($mixedHeadGreen | ConvertTo-Json -Compress -Depth 20))"
+    $mixedHeadRed = Invoke-RequiredCheckFixture @($exactOlderSuccess, $exactNewestFailure, $foreignNewerSuccess)
+    $mixedHeadRedReduction = $mixedHeadRed.observations.initial.pr.requiredCheckReductions[0]
+    Assert-True ($mixedHeadRed.status -ceq 'refused' -and
+      $mixedHeadRed.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $mixedHeadRed.mutationCount -eq 0 -and
+      $mixedHeadRedReduction.selected.databaseId -eq [long]9000000000000232 -and
+      $mixedHeadRedReduction.foreignHead.Count -eq 1) `
+      'issue #43 a newer foreign-head success masked the exact-head latest failure'
+    foreach ($headRefusal in @(
+        [ordered]@{ name = 'foreign-only'; checks = @($foreignNewerFailure, $foreignNewerSuccess) },
+        [ordered]@{ name = 'foreign-only-success'; checks = @($foreignNewerSuccess) },
+        [ordered]@{ name = 'missing-head'; checks = @($supersededFailure, $headlessSuccess) },
+        [ordered]@{ name = 'non-string-head'; checks = @($supersededFailure, $nonStringHeadSuccess) }
+      )) {
+      $headRefusalResult = Invoke-RequiredCheckFixture $headRefusal.checks
+      Assert-True ($headRefusalResult.status -ceq 'unknown' -and
+        $headRefusalResult.reason -ceq 'REQUIRED_CHECK_HEAD_MISMATCH' -and
+        $headRefusalResult.mutationCount -eq 0) `
+        "issue #43 $($headRefusal.name) required-check control was not refused (observed=$($headRefusalResult.status)/$($headRefusalResult.reason))"
+    }
+    $mixedHeadDirect = Invoke-RequiredCheckFixture @($exactOlderSuccess, $exactNewestFailure, $foreignNewerSuccess) $null 'Apply' 'SUCCESS' 'failure'
+    Assert-True ($mixedHeadDirect.status -ceq 'refused' -and
+      $mixedHeadDirect.reason -ceq 'REQUIRED_CHECK_NOT_GREEN' -and
+      $mixedHeadDirect.mutationCount -eq 0) `
+      'direct-enqueue qualification trusted a foreign-head success over the exact-head latest failure'
+
+    $directQualification = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess) $null 'Apply' 'FAILURE' 'failure'
+    Assert-True ($directQualification.status -ceq 'enqueued' -and
+      $directQualification.reason -ceq 'CONTROLLER_P0_DIRECT_ENQUEUE_CONFIRMED' -and
+      $directQualification.mutationCount -eq 1) `
+      'direct-enqueue qualification did not use reduced exact-head required checks'
+
+    $preflightSourceForMutants = [IO.File]::ReadAllText($preflight).Replace("`r`n", "`n")
+    Assert-True (-not $preflightSourceForMutants.Contains('CHECK_ROLLUP_NOT_GREEN', [StringComparison]::Ordinal)) `
+      'aggregate rollup gate was not removed from Apply'
+    # Each mutant must reach exactly one intended clause, then run as a whole preflight.
+    $newPreflightMutant = {
+      param([string]$Name, [string]$Before, [string]$After)
+      $occurrences = [regex]::Matches($preflightSourceForMutants, [regex]::Escape($Before)).Count
+      Assert-True ($occurrences -eq 1) "mutant $Name reaches exactly one intended clause (occurrences=$occurrences)"
+      $mutantSource = $preflightSourceForMutants.Replace($Before, $After)
+      $mutantSource = $mutantSource.Replace('$PSScriptRoot', ("'" + $PSScriptRoot.Replace("'", "''") + "'"))
+      $mutantPath = Join-Path $testRoot "landing-preflight-$Name-mutant.ps1"
+      [IO.File]::WriteAllText($mutantPath, $mutantSource, [Text.UTF8Encoding]::new($false))
+      $mutantPath
+    }
+    $nonHoldIssueAnchor = '  foreach ($issue in @($pull.closingIssues)) {' + "`n" + '    if ($issue.blockersComplete -ne $true) {'
+    $directIssueAnchor = '  foreach ($issue in @($pull.closingIssues)) {' + "`n" + '    if ($issue.blockersComplete -ne $true -or'
+    $headFilterClause = '    $matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })'
+    $aggregateMutantPath = & $newPreflightMutant 'aggregate-rollup' $nonHoldIssueAnchor (
+      '  if ([string]$pull.statusRollupState -cne "SUCCESS") { return [pscustomobject][ordered]@{ status = "refused"; reason = "CHECK_ROLLUP_NOT_GREEN" } }' + "`n" + $nonHoldIssueAnchor)
+    $directAggregateMutantPath = & $newPreflightMutant 'direct-aggregate-rollup' $directIssueAnchor (
+      '  if ([string]$pull.statusRollupState -cne "SUCCESS") { return $false }' + "`n" + $directIssueAnchor)
+    $headFilterMutantPath = & $newPreflightMutant 'drop-exact-head-filter' $headFilterClause '    $matching = @($matching)'
+    $originalPreflight = $preflight
+    try {
+      $preflight = $aggregateMutantPath
+      $aggregateMutant = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess) $null 'Report' 'FAILURE'
+      Assert-True ($aggregateMutant.status -ceq 'refused' -and
+        $aggregateMutant.reason -ceq 'CHECK_ROLLUP_NOT_GREEN' -and
+        $aggregateMutant.mutationCount -eq 0) `
+        'aggregate-rollup mutant survived the issue #43 superseded-suite fixture'
+      Write-Output 'KILLED required-check mutant=aggregate-rollup-gate'
+
+      # The red-rollup direct-enqueue positive above (enqueued under rollup
+      # FAILURE) is the control that must turn red under this mutant.
+      $preflight = $directAggregateMutantPath
+      $directAggregateMutant = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess) $null 'Apply' 'FAILURE' 'failure'
+      Assert-True ($directAggregateMutant.status -ceq 'refused' -and
+        $directAggregateMutant.reason -ceq 'DEPLOY_UNHEALTHY' -and
+        $directAggregateMutant.mutationCount -eq 0) `
+        "direct-aggregate-rollup mutant survived the issue #43 direct-enqueue fixture (observed=$($directAggregateMutant.status)/$($directAggregateMutant.reason))"
+      Write-Output 'KILLED required-check mutant=direct-aggregate-rollup-gate intended-clause=Test-DirectLandingAuthorityComplete'
+
+      $preflight = $headFilterMutantPath
+      $headFilterForeignOnly = Invoke-RequiredCheckFixture @($foreignNewerSuccess)
+      $headFilterMixedGreen = Invoke-RequiredCheckFixture @($supersededFailure, $supersededCancelled, $latestSuccess, $foreignNewerFailure)
+      Assert-True ($headFilterForeignOnly.status -ceq 'eligible' -and
+        $headFilterMixedGreen.status -ceq 'refused' -and
+        $headFilterMixedGreen.reason -ceq 'REQUIRED_CHECK_NOT_GREEN') `
+        "drop-exact-head-filter mutant did not expose the head filter (foreign-only=$($headFilterForeignOnly.status)/$($headFilterForeignOnly.reason) mixed=$($headFilterMixedGreen.status)/$($headFilterMixedGreen.reason))"
+      Write-Output 'KILLED required-check mutant=drop-exact-head-filter intended-clause=REQUIRED_CHECK_HEAD_MISMATCH'
+    } finally { $preflight = $originalPreflight }
+    Write-Output 'PASS required-check exact-head reduction mixed-head-green mixed-head-red foreign-only missing-head non-string-head direct-enqueue'
+
     foreach ($newestConclusion in @('FAILURE', 'CANCELLED', 'TIMED_OUT')) {
       $newest = New-SyntheticRequiredCheckProjection 9000000000000102 '2030-01-02T00:00:00Z' 'COMPLETED' $newestConclusion
       $newestRefusal = Invoke-RequiredCheckFixture @($newest, $olderGreen)
@@ -2126,8 +2334,9 @@ try {
     $redRollupObservation = New-Decision7643Observation
     $redRollupObservation.pr.statusRollupState = "FAILURE"
     $redRollup = Invoke-Decision7643Fixture @($redRollupObservation) "Report"
-    Assert-True ($redRollup.status -ceq "refused" -and $redRollup.reason -ceq "CHECK_ROLLUP_NOT_GREEN" -and $redRollup.mutationCount -eq 0) `
-      "Decision #7643 adapter accepted a red check rollup"
+    Assert-True ($redRollup.status -ceq "eligible" -and $redRollup.reason -ceq "REPORT_ONLY_ELIGIBLE" -and
+      $redRollup.admission.decision -ceq "DECISION_7643_PR_7641_ADAPTER_ADMITTED" -and $redRollup.mutationCount -eq 0) `
+      "Decision #7643 adapter still trusted the aggregate check rollup (observed=$($redRollup | ConvertTo-Json -Compress -Depth 20))"
     $redDeployObservation = New-Decision7643Observation
     $redDeployObservation.deploy.conclusion = "failure"
     $redDeploy = Invoke-Decision7643Fixture @($redDeployObservation) "Report"
@@ -3053,6 +3262,12 @@ if ([string]$staging.status -ceq "in_progress") {
       conclusion = "SUCCESS"
       databaseId = $scopeJobId
       detailsUrl = "https://github.com/chase-sets/chase-sets/actions/runs/$scopeRunId/job/$scopeJobId"
+      completedAt = "2030-01-02T00:00:00Z"
+      checkSuite = [ordered]@{
+        app = [ordered]@{ databaseId = [long]15368 }
+        workflowRun = [ordered]@{ workflow = [ordered]@{ databaseId = [long]274293632 } }
+        commit = [ordered]@{ oid = $headA }
+      }
     }
     $scopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes += $scopeCheck
     $scopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.totalCount = 2
@@ -3136,14 +3351,27 @@ if ([string]$staging.status -ceq "in_progress") {
     $manyScopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes += $secondScopeCheck
     $manyScopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.totalCount = 3
     $env:LANDING_PREFLIGHT_MOCK_GRAPH = Write-JsonFixture "scope-graph-many.json" $manyScopeGraph
+    Set-ScopeProviderFixtures ($scopeJobId + 1) ($scopeRunId + 1) $headA $false @("docs/newest-scope-proof.md")
     $manyProductionScope = Invoke-ProductionPreflight $currentHistory
-    Assert-True ($manyProductionScope.changeScope.classification -ceq "deployable" -and
-      $manyProductionScope.changeScope.proven -eq $false -and
-      $manyProductionScope.changeScope.reason -ceq "CHANGE_SCOPE_CHECK_AMBIGUOUS" -and
-      $manyProductionScope.changeScope.checkCandidateCount -eq 2 -and
-      $manyProductionScope.changeScope.checkCandidates -is [object[]] -and
-      $manyProductionScope.changeScope.checkCandidates.Count -eq 2) `
-      "multiple current Change Scope checks preserve N candidates and fail closed without choosing one"
+    Assert-True ($manyProductionScope.changeScope.classification -ceq "non-deployable" -and
+      $manyProductionScope.changeScope.proven -eq $true -and
+      $manyProductionScope.changeScope.reason -ceq "CHANGE_SCOPE_EXACT_HEAD_NON_DEPLOYABLE" -and
+      $manyProductionScope.changeScope.checkCandidateCount -eq 1 -and
+      $manyProductionScope.changeScope.checkCandidates.Count -eq 1 -and
+      $manyProductionScope.changeScope.evidence.workflowRunId -eq ($scopeRunId + 1)) `
+      "multiple current Change Scope checks reduce to the newest exact-head candidate (observed=$($manyProductionScope | ConvertTo-Json -Compress -Depth 20))"
+
+    $ambiguousScopeGraph = Copy-TestValue $manyScopeGraph
+    $ambiguousScopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[2].conclusion = "FAILURE"
+    $ambiguousScopeGraph.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[2].completedAt = $scopeCheck.completedAt
+    $env:LANDING_PREFLIGHT_MOCK_GRAPH = Write-JsonFixture "scope-graph-ambiguous.json" $ambiguousScopeGraph
+    $ambiguousProductionScope = Invoke-ProductionPreflight $currentHistory
+    Assert-True ($ambiguousProductionScope.changeScope.classification -ceq "deployable" -and
+      $ambiguousProductionScope.changeScope.proven -eq $false -and
+      $ambiguousProductionScope.changeScope.reason -ceq "CHANGE_SCOPE_CHECK_AMBIGUOUS" -and
+      $ambiguousProductionScope.changeScope.checkCandidateCount -eq 2 -and
+      $ambiguousProductionScope.changeScope.checkCandidates.Count -eq 2) `
+      "equal-recency Change Scope candidates with conflicting conclusions remain ambiguous"
   } finally {
     $env:LANDING_PREFLIGHT_MOCK_GRAPH = $defaultGraphPath
   }

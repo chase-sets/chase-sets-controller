@@ -265,6 +265,7 @@ function ConvertTo-RequiredCheckObservation($Context) {
     $app = if ($suite -and (Test-ObjectProperty $suite 'app')) { $suite.app } else { $null }
     $workflowRun = if ($suite -and (Test-ObjectProperty $suite 'workflowRun')) { $suite.workflowRun } else { $null }
     $workflow = if ($workflowRun -and (Test-ObjectProperty $workflowRun 'workflow')) { $workflowRun.workflow } else { $null }
+    $suiteCommit = if ($suite -and (Test-ObjectProperty $suite 'commit')) { $suite.commit } else { $null }
     $status = if (Test-ObjectProperty $Context 'status') { [string]$Context.status } else { $null }
     $conclusion = if (Test-ObjectProperty $Context 'conclusion') { $Context.conclusion } else { $null }
     $completedAt = if (Test-ObjectProperty $Context 'completedAt') { $Context.completedAt } else { $null }
@@ -281,10 +282,12 @@ function ConvertTo-RequiredCheckObservation($Context) {
       (Test-WholeNumber $Context.databaseId 1) -and
       (Test-RequiredCheckUri $Context.detailsUrl) -and
       $terminalShape -and
-      (Test-ExactKeys $suite @('app', 'workflowRun')) -and
+      (Test-ExactKeys $suite @('app', 'workflowRun', 'commit')) -and
       (Test-ExactKeys $app @('databaseId')) -and (Test-WholeNumber $app.databaseId 1) -and
       (Test-ExactKeys $workflowRun @('workflow')) -and
-      (Test-ExactKeys $workflow @('databaseId')) -and (Test-WholeNumber $workflow.databaseId 1)
+      (Test-ExactKeys $workflow @('databaseId')) -and (Test-WholeNumber $workflow.databaseId 1) -and
+      (Test-ExactKeys $suiteCommit @('oid')) -and
+      $suiteCommit.oid -is [string] -and [string]$suiteCommit.oid -cmatch '^[a-f0-9]{40}$'
     return [pscustomobject][ordered]@{
       schemaVersion = 'required-check-observation/v1'
       valid = $valid
@@ -292,9 +295,11 @@ function ConvertTo-RequiredCheckObservation($Context) {
       nodeType = 'CheckRun'
       name = if ($Context.name -is [string]) { [string]$Context.name } else { $null }
       databaseId = if (Test-WholeNumber $Context.databaseId 1) { [long]$Context.databaseId } else { $null }
+      detailsUrl = if ($Context.detailsUrl -is [string]) { [string]$Context.detailsUrl } else { $null }
       status = $status
       conclusion = if ($conclusion -is [string]) { [string]$conclusion } else { $null }
       completedAt = if ($completedAt -is [string]) { [string]$completedAt } else { $null }
+      headSha = if ($suiteCommit.oid -is [string]) { [string]$suiteCommit.oid } else { $null }
       producer = [ordered]@{
         appDatabaseId = if ($app -and (Test-WholeNumber $app.databaseId 1)) { [long]$app.databaseId } else { $null }
         workflowDatabaseId = if ($workflow -and (Test-WholeNumber $workflow.databaseId 1)) { [long]$workflow.databaseId } else { $null }
@@ -349,7 +354,8 @@ function New-RequiredCheckReduction(
   [string]$Reason,
   [int]$MatchCount,
   $Selected = $null,
-  [object[]]$Superseded = @()
+  [object[]]$Superseded = @(),
+  [object[]]$ForeignHead = @()
 ) {
   [pscustomobject][ordered]@{
     schemaVersion = 'required-check-reducer/v1'
@@ -359,10 +365,11 @@ function New-RequiredCheckReduction(
     matchCount = $MatchCount
     selected = $Selected
     superseded = [object[]]@($Superseded)
+    foreignHead = [object[]]@($ForeignHead)
   }
 }
 
-function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredName) {
+function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredName, [string]$ExpectedHead = $null) {
   $matching = @($Checks | Where-Object { [string]$_.name -ceq $RequiredName })
   if ($matching.Count -eq 0) {
     return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_MISSING' 0
@@ -402,19 +409,41 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
     return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' 1 $selected
   }
 
+  $foreignHead = @()
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedHead)) {
+    # Every observation must name its head; an unnamed head is never filtered away.
+    $headUnknown = @($matching | Where-Object {
+        $_.headSha -isnot [string] -or [string]$_.headSha -cnotmatch '^[a-f0-9]{40}$'
+      })
+    if ($headUnknown.Count -gt 0) {
+      return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_HEAD_MISMATCH' $matching.Count
+    }
+    # Reduce only over runs at the exact head; runs for another head are
+    # recorded as foreign and can neither admit nor supersede.
+    $foreignHead = @($matching | Where-Object { [string]$_.headSha -cne $ExpectedHead } | ForEach-Object {
+        $foreign = ConvertTo-RequiredCheckProvenance $_
+        $foreign.headSha = [string]$_.headSha
+        $foreign
+      })
+    $matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })
+    if ($matching.Count -eq 0) {
+      return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_HEAD_MISMATCH' 0 $null @() $foreignHead
+    }
+  }
+
   # Terminality is an admission predicate, not an ordering value.
   if (@($matching | Where-Object { [string]$_.status -cne 'COMPLETED' }).Count -gt 0) {
-    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NONTERMINAL' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NONTERMINAL' $matching.Count $null @() $foreignHead
   }
   $producerKeys = @($matching | ForEach-Object {
       "$($_.producer.appDatabaseId)/$($_.producer.workflowDatabaseId)"
     } | Sort-Object -Unique)
   if ($producerKeys.Count -ne 1) {
-    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_PRODUCER_MISMATCH' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_PRODUCER_MISMATCH' $matching.Count $null @() $foreignHead
   }
   $ids = @($matching | ForEach-Object { [long]$_.databaseId })
   if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) {
-    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_DUPLICATE_ID' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_DUPLICATE_ID' $matching.Count $null @() $foreignHead
   }
 
   $allSuccess = @($matching | Where-Object { [string]$_.conclusion -cne 'SUCCESS' }).Count -eq 0
@@ -425,11 +454,11 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
         $rightInstant = [datetimeoffset]::Parse([string]$matching[$right].completedAt, [Globalization.CultureInfo]::InvariantCulture)
         $timeOrder = [datetimeoffset]::Compare($leftInstant, $rightInstant)
         if ($timeOrder -eq 0) {
-          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_TIE' $matching.Count
+          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_TIE' $matching.Count $null @() $foreignHead
         }
         $idOrder = ([long]$matching[$left].databaseId).CompareTo([long]$matching[$right].databaseId)
         if (($timeOrder -gt 0 -and $idOrder -lt 0) -or ($timeOrder -lt 0 -and $idOrder -gt 0)) {
-          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_CONTRADICTION' $matching.Count
+          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_CONTRADICTION' $matching.Count $null @() $foreignHead
         }
       }
     }
@@ -443,9 +472,9 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
   $selected = ConvertTo-RequiredCheckProvenance $ordered[0]
   $superseded = @($ordered | Select-Object -Skip 1 | ForEach-Object { ConvertTo-RequiredCheckProvenance $_ })
   if ([string]$ordered[0].conclusion -cnotin @('SUCCESS', 'NEUTRAL', 'SKIPPED')) {
-    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NOT_GREEN' $matching.Count $selected $superseded
+    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NOT_GREEN' $matching.Count $selected $superseded $foreignHead
   }
-  return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' $matching.Count $selected $superseded
+  return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' $matching.Count $selected $superseded $foreignHead
 }
 
 function Get-ObservedType($Value, [bool]$Present) {
@@ -867,13 +896,45 @@ function Get-HostedChangeScopeObservation([string]$PullHead, [object[]]$CheckCan
   $fallback = New-FailClosedChangeScopeObservation $PullHead $(if ($candidates.Count -eq 0) { "CHANGE_SCOPE_CHECK_MISSING" } else { "CHANGE_SCOPE_CHECK_AMBIGUOUS" })
   $fallback.checkCandidateCount = $candidates.Count
   $fallback.checkCandidates = $candidates
-  if ($candidates.Count -ne 1) { return $fallback }
+  if ($candidates.Count -eq 0) { return $fallback }
 
-  $check = $candidates[0]
+  $reduction = Reduce-RequiredCheckObservations $candidates "Change Scope" $PullHead
+  if ([string]$reduction.status -ne 'eligible') {
+    $reason = switch ([string]$reduction.reason) {
+      'REQUIRED_CHECK_MISSING' { 'CHANGE_SCOPE_CHECK_MISSING' }
+      'REQUIRED_CHECK_NOT_GREEN' { 'CHANGE_SCOPE_CHECK_INCOMPLETE' }
+      'REQUIRED_CHECK_NONTERMINAL' { 'CHANGE_SCOPE_CHECK_INCOMPLETE' }
+      'REQUIRED_CHECK_HEAD_MISMATCH' { 'CHANGE_SCOPE_CHECK_HEAD_MISMATCH' }
+      default { 'CHANGE_SCOPE_CHECK_AMBIGUOUS' }
+    }
+    return New-FailClosedChangeScopeObservation $PullHead $reason ([pscustomobject]@{
+        checkCandidateCount = $candidates.Count
+        checkCandidates = $candidates
+        reason = $reason
+      })
+  }
+  $selectedId = [long]$reduction.selected.databaseId
+  $selectedCandidates = @($candidates | Where-Object { [long]$_.databaseId -eq $selectedId })
+  if ($selectedCandidates.Count -ne 1) {
+    return New-FailClosedChangeScopeObservation $PullHead "CHANGE_SCOPE_CHECK_AMBIGUOUS" ([pscustomobject]@{
+        checkCandidateCount = $candidates.Count
+        checkCandidates = $candidates
+        reason = "CHANGE_SCOPE_CHECK_AMBIGUOUS"
+      })
+  }
+  $check = $selectedCandidates[0]
+  # Carry only the selected exact-head observation into the typed scope result;
+  # older same-name runs remain represented by the reducer, not as ambiguity.
+  $candidates = @($check)
+  $selectedSource = [pscustomobject]@{
+    checkCandidateCount = 1
+    checkCandidates = @($check)
+    reason = "CHANGE_SCOPE_CHECK_SELECTED"
+  }
   if (-not (Test-WholeNumber $check.databaseId 1) -or
       [string]$check.status -cne "COMPLETED" -or [string]$check.conclusion -cne "SUCCESS" -or
       [string]::IsNullOrWhiteSpace([string]$check.detailsUrl)) {
-    return New-FailClosedChangeScopeObservation $PullHead "CHANGE_SCOPE_CHECK_INCOMPLETE" ([pscustomobject]@{ checkCandidateCount = 1; checkCandidates = $candidates; reason = "CHANGE_SCOPE_CHECK_INCOMPLETE" })
+    return New-FailClosedChangeScopeObservation $PullHead "CHANGE_SCOPE_CHECK_INCOMPLETE" $selectedSource
   }
   $repositoryPattern = [regex]::Escape($Repository)
   $urlMatch = [regex]::Match([string]$check.detailsUrl, "^https://github\.com/$repositoryPattern/actions/runs/(?<run>[0-9]+)/job/(?<job>[0-9]+)(?:\?.*)?$")
@@ -1306,6 +1367,7 @@ query($owner:String!, $name:String!, $pr:Int!, $cursor:String) {
                     checkSuite {
                       app { databaseId }
                       workflowRun { workflow { databaseId } }
+                      commit { oid }
                     }
                   }
                   ... on StatusContext { context state }
@@ -1406,18 +1468,13 @@ query($owner:String!, $name:String!, $pr:Int!, $cursor:String) {
   $changeScopeCheckCandidates = [Collections.Generic.List[object]]::new()
   foreach ($context in @($contextsConnection.nodes)) {
     if ([string]$context.__typename -ceq "CheckRun") {
-      $checks += ConvertTo-RequiredCheckObservation $context
+      $checkObservation = ConvertTo-RequiredCheckObservation $context
+      $checks += $checkObservation
       if ($context.name -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$context.name)) {
         $checksComplete = $false
       }
       if ([string]$context.name -ceq "Change Scope") {
-        $changeScopeCheckCandidates.Add([ordered]@{
-            databaseId = if (Test-ObjectProperty $context "databaseId") { $context.databaseId } else { $null }
-            detailsUrl = if (Test-ObjectProperty $context "detailsUrl") { [string]$context.detailsUrl } else { $null }
-            name = [string]$context.name
-            status = [string]$context.status
-            conclusion = [string]$context.conclusion
-          })
+        $changeScopeCheckCandidates.Add($checkObservation)
       }
     } elseif ([string]$context.__typename -ceq "StatusContext") {
       $checks += ConvertTo-RequiredCheckObservation $context
@@ -2861,7 +2918,7 @@ function Test-NonHoldPreflightObservation($Observation, $Review) {
   $checks = @($pull.checks)
   $reductions = [Collections.Generic.List[object]]::new()
   foreach ($requiredName in $required) {
-    $reduction = Reduce-RequiredCheckObservations ([object[]]$checks) $requiredName
+    $reduction = Reduce-RequiredCheckObservations ([object[]]$checks) $requiredName ([string]$pull.head)
     $reductions.Add($reduction)
     if ($pull -is [Collections.IDictionary]) {
       $pull['requiredCheckReductions'] = [object[]]@($reductions)
@@ -2871,9 +2928,6 @@ function Test-NonHoldPreflightObservation($Observation, $Review) {
     if ([string]$reduction.status -cne 'eligible') {
       return [pscustomobject][ordered]@{ status = [string]$reduction.status; reason = [string]$reduction.reason }
     }
-  }
-  if ([string]$pull.statusRollupState -cne "SUCCESS") {
-    return [pscustomobject][ordered]@{ status = "refused"; reason = "CHECK_ROLLUP_NOT_GREEN" }
   }
   foreach ($issue in @($pull.closingIssues)) {
     if ($issue.blockersComplete -ne $true) {
@@ -2954,12 +3008,11 @@ function Test-DirectLandingAuthorityComplete($Observation, $Review) {
       ([string]$pull.baseRefName -cne 'main' -or
        [string]$pull.baseHead -cnotmatch '^[a-f0-9]{40}$' -or
        [string]$Review.latest.newBase -cne [string]$pull.baseHead)) { return $false }
-  if ($pull.branchProtectionObserved -ne $true -or $pull.requiresStatusChecks -ne $true -or
-      [string]$pull.statusRollupState -cne 'SUCCESS') { return $false }
+  if ($pull.branchProtectionObserved -ne $true -or $pull.requiresStatusChecks -ne $true) { return $false }
   $required = @($pull.requiredContexts | ForEach-Object { [string]$_ })
   if ($required.Count -eq 0 -or @($required | Sort-Object -Unique).Count -ne $required.Count) { return $false }
   foreach ($requiredName in $required) {
-    if ([string](Reduce-RequiredCheckObservations @($pull.checks) $requiredName).status -cne 'eligible') { return $false }
+    if ([string](Reduce-RequiredCheckObservations @($pull.checks) $requiredName ([string]$pull.head)).status -cne 'eligible') { return $false }
   }
   foreach ($issue in @($pull.closingIssues)) {
     if ($issue.blockersComplete -ne $true -or
