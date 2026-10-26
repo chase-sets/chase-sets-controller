@@ -888,7 +888,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   $guardStart=$source8186.IndexOf($guardAnchor);Assert-True ($guardStart-ge0) '8186 guard anchor missing'
   $guardStop=$source8186.IndexOf($guardEnd,$guardStart)+$guardEnd.Length
   $guardBlock=$source8186.Substring($guardStart,$guardStop-$guardStart)
-  $roleAnchor="if(`$laneRole-cnotin@('implementation','planning','review')){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}"
+  $roleAnchor="if(`$laneRole-cnotin@('implementation','planning','review','decision')){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}"
   $ageAnchor="if(`$elapsed-lt0-or`$elapsed-gt300){throw 'WATCHDOG_RELAUNCH_WINDOW_EXPIRED'}"+"`n"
   foreach($anchor in @($guardAnchor,$roleAnchor,$ageAnchor)){Assert-True (([regex]::Matches($source8186,[regex]::Escape($anchor))).Count-eq1) "8186 mutation anchor not unique: $anchor"}
   $mutants8186=@(
