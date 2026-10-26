@@ -105,7 +105,7 @@ function Get-DispatchCountDecision($History, $Issue, [string]$CandidateState, [s
       if ($d.dispatchReceiptIdentity -isnot [string] -or $d.dispatchReceiptIdentity -cnotmatch '^[a-f0-9]{64}$') { return [pscustomobject]$result }
       $dispatch=$dispatches[$d.dispatchReceiptIdentity]
       if ($decisionDispatchCount -ne 1 -or $null -eq $dispatch -or $dispatch.lane -cne $d.lane -or $dispatch.transcript -cne $d.transcript -or
-          $dispatch.laneRole -cnotin @('planning','review')) { return [pscustomobject]$result }
+          $dispatch.laneRole -cnotin @('planning','review','decision')) { return [pscustomobject]$result }
       if ($d.phase -cne 'ACKNOWLEDGED' -and $d.dispatchReceiptIdentity -cne $decision.dispatchReceiptIdentity) { return [pscustomobject]$result }
       if ($d.phase -cin @('FINAL','APPLYING','APPLIED') -and $d.disposition -cnotin @('CONTINUE','REPLAN','WAIT','PRODUCT_QUESTION','RECOMMEND_NOT_COMPLETING')) { return [pscustomobject]$result }
       if ($d.phase -cin @('APPLYING','APPLIED') -and

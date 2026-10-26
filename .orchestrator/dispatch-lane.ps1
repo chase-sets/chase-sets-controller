@@ -66,7 +66,7 @@ param(
   # and disable kubectl's default kubeconfig fallback before the harness child
   # starts while retaining GitHub authentication.
   # implementation: explicitly inherit the launcher environment unchanged.
-  [ValidateSet("implementation", "review", "planning")][string]$LaneRole = "review",
+  [ValidateSet("implementation", "review", "planning", "decision")][string]$LaneRole = "review",
   [ValidateRange(1,[int]::MaxValue)][int]$Issue,
   [ValidateSet('product','controller')][string]$ReviewTarget = 'product',
   [ValidateRange(1,[int]::MaxValue)][int]$ControllerIssue,
@@ -425,7 +425,7 @@ if ($Model -cin @('gpt-6.1-sol', 'gpt-6-luna', 'claude-opus-5-5') -and $Placemen
 # Integration requests have a stricter closed author contract below, which owns
 # their refusal diagnostics; neither integration path admits Sonnet.
 if ($Model -ceq 'claude-sonnet-5-5' -and -not $IntegrationTargetPath -and -not $InterruptedIntegrationResumePath) {
-  # Row 0 is the review/planning envelope, not an implementation routing row.
+  # Row 0 is the review/planning/decision envelope, not an implementation routing row.
   # Review contracts still own authority; this quota never admits a reviewer.
   if ($LaneRole -eq 'review' -and ($Row -in @(11, 12) -or $ReviewTarget -eq 'controller')) {
     throw 'dispatch-lane: Sonnet 5.5 is not an admitted row-11/12 or controller reviewer'
@@ -528,6 +528,13 @@ $providerCredentialNames = @(
   "RELEASE_EVIDENCE_SPACES_ACCESS_ID",
   "RELEASE_EVIDENCE_SPACES_SECRET_KEY"
 )
+$githubCredentialNames = @(
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GITHUB_API_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN"
+)
 # Lane transcripts show the bulk of context spent on unbounded reads: whole
 # runtime transcripts and ledgers, directory inventories of the runtime root,
 # complete hosted CI logs and repeated tail/status polls. Each such output is
@@ -626,11 +633,12 @@ function Assert-ClaudeForegroundSettingsAgree([string]$WorktreePath) {
     throw "dispatch-lane: CLAUDE_FOREGROUND_POLICY_CONFLICT: refusing the Claude launch before any side effect; Claude settings env would override the foreground policy. $($claudeSettingsConflicts -join '; '). Correct those settings outside dispatch; dispatch never edits them."
   }
 }
-# Review and planning lanes are both read-only against provider state, so they
-# share the credential-isolation policy. They differ in what they may mutate:
+# Review, planning and decision lanes are all read-only against provider state,
+# so they share the credential-isolation policy. They differ in what they may
+# mutate:
 # review receives no provider credentials; its bounded mechanical remedies are
 # governed by contracts/review-v2.md. Planning owns GitHub issue recovery.
-$credentialIsolatedRoles = @("review", "planning")
+$credentialIsolatedRoles = @("review", "planning", "decision")
 $isCredentialIsolated = $LaneRole -in $credentialIsolatedRoles
 
 $reviewContractPath = Join-Path $PSScriptRoot "contracts/review-v2.md"
@@ -1013,6 +1021,22 @@ $environmentPolicy = if ($LaneRole -eq "review") {
     preservesNonProviderEnvironment = $true
     preservesGitHubAuthentication = $true
   }
+} elseif ($LaneRole -eq "decision") {
+  [ordered]@{
+    mode = "decision-isolation"
+    removedVariables = @($providerCredentialNames + $githubCredentialNames)
+    isolatedConfigRoots = @("APPDATA", "XDG_CONFIG_HOME", "GH_CONFIG_DIR")
+    kubeconfigPolicy = "nonexistent-path-inside-isolated-temp-root"
+    preservesNonProviderEnvironment = $true
+    preservesGitHubAuthentication = $false
+    githubWriteAuthority = $false
+    gitCredentialPolicy = "credential.helper=;GIT_TERMINAL_PROMPT=0;GCM_INTERACTIVE=never"
+    neutralizedVariables = @("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE", "GIT_CONFIG_PARAMETERS", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "GIT_SSH_COMMAND")
+    # Same-user default-path isolation: a child that deliberately re-points
+    # GH_CONFIG_DIR or re-enables a credential helper can still reach stored
+    # credentials. Decision prompts carry their GitHub evidence as files.
+    enforcement = "default-path-isolation"
+  }
 } else {
   [ordered]@{
     mode = "inherit"
@@ -1060,6 +1084,19 @@ function Get-HeavyVerificationPreamble([string]$Role, [int]$RoutingRow, [string]
   return "Heavy verification contract: product proof is exact-head hosted CI. Retain scoped pre-push checks and focused tests; local full/harness runs and focused DB diagnostics are optional, never publication or landing gates. A scoped refusal never escalates to a full gate: preserve and disclose the defect, never fabricate PASS. Controller authors retain baseline-aware controller-release-battery.ps1 proof; product CI is not controller release proof. Any eligible heavy reproduction uses '$Entrypoint', foreground and under unchanged exclusive admission, including direct Node, Playwright, full Vitest, script-battery and build commands. Exit 73 means not executed, not PASS or a consumed attempt. A timeout is load-sensitive only after an unchanged isolated timing collapse and a complete one-worker/file-serial gate; never raise timeouts, edit product files, or skip tests.`r`n`r`n"
 }
 $gatePreamble = Get-HeavyVerificationPreamble $LaneRole $Row (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')
+if ($successorResume) {
+  # #9411: publication-only successor preamble; never the continuation text.
+  $gatePreamble += "Finished-unpublished ordinary successor: prior launch $($integrationResume.sources.finishLaunchId) already finished R '$($integrationResume.state.finishHead)' on branch '$admissionBranch' without publishing; this worktree is attached at '$admissionHead'. Never continue, start, abort or skip a rebase. Make only plain commits confined to the prior FINAL grant's repair paths and focused tests, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the bound Pr/ReviewedHead/NewBase/Worktree and IntegrationLane '$($integrationResume.obligation.integrationLane)'; it pushes under the immutable original-head lease. Never push, force, reset, amend, rebase or move the branch yourself. A heavy-admission exit 73 is disclosed non-execution, never PASS and never a publication stop; hosted CI on the published head owns the full gates. Publication gives no PASS, continuation or landing authority.`r`n`r`n"
+} elseif ($integrationResume) {
+  $gatePreamble += "Interrupted canonical integration: original logical branch '$admissionBranch', detached HEAD '$admissionHead'. Entry bytes are preserved. Only this implementation child may resolve these existing conflicts. Continue through rebase-integration.ps1 -ContinueInterruptedIntegration with the bound original Pr/ReviewedHead/NewBase/Worktree. GIT_EDITOR is noninteractive. Never start a new rebase, abort, reset, stash, skip, or normalize the worktree. A later native stop remains pending; completion requires clean attachment, original-head lease publication, and the existing native completion validator. Resume gives no PASS or continuation authority.`r`n`r`n"
+  if ($ordinaryResume) {
+    $gatePreamble += "Ordinary author variant: pass the bound IntegrationLane '$($integrationResume.obligation.integrationLane)' and finish locally with -NoPush. A finished-unpublished result has no completion, acknowledgement or acceptance. Make only plain commits on this branch for repair/test changes, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the same bound arguments; it pushes under the immutable original-head lease. Never push, force, reset, amend the finish commit, rebase or move the branch yourself.`r`n`r`n"
+  }
+}
+$harnessPreamble = if ($Harness -eq "claude") { $claudeForegroundPreamble } else { "" }
+$reviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
+$planningPreamble = if ($LaneRole -eq "planning") { $planningContractText.TrimEnd() + "`r`n`r`n" } else { "" }
+$composedPrompt = $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + [IO.File]::ReadAllText($promptResolved)
 $plan = [ordered]@{
   harness = $Harness
   routing = $dispatchRouting
@@ -1075,6 +1112,7 @@ $plan = [ordered]@{
   stdin = $promptResolved
   stdout = $stdoutPath
   stderr = $stderrPath
+  composedPrompt = $composedPrompt
   watchdogWatchPath = $watchHint
   environmentPolicy = $environmentPolicy
   reviewContract = if ($LaneRole -eq "review") {
@@ -1177,7 +1215,7 @@ try {
     if ($integrationOwners.health.status -cne 'ok' -or @($integrationOwners.activeLanes | Where-Object { $_.branch -ceq $integrationTarget.branch }).Count) { throw "INTEGRATION_OWNER_PENDING diagnostics=$(Get-DispatchBlockingDiagnostics $integrationOwners)" }
   }
   # Ledger admission must finish before publishing any launch resources.
-  if ($LaneRole -cin @('implementation','planning','review')) {
+  if ($LaneRole -cin @('implementation','planning','review','decision')) {
     $routingIssue = @{}
     if ($PSBoundParameters.ContainsKey('Issue')) { $routingIssue.Issue = $Issue }
     # Every role writes the v3 routing row with its five capacity fields.
@@ -1254,19 +1292,7 @@ try {
       if ($LASTEXITCODE -eq 0 -and $ancestor.Count -eq 0) { [void](New-RebaseStart $owed $runtimeRoot $ownershipRecordPath -Prelaunch) }
     }
   }
-  if ($successorResume) {
-    # #9411: publication-only successor preamble; never the continuation text.
-    $gatePreamble += "Finished-unpublished ordinary successor: prior launch $($integrationResume.sources.finishLaunchId) already finished R '$($integrationResume.state.finishHead)' on branch '$admissionBranch' without publishing; this worktree is attached at '$admissionHead'. Never continue, start, abort or skip a rebase. Make only plain commits confined to the prior FINAL grant's repair paths and focused tests, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the bound Pr/ReviewedHead/NewBase/Worktree and IntegrationLane '$($integrationResume.obligation.integrationLane)'; it pushes under the immutable original-head lease. Never push, force, reset, amend, rebase or move the branch yourself. A heavy-admission exit 73 is disclosed non-execution, never PASS and never a publication stop; hosted CI on the published head owns the full gates. Publication gives no PASS, continuation or landing authority.`r`n`r`n"
-  } elseif ($integrationResume) {
-    $gatePreamble += "Interrupted canonical integration: original logical branch '$admissionBranch', detached HEAD '$admissionHead'. Entry bytes are preserved. Only this implementation child may resolve these existing conflicts. Continue through rebase-integration.ps1 -ContinueInterruptedIntegration with the bound original Pr/ReviewedHead/NewBase/Worktree. GIT_EDITOR is noninteractive. Never start a new rebase, abort, reset, stash, skip, or normalize the worktree. A later native stop remains pending; completion requires clean attachment, original-head lease publication, and the existing native completion validator. Resume gives no PASS or continuation authority.`r`n`r`n"
-    if ($ordinaryResume) {
-      $gatePreamble += "Ordinary author variant: pass the bound IntegrationLane '$($integrationResume.obligation.integrationLane)' and finish locally with -NoPush. A finished-unpublished result has no completion, acknowledgement or acceptance. Make only plain commits on this branch for repair/test changes, then publish exactly once through rebase-integration.ps1 -PublishInterruptedIntegration with the same bound arguments; it pushes under the immutable original-head lease. Never push, force, reset, amend the finish commit, rebase or move the branch yourself.`r`n`r`n"
-    }
-  }
-  $harnessPreamble = if ($Harness -eq "claude") { $claudeForegroundPreamble } else { "" }
-  $reviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
-  $planningPreamble = if ($LaneRole -eq "planning") { $planningContractText.TrimEnd() + "`r`n`r`n" } else { "" }
-  [IO.File]::WriteAllText($launchPromptFile, $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + [IO.File]::ReadAllText($promptResolved), [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($launchPromptFile, $composedPrompt, [Text.UTF8Encoding]::new($false))
   $startParameters = @{
     FilePath = $exe
     ArgumentList = @($launchArguments)
@@ -1326,17 +1352,39 @@ try {
     $reviewIsolationRoot = Join-Path $tempRoot "chase-sets-$LaneRole-$launchId"
     New-Item -ItemType Directory -Path $reviewIsolationRoot | Out-Null
 
-    foreach ($name in $providerCredentialNames) {
+    $credentialNamesToRemove = if ($LaneRole -eq "decision") {
+      @($providerCredentialNames + $githubCredentialNames)
+    } else {
+      @($providerCredentialNames)
+    }
+    foreach ($name in $credentialNamesToRemove) {
       $childEnvironment[$name] = $null
     }
     $childEnvironment["APPDATA"] = $reviewIsolationRoot
     $childEnvironment["XDG_CONFIG_HOME"] = $reviewIsolationRoot
     $childEnvironment["KUBECONFIG"] = Join-Path $reviewIsolationRoot "nonexistent-kubeconfig"
 
-    # gh defaults to %APPDATA%\GitHub CLI on Windows. Pin its original config
-    # before APPDATA is isolated so stored GitHub auth and GH_*/GITHUB_* token
-    # variables remain available to read-only review work.
-    if ($env:GH_CONFIG_DIR) {
+    # gh defaults to %APPDATA%\GitHub CLI on Windows. Review and planning pin
+    # their original config so read-only GitHub authentication remains
+    # available. Decision lanes receive an empty config root and no token.
+    if ($LaneRole -eq "decision") {
+      $childEnvironment["GH_CONFIG_DIR"] = Join-Path $reviewIsolationRoot "GitHub CLI"
+      # Git for Windows can use GCM independently of gh and independently of
+      # the inherited GH_* token variables. Disable credential helpers and all
+      # interactive fallback in the decision child environment.
+      $childEnvironment["GIT_CONFIG_COUNT"] = "1"
+      $childEnvironment["GIT_CONFIG_KEY_0"] = "credential.helper"
+      $childEnvironment["GIT_CONFIG_VALUE_0"] = ""
+      $childEnvironment["GIT_TERMINAL_PROMPT"] = "0"
+      $childEnvironment["GCM_INTERACTIVE"] = "never"
+      # Command-scope config, askpass helpers and an SSH agent would otherwise
+      # re-supply credentials; SSH runs in batch mode with no identities.
+      $childEnvironment["GIT_CONFIG_PARAMETERS"] = $null
+      $childEnvironment["GIT_ASKPASS"] = $null
+      $childEnvironment["SSH_ASKPASS"] = $null
+      $childEnvironment["SSH_AUTH_SOCK"] = $null
+      $childEnvironment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityFile=none -o IdentityAgent=none"
+    } elseif ($env:GH_CONFIG_DIR) {
       $childEnvironment["GH_CONFIG_DIR"] = $env:GH_CONFIG_DIR
     } elseif ($env:APPDATA) {
       $childEnvironment["GH_CONFIG_DIR"] = Join-Path $env:APPDATA "GitHub CLI"

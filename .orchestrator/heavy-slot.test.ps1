@@ -1010,6 +1010,17 @@ const timer = setInterval(() => {
   Assert-CensusBody $holder "foreign-becomes-competing" 73 "competing target|duplicate-live-ownership"
   [IO.File]::WriteAllText($foreign.Path, $foreign.Raw, [Text.UTF8Encoding]::new($false))
   Assert-CensusBody $holder "foreign-restored-irrelevant" 0
+  # #223: every credential-isolated role (review, planning, decision) is a
+  # valid foreign census sibling; an unknown role still refuses.
+  foreach ($siblingRole in @("planning", "decision", "observer")) {
+    $sibling = $foreign.Raw | ConvertFrom-Json -AsHashtable -DateKind String
+    $sibling.laneRole = $siblingRole
+    $sibling.reviewIsolationRoot = Join-Path $privateTemp "chase-sets-$siblingRole-$($sibling.launchId)"
+    [IO.File]::WriteAllText($foreign.Path, ($sibling | ConvertTo-Json -Compress -Depth 4), [Text.UTF8Encoding]::new($false))
+    if ($siblingRole -ceq "observer") { Assert-CensusBody $holder "foreign-role-$siblingRole" 73 "dispatch role invalid" }
+    else { Assert-CensusBody $holder "foreign-role-$siblingRole" 0 }
+  }
+  [IO.File]::WriteAllText($foreign.Path, $foreign.Raw, [Text.UTF8Encoding]::new($false))
   foreach ($bad in @(
       @{Name="malformed-foreign"; Raw="{"; Reason="census unknown"},
       @{Name="extra-foreign-field"; Raw=$foreign.Raw.TrimEnd('}') + ',"unknown":true}'; Reason="ownership-record-invalid"},

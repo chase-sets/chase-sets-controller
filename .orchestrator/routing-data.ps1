@@ -388,7 +388,7 @@ function Get-CapacityAuthorArtifact($Entry) {
   if ($Entry.kind -ceq 'dispatch') {
     if ($role -ceq 'implementation') { return 'code' }
     if ($role -ceq 'planning') { return 'brief' }
-    if ($role -ceq 'review') { return $null }
+    if ($role -cin @('review','decision')) { return $null }
     if ($roleless) { if ($Entry.authorModel) { return $null } else { return 'code' } }
     return 'unknown'
   }
@@ -398,6 +398,7 @@ function Get-CapacityAuthorArtifact($Entry) {
     if ($null -eq $Entry.PSObject.Properties['model'] -or $null -eq $Entry.model) { return $null }
     if ($role -ceq 'implementation') { return 'code' }
     if ($role -ceq 'planning') { return 'brief' }
+    if ($role -ceq 'decision') { return $null }
     if ($role -ceq 'review' -and $null -ne $Entry.PSObject.Properties['reviewerPatch'] -and $Entry.reviewerPatch -isnot [bool]) { return 'unknown' }
     if (($roleless -or $role -ceq 'review') -and $repaired) {
       if (($Entry.pr -is [int] -or $Entry.pr -is [long]) -and $Entry.pr -gt 0) { return 'code' }
@@ -416,7 +417,7 @@ function Get-CapacityAuthorArtifact($Entry) {
     $planningReceipt=$Entry.kind -ceq 'review-complete' -and ($role -ceq 'planning' -or $Entry.planningContract)
     if ($role -ceq 'implementation') { return 'code' } # CAPACITY_LIFECYCLE_CODE
     if ($role -ceq 'planning' -and -not $planningReceipt) { return 'brief' } # CAPACITY_LIFECYCLE_BRIEF
-    if (-not $roleless -and $role -cne 'review' -and -not $planningReceipt) { return 'unknown' }
+    if (-not $roleless -and $role -notin @('review','decision') -and -not $planningReceipt) { return 'unknown' }
     if ($repaired) {
       if (($Entry.pr -is [int] -or $Entry.pr -is [long]) -and $Entry.pr -gt 0) { return 'code' }
       return 'brief'
@@ -431,6 +432,7 @@ function Get-CapacityAuthorArtifact($Entry) {
 function Get-CapacityReceiptArtifact($Entry) {
   # The artifact a review receipt (or legacy author-naming dispatch) speaks for.
   if ($Entry.planningContract -or $Entry.laneRole -ceq 'planning') { return 'brief' }
+  if ($Entry.laneRole -ceq 'decision') { return $null }
   if ($Entry.reviewContract -or $Entry.laneRole -ceq 'review' -or $Entry.pr -or $Entry.controllerReviewSchema -or $Entry.kind -ceq 'dispatch') { return 'code' }
   return 'legacy'
 }
@@ -676,7 +678,7 @@ function Get-BriefAttributionProjection($Rows,$Hashes,$Registry) {
 
 function Get-CapacityAuthorHistory {
   # Branch-rooted (implementation): the complete single-branch lineage, as
-  # before. Issue-rooted (planning/review): every row of that issue on any
+  # before. Issue-rooted (planning/review/decision): every row of that issue on any
   # branch; rows carrying another issue belong to another artifact and are
   # neither authors nor followed. Artifact 'code', 'brief' or 'all' selects the
   # returned authorship; read-only reviewers are never authors.
@@ -828,7 +830,7 @@ function Get-CapacityAuthorHistory {
 
 function Resolve-CapacityRouting {
   param($Selection,[string]$StateRoot,[string]$LkgPath,[string]$HistoryPath,[string]$Branch,[int]$Issue=0,
-    [ValidateSet('implementation','planning','review')][string]$LaneRole='implementation',
+    [ValidateSet('implementation','planning','review','decision')][string]$LaneRole='implementation',
     [ValidateSet('','brief','code')][string]$ReviewArtifact='',
     [bool]$Exempt=$false,[DateTimeOffset]$NowUtc=[DateTimeOffset]::UtcNow)
   $result=[pscustomobject]@{selection=$Selection;capacityForecastStatus='not-evaluated';capacityDecisionDigest=$null
@@ -856,12 +858,13 @@ function Resolve-CapacityRouting {
     if ($toward -ceq 'claude') { $target.placement='override-Todd' } # CAPACITY_GUARD_RULED_PLACEMENT
   } catch { $result.capacityFlipSkip='SLOT_NOT_ADMITTED';return $result }
   # Independence is per artifact and per route: implementation reads the
-  # complete branch lineage, planning the whole issue, review the named
+  # complete branch lineage, planning/decision the whole issue, review the named
   # artifact (brief or code) of the issue. Skips grant nothing.
   $historyArguments=switch ($LaneRole) {
     'implementation' { @{Branch=$Branch;Artifact='code'} }
     'planning' { @{Issue=$Issue;Artifact='all'} }
     'review' { @{Issue=$Issue;Artifact=$ReviewArtifact} }
+    'decision' { @{Issue=$Issue;Artifact='all'} }
   }
   if (($LaneRole -cne 'implementation' -and $Issue -lt 1) -or -not $historyArguments.Artifact) { $result.capacityFlipSkip='REVIEWER_HISTORY_UNKNOWN';return $result } # CAPACITY_GUARD_ARTIFACT
   $history=Get-CapacityAuthorHistory -Path $HistoryPath @historyArguments -Registry $data.registry

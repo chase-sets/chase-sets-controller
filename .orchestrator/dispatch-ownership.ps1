@@ -375,7 +375,7 @@ function Test-DispatchRoutingProvenance($Record) {
 function Get-DispatchRoutingLedgerKeys([string]$Schema, $Row = $null) {
   $keys = @('ts','kind','dispatchRoutingSchema','attemptId','label','lane','laneRole','transcript','harness','model','effort','row','placement','worktree','branch','head')
   if ($null -ne $Row -and $null -ne $Row.PSObject.Properties['issue']) { $keys += 'issue' }
-  # A planning or review row dispatched without placement carries the logger's
+  # A planning, review or decision row dispatched without placement carries the logger's
   # closed placementSource beside its null placement (#9282 role v3 rows).
   if ($Schema -ceq 'watchdog-dispatch-routing/v3' -and $null -ne $Row -and $null -ne $Row.PSObject.Properties['placementSource']) { $keys += 'placementSource' }
   if ($Schema -ceq 'watchdog-dispatch-routing/v1') { return $keys }
@@ -398,7 +398,7 @@ function Test-DispatchRoutingLedgerEvidence($Row) {
         @($keys|Where-Object{$_ -cnotin $Row.PSObject.Properties.Name}).Count -or
         -not (Test-DispatchCapacityEvidence $Row)) { return $false }
     if ($null -ne $Row.PSObject.Properties['placementSource'] -and (
-        $Row.laneRole -cnotin @('review','planning') -or $null -ne $Row.placement -or $Row.placementSource -isnot [string] -or
+        $Row.laneRole -cnotin @('review','planning','decision') -or $null -ne $Row.placement -or $Row.placementSource -isnot [string] -or
         $Row.placementSource -cne $(if ([string]$Row.row -ceq '0') { 'row-0-explicit' } else { 'non-implementation-unspecified' }))) { return $false }
   }
   return $Row.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and
@@ -549,9 +549,9 @@ function Get-ValidatedDispatchOwnershipRecord(
     if (-not (Test-DispatchFullyQualifiedPath ([string]$record.promptPath)) -or
         -not (Test-DispatchSamePath ([string]$record.promptPath) $expectedPromptPath)) { return $null }
 
-    # review and planning are both provider-credential-isolated and own an
+    # review, planning and decision are all provider-credential-isolated and own an
     # isolation root named for their role; implementation owns none.
-    if ($record.laneRole -ceq "review" -or $record.laneRole -ceq "planning") {
+    if ($record.laneRole -ceq "review" -or $record.laneRole -ceq "planning" -or $record.laneRole -ceq "decision") {
       $expectedIsolationRoot = Join-Path $tempResolved "chase-sets-$([string]$record.laneRole)-$launchId"
       if (-not (Test-DispatchFullyQualifiedPath ([string]$record.reviewIsolationRoot)) -or
           -not (Test-DispatchSamePath ([string]$record.reviewIsolationRoot) $expectedIsolationRoot)) { return $null }
@@ -1509,8 +1509,8 @@ function Remove-DispatchLaunchResources(
   if (-not (Test-DispatchOwnershipRecordExact $current $ExpectedRecord)) { return $false }
 
   $promptPath = Join-Path (Get-DispatchCanonicalRoot $RuntimeRoot) "dispatch-heavy-verifier-$($current.launchId).prompt.txt"
-  $isolationRoot = if ($current.laneRole -ceq "review") {
-    Join-Path (Get-DispatchCanonicalRoot $TempRoot) "chase-sets-review-$($current.launchId)"
+  $isolationRoot = if ($current.laneRole -in @("review", "planning", "decision")) {
+    Join-Path (Get-DispatchCanonicalRoot $TempRoot) "chase-sets-$($current.laneRole)-$($current.launchId)"
   } else {
     $null
   }

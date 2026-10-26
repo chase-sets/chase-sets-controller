@@ -5,7 +5,7 @@ $ErrorActionPreference='Stop'
 $cases=@('policy','current','admission','stale-registry','stale-status','future-registry','future-status',
   'missing-policy','missing-registry','unparseable-policy','unparseable-registry',
   'missing-latest','missing-snapshot','unparseable-latest','unparseable-snapshot',
-  'explicit','evidence','cache','price','zero-accounts','account-authority','cache-publication','model-set')
+  'explicit','evidence','cache','price','zero-accounts','account-authority','cache-publication','model-set','decision-role')
 $root=Join-Path ([IO.Path]::GetTempPath()) ('routing-data-test-'+[guid]::NewGuid().ToString('N'))
 $now=[DateTimeOffset]'2026-09-30T12:00:00Z'
 [IO.Directory]::CreateDirectory((Join-Path $root 'benchmarks'))|Out-Null
@@ -96,6 +96,11 @@ function Invoke-Case([string]$Name){
       Assert-Equal $r.row 0 'explicit review/planning envelope keeps row zero'
       Assert-True ($null-eq$r.placement) 'explicit unqualified envelope never guesses placement'
       Assert-Refused {Resolve-Fixture -Row 0} ROUTING_ROW_REQUIRED
+    }
+    'decision-role' {
+      $dispatch=[pscustomobject]@{kind='dispatch';laneRole='decision';issue=223;model='model-a';effort='high'}
+      Assert-True ($null -eq (Get-CapacityAuthorArtifact $dispatch)) 'decision dispatch is issue-rooted and not authorship'
+      Assert-True ($null -eq (Get-CapacityReceiptArtifact $dispatch)) 'decision dispatch is not a code or brief receipt artifact'
     }
     'evidence' {
       $r=Resolve-Fixture

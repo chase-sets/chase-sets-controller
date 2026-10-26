@@ -88,7 +88,7 @@ function Test-Text([string]$Text) {
   $rules=@{
     7=@('At 15 or more dispatches without any confirmed canonical landing', 'only at the pre-dispatch moment', 'query-ledgers.ps1 -DispatchIssue', 'Never sweep closed, tracking-only or non-candidate issues', 'The fourth-attempt step-back review remains independent of this count', 'route one independent step-back review under section 11')
     11=@('Pending and final are once-only steady states', 'log-event.ps1 -DispatchDecision', 'CLAIMED', 'ACKNOWLEDGED', 'FINAL', 'APPLYING', 'APPLIED', 'never launch a second threshold decision', 'Replan is planning work, not another decision lane', 'counsel/operator gates and Todd-only authority remain binding', '`PARK` is refused.',
-      'The claim caller launches the decision lane once through `dispatch-lane.ps1 -Issue <issue> -LaneRole planning` (or `review`).',
+      'The claim caller launches the decision lane once through `dispatch-lane.ps1 -Issue <issue> -LaneRole decision`.',
       'The worktree leaf must equal the claimed `lane`, and the label must make the transcript equal the claimed `transcript`.',
       'That launcher''s `watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row, and `ACKNOWLEDGED.dispatchReceiptIdentity` is its raw SHA256.',
       'The host appends no other issue-bearing `kind=dispatch` row for that lane/transcript: no VERIFIED, attribution or backfill `-Issue` row.')

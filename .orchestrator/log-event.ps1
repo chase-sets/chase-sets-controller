@@ -42,7 +42,7 @@ param(
   # What the lane was dispatched to do. Recorded for its own sake, and read by
   # the delivery board's lane-owned states (§14): a `review` dispatch puts the
   # issue In review, anything else puts it In lane.
-  [ValidateSet("implementation", "review", "planning")][string]$LaneRole,
+  [ValidateSet("implementation", "review", "planning", "decision")][string]$LaneRole,
   [string]$Harness,
   [string]$Model,
   # On review-complete / verify-complete / repair-complete: the model whose
@@ -518,13 +518,13 @@ if ($DispatchRoutingSchema -cin @('watchdog-dispatch-routing/v2','watchdog-dispa
   throw 'ROUTING_EVIDENCE_INVALID: dispatch routing v2 required'
 }
 if($DispatchRoutingSchema){
-  if($Kind-cne'dispatch'-or-not$DispatchAttemptId-or-not$DispatchLabel-or-not$Lane-or$LaneRole-cnotin@('implementation','planning','review')-or-not$Transcript-or-not$Harness-or-not$Model-or-not$Effort-or-not$Row-or
+  if($Kind-cne'dispatch'-or-not$DispatchAttemptId-or-not$DispatchLabel-or-not$Lane-or$LaneRole-cnotin@('implementation','planning','review','decision')-or-not$Transcript-or-not$Harness-or-not$Model-or-not$Effort-or-not$Row-or
     [string]::IsNullOrWhiteSpace($DispatchWorktree)-or-not$DispatchHead-or
     ($LaneRole -ceq 'implementation' -and (-not $Placement -or -not $DispatchBranch))){throw 'watchdog-dispatch-routing/v1 requires closed attempt, lane, transcript, configuration, worktree, branch, and head identity'}
 }elseif($dispatchRoutingFieldsPresent){throw 'dispatch routing fields require -DispatchRoutingSchema watchdog-dispatch-routing/v1'}
 $capacityFields=@('CapacityForecastStatus','CapacityDecisionDigest','CapacityFlip','CapacityShadowFlip','CapacityFlipSkip')
 if ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3') {
-  # v3 is the routing row for every role (implementation, planning, review);
+  # v3 is the routing row for every role (implementation, planning, review, decision);
   # the five capacity fields are always present and validated.
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   if (@($capacityFields | Where-Object {-not $PSBoundParameters.ContainsKey($_)}).Count) { throw 'CAPACITY_EVIDENCE_INVALID: five fields required' }

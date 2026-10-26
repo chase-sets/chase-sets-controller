@@ -439,12 +439,12 @@ $provenance=@('policyGeneration','registryAuthorityDigest','family','slot','used
 $specProvenancePresent=@($provenance|Where-Object{$_ -in @($spec.PSObject.Properties.Name)}).Count -gt 0
 if($specProvenancePresent){$keys += $provenance}
 $legacy=Test-ExactKeys $spec $legacyKeys
-# 8186: the lane role is closed to dispatch-lane's three roles and read before any
+# 8186: the lane role is closed to dispatch-lane's four roles and read before any
 # other admission. Only implementation lanes reach routing provenance, recovery
-# age, history, fallback, prompt or dispatch below; planning and review are
-# observed on dispatch-lane's own envelope and never relaunched or killed here.
+# age, history, fallback, prompt or dispatch below; planning, review and decision
+# are observed on dispatch-lane's own envelope and never relaunched or killed here.
 $laneRole=if($null-ne$spec.PSObject.Properties['laneRole']-and$spec.laneRole-is[string]){[string]$spec.laneRole}else{''}
-if($laneRole-cnotin@('implementation','planning','review')){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}
+if($laneRole-cnotin@('implementation','planning','review','decision')){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}
 if(-not(Test-WatchdogScalarFields $spec)){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}
 $implementation=$laneRole-ceq'implementation'
 $integrationTarget=$null
@@ -473,7 +473,7 @@ if($legacy-and$spec.schemaVersion-ceq'watchdog-lane/v1'){
     $spec|Add-Member -NotePropertyName row -NotePropertyValue ([long]$routing.row)
     $spec|Add-Member -NotePropertyName placement -NotePropertyValue ([string]$routing.placement)
   }else{
-    # A retained v1 planning/review lane never had a routing row: it carries
+    # A retained v1 planning/review/decision lane never had a routing row: it carries
     # dispatch-lane's least-authority envelope (row 0, empty placement) in memory only.
     $spec|Add-Member -NotePropertyName row -NotePropertyValue ([long]0)
     $spec|Add-Member -NotePropertyName placement -NotePropertyValue ''
@@ -566,7 +566,7 @@ if($ownerState-cne'dead'-or$descendantState-cne'none'-or-not$stopped){
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OWNERSHIP_UNKNOWN';relaunch=$false;ownerState=$ownerState;descendantState=$descendantState}|ConvertTo-Json -Compress;return
 }
 if(-not$implementation){ # OBSERVATION_GUARD_ROLE
-  # A valid, stopped, proven-dead, non-successful planning/review lane is host
+  # A valid, stopped, proven-dead, non-successful planning/review/decision lane is host
   # diagnosis: not healthy, terminal or vacancy authority, and never a relaunch.
   # It returns before any recovery age, history, fallback, count, prompt,
   # dispatch or ledger effect, so repeated observations change no bytes.

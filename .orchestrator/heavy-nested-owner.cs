@@ -1321,7 +1321,7 @@ namespace ChaseSets.HeavyAdmission
                         if (!Path.IsPathFullyQualified(prompt) || !SamePath(prompt, Path.Combine(runtime, "dispatch-heavy-verifier-" + launch + ".prompt.txt"))) return "dispatch prompt invalid";
                         if (role == "implementation") {
                             if (record.GetProperty("reviewIsolationRoot").ValueKind != JsonValueKind.Null) return "dispatch isolation invalid";
-                        } else if (role == "review" || role == "planning") {
+                        } else if (role == "review" || role == "planning" || role == "decision") {
                             string isolation = DispatchString(record, "reviewIsolationRoot");
                             if (!Path.IsPathFullyQualified(isolation) || !SamePath(isolation, Path.Combine(tempRoot, "chase-sets-" + role + "-" + launch))) return "dispatch isolation invalid";
                         } else return "dispatch role invalid";

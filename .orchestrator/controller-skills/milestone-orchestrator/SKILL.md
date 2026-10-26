@@ -264,7 +264,7 @@ Select the exact model and effort from the model-routing skill and log its row
 and placement. Family aliases are not model identities; startup liveness must
 confirm the exact reported version.
 
-Fresh implementation, planning and review routing may consume a valid, active,
+Fresh implementation, planning, review and decision routing may consume a valid, active,
 fresh capacity forecast under model-routing's "Capacity-balanced fresh
 dispatch" rule (Todd 4388/6098327249): toward Claude every off-Claude row flips
 to its own Claude slot and logs `override-Todd`; toward Codex the ordered
@@ -274,7 +274,7 @@ a host-verified per-artifact Todd override are exempt before forecast read. The
 host binds the Todd reference to branch, exact head and requested
 row/harness/model/effort/placement in the closed `-ToddRouteOverride` JSON;
 dispatch refuses incomplete or mismatched claims. Standing Todd placements are
-not this exemption. Pass the positive `-Issue` on every planning and review
+not this exemption. Pass the positive `-Issue` on every planning, review and decision
 dispatch and `-ReviewArtifact brief|code` on every product review; independence
 means a fresh lane and session with no shared transcript or conversation state
 with the author lane. Reviews and decision lanes use their row's policy slot
@@ -307,6 +307,9 @@ the launcher persists both in the watchdog spec. Set `-LaneRole` to:
 - `review`: no provider credentials; mutation is limited to the mechanical
   remedies and brief-body repairs that `contracts/review-v2.md` and §7 allow.
 - `planning`: read-only repo plus bounded GitHub planning mutations.
+- `decision`: read-only decision work with no planning-repair contract and no
+  GitHub credentials, so `gh` and private-repo reads fail too. Put the issue,
+  PR and CI evidence the decision needs into files named in the prompt.
 
 Every prompt carries only:
 
@@ -470,11 +473,11 @@ Each cycle compare transcript growth, owner process, commits, PR state, and CI:
 Long external work gets an expected completion time and bounded polling.
 Transcripts are diagnostic evidence, never vacancy authority.
 
-The reducer observes every dispatched role (implementation, planning, review):
+The reducer observes every dispatched role (implementation, planning, review, decision):
 `LIVE_SLOW`, `TERMINAL_SUCCESS` and `OWNERSHIP_UNKNOWN` apply to all of them,
 and `LAUNCH_PENDING`/`LAUNCH_FAILED` keep a lane watched. Recovery below is
-implementation-only. A valid, stopped, proven-dead, non-successful planning or
-review lane returns `OBSERVATION_ONLY`: host diagnosis, not health, terminal or
+implementation-only. A valid, stopped, proven-dead, non-successful planning,
+review or decision lane returns `OBSERVATION_ONLY`: host diagnosis, not health, terminal or
 vacancy authority, and never a relaunch, kill, or ledger effect.
 A verified mechanical death is processed by `lane-stall-watchdog.ps1`, wired
 from `lane-stall-watchdog-batch.ps1`, within five minutes of observation. Harness
@@ -988,7 +991,7 @@ blindly relaunches. Persist `ACKNOWLEDGED` with the same payload plus
 `dispatchReceiptIdentity` (the canonical dispatch row's raw SHA256). A pending
 container, lane-complete prose or launch intent is not a FINAL verdict.
 The claim caller launches the decision lane once through
-`dispatch-lane.ps1 -Issue <issue> -LaneRole planning` (or `review`).
+`dispatch-lane.ps1 -Issue <issue> -LaneRole decision`.
 The worktree leaf must equal the claimed `lane`, and the label must make the
 transcript equal the claimed `transcript`. That launcher's
 `watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row,
