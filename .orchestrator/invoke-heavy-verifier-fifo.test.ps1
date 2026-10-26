@@ -2,7 +2,7 @@
 param(
   [ValidateSet('', 'bypass-fifo', 'skip-absent-head', 'renumber-on-retry', 'prune-live', 'never-expire', 'reset-without-authority', 'quarantine-early', 'ignore-marker', 'rename-completes')][string]$Mutant = '',
   [string]$GuardRevision = '',
-  [ValidateSet('all','recovery','isolation')][string]$Part = 'all'
+  [ValidateSet('all','order','lifecycle','authority','recovery','isolation')][string]$Part = 'all'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -118,6 +118,14 @@ function Assert-RecoveryOwners {
 function Assert-LockBlocked($Result,[string]$Name) {
   Assert-Fifo ($Result.Code -ne 0 -and -not $Result.Body -and $Result.Output -match 'lock unavailable \(') $Name "exit=$($Result.Code) $($Result.Output)"
 }
+if($Mutant){
+  $Part = switch($Mutant){
+    {$_ -in @('bypass-fifo','skip-absent-head','renumber-on-retry')} {'order';break}
+    {$_ -in @('prune-live','never-expire')} {'lifecycle';break}
+    'reset-without-authority' {'authority';break}
+    default {'recovery';break}
+  }
+}
 function Write-Seed($Tickets,[long]$Next=1000) {
   $doc=if(Test-Path $queue){Read-Json $queue}else{[pscustomobject]@{schemaVersion=1;fileIdentity='fixture-not-initialized';nextTicket=1;tickets=@()}}
   $doc.tickets=@($Tickets);$doc.nextTicket=$Next;Write-Json $queue $doc
@@ -168,6 +176,47 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   $script:head=(& git -C $tree rev-parse HEAD).Trim();$script:branch=(& git -C $tree branch --show-current).Trim()
   $a=New-Driver A;$b=New-Driver B;$c=New-Driver C;$o=New-Driver owner
   $now=[DateTimeOffset]::UtcNow;$start=$now.AddHours(-1).ToString('o')
+  function Test-MutantOrder {
+    foreach($shape in @('Gate','Attach')) {
+      Clear-Queue;$control=Invoke-Attempt $a $shape
+      Assert-Fifo ($control.Code -eq 0 -and $control.Body) "MUTANT $Mutant AC1 $shape control" $control.Output
+      $barrier=Start-Attempt $o $shape -Hold;Wait-For {Test-Path $barrier.Marker} "MUTANT $Mutant $shape barrier"
+      Assert-LockBlocked (Invoke-Attempt $a $shape) "MUTANT $Mutant AC1 $shape A waits for owner"
+      Assert-Refused (Invoke-Attempt $b $shape) "MUTANT $Mutant AC1 $shape B first refusal" 'queued;.*ticket=\d+.*position=2'
+      Assert-Refused (Invoke-Attempt $c $shape) "MUTANT $Mutant AC1 $shape C first refusal" 'queued;.*position=3'
+      $before=Read-Json $queue;$retry=Invoke-Attempt $a $shape;$after=Read-Json $queue
+      Assert-Fifo (($before.tickets.number -join ',') -ceq ($after.tickets.number -join ',') -and ($before.tickets.claimantKey -join ',') -ceq ($after.tickets.claimantKey -join ',')) "MUTANT $Mutant AC1 retry keeps number and order" $retry.Output
+      $null=Release-Attempt $barrier
+      foreach($pair in @(@($b,2),@($c,3))) {
+        Assert-Refused (Invoke-Attempt $pair[0] $shape) "MUTANT $Mutant AC1 $shape absent-head refusal position=$($pair[1])" "queued;.*ticket=\d+.*position=$($pair[1]).*reserved=True"
+      }
+      $admitted=Invoke-Attempt $a $shape
+      Assert-Fifo ($admitted.Code -eq 0 -and $admitted.Body) "MUTANT $Mutant AC1 $shape A admits after release" $admitted.Output
+      Write-Output "PASS MUTANT $Mutant AC1 $shape named guard case"
+    }
+  }
+  function Test-MutantLifecycle {
+    $rows=@();$tickets=@();$probes=@();$number=0
+    foreach($state in @('dead','reused','live','ambiguous')){foreach($desc in @($false,$null)){foreach($age in @(599,601)){
+      $number++;$probeId=2100000000+$number
+      $tickets+=New-Ticket $number $probeId $start ($now.AddSeconds(-$age).ToString('o'))
+      $probes+=@{pid=$probeId;startIdentity=$start;state=$state;descendant=$desc}
+      $rows+=@{number=$number;state=$state;desc=$desc;age=$age;keep=($age -le 600 -and ($state -in @('live','ambiguous') -or $null -eq $desc))}
+    }}}
+    Clear-Queue;$control=Invoke-Attempt $a Gate
+    Assert-Fifo ($control.Code -eq 0 -and $control.Body) "MUTANT $Mutant AC3 lifecycle control" $control.Output
+    Write-Seed $tickets
+    $r=Invoke-Attempt $b Gate (Set-Fixture @{now=$now.ToString('o');probes=$probes})
+    $retained=@((Read-Json $queue).tickets.number)
+    foreach($row in $rows){
+      $observed=$retained -contains $row.number
+      $name="MUTANT $Mutant AC3 lifecycle $($row.state) descendant=$(if($null -eq $row.desc){'unknown'}else{'false'}) age=$($row.age)"
+      Assert-Fifo ($observed -eq $row.keep) $name "retained=$observed expected=$($row.keep) exit=$($r.Code) $($r.Output)"
+    }
+    Write-Output "PASS MUTANT $Mutant AC3 lifecycle named guard case"
+  }
+  if($Part -eq 'order'){Test-MutantOrder;Write-Output "PASS FIFO mutant case=$Mutant";return}
+  if($Part -eq 'lifecycle'){Test-MutantLifecycle;Write-Output "PASS FIFO mutant case=$Mutant";return}
   if($Part-eq'all') {
   $control=Invoke-Attempt $a Gate
   Assert-Fifo ($control.Code-eq0-and$control.Body) 'AC2 initial no-waiter control' $control.Output
@@ -324,6 +373,18 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   [void][IO.Directory]::CreateDirectory((Split-Path -Parent $script:controllerOwner));[IO.File]::WriteAllText($script:controllerOwner,'controller owner sentinel')
   $script:controllerOwnerHash=Hash-File $script:controllerOwner
   $recoveryDriver=New-Driver recoveryHost
+  if($Part -eq 'authority'){
+    Clear-Queue;[IO.File]::WriteAllText($queue,'{invalid authority fixture');$hash=Hash-File $queue
+    $dispatch=New-DispatchFixture $recoveryDriver 'fifo-authority'
+    $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='7';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+    $r=Invoke-Attempt $recoveryDriver Gate @{QuarantineQueue=$hash} -Production
+    Assert-Fifo ($r.Code -eq 73 -and -not $r.Body) "MUTANT $Mutant AC4 authority guard refuses unbound reset" $r.Output
+    Assert-Fifo (-not(Test-Path $recovery) -and (Hash-File $queue) -ceq $hash) "MUTANT $Mutant AC4 authority guard leaves queue and quarantine unchanged" "output=$($r.Output)"
+    Assert-Fifo ($r.Output -match 'eligibility|host-only') "MUTANT $Mutant AC4 authority guard names refusal reason" $r.Output
+    Remove-Item -LiteralPath $dispatch.Path
+    Write-Output "PASS FIFO authority guard case=$Mutant"
+    return
+  }
   foreach($fault in @('changed-hash','replaced','reparse','pre-move-replacement')) {
     Clear-Queue;[IO.File]::WriteAllText($queue,"{invalid $fault");$hash=Hash-File $queue;$recover=@{QuarantineQueue=$hash}
     $r=Invoke-Attempt $recoveryDriver Gate ($recover+(Set-Fixture @{now=$now.ToString('o')})) -Production
@@ -395,5 +456,12 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   foreach($attempt in $attempts){if($attempt.Release){[IO.File]::WriteAllText($attempt.Release,'cleanup')}}
   foreach($driver in $drivers){[IO.File]::WriteAllText((Join-Path $driver.Dir 'stop'),'stop')}
   foreach($driver in $drivers){if(-not$driver.Process.WaitForExit(10000)){$driver.Process.Kill($true);$driver.Process.WaitForExit()}}
-  Write-Output "FIFO fixture evidence: $root"
+  $rootFull=[IO.Path]::GetFullPath($root)
+  $tempFull=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+  $rootParent=[IO.Path]::GetDirectoryName($rootFull)
+  $rootLeaf=[IO.Path]::GetFileName($rootFull)
+  if($rootParent -ieq $tempFull -and $rootLeaf -cmatch '^heavy-fifo-[0-9a-f]{32}$' -and (Test-Path -LiteralPath $rootFull)){
+    Remove-Item -LiteralPath $rootFull -Recurse -Force
+    Write-Output "FIFO fixture cleanup: removed $rootFull"
+  }
 }
