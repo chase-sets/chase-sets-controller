@@ -1,6 +1,22 @@
 [CmdletBinding()]
 param([string]$HistorySnapshot, [string]$BaselineModule, [string]$EvidenceRoot)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
+$oldRoutingRoot=$env:CHASE_SETS_ROUTING_DATA_ROOT
+$oldRoutingLkg=$env:CHASE_SETS_ROUTING_LKG_PATH
+$routingRoot=Join-Path ([IO.Path]::GetTempPath()) ('controller-scaling-routing-'+[guid]::NewGuid().ToString('N'))
+$ambientRoot=Join-Path $routingRoot 'ambient'
+$fixtureRoot=Join-Path $routingRoot 'fixture'
+[IO.Directory]::CreateDirectory($routingRoot) | Out-Null
+try {
+$null=New-RoutingDataFixture -Root $ambientRoot -Families @(
+  [pscustomobject]@{name='ambient';provider='codex';current='ambient-model';historical=@()})
+$fixture=New-RoutingDataFixture -Root $fixtureRoot -Families @(
+  [pscustomobject]@{name='sol';provider='codex';current='gpt-6.1-sol';historical=@('gpt-5.6-sol')},
+  [pscustomobject]@{name='astra';provider='codex';current='gpt-6-astra';historical=@()},
+  [pscustomobject]@{name='opus';provider='claude';current='claude-opus-5-5';historical=@()})
+$env:CHASE_SETS_ROUTING_DATA_ROOT=$ambientRoot
+$env:CHASE_SETS_ROUTING_LKG_PATH=(Join-Path $ambientRoot 'ambient-lkg.json')
 $candidate=Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -PassThru -DisableNameChecking
 $history = [pscustomobject]@{ complete=$true; rows=@(
   [pscustomobject]@{value=[pscustomobject]@{kind='note';issue=8468}},
@@ -25,6 +41,13 @@ try {
   $rawDispatch=($dispatch|ConvertTo-Json -Compress).Replace('controllerReviewSchema','controller\u0052eviewSchema')
   $rawReceipt=$receipt|ConvertTo-Json -Compress -Depth 20
   [IO.File]::WriteAllLines($path,@($rawDispatch,$rawReceipt),[Text.UTF8Encoding]::new($false))
+  $ambient=Read-ExactHeadReviewHistory $path
+  $ambientResult=Reduce-ControllerReleaseReview -Issue 8468 -ControllerHead $head -Mode strict-v1 -History $ambient
+  if($ambientResult.state-ceq'authorized'-or$ambientResult.reason-cne'MALFORMED_RELEVANT_STRICT_ROW'){
+    throw "ASSERTION FAILED: vocabulary-free ambient routing source did not reject the model claims: $($ambientResult.reason)"
+  }
+  $env:CHASE_SETS_ROUTING_DATA_ROOT=$fixture.stateRoot
+  $env:CHASE_SETS_ROUTING_LKG_PATH=$fixture.lkgPath
   $complete=Read-ExactHeadReviewHistory $path
   $positive=Reduce-ControllerReleaseReview -Issue 8468 -ControllerHead $head -Mode strict-v1 -History $complete
   if($positive.state-cne'authorized'){throw "ASSERTION FAILED: exact host-dispatched eligible review not accepted: $($positive.reason)"}
@@ -106,4 +129,12 @@ if($HistorySnapshot){
   }}finally{$writer.Dispose()}
   if((Get-FileHash $HistorySnapshot).Hash-cne$snapshotHash){throw 'snapshot bytes changed'}
   "PASS live snapshot byte-equivalent reductions=$count pairs=$($pairs.Count) sha256=$snapshotHash"
+}
+} finally {
+  $env:CHASE_SETS_ROUTING_DATA_ROOT=$oldRoutingRoot
+  $env:CHASE_SETS_ROUTING_LKG_PATH=$oldRoutingLkg
+  $resolved=[IO.Path]::GetFullPath($routingRoot)
+  $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+  if((Split-Path -Parent $resolved).TrimEnd('\','/')-cne$temp-or(Split-Path -Leaf $resolved)-notlike'controller-scaling-routing-*'){throw 'unsafe controller scaling routing cleanup root'}
+  Remove-Item -LiteralPath $resolved -Recurse -Force
 }

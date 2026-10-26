@@ -30,7 +30,18 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
-function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures')) {
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
+  if($UseArchive){
+    if($Name-cnotin @('b3b4ac2','aa62899')){throw "HISTORICAL_FIXTURE: archive source is only supported for b3b4ac2 or aa62899, got $Name"}
+    $sourceRoot=Split-Path -Parent $PSScriptRoot;$archive=Join-Path $Destination "historical-$Name.tar"
+    [IO.Directory]::CreateDirectory($Destination)|Out-Null
+    $archiveOutput=@(& git.exe --no-optional-locks -C $sourceRoot archive --format=tar -o $archive $Name .orchestrator 2>&1)
+    if($LASTEXITCODE-ne0){throw "HISTORICAL_FIXTURE: git archive failed: $($archiveOutput-join"`n")"}
+    $extractOutput=@(& tar.exe -xf $archive -C $Destination 2>&1)
+    if($LASTEXITCODE-ne0){throw "HISTORICAL_FIXTURE: archive extraction failed: $($extractOutput-join"`n")"}
+    Remove-Item -LiteralPath $archive -Force
+    return (Join-Path $Destination '.orchestrator')
+  }
   $fixtureRoot=Join-Path $FixturesRoot "historical-$Name"
   $readme=Join-Path $fixtureRoot 'README.md'
   if(-not(Test-Path -LiteralPath $readme -PathType Leaf)){throw "HISTORICAL_FIXTURE: missing README for $Name"}
@@ -45,7 +56,9 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','0b6e67e8','f67fc9
   [IO.Directory]::CreateDirectory($Destination)|Out-Null
   foreach($entry in $entries){
     $source=Join-Path $fixtureRoot $entry.path
-    $lf=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes($source)).Replace("`r`n","`n")); $blobHash=[Security.Cryptography.IncrementalHash]::CreateHash('SHA1'); $blobHash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($lf.Length)`0")); $blobHash.AppendData($lf); $actual=[Convert]::ToHexString($blobHash.GetHashAndReset()).ToLowerInvariant(); $blobHash.Dispose() # CRLF-normalized Git blob id in process: independent of core.autocrlf
+    $bytes=[IO.File]::ReadAllBytes($source)
+    if($Name -cnotin @('b3b4ac2','aa62899')){$bytes=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($bytes).Replace("`r`n","`n"))}
+    $blobHash=[Security.Cryptography.IncrementalHash]::CreateHash('SHA1'); $blobHash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")); $blobHash.AppendData($bytes); $actual=[Convert]::ToHexString($blobHash.GetHashAndReset()).ToLowerInvariant(); $blobHash.Dispose() # b3b4ac2 and aa62899 use raw Git blob bytes; older fixtures retain their established newline policy.
     if($actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
     $target=Join-Path $Destination $entry.path
     [IO.Directory]::CreateDirectory((Split-Path -Parent $target))|Out-Null
@@ -68,7 +81,10 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   # Candidate admission must reject that selector; never relax production
   # validation just to construct a historical stopped-attempt fixture.
   $historicalRoot = Join-Path $root 'pre-migration'
-  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
+  $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
+  if([string]::IsNullOrWhiteSpace($historicalSource)){$historicalSource='fixture'}
+  if($historicalSource-cnotin @('fixture','archive')){throw "HISTORICAL_FIXTURE: unknown test source '$historicalSource'"}
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive')); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
@@ -1111,7 +1127,7 @@ function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','
 # The merge graph reproduces the 9285 first-stop shape: a first-parent chain and
 # an older side history joined by a merge, so the raw reverse list (six commits
 # including the merge) differs from the sequencer's five-pick plan.
-function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-rebase','ordinary-watchdog','successor-rebase','successor-publication','successor-amend','successor-dispatch','successor-completion','successor-depth','successor-watchdog')][string]$Carrier) {
+function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-rebase','ordinary-watchdog','successor-rebase','successor-publication','successor-amend','successor-dispatch','successor-completion','successor-depth','successor-watchdog')][string]$Carrier,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry')][string]$Part='') {
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-9334-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
@@ -1488,8 +1504,8 @@ exit $LASTEXITCODE
     $baseline=Join-Path $f.case 'baseline-9411'
     if(-not(Test-Path -LiteralPath $baseline)){
       [IO.Directory]::CreateDirectory($baseline)|Out-Null
-      $archive=Join-Path $f.case 'baseline-9411.zip';[void](Git9334 (Split-Path -Parent $PSScriptRoot) @('archive','--format=zip','-o',$archive,$successorBaselineHead,'.orchestrator'))
-      [IO.Compression.ZipFile]::ExtractToDirectory($archive,$baseline)
+      $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
+      [void](New-HistoricalDispatchFixture 'aa62899' $baseline -UseArchive:($historicalSource-ceq'archive'))
     }
     return $baseline
   }
@@ -1685,12 +1701,17 @@ exit $LASTEXITCODE
       return
     }
     if ($Carrier -ceq 'ordinary-rebase') {
+      $runLive = -not $Part -or $Part -ceq 'ordinary-rebase-live'
+      $runRetry = -not $Part -or $Part -ceq 'ordinary-rebase-retry'
+      if ($runLive) {
       # LIVE lane: the same ordinary child captures, continues under -NoPush, commits and publishes; the launcher completes origin=live.
       $live=Fixture9334 'live' -Live
       Proof9334 ($live.seed.exit-eq0-and(Test-Path -LiteralPath $live.capturePath)) "live ordinary lane exit=$($live.seed.exit) with helper capture raw=$($live.seed.resultPath)"
       $liveEvents=Events9334 $live $live.seedLabel
       Proof9334 ($liveEvents.Count-eq4-and$liveEvents[0].item.exit_code-eq2-and$liveEvents[1].item.command.Contains('-ContinueInterruptedIntegration')-and$liveEvents[1].item.exit_code-eq1-and$liveEvents[1].item.aggregated_output.Contains('ordinary continuation requires NoPush')-and$liveEvents[2].item.exit_code-eq0-and$liveEvents[3].item.command.Contains('-PublishInterruptedIntegration')-and$liveEvents[3].item.exit_code-eq0) 'live ordinary child: wrapper first stop, missing NoPush refusal, NoPush continuation, leased publication'
       [void](Completion9334 $live 'live' 'ordinary live')
+      }
+      if ($runRetry) {
       # Second real conflict after readmission: checkpoint, stale refusal, fresh v4 chain, readmission, publication.
       $r=Fixture9334 'retained' -SecondStop
       $first=Bind9334 $r
@@ -1711,6 +1732,7 @@ exit $LASTEXITCODE
       $nextWatchdog=Read-RebaseJson (Join-Path $r.runtime "watchdog-lane-$($r.cfg.label).json")
       Proof9334 ($nextWatchdog.resumeOfLaunchId-ceq$watchdog.launchId-and$nextWatchdog.attemptId-ceq$first.sources.attemptId-and$nextWatchdog.interruptedIntegration-ceq($next|ConvertTo-Json -Depth 12 -Compress)) 'retry watchdog retains the fresh binding, lineage and semantic attempt'
       [void](Completion9334 $r 'resume' 'ordinary retained retry')
+      }
       $finished=$true
       return
     }
@@ -2074,8 +2096,8 @@ exit $LASTEXITCODE
     Write-Output "RETAINED $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier native objects, records, entry snapshots and source evidence: $root; finished=$finished"
   }
 }
-function Invoke-9334OrdinaryCarriers([string[]]$Carriers) {
-  foreach ($carrier in $Carriers) { Test-9334OrdinaryCarrier $carrier }
+function Invoke-9334OrdinaryCarriers([string[]]$Carriers,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry')][string]$Part='') {
+  foreach ($carrier in $Carriers) { Test-9334OrdinaryCarrier $carrier -Part $Part }
 }
 
 # Inert decision/shape controls. Native process, source authentication and Git
