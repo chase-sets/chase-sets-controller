@@ -12,6 +12,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
+$oldRoutingRoot=$env:CHASE_SETS_ROUTING_DATA_ROOT
+$oldRoutingLkg=$env:CHASE_SETS_ROUTING_LKG_PATH
+$routingRoot=Join-Path ([IO.Path]::GetTempPath()) ('issue-6254-routing-'+[guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($routingRoot) | Out-Null
+try {
+$ambient=New-RoutingDataFixture -Root (Join-Path $routingRoot 'ambient') -Families @(
+  [pscustomobject]@{name='ambient';provider='codex';current='ambient-model';historical=@()})
+$fixture=New-RoutingDataFixture -Root (Join-Path $routingRoot 'fixture') -Families @(
+  [pscustomobject]@{name='sol';provider='codex';current='gpt-6.1-sol';historical=@('gpt-5.6-sol')},
+  [pscustomobject]@{name='opus';provider='claude';current='claude-opus-5-5';historical=@()})
+$env:CHASE_SETS_ROUTING_DATA_ROOT=$fixture.stateRoot
+$env:CHASE_SETS_ROUTING_LKG_PATH=$fixture.lkgPath
 $controller = [IO.Path]::GetFullPath($ControllerRoot)
 $runtime = Join-Path $controller ".orchestrator"
 $required = @(
@@ -84,6 +97,16 @@ function Invoke-ReceiptPoisonDiscriminator {
     $targetPass = New-ReceiptRow $targetPr $headA "target-pass"
     $frozenHistory = Write-ReceiptHistory @($zeroOne,$zeroTwo,$targetPass) "frozen-live-shape.jsonl"
     $candidateReducer = Join-Path $runtime "review-head-reducer.ps1"
+    $env:CHASE_SETS_ROUTING_DATA_ROOT=$ambient.stateRoot
+    $env:CHASE_SETS_ROUTING_LKG_PATH=$ambient.lkgPath
+    $ambientCandidate = Invoke-ReceiptReducer $candidateReducer $frozenHistory
+    $ambientErrors = @($ambientCandidate.audit.malformedExactHeadReceiptDetails[0].errors)
+    Assert-6254 ($ambientCandidate.state -ceq "unknown" -and
+      $ambientCandidate.reason -ceq "MALFORMED_EXACT_HEAD_RECEIPT" -and
+      $ambientErrors -contains "INVALID_MODEL" -and $ambientErrors -contains "INVALID_AUTHORMODEL") `
+      "vocabulary-free ambient routing source did not reject the historical model identities"
+    $env:CHASE_SETS_ROUTING_DATA_ROOT=$fixture.stateRoot
+    $env:CHASE_SETS_ROUTING_LKG_PATH=$fixture.lkgPath
     $candidate = Invoke-ReceiptReducer $candidateReducer $frozenHistory
     Assert-6254 ($candidate.state -ceq "authorized" -and
       $candidate.reason -ceq "LATEST_EXACT_HEAD_PASS" -and
@@ -279,6 +302,17 @@ try {
   if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
       (Split-Path -Leaf $resolved) -notlike "issue-6254-discriminator-*") {
     throw "refusing unsafe discriminator cleanup target: $resolved"
+  }
+  Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+}
+} finally {
+  $env:CHASE_SETS_ROUTING_DATA_ROOT=$oldRoutingRoot
+  $env:CHASE_SETS_ROUTING_LKG_PATH=$oldRoutingLkg
+  $resolved=[IO.Path]::GetFullPath($routingRoot)
+  $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
+  if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
+      (Split-Path -Leaf $resolved) -notlike "issue-6254-routing-*") {
+    throw "refusing unsafe routing cleanup target: $resolved"
   }
   Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
 }
