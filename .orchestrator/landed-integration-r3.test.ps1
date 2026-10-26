@@ -1,3 +1,4 @@
+param([ValidateSet('','auth','7926','7962','guards','harness','copy-signal','prior-teardown','census-latency','census-deadline')][string]$Control='',[ValidateRange(0,60000)][int]$CensusLatencyMs=0,[ValidateSet('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release')][string[]]$Modes=@('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release'))
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -9,6 +10,12 @@ $logger=Join-Path $PSScriptRoot 'log-event.ps1'
 $failures=[Collections.Generic.List[string]]::new()
 . (Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
+. (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
+$r3Subject=Initialize-R3CensusSubject (Join-Path $fixtureRoot 'subject') $CensusLatencyMs -PreserveRepositorySelector
+$producer=Join-Path $r3Subject 'landed-integration-dispatch.ps1'
+$consumer=Join-Path $r3Subject 'landed-integration-consume.ps1'
+. (Join-Path $r3Subject 'dispatch-ownership.ps1')
+. (Join-Path $r3Subject 'integration-dispatch-test-support.ps1')
 
 function Assert-True($Condition,[string]$Message){if(-not$Condition){throw "ASSERTION FAILED: $Message"}}
 function New-SyntheticRepository([string]$Path,[string]$Branch,[string]$Label){
@@ -73,10 +80,125 @@ function Start-SyntheticPwsh([string[]]$Arguments){
   $process=[Diagnostics.Process]::Start($start)
   [pscustomobject]@{process=$process;stdout=$process.StandardOutput.ReadToEndAsync();stderr=$process.StandardError.ReadToEndAsync()}
 }
-function Complete-SyntheticPwsh($Handle,[int]$Seconds=45){
-  if(-not$Handle.process.WaitForExit($Seconds*1000)){throw "synthetic process did not finish: $($Handle.process.Id)"}
+function Complete-SyntheticPwsh($Handle){
+  $Handle.process.WaitForExit()
   $stdout=$Handle.stdout.GetAwaiter().GetResult();$stderr=$Handle.stderr.GetAwaiter().GetResult();$code=$Handle.process.ExitCode;$Handle.process.Dispose()
   [pscustomobject]@{exitCode=$code;stdout=$stdout;stderr=$stderr}
+}
+function Test-R3SignalControls {
+  $signal=Join-Path $fixtureRoot 'producer.signal'
+  $child=Join-Path $fixtureRoot 'signal-producer.ps1'
+  [IO.File]::WriteAllText($child,'param($Signal); [Console]::Out.WriteLine("stdout-complete"); [Console]::Error.WriteLine("stderr-complete"); if($Signal){[IO.File]::WriteAllText($Signal,"ready")}')
+  $missing=Start-SyntheticPwsh @('-NoProfile','-File',$child)
+  $failure=$null;try{Wait-SyntheticProducerSignal $signal $missing.process 'harness'}catch{$failure=$_.Exception.Message}
+  $terminal=Complete-SyntheticPwsh $missing
+  Assert-True ($failure-clike'SYNTHETIC_SIGNAL_MISSING: harness producer exited 0 without *'-and$terminal.stdout.Contains('stdout-complete')-and$terminal.stderr.Contains('stderr-complete')) 'terminal-without-signal refuses and preserves both EOF streams'
+  Write-Output 'CONTROL harness terminal-without-signal REFUSED guard=SYNTHETIC_SIGNAL_MISSING stdout/stderr=EOF'
+  $ready=Start-SyntheticPwsh @('-NoProfile','-File',$child,$signal)
+  Wait-SyntheticProducerSignal $signal $ready.process 'copy-signal'
+  $terminal=Complete-SyntheticPwsh $ready
+  Assert-True ($terminal.exitCode-eq0-and$terminal.stdout.Contains('stdout-complete')-and$terminal.stderr.Contains('stderr-complete')) 'copy-signal process exit and both EOFs'
+  Write-Output 'CONTROL copy-signal PASS producer=terminal stdout/stderr=EOF'
+  foreach($preserve in @($false,$true)){
+    $runtime=Join-Path $fixtureRoot "repeat-copy-$preserve"
+    $null=Initialize-R3CensusSubject $runtime -PreserveRepositorySelector:$preserve
+    $before=@(Get-ChildItem (Join-Path $runtime 'contracts') -File -Recurse|ForEach-Object{ $_.FullName.Substring($runtime.Length)+'|'+(Get-FileHash $_.FullName).Hash })
+    Copy-CensusController ([pscustomobject]@{runtime=$runtime}) -DeterministicMeter -PreserveRepositorySelector:$preserve
+    $after=@(Get-ChildItem (Join-Path $runtime 'contracts') -File -Recurse|ForEach-Object{ $_.FullName.Substring($runtime.Length)+'|'+(Get-FileHash $_.FullName).Hash })
+    Assert-True ($before.Count-gt0-and($before-join"`n")-ceq($after-join"`n")) 'repeated runtime copy preserves exact contracts inventory'
+    $source=[IO.File]::ReadAllText((Join-Path $runtime 'landed-integration-dispatch.ps1'))
+    Assert-True ($source.Contains("-ceq 'chase-sets/chase-sets'")-eq$preserve-and$source.Contains("-ceq '$SyntheticIntegrationRepository'")-ne$preserve) 'copied subject preserves requested repository selector'
+  }
+  Write-Output 'CONTROL copy-repeat PASS contracts=exact selector=preserved-or-synthetic meter=unique'
+}
+function Test-R3PriorTeardown {
+  $release=Join-Path $fixtureRoot 'prior.release';$ready=Join-Path $fixtureRoot 'prior.ready'
+  $descendantScript=Join-Path $fixtureRoot 'prior-descendant.ps1'
+  [IO.File]::WriteAllText($descendantScript,'param($Release,$Ready); [IO.File]::WriteAllText($Ready,"ready"); while(-not(Test-Path -LiteralPath $Release)){[Threading.Thread]::Sleep(20)}')
+  $rootScript=Join-Path $fixtureRoot 'prior-root.ps1';$identityPath=Join-Path $fixtureRoot 'prior-identity.json'
+  [IO.File]::WriteAllText($rootScript,@'
+param($ChildScript,$Release,$Ready,$Identity)
+$s=[Diagnostics.ProcessStartInfo]::new();$s.FileName=(Join-Path $PSHOME 'pwsh.exe');$s.UseShellExecute=$false;$s.CreateNoWindow=$true
+foreach($arg in @('-NoProfile','-File',$ChildScript,$Release,$Ready)){[void]$s.ArgumentList.Add($arg)}
+$child=[Diagnostics.Process]::Start($s)
+try{[IO.File]::WriteAllText($Identity,(@{pid=$child.Id;start=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json -Compress))}finally{$child.Dispose()}
+'@)
+  $launcher=Start-SyntheticPwsh @('-NoProfile','-Command','exit 0')
+  $owner=@{launcherPid=$launcher.process.Id;launcherStartIdentity=$launcher.process.StartTime.ToUniversalTime().ToString('o')}
+  $null=Complete-SyntheticPwsh $launcher
+  $root=Start-SyntheticPwsh @('-NoProfile','-File',$rootScript,$descendantScript,$release,$ready,$identityPath)
+  $owner.childPid=$root.process.Id;$owner.childStartIdentity=$root.process.StartTime.ToUniversalTime().ToString('o')
+  $root.process.WaitForExit();$root.process.Dispose()
+  $born=Get-Content -LiteralPath $identityPath -Raw|ConvertFrom-Json -DateKind String
+  $descendant=Get-Process -Id $born.pid -ErrorAction Stop
+  $owned=@{process=$descendant;startIdentity=$born.start;releasePath=$release}
+  try{
+    Assert-True ($descendant.StartTime.ToUniversalTime().ToString('o')-ceq$born.start) 'held descendant identity'
+    Wait-SyntheticProducerSignal $ready $descendant 'prior descendant readiness'
+    $failure=$null;try{Wait-RetainedPriorTree $owner}catch{$failure=$_.Exception.Message}
+    Assert-True ($failure-ceq'R3_PRIOR_TEARDOWN: live descendant without terminal producer') 'no-producer teardown refuses held descendant at own guard'
+    Write-Output 'CONTROL prior-teardown held-descendant REFUSED guard=R3_PRIOR_TEARDOWN'
+    Wait-RetainedPriorTree $owner @($owned)
+    Wait-RetainedPriorTree $owner
+    Write-Output 'PROOF prior-teardown candidate/omitted-guard preconditions roots/descendants=dead-by-identity'
+    & {function Get-CimInstance {throw 'synthetic unavailable inventory'};$failure=$null;try{Wait-RetainedPriorTree $owner}catch{$failure=$_.Exception.Message};Assert-True ($failure-ceq'R3_PRIOR_TEARDOWN: native inventory unavailable') 'teardown unavailable inventory named'}
+  }finally{
+    [IO.File]::WriteAllText($release,'release owned descendant on control failure')
+    if($owned.process){$owned.process.WaitForExit();$owned.process.Dispose()}
+  }
+  Write-Output 'PASS R3 prior-teardown stop-marker/identity-bound owned cleanup live-without-producer/unavailable=REFUSED'
+}
+
+function Test-R3CensusLatency {
+  $parent=Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-'+[guid]::NewGuid().ToString('N'))
+  try{
+    $f=New-CensusFixture $parent
+    Copy-CensusController $f 5101 -DeterministicMeter
+    [void](New-CensusFixtureOwner $f)
+    $owner=New-CensusFixtureOwner $f $f.product
+    $owner.record.state='launching';$owner.record.childPid=$null;$owner.record.childStartIdentity=$null;Write-DispatchOwnershipRecord $owner.path $owner.record
+    $o=@{schemaVersion='landed-integration-owed/v1';landedPr=908184L;landedHead=('a'*40);pr=908185L;targetHead=$owner.record.head;newBase=$owner.record.head;branch=$owner.record.branch;worktree=$f.product;integrationLane='integration-latency'}
+    $module=Import-Module (Join-Path $f.runtime 'landed-integration-evidence.psm1') -Force -PassThru -DisableNameChecking
+    try{
+      & $module {
+        param($f,$o,$owner)
+        $observation=Get-LiveDispatchOwnership $f.runtime $f.temp $f.container -ProductCensus
+        if($observation.health.status-cne'ok'-or$observation.activeLanes.Count-ne1){throw 'R3_CENSUS_LATENCY: ownership'}
+        $actual=Get-RebaseAuthenticatedOwner $o $f.runtime $owner.path Prelaunch -ProductCensus
+        if($actual.launchId-cne$owner.record.launchId){throw 'R3_CENSUS_LATENCY: authentication'}
+      } $f $o $owner
+    }finally{Remove-Module $module}
+    Write-Output 'CONTROL census-latency PASS ownership/authentication >5000ms injected per evaluation; wall time=telemetry'
+    $path=Join-Path $f.runtime 'dispatch-ownership.ps1';$text=[IO.File]::ReadAllText($path)
+    $needle='$Budget.watch.Charge(1)';Assert-True ([regex]::Matches($text,[regex]::Escape($needle)).Count-eq1) 'census-deadline one-variable charge anchor'
+    [IO.File]::WriteAllText($path,$text.Replace($needle,'$Budget.watch.Charge(5001)'))
+    $module=Import-Module (Join-Path $f.runtime 'landed-integration-evidence.psm1') -Force -PassThru -DisableNameChecking
+    try{& $module {
+      param($f,$o,$owner)
+      $actual=Get-LiveDispatchOwnership $f.runtime $f.temp $f.container -ProductCensus
+      if($actual.health.status-cne'partial'-or@($actual.health.diagnostics|Where-Object code -CEQ 'product-census-git-deadline').Count-ne1){throw 'R3_CENSUS_DEADLINE: ownership mutant wrong guard'}
+      $failure=$null;try{Get-RebaseAuthenticatedOwner $o $f.runtime $owner.path Prelaunch -ProductCensus|Out-Null}catch{$failure=$_.Exception.Message}
+      if($failure-cne'OWED_REBASE_PRODUCT_CENSUS_GIT_DEADLINE'){throw 'R3_CENSUS_DEADLINE: auth mutant wrong guard'}
+    } $f $o $owner}finally{Remove-Module $module}
+    Write-Output 'MUTANT census-deadline KILLED ownership=product-census-git-deadline authentication=OWED_REBASE_PRODUCT_CENSUS_GIT_DEADLINE'
+  }finally{Remove-CensusFixture $parent}
+}
+
+function Write-R3BoundTable {
+  foreach($row in @(
+    @('R3-Complete/F1','exact process exit + stdout EOF + stderr EOF'),
+    @('R3-F14','obligation signal or exact producer terminal-without-signal refusal'),
+    @('7926-Run-Process','exact process exit + stdout EOF + stderr EOF'),
+    @('7962-End-Native','exact process exit + stdout EOF + stderr EOF'),
+    @('7962-barriers/owner-ack','file signal or exact producer terminal-without-signal refusal'),
+    @('copied-dispatch-test-barrier','continue signal or identity-bound fixture parent terminal refusal'),
+    @('retained-prior-tree/both-arms','owned stop marker + exact process exit; complete native identity inventory; no-producer refuses'),
+    @('9334-publication','started owner record or pinned publisher terminal refusal'),
+    @('7963/9334-native','exact process exit + stdout EOF + stderr EOF'),
+    @('8102-holder-cleanup','stop marker + identity-bound owned child exit'),
+    @('8102-copy','exact process exit + stdout EOF + stderr EOF')
+  )){Write-Output "BOUND R3 scope=non-8076 site=$($row[0]) terminal=$($row[1])"}
+  Write-Output 'BOUND R3 scope=8076 site=retained-Fixture/MeasuredResume8076/Resume8076/Settle8076 status=PENDING_COMPOSED_INSTALLED_PROOF remaining=1500-second-settle-deadline'
 }
 function Convert-ProducerResult([string]$Output){
   $match=[regex]::Match($Output,'(?s)\{\s*"schemaVersion"\s*:\s*"landed-integration-dispatch-result/v1".*\}\s*$')
@@ -118,7 +240,7 @@ function Test-F14AcknowledgedCompletion{
   $owedPath=Join-Path $runtime "integration-owed-$pr-$($landedHead.Substring(0,12)).json";[IO.File]::WriteAllText($owedPath,($obligation|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
   $fixturePath=Join-Path $container 'census.json';Write-SyntheticFixture $fixturePath $target $landedPr $landedHead $pr;$history=Join-Path $runtime 'history.jsonl'
   $producerHandle=Start-SyntheticPwsh @('-NoProfile','-NonInteractive','-File',$producer,'-LandedPr',[string]$landedPr,'-LandedHead',$landedHead,'-HistoryPath',$history,'-RuntimeRoot',$runtime,'-ContainerRoot',$container,'-Repository',$SyntheticIntegrationRepository,'-FixturePath',$fixturePath,'-NoPushIntegration')
-  $deadline=[DateTime]::UtcNow.AddSeconds(20);do{if(Test-Path -LiteralPath $owedPath -PathType Leaf){break};if([DateTime]::UtcNow-ge$deadline){throw 'F14 exact obligation was not visible'};[Threading.Thread]::Sleep(25)}while($true)
+  Wait-SyntheticProducerSignal $owedPath $producerHandle.process 'F14 exact obligation'
   $exit19=Join-Path $container 'synthetic-exit-19.ps1';Set-Content -LiteralPath $exit19 -Value 'exit 19';$consumerFailure=$null
   try{& $consumer -Branch $target.branch -Worktree $target.path -RuntimeRoot $runtime -HistoryPath $history -AcceptingOwnerRecordPath $owner.recordPath -AcceptingOwnerLaunchId $owner.launchId -IntegrationScript $exit19 -NoPush|Out-Null}catch{$consumerFailure=$_.Exception.Message}
   $producerResult=Complete-SyntheticPwsh $producerHandle;$producerValue=Convert-ProducerResult $producerResult.stdout
@@ -257,6 +379,7 @@ function Test-7926F1TerminalCleanup {
   foreach($name in @('integration-dispatch-contract.ps1','dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','landed-integration-consume.ps1','rebase-integration.ps1','log-event.ps1','orchestration-log-lock.psm1')){
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $beforeRoot
   }
+  Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$beforeRoot})
   $beforeRevision='6e9156f8393de4b8f54519ece506d3b488adcd75'
   $beforeSource=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/landed-integration-dispatch.ps1")
   Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed producer available'
@@ -356,9 +479,28 @@ function Test-8103ReusedParentEndsChain {
 }
 
 try{
-  New-Item -ItemType Directory -Path $fixtureRoot|Out-Null
-  Test-8185AuthPartition
-  foreach($control in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase}})){
+  New-Item -ItemType Directory -Path $fixtureRoot -Force|Out-Null
+  Write-R3BoundTable
+  if($PSBoundParameters.ContainsKey('Modes')-and$Control-cne'7926'){throw 'R3 mode selection requires the focused 7926 control; default proof always runs all ten modes'}
+  if($Control){
+    switch($Control){
+      'auth' {Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs}
+      '7926' {Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}
+      '7962' {Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}
+      'guards' {Test-7926F1TerminalCleanup;Test-7926F2ProtectedBoundary;Test-8103ReusedParentEndsChain;Test-F13BranchScopedOwners;Test-F14AcknowledgedCompletion;Test-F15AcknowledgementOnlyReconciliation}
+      'prior-teardown' {Test-R3PriorTeardown}
+      'census-latency' {Test-R3CensusLatency}
+      'census-deadline' {Test-R3CensusLatency}
+      default {Test-R3SignalControls}
+    }
+    Write-Output "PASS R3 focused $Control"
+    return
+  }
+  Test-R3SignalControls
+  Test-R3PriorTeardown
+  Test-R3CensusLatency
+  Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs
+  foreach($control in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
     try{& $control.body;Write-Output "CONTROL $($control.name) PASS"}catch{$failures.Add("$($control.name): $($_.Exception.Message)");Write-Output "CONTROL $($control.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
   }
   Assert-SyntheticIntegrationWitnesses $fixtureRoot

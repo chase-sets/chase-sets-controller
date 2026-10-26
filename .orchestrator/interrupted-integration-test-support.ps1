@@ -81,6 +81,9 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   # #8102: the platform slot of the container holding this checkout is observed
   # (never taken) around each timed fixture window.
   $fleetContainer=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+  # Retained proof never samples the live controller/product fleet. Classifier
+  # copies keep their explicit 8102-* container and its synthetic holder.
+  if($Carrier-ceq'retained'-and(Split-Path -Leaf $fleetContainer)-notlike'8102-*'){$fleetContainer=$root}
   $holder=Join-Path $root 'native-holder.ps1'
   [IO.File]::WriteAllText($holder,@'
 param([string]$Release,[string]$Ready,[string]$Arm,[string]$ArmedReceipt,[string]$Expire,[int]$OwnerPid,[string]$OwnerStartIdentity)
@@ -600,6 +603,11 @@ exit $LASTEXITCODE
   }
   function Discriminator($f,[string]$Name,[string]$Reason,[string]$MutantPath,[string[]]$Extra=@('-Dry'),[scriptblock]$Observe,[switch]$LoadBound) {
     $before=RawState $f;$runtimeBefore=RuntimeState $f;$candidatePath=$f.cfg.dispatch
+    if($Carrier-ceq'retained'){
+      $priorInput=Read-RebaseJson $f.cfg.resumePath
+      $priorOwner=Read-RebaseJson (Join-Path $f.runtime "watchdog-lane-$($priorInput.sources.priorLabel).json")
+      Wait-RetainedPriorTree $priorOwner
+    }
     $observations=@()
     if($Observe){$observations+=& $Observe}
     $candidate=Launch $f $Extra
@@ -608,6 +616,7 @@ exit $LASTEXITCODE
     if([string]::IsNullOrEmpty($MutantPath)){[Console]::Out.WriteLine("SKIPPED 7963 $Carrier $Name omitted-guard arm");return}
     try{
       $f.cfg.dispatch=$MutantPath
+      if($Carrier-ceq'retained'){Wait-RetainedPriorTree $priorOwner}
       if($Observe){$observations+=& $Observe}
       $loadBefore=if($LoadBound){Get-FleetLoadObservation $fleetContainer}else{$null}
       $bypass=Launch $f $Extra
@@ -1152,12 +1161,20 @@ $cfg=Get-Content -Raw $Config|ConvertFrom-Json -DateKind String
 $stdin=[Console]::In.ReadToEnd()
 if($cfg.promptCapture){[IO.File]::WriteAllText($cfg.promptCapture,$stdin)}
 Import-Module $cfg.module -Force -DisableNameChecking
-$deadline=[datetimeoffset]::UtcNow.AddSeconds(10)
-do {
-  $owners=@(Get-ChildItem -LiteralPath $cfg.runtime -Filter 'dispatch-launch-*.json' -File|ForEach-Object{Get-Content -Raw $_.FullName|ConvertFrom-Json -DateKind String}|Where-Object{$_.childPid-eq$PID-and$_.state-ceq'started'})
-  if($owners.Count-eq1){break}
-  [Threading.Thread]::Sleep(20)
-} while([datetimeoffset]::UtcNow-lt$deadline)
+$self=@(Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction Stop)
+if($self.Count-ne1){throw 'synthetic ordinary publication producer inventory ambiguous'}
+$publisher=Get-Process -Id $self[0].ParentProcessId -ErrorAction Stop
+try {
+  [void]$publisher.Handle
+  $publisherStart=$publisher.StartTime.ToUniversalTime().ToString('o')
+  do {
+    $owners=@(Get-ChildItem -LiteralPath $cfg.runtime -Filter 'dispatch-launch-*.json' -File|ForEach-Object{Get-Content -Raw $_.FullName|ConvertFrom-Json -DateKind String}|Where-Object{$_.childPid-eq$PID-and$_.state-ceq'started'})
+    if($owners.Count-eq1){break}
+    if($owners.Count-gt1-or$publisher.HasExited){throw 'synthetic ordinary child ownership not published before producer terminal'}
+    [Threading.Thread]::Sleep(20)
+  } while($true)
+  if($owners[0].launcherPid-ne$publisher.Id-or$owners[0].launcherStartIdentity-cne$publisherStart){throw 'synthetic ordinary publication producer identity differs'}
+} finally {$publisher.Dispose()}
 if($owners.Count-ne1){throw 'synthetic ordinary child ownership not published'}
 $o=$cfg.obligation
 $exe=Join-Path $PSHOME 'pwsh.exe'
@@ -2327,12 +2344,14 @@ function Start-SyntheticFleetHolder([string]$Container,[string]$Lane='synthetic-
 }
 function Stop-SyntheticFleetHolder($Holder) {
   if($null-eq$Holder){return}
-  try{[IO.File]::WriteAllText($Holder.stopPath,'stop')}catch{}
+  [void](Assert-8102TempContainer (Split-Path -Parent $Holder.stopPath))
+  if($Holder.child.StartTime.ToUniversalTime().ToString('o')-cne$Holder.owner.childProcessStartUtc){throw '8102 owned holder cleanup identity differs'}
   try {
-    if(-not$Holder.child.WaitForExit(5000)){
-      $Holder.child.Kill($true)
-      $Holder.child.WaitForExit()
-    }
+    [IO.File]::WriteAllText($Holder.stopPath,'stop')
+    $Holder.child.WaitForExit()
+  } catch {
+    if(-not$Holder.child.HasExited){$Holder.child.Kill($true);$Holder.child.WaitForExit()}
+    throw
   } finally {
     $Holder.child.Dispose()
     if(Test-Path -LiteralPath $Holder.lockDir){Remove-Item -LiteralPath $Holder.lockDir -Recurse -Force}
@@ -2386,10 +2405,10 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
   [void](New-HistoricalDispatchFixture 'b3b4ac2' (Join-Path $copy 'historical-b3b4ac2'))
   return [pscustomobject]@{label=$Label;container=$container;root=$copy;runtime=(Join-Path $copy '.orchestrator');applied=$applied}
 }
-# Runs one carrier from a copy in its own pwsh process, bounded, and returns the
+# Runs one carrier from a copy until its process and both streams finish, returning the
 # raw exit and captured streams. The copy's support script is dot-sourced from
 # the copy so every fixture probe observes the copy's container.
-function Invoke-8102CarrierCopy($Copy,[string]$Carrier,[int]$TimeoutSeconds=1500) {
+function Invoke-8102CarrierCopy($Copy,[string]$Carrier) {
   $runner=Join-Path $Copy.container "run-$Carrier.ps1"
   [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier')`n",[Text.UTF8Encoding]::new($false))
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$Copy.root
@@ -2400,7 +2419,6 @@ function Invoke-8102CarrierCopy($Copy,[string]$Carrier,[int]$TimeoutSeconds=1500
   $p=[Diagnostics.Process]::Start($psi)
   try{
     $out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync()
-    if(-not$p.WaitForExit($TimeoutSeconds*1000)){$p.Kill($true);[void]$p.WaitForExit(10000);throw "8102 carrier copy $($Copy.label)/$Carrier exceeded $TimeoutSeconds s"}
     $p.WaitForExit()
     $stdout=$out.GetAwaiter().GetResult();$stderr=$err.GetAwaiter().GetResult()
     $stdoutPath=Join-Path $Copy.container "run-$Carrier.stdout.txt";$stderrPath=Join-Path $Copy.container "run-$Carrier.stderr.txt"

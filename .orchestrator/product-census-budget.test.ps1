@@ -1,10 +1,10 @@
-param([switch]$Baseline)
+param([switch]$Baseline,[ValidateSet('','seam')][string]$Control='')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
 
 # All Git repositories, records and process identities are local synthetic
-# fixtures. Only the Git seam is delayed; native proof and authorizers run.
+# fixtures. Only copied budget reads are metered; native proof and authorizers run.
 $probe = {
   param($Fixture, $Obligation, $OwnerPath, $Site, $Mode, $Unscoped)
   $script:budgetStats = @{ evaluations=[Collections.Generic.List[object]]::new();
@@ -23,19 +23,20 @@ $probe = {
   function script:Invoke-ProductCensusGit {
     param($Checkout,$Arguments,$Budget)
     $s = $script:budgetStats
-    $entry = @($s.evaluations | Where-Object { [object]::ReferenceEquals($_.watch,$Budget.watch) })
+    $entry = @($s.evaluations | Where-Object generation -EQ $Budget.watch.restarts)
     if ($entry.Count -eq 0) {
-      $entry = @{watch=$Budget.watch; cap=$Budget.deadline; calls=0; gitMs=0L; reads=[Collections.Generic.List[string]]::new()}
+      $entry = @{generation=$Budget.watch.restarts; cap=$Budget.deadline; calls=0; gitMs=0L; charges=0L; reads=[Collections.Generic.List[string]]::new()}
       $s.evaluations.Add($entry)
     } else { $entry = $entry[0] }
     $entry.calls++; $s.calls++
+    $Budget.watch.Charge(1); $entry.charges++
     $entry.reads.Add("$Checkout|$($Arguments -join ' ')")
     $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
       if (($script:budgetMode -eq 'loaded' -and $s.calls -eq 1) -or
           ($script:budgetMode -eq 'persistent' -and $entry.calls -eq 1)) {
         # Exceed the unchanged old deadline once (or once per evaluation).
-        [Threading.Thread]::Sleep(5100)
+        $Budget.watch.Charge(5001); $entry.charges+=5001
       }
       if ($script:budgetMode -in @('poisoned-anchor','changed-identity') -and -not $script:delayedAnchor -and
           $Checkout -ceq $script:budgetFixture.anchor -and $Arguments[0] -ceq 'config') {
@@ -45,7 +46,7 @@ $probe = {
           $changed.worktree=$script:budgetFixture.seat; $changed.lane='platform-seat'
           Write-DispatchOwnershipRecord $script:budgetOwnerPath $changed
         }
-        [Threading.Thread]::Sleep(5100)
+        $Budget.watch.Charge(5001); $entry.charges+=5001
       }
       if ($script:budgetMode -eq 'unknown') { throw 'synthetic-secret-unknown' }
       & $script:nativeBudgetGit $Checkout $Arguments $Budget
@@ -78,11 +79,18 @@ function Write-BudgetMeasurement($Result,[string]$Site,[string]$Mode) {
   Write-Output ("MEASURED " + (@{site=$Site;mode=$Mode;gitSegmentMs=$s.gitMs;wholeCallMs=$Result.elapsedMs;
     evaluations=$s.evaluations.Count;gitCalls=$s.calls;gitSpawns=$s.spawns;recordReads=$s.records;records=2;seats=2;
     signal='exact git-deadline only';evaluationCaps=@($s.evaluations | ForEach-Object cap);
-    evaluationGitMs=@($s.evaluations | ForEach-Object gitMs);refusedOutcomes=@($s.outcomes)} | ConvertTo-Json -Compress))
+    evaluationGitMs=@($s.evaluations | ForEach-Object gitMs);evaluationCharges=@($s.evaluations | ForEach-Object charges);
+    generations=@($s.evaluations | ForEach-Object generation);refusedOutcomes=@($s.outcomes)} | ConvertTo-Json -Compress))
 }
 function Assert-BudgetResult($Result,[string]$Site,[string]$Mode,[int]$Evaluations) {
   Assert-CensusFixture ($Result.stats.evaluations.Count -eq $Evaluations) "$Site/$Mode allowance evaluations=$Evaluations"
   Assert-CensusFixture (@($Result.stats.evaluations | Where-Object cap -NE 5000).Count -eq 0) "$Site/$Mode finite per-evaluation cap"
+  for($i=0;$i-lt$Result.stats.evaluations.Count;$i++){
+    $entry=$Result.stats.evaluations[$i]
+    $crossing=($Mode-ceq'persistent')-or($i-eq0-and$Mode-in@('loaded','poisoned-anchor','changed-identity'))
+    $expected=$entry.calls+$(if($crossing){5001}else{0})
+    Assert-CensusFixture ($entry.charges-eq$expected-and$entry.generation-eq($i+1)) "$Site/$Mode exact charges and restart generation"
+  }
   if ($Mode -in @('loaded','poisoned-anchor','persistent')) {
     $expectedRefusals=if ($Mode -eq 'persistent') {2} else {1}
     Assert-CensusFixture ($Result.stats.outcomes.Count -eq $expectedRefusals -and
@@ -106,6 +114,98 @@ function Assert-BudgetResult($Result,[string]$Site,[string]$Mode,[int]$Evaluatio
   Assert-CensusFixture ($output -notmatch 'synthetic-secret|https:|github') "$Site/$Mode secret-free"
 }
 
+function ConvertTo-HistoricalBudgetSubject([string]$Source,[ValidateSet('ownership','authentication')][string]$Site) {
+  $clock='[Diagnostics.Stopwatch]::StartNew()'
+  $wait='$process.WaitForExit([int]$remaining)'
+  $replacement='$($deterministicBudgetMeter.Restart(); $deterministicBudgetMeter)'
+  $meteredWait='$deterministicBudgetMeter.WaitForProcess($process,@($outRead,$errRead),@($stdout.Length,$stderr.Length))'
+  $waits=if($Site -ceq 'ownership'){1}else{0}
+  Assert-CensusFixture ([regex]::Matches($Source,[regex]::Escape($clock)).Count -eq 1 -and
+    [regex]::Matches($Source,[regex]::Escape('[Diagnostics.Stopwatch]::new()')).Count -eq 0 -and
+    [regex]::Matches($Source,[regex]::Escape($wait)).Count -eq $waits) "historical $Site clock/wait anchors"
+  $converted=$Source.Replace($clock,$replacement).Replace($wait,$meteredWait)
+  Assert-CensusFixture ($converted.Replace($replacement,$clock).Replace($meteredWait,$wait) -ceq $Source) "historical $Site inverse diff"
+  return $converted
+}
+
+function Test-BudgetSeam {
+  $ownership=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'))
+  $auth=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence.psm1'))
+  $converted=ConvertTo-DeterministicBudgetSubject $ownership
+  [void](ConvertTo-CensusAuthBudgetSubject $auth)
+  foreach($site in @('ownership','authentication')){
+    $sample='[Diagnostics.Stopwatch]::StartNew()'+$(if($site-ceq'ownership'){'; $process.WaitForExit([int]$remaining)'}else{''})
+    [void](ConvertTo-HistoricalBudgetSubject $sample $site)
+    foreach($bad in @($sample.Replace('[Diagnostics.Stopwatch]::StartNew()','0'),($sample+'; [Diagnostics.Stopwatch]::StartNew()'))){
+      $failure=$null;try{[void](ConvertTo-HistoricalBudgetSubject $bad $site)}catch{$failure=$_.Exception.Message}
+      Assert-CensusFixture ($failure -ceq "ASSERTION FAILED: historical $site clock/wait anchors") "historical $site missing/duplicate refusal"
+    }
+    if($site-ceq'ownership'){
+      foreach($bad in @($sample.Replace('$process.WaitForExit([int]$remaining)','0'),($sample+'; $process.WaitForExit([int]$remaining)'))){
+        $failure=$null;try{[void](ConvertTo-HistoricalBudgetSubject $bad $site)}catch{$failure=$_.Exception.Message}
+        Assert-CensusFixture ($failure-ceq'ASSERTION FAILED: historical ownership clock/wait anchors') 'historical missing/duplicate wait refusal'
+      }
+    }
+  }
+  foreach($pair in @(@($ownership,'[Diagnostics.Stopwatch]::new()','ownership'),@($auth,'[Diagnostics.Stopwatch]::new()','authentication'))){
+    foreach($bad in @($pair[0].Replace($pair[1],'0'),($pair[0]+$pair[1]))){
+      $failure=$null;try{if($pair[2]-ceq'ownership'){[void](ConvertTo-DeterministicBudgetSubject $bad)}else{[void](ConvertTo-CensusAuthBudgetSubject $bad)}}catch{$failure=$_.Exception.Message}
+      Assert-CensusFixture ($null -ne $failure) "$($pair[2]) missing/duplicate refusal"
+    }
+  }
+  & {
+    $deterministicBudgetMeter=New-DeterministicBudgetMeter
+    . ([scriptblock]::Create($converted))
+    function Replay([int]$Charge,[int]$CpuWork=0,[switch]$Persistent){
+      $observed=[Collections.Generic.List[object]]::new();$failure=$null
+      try{Invoke-ProductCensusEvaluation {
+        param($b)
+        $b.watch.Restart();$b.watch.Charge(1)
+        for($i=0;$i-lt$CpuWork;$i++){$null=[Math]::Sqrt($i)}
+        if($Persistent-or$observed.Count-eq0){$b.watch.Charge($Charge)}
+        $observed.Add(@{generation=$b.watch.restarts;charged=$b.watch.ElapsedMilliseconds;cap=$b.deadline})
+        if($b.watch.ElapsedMilliseconds-ge$b.deadline){throw 'git-deadline'}
+      }|Out-Null}catch{$failure=$_.Exception.Message}
+      return @{rows=$observed;failure=$failure}
+    }
+    function Assert-Replay($Replay){
+      Assert-CensusFixture ($Replay.rows.Count-eq2) 'seam loaded evaluation count=2'
+      Assert-CensusFixture ($Replay.rows[0].charged-eq5002-and$Replay.rows[1].charged-eq1) 'seam charged readings'
+    }
+    $fast=Replay 5001;$busy=Replay 5001 10000
+    Assert-CensusFixture ($fast.rows.Count-eq2-and$busy.rows.Count-eq2-and$fast.rows[0].charged-eq5002-and$busy.rows[0].charged-eq5002-and$fast.rows[1].charged-eq1-and$busy.rows[1].charged-eq1) 'seam same-charge opposite-CPU replay'
+    Assert-CensusFixture ($fast.rows[1].generation-eq($fast.rows[0].generation+1)) 'seam restart generation'
+    Assert-CensusFixture ((Replay 4998).rows.Count-eq1-and(Replay 4999).rows.Count-eq2) 'seam exact cap boundary'
+    Assert-Replay $fast;Assert-Replay $busy
+    $killed=$null;try{Assert-Replay (Replay 0)}catch{$killed=$_.Exception.Message}
+    Assert-CensusFixture ($killed-ceq'ASSERTION FAILED: seam loaded evaluation count=2') 'seam dropped charge own-guard kill'
+    Write-Output 'MUTANT budget-seam drop-charge KILLED guard=evaluation-count'
+    $saved=$deterministicBudgetMeter
+    $deterministicBudgetMeter=New-DeterministicBudgetMeter
+    $deterministicBudgetMeter | Add-Member -NotePropertyName wall -NotePropertyValue ([Diagnostics.Stopwatch]::StartNew())
+    $deterministicBudgetMeter | Add-Member -Force -MemberType ScriptProperty -Name ElapsedMilliseconds -Value {$this.wall.ElapsedMilliseconds}
+    $killed=$null;try{Assert-Replay (Replay 5001)}catch{$killed=$_.Exception.Message}
+    Assert-CensusFixture ($killed-cin@('ASSERTION FAILED: seam loaded evaluation count=2','ASSERTION FAILED: seam charged readings')) 'seam clock leak own-guard kill'
+    $deterministicBudgetMeter=$saved
+    Write-Output 'MUTANT budget-seam clock-leak KILLED guard=charged-replay-census'
+    $needle='$evaluation -lt 2';Assert-CensusFixture ($converted.Contains($needle)) 'seam retry mutant anchor'
+    . ([scriptblock]::Create($converted.Replace($needle,'$evaluation -lt 3')))
+    $calls=@{count=0};try{Invoke-ProductCensusEvaluation {param($b)$calls.count++;throw 'git-deadline'}|Out-Null}catch{}
+    # The terminal guard must be the one variable changed to allow a third arm.
+    Assert-CensusFixture ($calls.count-eq2) 'loop inflation alone cannot bypass terminal retry guard'
+    $persistent=Replay 5001 -Persistent
+    Assert-CensusFixture ($persistent.failure-ceq'git-deadline'-and$persistent.rows.Count-eq2) 'seam persistent terminal refusal'
+    . ([scriptblock]::Create($converted.Replace('$evaluation -eq 1','$evaluation -eq 2')))
+    $mutant=Replay 5001 -Persistent
+    $killed=$null;try{Assert-CensusFixture ($mutant.failure-ceq'git-deadline'-and$mutant.rows.Count-eq2) 'seam persistent terminal refusal'}catch{$killed=$_.Exception.Message}
+    Assert-CensusFixture ($killed-ceq'ASSERTION FAILED: seam persistent terminal refusal') 'seam extra-retry own-guard kill'
+    Write-Output 'MUTANT budget-seam extra-retry KILLED guard=terminal-refusal'
+  }
+  Write-Output 'PASS product-census-budget seam anchors/inverse-diff/restarts/cap-boundaries/replay/mutants; fixtures=0 Git=0 processes=0'
+}
+
+if($Control -ceq 'seam'){Test-BudgetSeam;return}
+
 $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
 $failures = [Collections.Generic.List[string]]::new()
 try {
@@ -126,8 +226,17 @@ try {
     if ($Baseline) {
       $text = (& git -C (Split-Path -Parent $PSScriptRoot) show "f292db3c0c89aba867b7ae10da6fffd0fc2970ee:.orchestrator/$name") -join "`n"
       if ($LASTEXITCODE) { throw 'baseline source unavailable' }
+      $site=if($name-ceq'dispatch-ownership.ps1'){'ownership'}else{'authentication'}
+      $text=ConvertTo-HistoricalBudgetSubject $text $site
+      if($site-ceq'ownership'){$text=(Get-CensusBudgetMeterPrelude)+$text}
       [IO.File]::WriteAllText((Join-Path $source $name),$text)
     } else { Copy-Item (Join-Path $PSScriptRoot $name) $source }
+  }
+  if(-not$Baseline){
+    $p=Join-Path $source 'dispatch-ownership.ps1'
+    [IO.File]::WriteAllText($p,((Get-CensusBudgetMeterPrelude)+(ConvertTo-DeterministicBudgetSubject ([IO.File]::ReadAllText($p)))))
+    $p=Join-Path $source 'landed-integration-evidence.psm1'
+    [IO.File]::WriteAllText($p,(ConvertTo-CensusAuthBudgetSubject ([IO.File]::ReadAllText($p))))
   }
   # Count actual process creation, not calls that fail the pre-spawn deadline.
   $ownershipPath=Join-Path $source 'dispatch-ownership.ps1'
@@ -156,14 +265,16 @@ try {
         if ($mode -eq 'quiet') { $quietGitCalls=$result.stats.evaluations[-1].calls }
         if ($Baseline -and $mode -eq 'loaded') {
           Assert-CensusFixture ($result.stats.evaluations.Count -eq 1 -and
-            (($site -eq 'ownership' -and $result.value.health.status -ceq 'partial') -or
+            $result.stats.calls-eq1-and$result.stats.spawns-eq0-and$result.stats.evaluations[0].charges-eq5002-and
+            (($site -eq 'ownership' -and $result.value.health.status -ceq 'partial'-and
+              @($result.value.health.diagnostics|Where-Object { $_.code-ceq'worktree-outside-container'-and$_.reason-ceq'git-deadline' }).Count-eq1) -or
              ($site -eq 'authentication' -and $result.failure -like 'OWED_REBASE_OWNER_UNAUTHORIZED*'))) 'baseline deadline reproduces refusal'
           Write-Output "BASELINE $site loaded REFUSED reason=$($result.failure)"
         } else {
           $count=if ($mode -in @('loaded','persistent','poisoned-anchor','changed-identity')) {2} else {1}
           Assert-BudgetResult $result $site $mode $count
           if ($mode -in @('loaded','poisoned-anchor')) {
-            Assert-CensusFixture ($result.stats.evaluations[0].gitMs -gt 5000 -and
+            Assert-CensusFixture ($result.stats.evaluations[0].charges -gt 5000 -and
               $result.stats.evaluations[1].reads.Count -eq $quietGitCalls -and
               @($result.stats.evaluations[1].reads | Where-Object { $_ -like "$($f.anchor)|rev-parse*" }).Count -eq 1) "$site fresh complete anchors after deadline"
           }
@@ -219,11 +330,11 @@ try {
   $old='return Invoke-ProductCensusEvaluation $evaluate'
   Assert-CensusFixture ($candidateModule.Contains($old)) 'divergent mutant exact shared call'
   try {
-    [IO.File]::WriteAllText($modulePath,$candidateModule.Replace($old,'return & $evaluate @{watch=[Diagnostics.Stopwatch]::new();deadline=5000}'))
+    [IO.File]::WriteAllText($modulePath,$candidateModule.Replace($old,'$independentMeter=New-DeterministicBudgetMeter; return & $evaluate @{watch=$independentMeter;deadline=5000}'))
     $mutant=Invoke-BudgetProbe $f $obligation $owner.path $source authentication loaded
     $killed=$null
     try { Assert-BudgetResult $mutant authentication loaded 2 } catch { $killed=$_.Exception.Message }
-    Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: authentication/loaded allowance evaluations=2') 'divergent site mutant killed by shared policy assertion'
+    Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: authentication/loaded allowance evaluations=2' -and $mutant.failure-ceq'OWED_REBASE_PRODUCT_CENSUS_GIT_DEADLINE' -and $mutant.stats.evaluations[0].charges-gt5000) 'divergent site mutant killed by shared policy assertion'
     Write-Output 'MUTANT product-census-budget-shared-rule divergent-site KILLED evaluations=1 expected=2'
   } catch {
     $failures.Add($_.Exception.Message)
