@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('', 'bypass-fifo', 'skip-absent-head', 'renumber-on-retry', 'prune-live', 'never-expire', 'reset-without-authority', 'quarantine-early', 'ignore-marker', 'rename-completes')][string]$Mutant = '',
+  [ValidateSet('', 'bypass-fifo', 'skip-absent-head', 'renumber-on-retry', 'prune-live', 'never-expire', 'reset-without-authority', 'quarantine-early', 'ignore-marker', 'rename-completes', 'controller-bypass-fifo', 'controller-command-link')][string]$Mutant = '',
   [string]$GuardRevision = '',
-  [ValidateSet('all','order','lifecycle','authority','recovery','isolation')][string]$Part = 'all'
+  [ValidateSet('all','order','lifecycle','authority','recovery','isolation','controller')][string]$Part = 'all'
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -21,6 +21,8 @@ $mutations = @{
   'quarantine-early' = @('if (((Get-QueueNow) - [DateTimeOffset]::Parse($marker.wrapperUtc)).TotalSeconds -le $queueRetentionSeconds)', 'if ($false)')
   'ignore-marker' = @('if (Test-PathEntry $queueRecoveryPath) { throw "heavy-verifier: verify queue recovery marker present ($queueRecoveryPath)" }', 'if ($false) { throw "heavy-verifier: verify queue recovery marker present ($queueRecoveryPath)" }')
   'rename-completes' = @("Stop-QueueRecoveryFixture 'moved'", '[IO.File]::Delete($queueRecoveryPath); $script:quarantineCompleted = $true; return')
+  'controller-bypass-fifo' = @('if ($isQueueSlot) { # admission queue gate', 'if ($isProductSlot) { # admission queue gate')
+  'controller-command-link' = @('(-not $isControllerSlot -or $_.commandIdentity -ceq $claimant.CommandIdentity)', '$true')
 }
 if ($Mutant) {
   $edit = $mutations[$Mutant]
@@ -67,7 +69,7 @@ const spec=JSON.parse(fs.readFileSync(req));fs.unlinkSync(req);
 try{const p=spec.parameters;
 const env={...process.env};
 for(const key of Object.keys(env))if(key==='NODE_OPTIONS'||key.startsWith('CHASE_SETS_HEAVY_ADMISSION_')||key==='CHASE_SETS_HEAVY_SLOT_ID'||key==='CHASE_SETS_HEAVY_SLOT_TRANSPORT'||key.toLowerCase()==='npm_config_script_shell')delete env[key];
-Object.assign(env,spec.env||{});env.FIFO_BODY=spec.marker;
+Object.assign(env,spec.env||{});env.FIFO_BODY=spec.marker;env.FIFO_RELEASE=spec.release||'';
 if(spec.shape==='Attach'){
  const ar=fs.mkdtempSync(path.join(os.tmpdir(),'chase-sets-heavy-admission-fifo-')),result=path.join(ar,'result.json');
  const child=cp.spawn(process.execPath,[body,spec.marker,spec.release||'',result],{windowsHide:true,stdio:'ignore',env});
@@ -106,8 +108,10 @@ function Complete-Attempt($Attempt) {
 function Invoke-Attempt($Driver,[string]$Shape='Gate',[hashtable]$Extra=@{},[switch]$Production,[hashtable]$Environment=@{}) { Complete-Attempt (Start-Attempt $Driver $Shape $Extra -Production:$Production -Environment $Environment) }
 function Release-Attempt($Attempt) { [IO.File]::WriteAllText($Attempt.Release,'release');Complete-Attempt $Attempt }
 $queue=Join-Path $runtime 'verify-queue.json';$recovery=Join-Path $runtime 'verify-queue.recovery';$lock=Join-Path $runtime 'verify-lock.d';$owner=Join-Path $lock 'owner.json';$fixture=Join-Path $container 'fixture.json'
+$controllerQueue=Join-Path $runtime 'controller-verify-queue.json';$controllerLock=Join-Path $runtime 'controller-verify-lock.d';$controllerOwner=Join-Path $controllerLock 'owner.json'
 function Set-Fixture($Value) { Write-Json $fixture $Value;return @{TestQueueFixture=$fixture} }
 function Clear-Queue { foreach($p in @($queue,$recovery)){if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath $p -Force}} }
+function Clear-ControllerQueue { foreach($p in @($controllerQueue)){if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath $p -Force}} }
 function Assert-Refused($Result,[string]$Name,[string]$Pattern='') {
   Assert-Fifo ($Result.Code -eq 73 -and -not $Result.Body -and (-not $Pattern -or $Result.Output -match $Pattern)) $Name "exit=$($Result.Code) body=$($Result.Body) output=$($Result.Output)"
   Assert-RecoveryOwners
@@ -120,12 +124,48 @@ function Assert-LockBlocked($Result,[string]$Name) {
 }
 if($Mutant){
   $Part = switch($Mutant){
-    {$_ -in @('bypass-fifo','skip-absent-head','renumber-on-retry')} {'order';break}
+    {$_ -in @('bypass-fifo','skip-absent-head','renumber-on-retry','controller-bypass-fifo','controller-command-link')} {'order';break}
     {$_ -in @('prune-live','never-expire')} {'lifecycle';break}
     'reset-without-authority' {'authority';break}
     default {'recovery';break}
   }
 }
+  function Test-ControllerOrder {
+    Clear-ControllerQueue
+    $control=Invoke-Attempt $a ControllerBattery
+    Assert-Fifo ($control.Code -eq 0 -and $control.Body) 'CONTROLLER AC1 no-waiter control' $control.Output
+    $barrier=Start-Attempt $o ControllerBattery -Hold;Wait-For {Test-Path $barrier.Marker} 'controller barrier owner'
+    Assert-ControllerBlocked (Invoke-Attempt $a ControllerBattery) 'CONTROLLER AC1 A waits for owner'
+    Assert-ControllerRefused (Invoke-Attempt $b ControllerBattery) 'CONTROLLER AC1 B queues' 'queued;.*position=2'
+    Assert-ControllerRefused (Invoke-Attempt $c ControllerBattery) 'CONTROLLER AC1 C queues' 'queued;.*position=3'
+    $before=Read-Json $controllerQueue;$retry=Invoke-Attempt $a ControllerBattery;$after=Read-Json $controllerQueue
+    Assert-Fifo (($before.tickets.number -join ',') -ceq ($after.tickets.number -join ',') -and ($before.tickets.claimantKey -join ',') -ceq ($after.tickets.claimantKey -join ',')) 'CONTROLLER AC1 retry keeps number and order' $retry.Output
+    $null=Release-Attempt $barrier
+    Assert-ControllerRefused (Invoke-Attempt $b ControllerBattery) 'CONTROLLER AC1 B remains behind A' 'queued;.*position=2.*reserved=True'
+    Assert-ControllerRefused (Invoke-Attempt $c ControllerBattery) 'CONTROLLER AC1 C remains behind A' 'queued;.*position=3.*reserved=True'
+    $admitted=Invoke-Attempt $a ControllerBattery
+    Assert-Fifo ($admitted.Code -eq 0 -and $admitted.Body) 'CONTROLLER AC1 earliest admits' $admitted.Output
+    Assert-Fifo (@((Read-Json $controllerQueue).tickets|Where-Object claimantKey -like "*parent:$($a.Pid)*").Count -eq 0) 'CONTROLLER AC1 admitted ticket removed' $admitted.Output
+    Write-Output "PASS CONTROLLER AC1 FIFO battery claimant and separate queue state mutant=$Mutant"
+
+    Clear-ControllerQueue;$barrier=Start-Attempt $o ControllerBattery -Hold;Wait-For {Test-Path $barrier.Marker} 'controller command-link barrier'
+    Assert-ControllerBlocked (Invoke-Attempt $a ControllerBattery) 'CONTROLLER AC2 first claimant holds the head'
+    Assert-ControllerRefused (Invoke-Attempt $b ControllerBattery) 'CONTROLLER AC2 first command ticket' 'position=2'
+    Assert-ControllerRefused (Invoke-Attempt $b ControllerBattery @{ControllerBatteryOnFailure='all'}) 'CONTROLLER AC2 changed command gets tail ticket' 'position=3'
+    $tickets=@((Read-Json $controllerQueue).tickets)
+    Assert-Fifo ($tickets.Count -eq 3 -and $tickets[1].commandIdentity -cne $tickets[2].commandIdentity) 'CONTROLLER AC2 command linkage is not priority inheritance'
+    $null=Release-Attempt $barrier
+    Assert-Fifo ((Invoke-Attempt $a ControllerBattery).Code -eq 0) 'CONTROLLER AC2 earliest claimant admits before linked command'
+    Assert-Fifo ((Invoke-Attempt $b ControllerBattery).Code -eq 0) 'CONTROLLER AC2 first command admits before linked command'
+    Assert-Fifo ((Invoke-Attempt $b ControllerBattery @{ControllerBatteryOnFailure='all'}).Code -eq 0) 'CONTROLLER AC2 linked command admits at its own turn'
+    Write-Output 'PASS CONTROLLER AC2 per-command linkage and separate controller queue'
+  }
+  function Assert-ControllerRefused($Result,[string]$Name,[string]$Pattern='') {
+    Assert-Fifo ($Result.Code -eq 73 -and -not $Result.Body -and (-not $Pattern -or $Result.Output -match $Pattern)) $Name "exit=$($Result.Code) body=$($Result.Body) output=$($Result.Output)"
+  }
+  function Assert-ControllerBlocked($Result,[string]$Name) {
+    Assert-Fifo ($Result.Code -eq 73 -and -not $Result.Body -and $Result.Output -match 'lock unavailable \(') $Name "exit=$($Result.Code) output=$($Result.Output)"
+  }
 function Write-Seed($Tickets,[long]$Next=1000) {
   $doc=if(Test-Path $queue){Read-Json $queue}else{[pscustomobject]@{schemaVersion=1;fileIdentity='fixture-not-initialized';nextTicket=1;tickets=@()}}
   $doc.tickets=@($Tickets);$doc.nextTicket=$Next;Write-Json $queue $doc
@@ -168,7 +208,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   & pnpm.cmd --dir $tree install --lockfile-only --ignore-scripts --offline *> (Join-Path $root 'pnpm-setup.log')
   if($LASTEXITCODE -ne 0){throw 'SETUP: fixture pnpm lock generation'}
   [void][IO.Directory]::CreateDirectory((Join-Path $tree '.orchestrator'))
-  [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/controller-release-battery.ps1'),'[IO.File]::AppendAllText($env:FIFO_BODY,"body`n")')
+  [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/controller-release-battery.ps1'),'[IO.File]::AppendAllText($env:FIFO_BODY,"body`n"); while($env:FIFO_RELEASE -and -not (Test-Path -LiteralPath $env:FIFO_RELEASE)){ Start-Sleep -Milliseconds 20 }')
   [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/fail-closed-guard-evidence.test.ps1'),'param($Scenario,$ExpectedControllerHead,$SuiteResultOut); [IO.File]::WriteAllText((Join-Path (Get-Location) $SuiteResultOut),''{}''); [IO.File]::AppendAllText($env:FIFO_BODY,"body`n")')
   & git -C $tree add .gitignore package.json pnpm-lock.yaml gate.cjs scripts .orchestrator
   & git -C $tree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert FIFO fixture'
@@ -215,9 +255,15 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
     }
     Write-Output "PASS MUTANT $Mutant AC3 lifecycle named guard case"
   }
-  if($Part -eq 'order'){Test-MutantOrder;Write-Output "PASS FIFO mutant case=$Mutant";return}
+  if($Part -eq 'controller'){Test-ControllerOrder;Write-Output "PASS FIFO controller case=$Mutant";return}
+  if($Part -eq 'order'){
+    if($Mutant -in @('controller-bypass-fifo','controller-command-link')) { Test-ControllerOrder }
+    else { Test-MutantOrder }
+    Write-Output "PASS FIFO mutant case=$Mutant";return
+  }
   if($Part -eq 'lifecycle'){Test-MutantLifecycle;Write-Output "PASS FIFO mutant case=$Mutant";return}
   if($Part-eq'all') {
+  Test-ControllerOrder
   $control=Invoke-Attempt $a Gate
   Assert-Fifo ($control.Code-eq0-and$control.Body) 'AC2 initial no-waiter control' $control.Output
   Write-Output 'PASS AC2 initial no-waiter control'

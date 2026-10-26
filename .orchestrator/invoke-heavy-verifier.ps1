@@ -82,6 +82,10 @@ param(
   # Concurrent battery items (#120), forwarded verbatim as one argument.
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryConcurrentIdentity = "",
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][ValidateSet("stop", "all")][string]$ControllerBatteryOnFailure = "stop",
+  # The canonical battery supplies its own process identity. This avoids a
+  # parent-process inference at the controller admission seam.
+  [Parameter(ParameterSetName = "ControllerBattery", DontShow)][ValidateRange(0, [int]::MaxValue)][int]$ControllerBatteryClaimantPid = 0,
+  [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryClaimantStartUtc = "",
   # Guard-evidence precursor producers are a closed production surface. The
   # selected value resolves to one tracked script and one fixed grammar below.
   [Parameter(Mandatory, ParameterSetName = "ControllerPrecursor")]
@@ -117,6 +121,15 @@ $isWorkspaceDbTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceDbTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
 $isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture)
+$isControllerSlot = $isControllerBattery -or $isControllerPrecursor -or $isControllerFixture
+$isQueueSlot = $isProductSlot -or $isControllerSlot
+$hasControllerBatteryClaimant = $isControllerBattery -and $ControllerBatteryClaimantPid -gt 0
+if ($hasControllerBatteryClaimant -and -not (Test-UtcIdentity $ControllerBatteryClaimantStartUtc)) {
+  throw 'heavy-verifier: controller battery claimant identity is unavailable'
+}
+if ($isControllerBattery -and $ControllerBatteryClaimantPid -eq 0 -and -not [string]::IsNullOrWhiteSpace($ControllerBatteryClaimantStartUtc)) {
+  throw 'heavy-verifier: controller battery claimant identity is unavailable'
+}
 $isBudgetedWorkspaceDb = $isWorkspaceDbTest
 $isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
@@ -203,7 +216,7 @@ trap {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
-  if (($isControllerPrecursor -or $isControllerFixture) -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
+  if ($isControllerSlot -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
@@ -1290,9 +1303,11 @@ if ($isControllerFixture) {
 $lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "controller-verify-lock.d" } else { "verify-lock.d" }
 $lockPath = Join-Path $container (".orchestrator\" + $lockDirectoryName)
 $ownerPath = Join-Path $lockPath "owner.json"
-$queuePath = Join-Path $container ".orchestrator\verify-queue.json"
-$queueRecoveryPath = Join-Path $container ".orchestrator\verify-queue.recovery"
-$queueRecordRoot = Join-Path $container ".orchestrator\verify-queue-quarantine"
+$queueFileStem = if ($isControllerSlot) { 'controller-verify-queue' } else { 'verify-queue' }
+$queuePath = Join-Path $container (".orchestrator\$queueFileStem.json")
+$queueRecoveryPath = Join-Path $container (".orchestrator\$queueFileStem.recovery")
+$queueRecordRoot = Join-Path $container (".orchestrator\$queueFileStem-quarantine")
+$queueLabel = if ($isControllerSlot) { 'controller verify queue' } else { 'verify queue' }
 $queueRetentionSeconds = 600
 $queueMaximumTickets = 128
 $queueMaximumBytes = 256 * 1024
@@ -1792,6 +1807,16 @@ function Assert-QueuePathSafe([string]$Path) {
   }
 }
 function Get-QueueClaimant {
+  if ($hasControllerBatteryClaimant) {
+    if ((Get-ProcessIdentityState $ControllerBatteryClaimantPid $ControllerBatteryClaimantStartUtc) -cne 'live') {
+      throw 'heavy-verifier: verify queue claimant identity is unavailable'
+    }
+    return [pscustomobject]@{
+      Key = "battery:$ControllerBatteryClaimantPid`:$ControllerBatteryClaimantStartUtc"
+      Pid = $ControllerBatteryClaimantPid; StartIdentity = $ControllerBatteryClaimantStartUtc
+      ChildPid = $null; ChildStartIdentity = $null; CommandIdentity = $commandIdentity
+    }
+  }
   if ($callerBinding.Record) {
     $record = $callerBinding.Record
     $claimPid = if ($record.childPid) { [int]$record.childPid } else { [int]$record.launcherPid }
@@ -1799,11 +1824,17 @@ function Get-QueueClaimant {
     if ([string]::IsNullOrWhiteSpace([string]$record.launchId) -or $claimPid -le 0 -or -not (Test-UtcIdentity $start)) {
       throw 'heavy-verifier: verify queue claimant identity is unavailable'
     }
+    $baseKey = "launch:$($record.launchId)"
     return [pscustomobject]@{
-      Key = "launch:$($record.launchId)"
+      # Controller batteries are retried by a fresh battery process. Keep the
+      # containing launch as the lifecycle identity, but bind its ticket to
+      # the exact command so an unrelated controller command cannot inherit
+      # the position. Product tickets retain #94's launch-only identity.
+      Key = $baseKey
       Pid = $claimPid; StartIdentity = $start
       ChildPid = if ($record.childPid) { [int]$record.childPid } else { $null }
       ChildStartIdentity = if ($record.childPid) { [string]$record.childStartIdentity } else { $null }
+      CommandIdentity = if ($isControllerSlot) { $commandIdentity } else { $null }
     }
   }
   try {
@@ -1817,7 +1848,12 @@ function Get-QueueClaimant {
     if ((Get-ProcessIdentityState $rootPid $rootStart) -cne 'live' -or
         (Get-ProcessIdentityState $parentId $start) -cne 'live' -or
         $parent.StartTime.ToUniversalTime() -gt [DateTimeOffset]::Parse($rootStart).UtcDateTime) { throw 'parent identity changed' }
-    return [pscustomobject]@{ Key = "parent:$parentId`:$start"; Pid = $parentId; StartIdentity = $start; ChildPid = $null; ChildStartIdentity = $null }
+    $baseKey = "parent:$parentId`:$start"
+    return [pscustomobject]@{
+      Key = $baseKey
+      Pid = $parentId; StartIdentity = $start; ChildPid = $null; ChildStartIdentity = $null
+      CommandIdentity = if ($isControllerSlot) { $commandIdentity } else { $null }
+    }
   } catch {
     throw "heavy-verifier: verify queue claimant identity is unavailable: $($_.Exception.Message)"
   }
@@ -1874,12 +1910,18 @@ function Read-VerifyQueue {
     $previous = 0L
     foreach ($ticket in @($doc.tickets)) {
       $keys = (@($ticket.PSObject.Properties.Name) | Sort-Object) -join ','
-      if ($keys -cne 'childPid,childStartIdentity,claimantKey,number,pid,presentedUtc,startIdentity' -or
+      $expectedTicketKeys = if ($isControllerSlot) {
+        'childPid,childStartIdentity,claimantKey,commandIdentity,number,pid,presentedUtc,startIdentity'
+      } else {
+        'childPid,childStartIdentity,claimantKey,number,pid,presentedUtc,startIdentity'
+      }
+      if ($keys -cne $expectedTicketKeys -or
           $ticket.number -isnot [int] -and $ticket.number -isnot [long] -or $ticket.number -lt 1 -or
           $ticket.number -le $previous -or $ticket.number -ge $doc.nextTicket -or
           -not $numbers.Add([long]$ticket.number) -or $ticket.claimantKey -isnot [string] -or $ticket.claimantKey.Length -lt 3 -or $ticket.claimantKey.Length -gt 256 -or
-          -not $claimants.Add($ticket.claimantKey) -or -not (Test-PositivePid $ticket.pid) -or
+          -not $claimants.Add($(if ($isControllerSlot) { "$($ticket.claimantKey)|$($ticket.commandIdentity)" } else { $ticket.claimantKey })) -or -not (Test-PositivePid $ticket.pid) -or
           -not (Test-QueueUtc $ticket.startIdentity) -or -not (Test-QueueUtc $ticket.presentedUtc)) { throw 'malformed-ticket' }
+      if ($isControllerSlot -and ($ticket.commandIdentity -isnot [string] -or $ticket.commandIdentity -cnotmatch '^[a-f0-9]{64}$')) { throw 'malformed-command-identity' }
       if ($null -ne $ticket.childPid -and (-not (Test-PositivePid $ticket.childPid) -or -not (Test-QueueUtc $ticket.childStartIdentity))) { throw 'malformed-child-ticket' }
       if ($null -eq $ticket.childPid -and $null -ne $ticket.childStartIdentity) { throw 'malformed-child-ticket' }
       $previous = [long]$ticket.number
@@ -1928,7 +1970,7 @@ function Read-VerifyQueueBytes {
   } catch { throw "heavy-verifier: verify queue invalid (path=$queuePath size=$size sha256=$hash reason=$($_.Exception.Message))" }
 }
 function Get-QueueTicketContext {
-  if (-not $isProductSlot) { return $null }
+  if (-not $isQueueSlot) { return $null }
   if (Test-PathEntry $queueRecoveryPath) { throw "heavy-verifier: verify queue recovery marker present ($queueRecoveryPath)" }
   $claimant = Get-QueueClaimant
   $queue = Read-VerifyQueue
@@ -1936,11 +1978,22 @@ function Get-QueueTicketContext {
   $retained = @($queue.Tickets | Where-Object { Test-QueueTicketRetained $_ $now })
   $changed = $retained.Count -ne $queue.Tickets.Count
   $queue.Tickets = $retained
-  $ticket = $queue.Tickets | Where-Object { $_.claimantKey -ceq $claimant.Key -and $_.pid -eq $claimant.Pid -and $_.startIdentity -ceq $claimant.StartIdentity } | Select-Object -First 1
+  $ticket = $queue.Tickets | Where-Object {
+    $_.claimantKey -ceq $claimant.Key -and
+    $_.pid -eq $claimant.Pid -and
+    $_.startIdentity -ceq $claimant.StartIdentity -and
+    (-not $isControllerSlot -or $_.commandIdentity -ceq $claimant.CommandIdentity)
+  } | Select-Object -First 1
   if ($ticket) { $ticket.presentedUtc = $now.ToString('o'); $changed = $true }
   else {
     if ($queue.Tickets.Count -ge $queueMaximumTickets) { throw "heavy-verifier: verify queue invalid (path=$queuePath size=$($queue.Bytes.Length) sha256=$($queue.Hash) reason=over-capacity)" }
-    $ticket = [pscustomobject]@{ number = $queue.NextTicket; claimantKey = $claimant.Key; pid = $claimant.Pid; startIdentity = $claimant.StartIdentity; childPid = $claimant.ChildPid; childStartIdentity = $claimant.ChildStartIdentity; presentedUtc = $now.ToString('o') }
+    $ticketData = [ordered]@{
+      number = $queue.NextTicket; claimantKey = $claimant.Key; pid = $claimant.Pid
+      startIdentity = $claimant.StartIdentity; childPid = $claimant.ChildPid
+      childStartIdentity = $claimant.ChildStartIdentity; presentedUtc = $now.ToString('o')
+    }
+    if ($isControllerSlot) { $ticketData.commandIdentity = $claimant.CommandIdentity }
+    $ticket = [pscustomobject]$ticketData
     $queue.NextTicket++
     $queue.Tickets += $ticket; $changed = $true
   }
@@ -1952,7 +2005,10 @@ function Remove-QueueTicket($Context) {
   if ($queueFixture.failRemoval) { throw 'heavy-verifier: verify queue injected admission persistence failure' }
   $queue = Read-VerifyQueue
   $match = @($queue.Tickets | Where-Object number -eq $Context.Ticket.number)
-  if ($match.Count -ne 1 -or $match[0].claimantKey -cne $Context.Ticket.claimantKey) { throw "heavy-verifier: verify queue ticket changed (ticket=$($Context.Ticket.number))" }
+  if ($match.Count -ne 1 -or $match[0].claimantKey -cne $Context.Ticket.claimantKey -or
+      ($isControllerSlot -and $match[0].commandIdentity -cne $Context.Ticket.commandIdentity)) {
+    throw "heavy-verifier: $queueLabel ticket changed (ticket=$($Context.Ticket.number))"
+  }
   $queue.Tickets = @($queue.Tickets | Where-Object number -ne $Context.Ticket.number)
   Assert-VerifyQueueUnchanged $Context.Queue
   Write-VerifyQueue $queue
@@ -2639,7 +2695,7 @@ try {
   }
   if ($script:quarantineCompleted) { return }
   $queueContext = $null
-  if ($isProductSlot) {
+  if ($isQueueSlot) { # admission queue gate
     $queueContext = Get-QueueTicketContext
     if (-not $queueContext.IsHead) {
       $reserved = -not (Test-Path -LiteralPath $lockPath)
