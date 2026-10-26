@@ -354,7 +354,8 @@ function New-RequiredCheckReduction(
   [string]$Reason,
   [int]$MatchCount,
   $Selected = $null,
-  [object[]]$Superseded = @()
+  [object[]]$Superseded = @(),
+  [object[]]$ForeignHead = @()
 ) {
   [pscustomobject][ordered]@{
     schemaVersion = 'required-check-reducer/v1'
@@ -364,6 +365,7 @@ function New-RequiredCheckReduction(
     matchCount = $MatchCount
     selected = $Selected
     superseded = [object[]]@($Superseded)
+    foreignHead = [object[]]@($ForeignHead)
   }
 }
 
@@ -407,28 +409,41 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
     return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' 1 $selected
   }
 
+  $foreignHead = @()
   if (-not [string]::IsNullOrWhiteSpace($ExpectedHead)) {
-    $headMismatch = @($matching | Where-Object {
-        $_.headSha -isnot [string] -or [string]$_.headSha -cne $ExpectedHead
+    # Every observation must name its head; an unnamed head is never filtered away.
+    $headUnknown = @($matching | Where-Object {
+        $_.headSha -isnot [string] -or [string]$_.headSha -cnotmatch '^[a-f0-9]{40}$'
       })
-    if ($headMismatch.Count -gt 0) {
+    if ($headUnknown.Count -gt 0) {
       return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_HEAD_MISMATCH' $matching.Count
+    }
+    # Reduce only over runs at the exact head; runs for another head are
+    # recorded as foreign and can neither admit nor supersede.
+    $foreignHead = @($matching | Where-Object { [string]$_.headSha -cne $ExpectedHead } | ForEach-Object {
+        $foreign = ConvertTo-RequiredCheckProvenance $_
+        $foreign.headSha = [string]$_.headSha
+        $foreign
+      })
+    $matching = @($matching | Where-Object { [string]$_.headSha -ceq $ExpectedHead })
+    if ($matching.Count -eq 0) {
+      return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_HEAD_MISMATCH' 0 $null @() $foreignHead
     }
   }
 
   # Terminality is an admission predicate, not an ordering value.
   if (@($matching | Where-Object { [string]$_.status -cne 'COMPLETED' }).Count -gt 0) {
-    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NONTERMINAL' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NONTERMINAL' $matching.Count $null @() $foreignHead
   }
   $producerKeys = @($matching | ForEach-Object {
       "$($_.producer.appDatabaseId)/$($_.producer.workflowDatabaseId)"
     } | Sort-Object -Unique)
   if ($producerKeys.Count -ne 1) {
-    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_PRODUCER_MISMATCH' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_PRODUCER_MISMATCH' $matching.Count $null @() $foreignHead
   }
   $ids = @($matching | ForEach-Object { [long]$_.databaseId })
   if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) {
-    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_DUPLICATE_ID' $matching.Count
+    return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_DUPLICATE_ID' $matching.Count $null @() $foreignHead
   }
 
   $allSuccess = @($matching | Where-Object { [string]$_.conclusion -cne 'SUCCESS' }).Count -eq 0
@@ -439,11 +454,11 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
         $rightInstant = [datetimeoffset]::Parse([string]$matching[$right].completedAt, [Globalization.CultureInfo]::InvariantCulture)
         $timeOrder = [datetimeoffset]::Compare($leftInstant, $rightInstant)
         if ($timeOrder -eq 0) {
-          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_TIE' $matching.Count
+          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_TIE' $matching.Count $null @() $foreignHead
         }
         $idOrder = ([long]$matching[$left].databaseId).CompareTo([long]$matching[$right].databaseId)
         if (($timeOrder -gt 0 -and $idOrder -lt 0) -or ($timeOrder -lt 0 -and $idOrder -gt 0)) {
-          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_CONTRADICTION' $matching.Count
+          return New-RequiredCheckReduction $RequiredName 'unknown' 'REQUIRED_CHECK_ORDER_CONTRADICTION' $matching.Count $null @() $foreignHead
         }
       }
     }
@@ -457,9 +472,9 @@ function Reduce-RequiredCheckObservations([object[]]$Checks, [string]$RequiredNa
   $selected = ConvertTo-RequiredCheckProvenance $ordered[0]
   $superseded = @($ordered | Select-Object -Skip 1 | ForEach-Object { ConvertTo-RequiredCheckProvenance $_ })
   if ([string]$ordered[0].conclusion -cnotin @('SUCCESS', 'NEUTRAL', 'SKIPPED')) {
-    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NOT_GREEN' $matching.Count $selected $superseded
+    return New-RequiredCheckReduction $RequiredName 'refused' 'REQUIRED_CHECK_NOT_GREEN' $matching.Count $selected $superseded $foreignHead
   }
-  return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' $matching.Count $selected $superseded
+  return New-RequiredCheckReduction $RequiredName 'eligible' 'REQUIRED_CHECK_SELECTED' $matching.Count $selected $superseded $foreignHead
 }
 
 function Get-ObservedType($Value, [bool]$Present) {
