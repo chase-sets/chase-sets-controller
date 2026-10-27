@@ -635,9 +635,13 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
   $script:heavyCallerAncestry = $null
   $chain = @{}
   $snapshot = @{}
-  $remaining = [Math]::Min($Evaluation.deadline - $Evaluation.watch.ElapsedMilliseconds, $RemainingMs)
-  if ($remaining -lt 1000) { throw 'dispatch census evaluation exhausted' }
-  foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec ([uint32][Math]::Floor($remaining / 1000)) -ErrorAction Stop)) {
+  $cimBounds = @{}
+  if ($Evaluation) {
+    $remaining = [Math]::Min($Evaluation.deadline - $Evaluation.watch.ElapsedMilliseconds, $RemainingMs)
+    if ($remaining -lt 1000) { throw 'dispatch census evaluation exhausted' }
+    $cimBounds.OperationTimeoutSec = [uint32][Math]::Floor($remaining / 1000)
+  }
+  foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate @cimBounds -ErrorAction Stop)) {
     Assert-DispatchObservationTime
     $id = [int]$row.ProcessId
     if ($snapshot.ContainsKey($id)) { throw 'ambiguous process snapshot' }
@@ -925,8 +929,7 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
         [IO.File]::ReadAllText($Evaluation.selectedPath) -cne $Evaluation.selectedRaw)) { throw 'selected dispatch bytes changed' }
     Assert-DispatchObservationTime
     if ($live.health.counts.truncated -gt 0 -or $live.health.counts.rejected -gt 0 -or
-        $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0 -or
-        (Get-DispatchBlockingDiagnostics $live)) {
+        $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0) {
       $result.Retryable = Test-DispatchCensusReobservation $live
       throw 'dispatch census unknown or incomplete'
     }
@@ -1014,6 +1017,12 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     }
     if ($foreignChanged) {
       throw 'dispatch census changed'
+    }
+    # Preserve the selected-owner refusal above, but never accept a complete
+    # census with a blocking diagnostic merely because its counters are zero.
+    if ((Get-DispatchBlockingDiagnostics $live)) {
+      $result.Retryable = Test-DispatchCensusReobservation $live
+      throw 'dispatch census unknown or incomplete'
     }
   } catch { $result.Reason = $_.Exception.Message }
   return [pscustomobject]$result
