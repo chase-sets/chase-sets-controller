@@ -135,6 +135,7 @@ function Test-7962NativeControls([string]$RepositoryRoot=(Split-Path -Parent $PS
   Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
   function N([string]$Repo,[string[]]$A){$v=@(& git -C $Repo @A 2>&1);if($LASTEXITCODE-ne0){throw "Git $LASTEXITCODE $A $v"};return ($v-join"`n").Trim()}
   function J([string]$Path,$Value){[IO.File]::WriteAllText($Path,(ConvertTo-Json -InputObject $Value -Depth 30 -Compress),[Text.UTF8Encoding]::new($false))}
+  function Get-SyntheticIdentity([string]$Text){return ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text)))).ToLowerInvariant()}
   function Check($Condition,[string]$Name){if(-not$Condition){throw "7962 $Name"}}
   $nativeHandles=[Collections.Generic.List[object]]::new()
   function Control([string]$Name,[scriptblock]$Body){
@@ -402,6 +403,20 @@ exit 0
     $ackPath=@(Get-ChildItem $c.runtime -Filter 'dispatch-start-*.json')[0].FullName;$ack=Read-RebaseJson $ackPath
     $specPath=Join-Path $c.runtime "watchdog-lane-$($ack.label).json";$spec=Read-RebaseJson $specPath
     Check ($spec.state-ceq'exited'-and$spec.exitCode-eq0-and$ack.head-cne$c.head) 'native exited0 mismatching start'
+    # The archived producer writes an author-free v1 start, while the current
+    # row-7 fixture derives an author-bound v2 identity. Keep the historical
+    # ack/spec attribution, but bind the fixture file to the identity that the
+    # current producer will seek. This is not a new launch or a policy change.
+    $lane="integration-907960-907962-$('a'*8)"
+    $legacyIdentity=Get-SyntheticIdentity "landed-integration-start/v1`n907960`n$('a'*40)`n907962`n$($c.head)`n$($c.branch)`n$($c.repo)`n$lane"
+    $author=Get-LandedIntegrationAuthor -DefaultCodex
+    $authorIdentity="$($author.harness)/$($author.model)/$($author.effort)/$($author.row)/$($author.placement)"
+    $currentIdentity=Get-SyntheticIdentity "landed-integration-start/v2`n$legacyIdentity`n$($c.base)`n$authorIdentity"
+    $ack.requestIdentity=$currentIdentity
+    $currentAckPath=Join-Path $c.runtime "dispatch-start-$currentIdentity.json"
+    J $currentAckPath $ack
+    Remove-Item -LiteralPath $ackPath -Force
+    $ackPath=$currentAckPath
     return @{c=$c;ackPath=$ackPath;ack=$ack;specPath=$specPath;spec=$spec;wrapper=$wrapper}
   }
   Control 'retained-exited0-parameter-stop-double-replay' {
