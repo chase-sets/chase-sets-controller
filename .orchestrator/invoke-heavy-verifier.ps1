@@ -2834,12 +2834,14 @@ try {
     }
   }
   $queueLockCreated = $false
+  Assert-HeavyAdmissionTime
   try {
-    Assert-HeavyAdmissionTime
     New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
     $queueLockCreated = $true
   } catch {
+    Assert-HeavyAdmissionTime
     if (-not (Invoke-StaleLockReclamation)) { Describe-ExistingLock }
+    Assert-HeavyAdmissionTime
     try {
       New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
       $queueLockCreated = $true
