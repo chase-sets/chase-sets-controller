@@ -1164,7 +1164,8 @@ function Get-LiveDispatchOwnership(
   [scriptblock]$CanonicalPathObserver,
   [scriptblock]$DateKindSupportResolver = {
     (Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")
-  }
+  },
+  [scriptblock]$ClockResolver = { [Diagnostics.Stopwatch]::StartNew() }
 ) {
   $evaluationState = @{}
   $evaluate = {
@@ -1482,7 +1483,7 @@ function Get-LiveDispatchOwnership(
   # process identities and anchors, once at most; never just a failed seat.
   try {
     if ($ProductCensus) { return Invoke-ProductCensusEvaluation $evaluate $DeadlineMs }
-    return & $evaluate @{watch=[Diagnostics.Stopwatch]::new();deadline=$DeadlineMs}
+    return & $evaluate @{watch=(& $ClockResolver);deadline=$DeadlineMs}
   } catch {
     if ($_.Exception.Message -cne 'git-deadline') { throw }
     return $evaluationState.result
