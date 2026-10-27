@@ -374,7 +374,7 @@ $platformRules = @(
   # product loop applies orchestrator-shared Platform handoff by label each
   # cycle; milestone membership never grants the platform loop an issue.
   @(3, 'The orchestration platform loop and its migration belong to the controller thread.', 'The orchestration platform loop belongs to this orchestrator.'),
-  @(3, 'This orchestrator does not observe, start, stop, upgrade or repair platform supervisors or executors and never touches the platform checkout.', 'This orchestrator supervises, restarts and repairs platform executors.'),
+  @(3, 'This orchestrator does not observe, start, stop, resume, unpark, upgrade or repair platform runs, supervisors or executors, never labels a platform issue `ready`, and never touches the platform checkout.', 'This orchestrator supervises, restarts and repairs platform executors.'),
   @(3, 'Once per cycle, before step 7, it applies `orchestrator-shared` Platform handoff from `.orchestrator/platform-handoff.json` and complete issue reads:', 'Once per cycle it reads the platform register:'),
   @(3, 'it resumes unfinished take-backs, takes back held issues that meet a take-back reason, files one controller defect for each return not acknowledged within `releaseHours`, returns acknowledged issues to normal delivery, then hands off new ones.', 'it hands off new issues.'),
   @(3, 'handle it as usual and leave platform-side causes to the controller thread.', 'repair platform-side causes directly.'),
@@ -589,7 +589,9 @@ $handoffRules = @(
   'An issue is held while it carries `dispatch:platform` without `dispatch:platform-return`, and returning while it carries `dispatch:platform-return`.',
   'The product loop chooses handoffs and requests returns. Beyond the handoff and take-back writes below, it never touches an issue carrying either label, or that issue''s PR or branch.',
   'The platform loop works only issues with `dispatch:platform` and without `dispatch:platform-return`.',
-  'The controller loop owns `.orchestrator/platform-handoff.json`, the platform run, acknowledgment when no platform supervisor runs, and platform fixes from take-back causes.',
+  'The controller loop owns `.orchestrator/platform-handoff.json`; every orchestration platform run, the platform''s self loop included: starts, resumes, unparks, `ready` labels on platform issues, recovery and the choice of the next platform fix; acknowledgment when no platform supervisor runs; and platform fixes from take-back causes.',
+  'The product loop does none of these.',
+  'When the controller loop asks for a quiet window before a platform gate, the product loop holds new heavy admissions until it is released.',
   '`.orchestrator/platform-handoff.json` has exactly the fields `schemaVersion` (`platform-handoff/v1`), `accepting` (boolean), `maxInFlight` (an integer of zero or more), and `idleHours`, `maxHours` and `releaseHours` (positive integers). Only the controller loop writes it. An absent, unreadable or invalid file means not accepting.',
   'Authorities come from complete paginated reads, and an incomplete read makes no handoff and no clock-based take-back for that issue this cycle.',
   'Label age is the newest `LabeledEvent` for `dispatch:platform`; return age is the newest `LabeledEvent` for `dispatch:platform-return`.',
@@ -627,6 +629,7 @@ $supervisionRules = @(
   'Observe runs and their PRs read-only.',
   'A historical log line or a matching PID alone is not liveness, and alert silence is not health.',
   'Never hand-edit the platform checkout or the WSL executor checkout; platform defects go to the platform''s self loop, which owns every platform-repository issue.',
+  'This thread chooses the next platform fix, labels a platform issue `ready` only after an independent readiness review, and decides each unpark and resume, recording the decision on the platform issue.',
   'Upgrade the executor only while no Chase Sets supervisor is live.',
   'Each cycle, read the Chase Sets issues carrying `dispatch:platform-return` from a complete paginated read.',
   'While no Chase Sets supervisor is live, this thread is their holder: acknowledge each one (`by: controller`) only after confirming that no process of the run remains, the supervisor and every descendant, and after the shared acknowledgment''s merge-queue check; then make the remaining acknowledgment writes in order.',
@@ -744,6 +747,9 @@ $sharedHandoffMutants['incomplete-read-counts-as-idle'] = Edit-Policy $sharedTex
 $sharedHandoffMutants['re-handoff-after-take-back'] = Edit-Policy $sharedText '; and has never had a `platform-take-back` marker.' '.'
 $sharedHandoffMutants['milestone-ownership-appended'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. The platform loop also keeps each platform-owned milestone in the ownership register.'
 $sharedHandoffMutants['milestone-partition-restored'] = Edit-Policy $sharedText 'Labels and markers are the only transport between the product and platform loops; milestones play no part.' 'The platform loop owns whole milestones assigned to it.'
+$sharedHandoffMutants['product-loop-labels-ready'] = Edit-Policy $sharedText 'The product loop does none of these.' 'The product loop may also label platform issues `ready`.'
+$sharedHandoffMutants['self-loop-excluded'] = Edit-Policy $sharedText 'every orchestration platform run, the platform''s self loop included:' 'every Chase Sets platform run:'
+$sharedHandoffMutants['quiet-window-ignored'] = Edit-Policy $sharedText 'the product loop holds new heavy admissions until it is released.' 'the product loop continues admitting heavy work.'
 $sharedHandoffMutants['section-dated'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. Adopted 2026-10-21.'
 $sharedHandoffMutants['section-issue-number'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. See #192.'
 $sharedHandoffMutants['section-iss-identity'] = Edit-Policy $sharedText 'milestones play no part.' 'milestones play no part. Platform side: ISS-258.'
@@ -763,6 +769,7 @@ $supervisionHandoffMutants['run-noncanonical-start'] = Edit-Policy $supervisionT
 $supervisionHandoffMutants['overdue-holder-left-running'] = Edit-Policy $supervisionText 'write `accepting: false`, stop the run, and acknowledge the same way.' 'file a platform issue.'
 $supervisionHandoffMutants['executor-hand-patched'] = Edit-Policy $supervisionText 'Never hand-edit the platform checkout or the WSL executor checkout;' 'Hand-patch the WSL executor checkout when a run stops;'
 $supervisionHandoffMutants['executor-upgraded-while-live'] = Edit-Policy $supervisionText 'Upgrade the executor only while no Chase Sets supervisor is live.' 'Upgrade the executor at any time.'
+$supervisionHandoffMutants['ready-without-review'] = Edit-Policy $supervisionText 'labels a platform issue `ready` only after an independent readiness review,' 'labels platform issues `ready` as they arrive,'
 $supervisionHandoffMutants['observation-mutates'] = Edit-Policy $supervisionText 'Observe runs and their PRs read-only.' 'Observe runs and repair their PRs.'
 $supervisionHandoffMutants['one-issue-per-take-back'] = Edit-Policy $supervisionText 'For each distinct platform cause named in `platform-take-back` comments, file one platform issue' 'For each take-back, file one platform issue'
 $supervisionHandoffMutants['max-in-flight-unbounded'] = Edit-Policy $supervisionText 'Raise `maxInFlight` from the weekly platform scorecard (`platform-scorecard.ps1`) and that week''s `platform-take-back` markers.' 'Raise `maxInFlight` whenever the queue is short.'
