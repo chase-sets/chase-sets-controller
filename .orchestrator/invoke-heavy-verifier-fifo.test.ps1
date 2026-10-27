@@ -162,6 +162,7 @@ function New-Driver([string]$Name) {
 function Start-Attempt($Driver,[string]$Shape='Gate',[hashtable]$Extra=@{},[switch]$Hold,[switch]$Production,[hashtable]$Environment=@{}) {
   $id=[guid]::NewGuid().ToString('N');$output=Join-Path $Driver.Dir "$id.result";$marker=Join-Path $root "$id.body";$release=if($Hold){Join-Path $root "$id.release"}else{''}
   $p=@{Worktree=$tree;Lane='fifo';Branch=$script:branch;ClaimedHead=$script:head;ContainerRoot=$container}
+  if($Shape-ceq'ControllerBattery'){$p.ControllerBatteryClaimantPid=$Driver.Pid;$p.ControllerBatteryClaimantStartUtc=$Driver.Start}
   if($Production-and$Shape-eq'Gate'){$p.Gate='verify:static'};foreach($key in $Extra.Keys){$p[$key]=$Extra[$key]}
   $attempt=[pscustomobject]@{Output=$output;Marker=$marker;Release=$release;Driver=$Driver};$attempts.Add($attempt)
   Write-Json (Join-Path $Driver.Dir 'next.json') @{parameters=$p;shape=$Shape;marker=$marker;release=$release;output=$output;production=[bool]$Production;env=$Environment}
@@ -210,6 +211,7 @@ if($Mutant){
     $null=Release-Attempt $barrier
     Assert-ControllerRefused (Invoke-Attempt $b ControllerBattery) 'CONTROLLER AC1 B remains behind A' 'queued;.*position=2.*reserved=True'
     Assert-ControllerRefused (Invoke-Attempt $c ControllerBattery) 'CONTROLLER AC1 C remains behind A' 'queued;.*position=3.*reserved=True'
+    Assert-ControllerRefused (Invoke-Attempt $o ControllerBattery) 'CONTROLLER AC2 releasing owner reclaims behind existing waiters' 'queued;.*position=4.*reserved=True'
     $admitted=Invoke-Attempt $a ControllerBattery
     Assert-Fifo ($admitted.Code -eq 0 -and $admitted.Body) 'CONTROLLER AC1 earliest admits' $admitted.Output
     Assert-Fifo (@((Read-Json $controllerQueue).tickets|Where-Object claimantKey -like "*parent:$($a.Pid)*").Count -eq 0) 'CONTROLLER AC1 admitted ticket removed' $admitted.Output
@@ -225,6 +227,15 @@ if($Mutant){
     Assert-Fifo ((Invoke-Attempt $a ControllerBattery).Code -eq 0) 'CONTROLLER AC2 earliest claimant admits before linked command'
     Assert-Fifo ((Invoke-Attempt $b ControllerBattery).Code -eq 0) 'CONTROLLER AC2 first command admits before linked command'
     Assert-Fifo ((Invoke-Attempt $b ControllerBattery @{ControllerBatteryOnFailure='all'}).Code -eq 0) 'CONTROLLER AC2 linked command admits at its own turn'
+    $prior=Join-Path $root 'prior-result.json';$foreign=Join-Path $root 'foreign-result.json';[IO.File]::WriteAllText($prior,'prior');[IO.File]::WriteAllText($foreign,'foreign')
+    Clear-ControllerQueue;$barrier=Start-Attempt $o ControllerBattery -Hold;Wait-For {Test-Path $barrier.Marker} 'controller prior-result barrier'
+    $sameA=Invoke-Attempt $b ControllerBattery @{ControllerBatteryPriorResultPath=$prior};$foreignB=Invoke-Attempt $b ControllerBattery @{ControllerBatteryPriorResultPath=$foreign}
+    $tickets=@((Read-Json $controllerQueue).tickets)
+    Assert-Fifo ($tickets.Count-eq2-and$tickets[0].claimantKey-ceq$tickets[1].claimantKey-and$tickets[0].commandIdentity-cne$tickets[1].commandIdentity) 'CONTROLLER AC2 prior evidence links same lane while foreign result gets distinct command' ($tickets|ConvertTo-Json -Compress)
+    $null=Release-Attempt $barrier;$priorAdmitted=Invoke-Attempt $b ControllerBattery @{ControllerBatteryPriorResultPath=$prior}
+    Assert-Fifo ($priorAdmitted.Code-eq0-and$priorAdmitted.Body) 'CONTROLLER AC2 same-lane prior result retry admits with body' $priorAdmitted.Output
+    $rejected=Invoke-Attempt $b ControllerBattery @{ControllerBatteryPriorResultPath=$foreign}
+    Assert-Fifo ($rejected.Code-eq91-and-not$rejected.Body-and$rejected.Output-match'foreign prior result') 'CONTROLLER AC2 foreign prior result is rejected without body' $rejected.Output
     Write-Output 'PASS CONTROLLER AC2 per-command linkage and separate controller queue'
   }
   function Assert-ControllerRefused($Result,[string]$Name,[string]$Pattern='') {
@@ -275,7 +286,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   & pnpm.cmd --dir $tree install --lockfile-only --ignore-scripts --offline *> (Join-Path $root 'pnpm-setup.log')
   if($LASTEXITCODE -ne 0){throw 'SETUP: fixture pnpm lock generation'}
   [void][IO.Directory]::CreateDirectory((Join-Path $tree '.orchestrator'))
-  [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/controller-release-battery.ps1'),'[IO.File]::AppendAllText($env:FIFO_BODY,"body`n"); while($env:FIFO_RELEASE -and -not (Test-Path -LiteralPath $env:FIFO_RELEASE)){ Start-Sleep -Milliseconds 20 }')
+  [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/controller-release-battery.ps1'),'param([string]$PriorResultPath); if($PriorResultPath -and [IO.Path]::GetFileName($PriorResultPath)-ceq''foreign-result.json''){Write-Error ''foreign prior result'';exit 91}; [IO.File]::AppendAllText($env:FIFO_BODY,"body`n"); while($env:FIFO_RELEASE -and -not (Test-Path -LiteralPath $env:FIFO_RELEASE)){ Start-Sleep -Milliseconds 20 }')
   [IO.File]::WriteAllText((Join-Path $tree '.orchestrator/fail-closed-guard-evidence.test.ps1'),'param($Scenario,$ExpectedControllerHead,$SuiteResultOut); [IO.File]::WriteAllText((Join-Path (Get-Location) $SuiteResultOut),''{}''); [IO.File]::AppendAllText($env:FIFO_BODY,"body`n")')
   & git -C $tree add .gitignore package.json pnpm-lock.yaml gate.cjs scripts .orchestrator
   & git -C $tree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert FIFO fixture'

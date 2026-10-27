@@ -10,7 +10,7 @@ function Assert-HeavyFiles {
     'heavy-admission-holder-launcher.cjs', 'dispatch-ownership.ps1', 'fleet-exclusive-admission.psm1', 'invoke-fleet-exclusive-gate.ps1',
     'lane-admission.ps1', 'lane-admission-v1.schema.json', 'lane-admission-collected-input-v1.schema.json',
     'install-controller-skills.ps1', 'controller-install-lock.psm1', 'controller-heavy-paths.psm1',
-    'dispatch-lane.ps1', 'lane-stall-watchdog.ps1', 'lane-stall-watchdog-batch.ps1',
+    'dispatch-lane.ps1', 'lane-stall-watchdog.ps1', 'lane-stall-watchdog-batch.ps1', 'watchdog-host-hold.ps1',
     'lease.ps1', 'lease-contract.psm1', 'integration-dispatch-contract.ps1',
     'controller-release-battery.ps1', 'verify-lock.d/owner.json', 'controller-verify-lock.d/owner.json',
     'contracts/heavy-lane-admission.md'

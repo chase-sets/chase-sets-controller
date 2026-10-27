@@ -672,6 +672,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     'bypass-predispatch-hold'='AC5 hold published before dispatch vetoes relaunch'
     'hold-fail-open'='AC5 corrupt hold fails closed'
     'hold-identity-unbound'='AC5 foreign-launch release fails closed'
+    'stale-release-unbound'='AC5 stale same-launch release must not clear newer hold'
     'release-ignored'='AC5 exact host release resumes ordinary recovery'
   }
   function Invoke-HoldWatchdog($Item,[string]$Name,[int]$AgeSeconds=299,[string[]]$Extra=@()){
@@ -681,9 +682,11 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     [pscustomobject]@{Exit=$code;Output=$out;Result=$(if($json){$json|ConvertFrom-Json -DateKind String}else{$null})}
   }
   function Write-HostHold($Item,[string]$State='HELD',[hashtable]$Changes=@{},[string]$Path=''){
-    $record=[ordered]@{schemaVersion='watchdog-host-hold/v1';authority='host';state=$State;label=$Item.spec.label;attemptId=$Item.spec.attemptId;launchId=$Item.spec.launchId;worktree=$Item.spec.worktree;branch=$Item.spec.branch;head=$Item.spec.head;recordedAt=[datetimeoffset]::UtcNow.ToString('o')}
-    foreach($key in $Changes.Keys){if($null-eq$Changes[$key]){$record.Remove($key)}else{$record[$key]=$Changes[$key]}}
     if(-not$Path){$Path=Join-Path $runtime "watchdog-host-hold-$($Item.spec.label).json"}
+    $existing=$null
+    if($State-ceq'RELEASED' -and (Test-Path -LiteralPath $Path -PathType Leaf)){$existing=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json -DateKind String}
+    $record=[ordered]@{schemaVersion='watchdog-host-hold/v1';authority='host';state=$State;holdId=$(if($existing){[string]$existing.holdId}else{[guid]::NewGuid().ToString()});label=$Item.spec.label;attemptId=$Item.spec.attemptId;launchId=$Item.spec.launchId;worktree=$Item.spec.worktree;branch=$Item.spec.branch;head=$Item.spec.head;recordedAt=[datetimeoffset]::UtcNow.ToString('o')}
+    foreach($key in $Changes.Keys){if($null-eq$Changes[$key]){$record.Remove($key)}else{$record[$key]=$Changes[$key]}}
     [IO.File]::WriteAllText($Path,($record|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$Path
   }
   function Get-HoldEffects($Item){
@@ -756,6 +759,11 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
       Assert-HoldUnknown $corrupt 'h1-corrupt' 'AC5 corrupt hold fails closed'
       $foreign=New-Spec 'h1-foreign-launch';[void](Write-HostHold $foreign 'RELEASED' @{launchId=[guid]::NewGuid().ToString()})
       Assert-HoldUnknown $foreign 'h1-foreign-launch' 'AC5 foreign-launch release fails closed'
+      $replay=New-Spec 'h1-stale-release';$oldRelease=Write-HostHold $replay 'RELEASED' @{recordedAt='2000-01-01T00:00:00.0000000Z'};$staleBytes=[IO.File]::ReadAllBytes($oldRelease)
+      [void](Write-HostHold $replay 'HELD' @{holdId=[guid]::NewGuid().ToString()});$heldRun=Invoke-HoldWatchdog $replay 'h1-stale-release-held';Assert-HostHoldResult $heldRun 'AC5 stale-release held control'
+      $before=Get-HoldEffects $replay;[IO.File]::WriteAllBytes($oldRelease,$staleBytes);$run=Invoke-HoldWatchdog $replay 'h1-stale-release-replay'
+      Assert-HostHoldResult $run 'AC5 stale same-launch release must not clear newer hold';Assert-NoHoldEffects $before $replay 'AC5 stale same-launch release had dispatch effects'
+      Write-Output 'PASS AC5 stale same-launch release cannot clear newer hold'
       $bad=@(
         @{name='foreign-attempt';state='RELEASED';changes=@{attemptId='synthetic-other-attempt'}},
         @{name='foreign-label';state='RELEASED';changes=@{label='h1-other-lane'}},
@@ -806,15 +814,17 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     $source=[IO.File]::ReadAllText($watchdog).Replace("`r`n","`n")
     $observeGuard="if(`$hostHold-and`$hostHold.state-ceq'HELD'){ # HOST_HOLD_OBSERVATION_GUARD"
     $dispatchGuard="if(`$hostHold-and`$hostHold.state-ceq'HELD'){ # HOST_HOLD_DISPATCH_GUARD"
-    $catch='}catch{throw "WATCHDOG_HOST_HOLD_UNKNOWN: $($_.Exception.Message)"}'
+    $catch='    return $hold'+"`n"+'  }catch{throw "WATCHDOG_HOST_HOLD_UNKNOWN: $($_.Exception.Message)"}'
     $identity='$hold.attemptId-cne[string]$Spec.attemptId-or$hold.launchId-cne[string]$Spec.launchId-or'
-    foreach($anchor in @($observeGuard,$dispatchGuard,$catch,$identity)){Assert-True (([regex]::Matches($source,[regex]::Escape($anchor))).Count-eq1) "SETUP host-hold mutation anchor not unique: $anchor"}
+    $releaseBinding='if($hostHold -and -not(Assert-HostHoldRelease $hostHold $runtimeFull $Label)){'
+    foreach($anchor in @($observeGuard,$dispatchGuard,$catch,$identity,$releaseBinding)){$count=([regex]::Matches($source,[regex]::Escape($anchor))).Count;Assert-True (($count-eq1)-or($anchor-ceq$releaseBinding-and$count-eq2)) "SETUP host-hold mutation anchor not unique: $anchor"}
     $mutants=[ordered]@{
       'bypass-hold'=$source.Replace($observeGuard,'if($false){').Replace($dispatchGuard,'if($false){')
       'bypass-observation-hold'=$source.Replace($observeGuard,'if($false){')
       'bypass-predispatch-hold'=$source.Replace($dispatchGuard,'if($false){')
-      'hold-fail-open'=$source.Replace($catch,'}catch{return $null}')
+      'hold-fail-open'=$source.Replace($catch,('    return $hold'+"`n"+'  }catch{return $null}'))
       'hold-identity-unbound'=$source.Replace($identity,'')
+      'stale-release-unbound'=$source.Replace($releaseBinding,'if($false){')
       'release-ignored'=$source.Replace($observeGuard,"if(`$hostHold){").Replace($dispatchGuard,"if(`$hostHold){")
     }
     $mutantRoot=Join-Path $root 'mutants-host-hold';New-Item -ItemType Directory $mutantRoot|Out-Null

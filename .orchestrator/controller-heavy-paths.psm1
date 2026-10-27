@@ -7,7 +7,7 @@ function Test-ControllerHeavyPath {
   # Include the classifier and installer themselves: changing the guard must
   # never qualify for its own non-heavy exemption. Ownership/admission callers
   # without those words in their names are explicit below.
-  $normalized -imatch 'heavy|verify|admission|ownership|(^|/)(install-controller-skills\.ps1|controller-install-lock\.psm1|dispatch-lane\.ps1|lane-stall-watchdog[^/]*|lease[^/]*|integration-dispatch-contract\.ps1|controller-release-battery\.ps1|invoke-fleet-exclusive-gate\.ps1)$'
+  $normalized -imatch 'heavy|verify|admission|ownership|(^|/)(install-controller-skills\.ps1|controller-install-lock\.psm1|dispatch-lane\.ps1|lane-stall-watchdog[^/]*|watchdog-host-hold\.ps1|lease[^/]*|integration-dispatch-contract\.ps1|controller-release-battery\.ps1|invoke-fleet-exclusive-gate\.ps1)$'
 }
 
 function Get-ControllerHeavyInstallDelta {

@@ -124,6 +124,18 @@ $isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isCo
 $isControllerSlot = $isControllerBattery -or $isControllerPrecursor -or $isControllerFixture
 $isQueueSlot = $isProductSlot -or $isControllerSlot
 $hasControllerBatteryClaimant = $isControllerBattery -and $ControllerBatteryClaimantPid -gt 0
+
+function Test-UtcIdentity([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+  $parsed = [DateTimeOffset]::MinValue
+  return [DateTimeOffset]::TryParse($Value, [ref]$parsed)
+}
+function Test-PositivePid($Value) {
+  if ($Value -isnot [int] -and $Value -isnot [long]) { return $false }
+  $parsed = 0
+  return [int]::TryParse([string]$Value, [ref]$parsed) -and $parsed -gt 0
+}
+
 if ($hasControllerBatteryClaimant -and -not (Test-UtcIdentity $ControllerBatteryClaimantStartUtc)) {
   throw 'heavy-verifier: controller battery claimant identity is unavailable'
 }
@@ -1488,16 +1500,6 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
   } catch {
     return $null
   }
-}
-function Test-UtcIdentity([string]$Value) {
-  if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
-  $parsed = [DateTimeOffset]::MinValue
-  return [DateTimeOffset]::TryParse($Value, [ref]$parsed)
-}
-function Test-PositivePid($Value) {
-  if ($Value -isnot [int] -and $Value -isnot [long]) { return $false }
-  $parsed = 0
-  return [int]::TryParse([string]$Value, [ref]$parsed) -and $parsed -gt 0
 }
 function Test-NativeTuple($Tuple) {
   try {
