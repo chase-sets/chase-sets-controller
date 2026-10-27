@@ -82,8 +82,10 @@ function Get-LiveDispatchOwnership {
   $parameters.ClockResolver = { New-CensusClock }
   if ($fixture.Mode -ceq 'deadline-persistent' -or
       ($fixture.Mode -ceq 'deadline-once' -and $fixture.Calls -eq 1)) { $parameters.DeadlineMs = 0 }
+  if ($fixture.Mode -ceq 'churn-overlap' -and $fixture.Calls -eq 2) { & $fixture.Hook }
   $fixture.Last = & $census @parameters
-  if ($fixture.Mode -cin @('churn-early', 'churn-overlap') -and $fixture.Calls -eq 1) { & $fixture.Hook }
+  if ($fixture.Mode -ceq 'churn-early' -and $fixture.Calls -eq 1) { & $fixture.Hook }
+  if ($fixture.Mode -ceq 'churn-overlap' -and $fixture.Calls -eq 1) { [IO.File]::Delete($foreignPath) }
   if ($fixture.Mode -ceq 'equal-count-replace' -and $fixture.Calls -eq 1) { & $fixture.Hook }
   if ($fixture.Mode -ceq 'cap-tail') {
     # Remove only the excluded tail after the real cap refuses. Counts now match
