@@ -63,6 +63,7 @@ param(
   [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayIdentityRevalidationMilliseconds,
   [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayChildPublicationMilliseconds,
   [Parameter(DontShow)][ValidateRange(0, 30000)][int]$TestDelayDiagnosticLaunchMilliseconds,
+  [Parameter(DontShow)][string]$TestDiagnosticClockFixture,
   # The canonical controller release battery uses the same exact-owner lock
   # implementation, but its command and arguments are fixed here rather than
   # exposed as an arbitrary production command surface.
@@ -397,6 +398,24 @@ function Test-SafeFile([string]$Path) {
       (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne [IO.FileAttributes]::ReparsePoint)
   } catch {
     return $false
+  }
+}
+$script:diagnosticClockIndex = 0
+function Get-DiagnosticNow {
+  if ([string]::IsNullOrWhiteSpace($TestDiagnosticClockFixture)) { return [DateTime]::UtcNow }
+  if (-not (Test-SafeFile $TestDiagnosticClockFixture)) { throw 'heavy-verifier: diagnostic clock fixture is unavailable or unsafe' }
+  try {
+    $fixture = [IO.File]::ReadAllText($TestDiagnosticClockFixture) | ConvertFrom-Json -ErrorAction Stop
+    $values = @($fixture.times)
+    if ($fixture.schema -cne 'test-diagnostic-clock/v1' -or $values.Count -eq 0) { throw 'invalid clock fixture' }
+    $index = [Math]::Min($script:diagnosticClockIndex, $values.Count - 1)
+    $script:diagnosticClockIndex++
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse([string]$values[$index], [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { throw 'invalid clock value' }
+    return $parsed.UtcDateTime
+  } catch {
+    throw 'heavy-verifier: diagnostic clock fixture is unreadable'
   }
 }
 $diagnosticScriptFull = $null
@@ -3165,7 +3184,7 @@ try {
     }
     if ($isTimedRoute) {
       $budgetMilliseconds = [int][Math]::Ceiling($(if ($isDiagnostic) { $DiagnosticBudgetSeconds } else { $WorkspaceDbBudgetSeconds }) * 1000)
-      $deadline = [DateTime]::UtcNow.AddMilliseconds($budgetMilliseconds)
+      $deadline = (Get-DiagnosticNow).AddMilliseconds($budgetMilliseconds)
       $peakWorkingSet = [long]$child.WorkingSet64
       $workingSet = $peakWorkingSet
       $diagnosticObservedDescendants = @()
@@ -3188,7 +3207,7 @@ try {
           $possibleDescendant = if ($IsWindows) { $jobActive -or (Test-ObservedDiagnosticDescendants $diagnosticObservedDescendants) } else { Test-PossibleOwnedChild $owner -GuardedRootOnly }
           if ($possibleDescendant -eq $false) { break }
         }
-        $remaining = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        $remaining = [int][Math]::Floor(($deadline - (Get-DiagnosticNow)).TotalMilliseconds)
         if ($remaining -le 0) {
           $childTimedOut = $true
           Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
@@ -3197,8 +3216,8 @@ try {
         [void]$child.WaitForExit([Math]::Min(100, $remaining))
       }
       if ($childTimedOut) {
-        $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(2)
-        while (-not $child.HasExited -and [DateTime]::UtcNow -lt $cleanupDeadline) {
+        $cleanupDeadline = (Get-DiagnosticNow).AddSeconds(2)
+        while (-not $child.HasExited -and (Get-DiagnosticNow) -lt $cleanupDeadline) {
           try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
           [void]$child.WaitForExit(50)
         }
