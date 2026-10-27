@@ -1,4 +1,48 @@
 $SyntheticIntegrationRepository='synthetic-7962-owner/synthetic-7962-repository'
+
+function Wait-SyntheticProducerSignal([string]$Path,$Process,[string]$Name) {
+  while(-not(Test-Path -LiteralPath $Path)){
+    if($Process.HasExited){throw "SYNTHETIC_SIGNAL_MISSING: $Name producer exited $($Process.ExitCode) without $Path"}
+    [Threading.Thread]::Sleep(20)
+  }
+}
+
+function Wait-RetainedPriorTree($Owner,[object[]]$Producers=@()) {
+  # Only an explicitly owned, identity-bound producer can be asked to stop.
+  # No producer means one fail-closed observation, never an unbounded poll.
+  foreach($producer in $Producers){
+    if($producer.process.StartTime.ToUniversalTime().ToString('o')-cne$producer.startIdentity){throw 'R3_PRIOR_TEARDOWN: owned producer identity differs'}
+    $release=[IO.Path]::GetFullPath($producer.releasePath)
+    if(-not$release.StartsWith([IO.Path]::GetTempPath(),[StringComparison]::OrdinalIgnoreCase)){throw 'R3_PRIOR_TEARDOWN: release outside fixture'}
+    [IO.File]::WriteAllText($release,'release owned prior-tree fixture')
+    $producer.process.WaitForExit();$producer.process.Dispose();$producer.process=$null
+  }
+  try{$all=@(Get-CimInstance Win32_Process -ErrorAction Stop)}catch{throw 'R3_PRIOR_TEARDOWN: native inventory unavailable'}
+  $observer=@($all|Where-Object ProcessId -EQ $PID)
+  if($observer.Count-ne1-or$null-eq$observer[0].CreationDate-or
+    [Math]::Abs(([datetimeoffset]$observer[0].CreationDate).UtcTicks-(Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks)-ge10){throw 'R3_PRIOR_TEARDOWN: native inventory incomplete'}
+  $seen=[Collections.Generic.HashSet[int]]::new();$reused=@{}
+  foreach($role in @('launcher','child')){
+    $id=[int]$Owner."${role}Pid";$identity=[datetimeoffset]$Owner."${role}StartIdentity"
+    if($id-le0-or-not$seen.Add($id)){throw 'R3_PRIOR_TEARDOWN: ambiguous root'}
+    $rows=@($all|Where-Object ProcessId -EQ $id)
+    if(-not$rows.Count){continue}
+    if($rows.Count-ne1-or$null-eq$rows[0].CreationDate){throw 'R3_PRIOR_TEARDOWN: ambiguous root'}
+    if([Math]::Abs(([datetimeoffset]$rows[0].CreationDate).UtcTicks-$identity.UtcTicks)-lt10){throw 'R3_PRIOR_TEARDOWN: live root without terminal producer'}
+    $reused[$id]=[datetimeoffset]$rows[0].CreationDate
+  }
+  $queue=[Collections.Generic.Queue[int]]::new();foreach($id in $seen){$queue.Enqueue($id)}
+  while($queue.Count){
+    $id=$queue.Dequeue()
+    foreach($child in @($all|Where-Object ParentProcessId -EQ $id)){
+      if($reused.ContainsKey($id)-and$null-ne$child.CreationDate-and[datetimeoffset]$child.CreationDate-ge$reused[$id]){continue}
+      try{$exact=@(Get-CimInstance Win32_Process -Filter "ProcessId = $($child.ProcessId)" -ErrorAction Stop)}catch{throw 'R3_PRIOR_TEARDOWN: descendant inventory unavailable'}
+      if($exact.Count-ne1-or$null-eq$child.CreationDate-or$child.CreationDate-ne$exact[0].CreationDate){throw 'R3_PRIOR_TEARDOWN: ambiguous descendant'}
+      if([datetimeoffset]$child.CreationDate-ge[datetimeoffset]$Owner.launcherStartIdentity){throw 'R3_PRIOR_TEARDOWN: live descendant without terminal producer'}
+      if($seen.Add([int]$child.ProcessId)){$queue.Enqueue([int]$child.ProcessId)}
+    }
+  }
+}
 function Write-SyntheticIntegrationEligibility([string]$History, $Nodes) {
   Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -DisableNameChecking
   foreach($node in $Nodes){
@@ -76,11 +120,11 @@ function Set-ArchivedOrchestrationLogMutexName([string]$Runtime) {
 }
 
 # Executed by the existing R3 carrier, focused or inside the canonical battery.
-function Test-7962NativeControls {
+function Test-7962NativeControls([string]$RepositoryRoot=(Split-Path -Parent $PSScriptRoot)) {
   $caseRoot=Join-Path $fixtureRoot 'synthetic-7962';New-Item -ItemType Directory $caseRoot|Out-Null
   $nativeFailures=[Collections.Generic.List[string]]::new()
   $pwsh=(Get-Command pwsh -CommandType Application|Select-Object -First 1 -ExpandProperty Source)
-  $baseline='8106d4e12c4b3329e3b59372366c5a57e8dfacc1';$candidateRoot=Split-Path -Parent $PSScriptRoot
+  $baseline='8106d4e12c4b3329e3b59372366c5a57e8dfacc1';$candidateRoot=$RepositoryRoot
   & git -C $candidateRoot cat-file -e "$baseline^{commit}";if($LASTEXITCODE-ne0){throw 'baseline missing'}
   $zip=Join-Path $caseRoot 'baseline.zip'; & git -C $candidateRoot archive --format=zip "--output=$zip" $baseline .orchestrator
   if($LASTEXITCODE-ne0){throw 'baseline archive failed'}
@@ -91,17 +135,31 @@ function Test-7962NativeControls {
   Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
   function N([string]$Repo,[string[]]$A){$v=@(& git -C $Repo @A 2>&1);if($LASTEXITCODE-ne0){throw "Git $LASTEXITCODE $A $v"};return ($v-join"`n").Trim()}
   function J([string]$Path,$Value){[IO.File]::WriteAllText($Path,(ConvertTo-Json -InputObject $Value -Depth 30 -Compress),[Text.UTF8Encoding]::new($false))}
+  function Get-SyntheticIdentity([string]$Text){return ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text)))).ToLowerInvariant()}
   function Check($Condition,[string]$Name){if(-not$Condition){throw "7962 $Name"}}
-  function Control([string]$Name,[scriptblock]$Body){try{& $Body;Write-Output "CONTROL 7962/$Name native assertions satisfied"}catch{$nativeFailures.Add("${Name}: $($_.Exception.Message)");Write-Output "CONTROL 7962/$Name FAILED $($_.Exception.Message) $($_.ScriptStackTrace)"}}
+  $nativeHandles=[Collections.Generic.List[object]]::new()
+  function Control([string]$Name,[scriptblock]$Body){
+    try{& $Body;Write-Output "CONTROL 7962/$Name native assertions satisfied"}
+    catch{$nativeFailures.Add("${Name}: $($_.Exception.Message)");Write-Output "CONTROL 7962/$Name FAILED $($_.Exception.Message) $($_.ScriptStackTrace)"}
+    finally{
+      foreach($handle in @($nativeHandles|Where-Object {-not$_.complete})){
+        # These exact handles were started below, never discovered by PID.
+        if(-not$handle.p.HasExited){$handle.p.Kill($true)}
+        $null=End-Native $handle
+      }
+    }
+  }
   function Begin-Native([string]$Script,[string[]]$A,[string]$Stem){
     $s=[Diagnostics.ProcessStartInfo]::new();$s.FileName=$pwsh;$s.UseShellExecute=$false;$s.CreateNoWindow=$true;$s.RedirectStandardOutput=$true;$s.RedirectStandardError=$true
     foreach($arg in (@('-NoProfile','-NonInteractive','-File',$Script)+$A)){[void]$s.ArgumentList.Add($arg)}
-    $p=[Diagnostics.Process]::Start($s);return @{p=$p;out=$p.StandardOutput.ReadToEndAsync();err=$p.StandardError.ReadToEndAsync();stem=$Stem}
+    $p=[Diagnostics.Process]::Start($s);[void]$p.Handle
+    $handle=@{p=$p;out=$p.StandardOutput.ReadToEndAsync();err=$p.StandardError.ReadToEndAsync();stem=$Stem;complete=$false}
+    $nativeHandles.Add($handle);return $handle
   }
   function End-Native($h){
-    if(-not$h.p.WaitForExit(45000)){throw "native deadline $($h.stem) PID=$($h.p.Id)"}
+    $h.p.WaitForExit()
     $r=[pscustomobject]@{exit=$h.p.ExitCode;stdout=$h.out.GetAwaiter().GetResult();stderr=$h.err.GetAwaiter().GetResult();pid=$h.p.Id}
-    [IO.File]::WriteAllText("$($h.stem).stdout.log",$r.stdout);[IO.File]::WriteAllText("$($h.stem).stderr.log",$r.stderr);J "$($h.stem).exit.json" @{exit=$r.exit;pid=$r.pid};$h.p.Dispose();return $r
+    [IO.File]::WriteAllText("$($h.stem).stdout.log",$r.stdout);[IO.File]::WriteAllText("$($h.stem).stderr.log",$r.stderr);J "$($h.stem).exit.json" @{exit=$r.exit;pid=$r.pid};$h.complete=$true;$h.p.Dispose();return $r
   }
   function Run-Native([string]$Script,[string[]]$A,[string]$Stem){
     if('-FixturePath'-cin$A){
@@ -286,16 +344,16 @@ exit $LASTEXITCODE
     $c=New-Case 'stale-preflight';$req=Request $c;$entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue'
     $extra=@('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
     $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') $extra
-    $h=Begin-Native $runner @() (Join-Path $c.root 'candidate');$deadline=[datetime]::UtcNow.AddSeconds(15)
-    while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'stale barrier not reached'};[Threading.Thread]::Sleep(25)}
+    $h=Begin-Native $runner @() (Join-Path $c.root 'candidate')
+    Wait-SyntheticProducerSignal $entered $h.p 'stale barrier'
     $api=Read-RebaseJson $c.api;$api[0].data.repository.pullRequest.headRefOid=$c.base;J $c.api $api;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
     Check ($r.exit-ne0-and$r.stderr.Contains('INTEGRATION_TARGET_RECONCILIATION_REQUIRED')-and(Zero-Effects $c)) 'stale API escaped publication'
     $api[0].data.repository.pullRequest.headRefOid=$c.head;J $c.api $api;Remove-Item -LiteralPath $entered,$continue
     $old='    [void](Assert-IntegrationTarget $worktreeResolved $integrationTarget.branch $integrationTarget.head $integrationTarget.newBase $integrationTarget.repository $integrationTarget.pr $IntegrationAuthorityFixturePath) # INTEGRATION_GUARD_PUBLICATION'
     $mutant=New-Subject 'publication' 'dispatch-lane.ps1' $old '    # independently omitted publication guard'
     $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6.1-sol','high',7,'provisional') $extra
-    $h=Begin-Native $runner @() (Join-Path $c.root 'bypass');$deadline=[datetime]::UtcNow.AddSeconds(15)
-    while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'bypass barrier not reached'};[Threading.Thread]::Sleep(25)}
+    $h=Begin-Native $runner @() (Join-Path $c.root 'bypass')
+    Wait-SyntheticProducerSignal $entered $h.p 'bypass barrier'
     $api[0].data.repository.pullRequest.headRefOid=$c.base;J $c.api $api;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
     Check ($r.exit-eq0-and(Test-Path (Join-Path $c.root 'body.txt'))) "publication bypass $($r.stderr)"
   }
@@ -345,6 +403,20 @@ exit 0
     $ackPath=@(Get-ChildItem $c.runtime -Filter 'dispatch-start-*.json')[0].FullName;$ack=Read-RebaseJson $ackPath
     $specPath=Join-Path $c.runtime "watchdog-lane-$($ack.label).json";$spec=Read-RebaseJson $specPath
     Check ($spec.state-ceq'exited'-and$spec.exitCode-eq0-and$ack.head-cne$c.head) 'native exited0 mismatching start'
+    # The archived producer writes an author-free v1 start, while the current
+    # row-7 fixture derives an author-bound v2 identity. Keep the historical
+    # ack/spec attribution, but bind the fixture file to the identity that the
+    # current producer will seek. This is not a new launch or a policy change.
+    $lane="integration-907960-907962-$('a'*8)"
+    $legacyIdentity=Get-SyntheticIdentity "landed-integration-start/v1`n907960`n$('a'*40)`n907962`n$($c.head)`n$($c.branch)`n$($c.repo)`n$lane"
+    $author=Get-LandedIntegrationAuthor -DefaultCodex
+    $authorIdentity="$($author.harness)/$($author.model)/$($author.effort)/$($author.row)/$($author.placement)"
+    $currentIdentity=Get-SyntheticIdentity "landed-integration-start/v2`n$legacyIdentity`n$($c.base)`n$authorIdentity"
+    $ack.requestIdentity=$currentIdentity
+    $currentAckPath=Join-Path $c.runtime "dispatch-start-$currentIdentity.json"
+    J $currentAckPath $ack
+    Remove-Item -LiteralPath $ackPath -Force
+    $ackPath=$currentAckPath
     return @{c=$c;ackPath=$ackPath;ack=$ack;specPath=$specPath;spec=$spec;wrapper=$wrapper}
   }
   Control 'retained-exited0-parameter-stop-double-replay' {
@@ -437,8 +509,8 @@ exit 0
     if($state-ceq'path'){$req.runtimeRoot=$c.root;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req}
     if($state-ceq'moved-request'){
       $entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue';$runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
-      $h=Begin-Native $runner @() (Join-Path $c.root 'candidate');$deadline=[datetime]::UtcNow.AddSeconds(15)
-      while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'request barrier not reached'};[Threading.Thread]::Sleep(25)}
+      $h=Begin-Native $runner @() (Join-Path $c.root 'candidate')
+      Wait-SyntheticProducerSignal $entered $h.p 'request barrier'
       $req.newBase=$c.head;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
     }else{$r=Run-Native (Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1')) @() (Join-Path $c.root 'candidate')}
     Check ($r.exit-ne0-and$r.stderr.Contains('INTEGRATION_REQUEST')-and(Zero-Effects $c)) "request $state escaped native boundary"
@@ -447,8 +519,8 @@ exit 0
       $old="    if ((Get-RebaseRecordIdentity (Read-RebaseJson `$IntegrationTargetPath)) -cne (Get-RebaseRecordIdentity `$integrationTarget)) { throw 'INTEGRATION_REQUEST_MOVED' }"
       $mutant=New-Subject 'request-moved' 'dispatch-lane.ps1' $old '    # independently omitted request immutability guard'
       $runner=Launcher-Runner $c $req $mutant @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
-      $h=Begin-Native $runner @() (Join-Path $c.root 'bypass');$deadline=[datetime]::UtcNow.AddSeconds(15)
-      while(-not(Test-Path $entered)){if($h.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'request bypass barrier not reached'};[Threading.Thread]::Sleep(25)}
+      $h=Begin-Native $runner @() (Join-Path $c.root 'bypass')
+      Wait-SyntheticProducerSignal $entered $h.p 'request bypass barrier'
       $req.newBase=$c.head;J (Join-Path $c.runtime "integration-request-$($req.label).json") $req;[IO.File]::WriteAllText($continue,'continue');$r=End-Native $h
       Check ($r.exit-eq0-and(Test-Path (Join-Path $c.root 'body.txt'))) "changed request bypass did not expose stale in-memory launch $($r.stderr)"
     }
@@ -473,15 +545,15 @@ exit 0
   Control 'live-owner-publication-candidate-and-bypass' {
     $c=New-Case 'live-owner';$req=Request $c;$entered=Join-Path $c.root 'entered';$continue=Join-Path $c.root 'continue';$release=Join-Path $c.root 'owner-release'
     $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('IntegrationPreflightObservedPath',$entered,'IntegrationPreflightContinuePath',$continue)
-    $target=Begin-Native $runner @() (Join-Path $c.root 'target');$deadline=[datetime]::UtcNow.AddSeconds(15)
-    while(-not(Test-Path $entered)){if($target.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'owner-race target barrier missing'};[Threading.Thread]::Sleep(25)}
+    $target=Begin-Native $runner @() (Join-Path $c.root 'target')
+    Wait-SyntheticProducerSignal $entered $target.p 'owner-race target barrier'
     $ownerReq=Request $c 'synthetic-owner';$ownerReq.requestIdentity='d'*64;J (Join-Path $c.runtime 'integration-request-synthetic-owner.json') $ownerReq
     $ownerRunner=Launcher-Runner $c $ownerReq (Join-Path $PSScriptRoot 'dispatch-lane.ps1')
     [IO.File]::WriteAllText((Join-Path $c.root 'body.ps1'),'Write-Output ''{"type":"item.completed"}'';while(-not(Test-Path -LiteralPath '''+$release.Replace("'","''")+''')){[Threading.Thread]::Sleep(25)}')
     $owner=Begin-Native $ownerRunner @() (Join-Path $c.root 'owner')
     try{
-      $deadline=[datetime]::UtcNow.AddSeconds(15);$ownerAck=Join-Path $c.runtime ('dispatch-start-'+('d'*64)+'.json')
-      while(-not(Test-Path $ownerAck)){if($owner.p.HasExited-or[datetime]::UtcNow-ge$deadline){throw 'native owner not published'};[Threading.Thread]::Sleep(25)}
+      $ownerAck=Join-Path $c.runtime ('dispatch-start-'+('d'*64)+'.json')
+      Wait-SyntheticProducerSignal $ownerAck $owner.p 'native owner publication'
       [IO.File]::WriteAllText($continue,'continue');$r=End-Native $target
       Check ($r.exit-ne0-and$r.stderr.Contains('INTEGRATION_OWNER_PENDING')-and-not(Test-Path (Join-Path $c.root 'body.txt'))-and-not$owner.p.HasExited) 'live owner not preserved at mutation boundary'
       $old='    if ($integrationOwners.health.status -cne ''ok'' -or @($integrationOwners.activeLanes | Where-Object { $_.branch -ceq $integrationTarget.branch }).Count) { throw "INTEGRATION_OWNER_PENDING diagnostics=$(Get-DispatchBlockingDiagnostics $integrationOwners)" }'

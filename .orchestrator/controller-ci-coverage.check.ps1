@@ -428,20 +428,68 @@ function Get-CarrierProofCensus([string]$Source){
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
   Assert-Ci ($errors.Count -eq 0) 'historical carrier proof source parse failed'
+  # AC2 replaces the wall-clock carrier timeout with a terminal process wait
+  # followed by both redirected-stream EOF waits. Keep these member calls in
+  # the baseline census even though they are not predicates themselves.
+  $terminalBoundCalls=@('$p.WaitForExit()','$out.GetAwaiter().GetResult()','$err.GetAwaiter().GetResult()','$Holder.child.WaitForExit()')
   $keys=@{}
   foreach($node in $ast.FindAll({param($n)
     ($n -is [Management.Automation.Language.CommandAst] -and ($n.GetCommandName() -clike 'Assert-*' -or $n.GetCommandName() -clike 'Proof*')) -or
     $n -is [Management.Automation.Language.ThrowStatementAst] -or $n -is [Management.Automation.Language.HashtableAst] -or
-    $n -is [Management.Automation.Language.BinaryExpressionAst] -or $n -is [Management.Automation.Language.UnaryExpressionAst]
+    $n -is [Management.Automation.Language.BinaryExpressionAst] -or $n -is [Management.Automation.Language.UnaryExpressionAst] -or
+    ($n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $terminalBoundCalls -contains $n.Extent.Text)
   },$true)){
     $key=$node.GetType().Name+':'+$node.Extent.Text
+    if($node -is [Management.Automation.Language.InvokeMemberExpressionAst]){
+      $owner=$node.Parent
+      while($owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]){$owner=$owner.Parent}
+      Assert-Ci ($null -ne $owner) 'historical carrier terminal wait has no function owner'
+      $key=$owner.Name+'/'+$key
+    }
     $keys[$key]=1+[int]$keys[$key]
   }
   return $keys
 }
+$carrierPredicateReplacements=@{
+  # AC2 intentionally removes the bounded WaitForExit($TimeoutSeconds*1000)
+  # predicate. Its replacement is the exact producer terminal state: process
+  # exit plus both redirected streams reaching EOF.
+  'BinaryExpressionAst:$TimeoutSeconds*1000'=@(
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$p.WaitForExit()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$out.GetAwaiter().GetResult()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$err.GetAwaiter().GetResult()'
+  )
+  'UnaryExpressionAst:-not$p.WaitForExit($TimeoutSeconds*1000)'=@(
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$p.WaitForExit()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$out.GetAwaiter().GetResult()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$err.GetAwaiter().GetResult()'
+  )
+  'ThrowStatementAst:throw "8102 carrier copy $($Copy.label)/$Carrier exceeded $TimeoutSeconds s"'=@(
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$p.WaitForExit()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$out.GetAwaiter().GetResult()'
+    'Invoke-8102CarrierCopy/InvokeMemberExpressionAst:$err.GetAwaiter().GetResult()'
+  )
+  # AC2 also removes the five-second owned-holder bound. Cleanup now waits for
+  # the owned child and only uses HasExited to decide whether an owned kill is
+  # still required after a signal/cleanup failure.
+  'UnaryExpressionAst:-not$Holder.child.WaitForExit(5000)'=@(
+    'UnaryExpressionAst:-not$Holder.child.HasExited'
+    'Stop-SyntheticFleetHolder/InvokeMemberExpressionAst:$Holder.child.WaitForExit()'
+    'BinaryExpressionAst:$Holder.child.StartTime.ToUniversalTime().ToString(''o'')-cne$Holder.owner.childProcessStartUtc'
+  )
+}
 function Assert-CarrierProofCensus([string]$Source,[string]$Baseline){
   $before=Get-CarrierProofCensus $Baseline;$after=Get-CarrierProofCensus $Source
-  foreach($key in $before.Keys){Assert-Ci ([int]$after[$key] -ge $before[$key]) "historical carrier baseline predicate/assertion/mutant lost: $key"}
+  foreach($key in $before.Keys){
+    if([int]$after[$key] -ge $before[$key]){continue}
+    if($carrierPredicateReplacements.ContainsKey($key)){
+      foreach($replacement in $carrierPredicateReplacements[$key]){
+        Assert-Ci ([int]$after[$replacement] -ge 1) "historical carrier AC2 replacement predicate/mutant lost: $key -> $replacement"
+      }
+      continue
+    }
+    Assert-Ci $false "historical carrier baseline predicate/assertion/mutant lost: $key"
+  }
   $tokens=$null;$errors=$null
   $beforeAst=[Management.Automation.Language.Parser]::ParseInput($Baseline,[ref]$tokens,[ref]$errors)
   $afterAst=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
@@ -497,6 +545,14 @@ foreach($leaf in $carrierBaselineBlobs.Keys){
   $needle=if($leaf -ceq 'interrupted-integration-test-support.ps1'){"Proof9334 (`$live.seed.exit-eq0-and(Test-Path -LiteralPath `$live.capturePath))"}else{'Assert-True '}
   Assert-Ci ($candidate.Contains($needle)) "carrier dropped-proof mutant anchor missing: $leaf"
   Refuses-Coverage { Assert-CarrierProofCensus ($candidate.Replace($needle,'REMOVED-PROOF ')) $baseline }
+  if($leaf -ceq 'interrupted-integration-test-support.ps1'){
+    foreach($key in @($carrierPredicateReplacements.Values|ForEach-Object{$_}|Sort-Object -Unique)){
+      $extent=$key.Substring($key.IndexOf(':')+1)
+      Assert-Ci ($candidate.Contains($extent)) "carrier AC2 replacement predicate anchor missing: $extent"
+      Refuses-Coverage { Assert-CarrierProofCensus ($candidate.Replace($extent,'$null')) $baseline }
+    }
+    Write-Output 'PASS AC2 historical bound replacements: exact function-owned process/EOF waits and owned-holder terminal cleanup retained; dropped replacement-key mutants refused'
+  }
 }
 Write-Output 'PASS historical carrier baseline blobs: assertion/throw, predicate and mutant-table multisets retained in both suites and support; dropped-proof mutants refused'
 function Assert-BoardSplitContract([string]$Source){

@@ -1,12 +1,12 @@
 # Loaded by the R3 production-caller suite. All identities below belong to newly
 # created synthetic repositories; no live incident bytes are rewritten as tests.
-function Test-8185AuthPartition {
+function Test-8185AuthPartition([int]$CensusLatencyMs=0) {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
   $parent = Join-Path ([IO.Path]::GetTempPath()) ('synthetic-census-' + [guid]::NewGuid().ToString('N'))
   try {
     $f = New-CensusFixture $parent
-    Copy-CensusController $f
+    Copy-CensusController $f $CensusLatencyMs -DeterministicMeter
     $foreign = New-CensusFixtureOwner $f
     $owner = New-CensusFixtureOwner $f $f.product
     $owner.record.state = 'launching'; $owner.record.childPid = $null; $owner.record.childStartIdentity = $null
@@ -122,7 +122,7 @@ function Test-8185AuthPartition {
   }
 }
 
-function Add-8185PlatformSibling([string]$Case,[string]$Runtime,[string]$Repository,[string]$Branch) {
+function Add-8185PlatformSibling([string]$Case,[string]$Runtime,[string]$Repository,[string]$Branch,[int]$CensusLatencyMs=0) {
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
   $parent = Split-Path -Parent $Case
@@ -144,13 +144,15 @@ function Add-8185PlatformSibling([string]$Case,[string]$Runtime,[string]$Reposit
   [void](Invoke-CensusFixtureGit $Repository @('worktree','add','-q',(Join-Path $Case 'main'),'main'))
   $f = [pscustomobject]@{runtime=$Runtime;container=$Case;seat=$seat;temp=[IO.Path]::GetTempPath()}
   [void](New-CensusFixtureOwner $f)
-  Copy-CensusController $f
+  Copy-CensusController $f $CensusLatencyMs -DeterministicMeter
 }
 
-function Test-7926CompletedRebase([string[]]$Modes=@('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release')) {
-  Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
+function Test-7926CompletedRebase([string[]]$Modes=@('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release'),[int]$CensusLatencyMs=0) {
   $root=Join-Path $fixtureRoot 'synthetic-7926'
   New-Item -ItemType Directory -Path $root | Out-Null
+  . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
+  $controlRuntime=Initialize-R3CensusSubject (Join-Path $root 'control-runtime') $CensusLatencyMs
+  Import-Module (Join-Path $controlRuntime 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   $proofCount=0
   function Proof([bool]$Condition,[string]$Name) {
     Assert-True $Condition $Name
@@ -170,7 +172,31 @@ function Test-7926CompletedRebase([string[]]$Modes=@('prospective','platform','p
     $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
     foreach($arg in @('-NoProfile','-NonInteractive','-File',$Script)+$Arguments){[void]$psi.ArgumentList.Add($arg)}
     $p=[Diagnostics.Process]::Start($psi)
-    try{$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync();$p.WaitForExit();$text=$out.GetAwaiter().GetResult();$errorText=$err.GetAwaiter().GetResult();[IO.File]::WriteAllText("$Stem.stdout",$text);[IO.File]::WriteAllText("$Stem.stderr",$errorText);[IO.File]::WriteAllText("$Stem.exit",[string]$p.ExitCode);return [pscustomobject]@{exit=$p.ExitCode;stdout=$text;stderr=$errorText}}finally{$p.Dispose()}
+    $pins=@{};$launcherStart=$p.StartTime.ToUniversalTime().ToString('o')
+    try{
+      $out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync()
+      while(-not$p.WaitForExit(20)){
+        # An open handle keeps an exited fixture child's real PID from being
+        # reused before release authentication. No liveness fact is fabricated.
+        foreach($path in @(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-launch-*.json' -File)){
+          $owner=Get-ValidatedDispatchOwnershipRecord $path.FullName $runtime ([IO.Path]::GetTempPath());if($null-eq$owner){continue}
+          if($owner.launcherPid-ne$p.Id-or$owner.launcherStartIdentity-cne$launcherStart-or-not$owner.childPid){continue}
+          $key=[string]$owner.launchId;if($pins.ContainsKey($key)){continue}
+          $child=Get-Process -Id $owner.childPid -ErrorAction Stop
+          try{
+            [void]$child.Handle
+            if($child.StartTime.ToUniversalTime().ToString('o')-cne$owner.childStartIdentity){throw '7926 fixture child identity changed before native handle pin'}
+            $pins[$key]=$child;$child=$null
+          }finally{if($child){$child.Dispose()}}
+        }
+      }
+      $text=$out.GetAwaiter().GetResult();$errorText=$err.GetAwaiter().GetResult();[IO.File]::WriteAllText("$Stem.stdout",$text);[IO.File]::WriteAllText("$Stem.stderr",$errorText);[IO.File]::WriteAllText("$Stem.exit",[string]$p.ExitCode);return [pscustomobject]@{exit=$p.ExitCode;stdout=$text;stderr=$errorText}
+    }catch{
+      $failure=$_
+      if(-not$p.HasExited){$p.Kill($true)};$p.WaitForExit()
+      [IO.File]::WriteAllText("$Stem.stdout",$out.GetAwaiter().GetResult());[IO.File]::WriteAllText("$Stem.stderr",$err.GetAwaiter().GetResult());[IO.File]::WriteAllText("$Stem.exit",[string]$p.ExitCode)
+      throw $failure
+    }finally{foreach($child in $pins.Values){$child.Dispose()};$p.Dispose()}
   }
   function Movement-Counts([string]$Path) {
     $starts=@(Get-Content -LiteralPath $Path | ForEach-Object { $_ | ConvertFrom-Json -DateKind String } | Where-Object { $_.event -ceq 'start' })
@@ -229,6 +255,7 @@ $cfg=Get-Content -Raw $env:SYNTHETIC_7926_CONFIG | ConvertFrom-Json -DateKind St
 exit $LASTEXITCODE
 '@)
   $originalProducer = $producer
+  $executedModes=[Collections.Generic.List[string]]::new()
   foreach($mode in $Modes) {
     $producer = $originalProducer
     $case=Join-Path $root $mode;$runtime=Join-Path $case 'runtime';$repo=Join-Path $case 'lane';$remote=Join-Path $case 'remote.git'
@@ -250,9 +277,12 @@ exit $LASTEXITCODE
     $owedPath=Join-Path $runtime "integration-owed-$pr-$($landed.Substring(0,12)).json";$owedJson=$owed|ConvertTo-Json -Compress
     if($mode -ne 'late-owed'){[IO.File]::WriteAllText($owedPath,$owedJson)}
     $history=Join-Path $runtime 'dispatch-log.jsonl';$prompt=Join-Path $runtime 'synthetic.prompt.txt';[IO.File]::WriteAllText($prompt,"Synthetic integration $pr $original $base $branch $repo")
-    $dispatch=Join-Path $PSScriptRoot 'dispatch-lane.ps1';$rebase=Join-Path $PSScriptRoot 'rebase-integration.ps1'
+    . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
+    Copy-CensusController ([pscustomobject]@{runtime=$runtime}) $CensusLatencyMs -DeterministicMeter
+    $dispatch=Join-Path $runtime 'dispatch-lane.ps1';$rebase=Join-Path $runtime 'rebase-integration.ps1'
+    $producer=Join-Path $runtime 'landed-integration-dispatch.ps1'
     if ($mode -like 'platform*') {
-      Add-8185PlatformSibling $case $runtime $repo $branch
+      Add-8185PlatformSibling $case $runtime $repo $branch $CensusLatencyMs
       $dispatch=Join-Path $runtime 'dispatch-lane.ps1';$rebase=Join-Path $runtime 'rebase-integration.ps1'
       $producer=Join-Path $runtime 'landed-integration-dispatch.ps1'
       if ($mode -ne 'platform') {
@@ -266,6 +296,7 @@ exit $LASTEXITCODE
       # Execute the immutable installed baseline callers, with their complete
       # runtime dependencies, solely against this case's synthetic roots.
       Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $baseline -Recurse -Exclude 'controller-skills','artifacts','logs'
+      Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$baseline}) $CensusLatencyMs
       foreach($name in $(if($mode -eq 'legacy'){@('dispatch-lane.ps1','rebase-integration.ps1','landed-integration-consume.ps1')}else{@()})) {
         $bytes=@(& git -C (Split-Path -Parent $PSScriptRoot) show "177f2d55176d122b267444c3de240927f98285ff:.orchestrator/$name")
         if($LASTEXITCODE -ne 0){throw 'immutable baseline unavailable'}
@@ -285,6 +316,7 @@ exit $LASTEXITCODE
     if ($mode -in @('review','planning')) {
       $native=Movement-Counts $trace;$transcript=[IO.File]::ReadAllText((Join-Path $runtime "$label.jsonl"))
       Proof ($execution.exit -ne 0 -and $transcript.Contains('OWED_REBASE_OWNER_UNAUTHORIZED') -and $native.rebase -eq 0 -and $native.continuation -eq 0 -and $native.push -eq 1 -and (Native $repo @('rev-parse','HEAD')) -ceq $original -and [IO.File]::ReadAllText($owedPath) -ceq $owedJson) "production $mode dispatcher child refused before native rebase or publication"
+      $executedModes.Add($mode);Write-Output "CENSUS 7926 mode=$mode completed=true metered=true"
       continue
     }
     if(-not(Test-Path $resultPath)){throw "7926 $mode execution failed: $($execution.stdout) $($execution.stderr)"}
@@ -301,16 +333,19 @@ exit $LASTEXITCODE
       } else {
         Proof ($execution.exit -ne 0 -and $execution.stderr.Contains('OWED_REBASE_OWNER_UNAUTHORIZED: unique owner') -and -not (Test-Path $completionPath) -and @(Get-ChildItem $runtime -Filter 'integration-owed-ack-v3-*.json').Count -eq 0) "8185 per-site $mode mutant KILLED native completion refused owed retained"
       }
+      $executedModes.Add($mode);Write-Output "CENSUS 7926 mode=$mode completed=true metered=true"
       continue
     }
     if($mode -eq 'foreign-release') {
       $records=@(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-launch-*.json' -File)
       $foreign=if($records.Count -eq 1){Get-Content -Raw $records[0].FullName|ConvertFrom-Json -DateKind String}else{$null}
       Proof ($execution.exit -ne 0 -and $foreign.childPid -eq 2147483000 -and -not(Test-Path $completionPath) -and @(Get-ChildItem $runtime -Filter 'integration-owed-ack-v3-*.json').Count -eq 0) 'actual release refuses changed child identity and preserves the foreign owner record'
+      $executedModes.Add($mode);Write-Output "CENSUS 7926 mode=$mode completed=true metered=true"
       continue
     }
     if($mode -eq 'skip-release') {
       Proof ($execution.exit -eq 0 -and -not(Test-Path $completionPath) -and @(Get-ChildItem $runtime -Filter 'integration-owed-ack-v3-*.json').Count -eq 0 -and $result.remote -ceq $result.head) 'candidate versus skip-release-capture bypass: actual published child result has no completion or ack without release hook'
+      $executedModes.Add($mode);Write-Output "CENSUS 7926 mode=$mode completed=true metered=true"
       continue
     }
     $fixture=Join-Path $case 'census.json'
@@ -318,7 +353,7 @@ exit $LASTEXITCODE
     $producerArgs=@('-LandedPr',[string]$landedPr,'-LandedHead',$landed,'-RuntimeRoot',$runtime,'-ContainerRoot',$case,'-HistoryPath',$history,'-Repository',$SyntheticIntegrationRepository,'-FixturePath',$fixture)
     if($mode -eq 'legacy') {
       Proof ($execution.exit -ne 0 -and $execution.stderr.Contains('OWED_INTEGRATION_TARGET_HEAD_NOT_ANCESTOR') -and -not(Test-Path $completionPath)) 'legacy immutable baseline reproduces original release failure'
-      Add-8185PlatformSibling $case $runtime $repo $branch
+      Add-8185PlatformSibling $case $runtime $repo $branch $CensusLatencyMs
       $producer=Join-Path $runtime 'landed-integration-dispatch.ps1'
       $watchdogPath=Join-Path $runtime "watchdog-lane-$label.json";$watchdog=Get-Content -Raw $watchdogPath|ConvertFrom-Json -DateKind String
       $routing=@(Get-Content $history|ForEach-Object{$_|ConvertFrom-Json -DateKind String}|Where-Object{$_.dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v1'})[0]
@@ -348,6 +383,7 @@ exit $LASTEXITCODE
       $recoveryGuard='function Get-RebaseRecoveryEvidence($References,$Obligation,[string]$Runtime,[string]$Launch,[string]$Result,[string]$Tree,[switch]$Retained) {'
       Assert-True ($moduleText.Contains($recoveryGuard)) 'report authority bypass carrier'
       [IO.File]::WriteAllText((Join-Path $reportSubject 'landed-integration-evidence.psm1'),$moduleText.Replace($recoveryGuard,"$recoveryGuard`n  if (@(`$References).Count -eq 1) { return Read-RebaseJson `$References[0].path } <# report-is-authority bypass #>"))
+      Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$reportSubject}) $CensusLatencyMs
       $historyBytes=[IO.File]::ReadAllBytes($history)
       $reportBypass=Run-Process (Join-Path $reportSubject 'landed-integration-dispatch.ps1') $producerArgs (Join-Path $case 'report-authority-bypass')
       Proof ($reportBypass.exit -eq 0 -and (Test-Path $completionPath) -and -not(Test-Path $owedPath)) 'candidate versus report-is-authority bypass discriminates author report shortcut'
@@ -392,6 +428,7 @@ exit $LASTEXITCODE
       Proof ($failed.exit -ne 0 -and [IO.File]::ReadAllText($owedPath) -ceq $owedJson -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($ackPath)) -ceq [Convert]::ToBase64String($ackBytes)) 'v3 append failure retains exact owed and acknowledgement'
       $subject=Join-Path $case 'delete-before-terminal';New-Item -ItemType Directory -Path $subject|Out-Null
       foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $subject}
+      Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$subject}) $CensusLatencyMs
       $text=[IO.File]::ReadAllText($producer);$guard='    if($alreadySuccessful.Count-eq0){'
       Assert-True ([regex]::Matches($text,[regex]::Escape($guard)).Count -eq 1) 'terminal ordering single mutation carrier'
       $mutant=Join-Path $subject 'landed-integration-dispatch.ps1';[IO.File]::WriteAllText($mutant,$text.Replace($guard,"    Remove-Item -LiteralPath `$owed -Force <# delete-before-terminal bypass #>`n$guard"))
@@ -477,9 +514,10 @@ exit $LASTEXITCODE
       [IO.File]::WriteAllBytes($completionPath,$completionBytes);[IO.File]::WriteAllBytes($ackPath,$ackBytes)
       # Each bypass changes only its named guard. The observed Git repository
       # and the other completion fields stay fixed across the pair.
-      $modulePath=Join-Path $PSScriptRoot 'landed-integration-evidence.psm1';$source=[IO.File]::ReadAllText($modulePath)
+      $modulePath=Join-Path $controlRuntime 'landed-integration-evidence.psm1';$source=[IO.File]::ReadAllText($modulePath)
       $mutantRoot=Join-Path $case 'mutant';New-Item -ItemType Directory -Path $mutantRoot|Out-Null
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1') -Destination $mutantRoot
+      Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$mutantRoot}) $CensusLatencyMs
       $mutantPath=Join-Path $mutantRoot 'landed-integration-evidence.psm1';$check=Join-Path $case 'check-evidence.ps1'
       [IO.File]::WriteAllText($check,@'
 param($Module,$Owed,$Runtime,$Ack,$Git='git')
@@ -538,6 +576,7 @@ Assert-RebaseAcknowledgement $a $o $Runtime $Git
       [IO.File]::WriteAllBytes($completionPath,$completionBytes)
       $ackSubject=Join-Path $case 'ack-before-proof';New-Item -ItemType Directory -Path $ackSubject|Out-Null
       foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $ackSubject}
+      Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$ackSubject}) $CensusLatencyMs
       $consumerText=[IO.File]::ReadAllText($consumer);$ackGuard='    Assert-RebaseAcknowledgement $ack $obligation $runtime $GitExecutable'
       Assert-True ([regex]::Matches($consumerText,[regex]::Escape($ackGuard)).Count -eq 1) 'ack proof ordering mutation carrier'
       $ackMutant=Join-Path $ackSubject 'landed-integration-consume.ps1';[IO.File]::WriteAllText($ackMutant,$consumerText.Replace($ackGuard,"    Write-RebaseRecord `$v3Path `$ack <# ack-before-proof bypass #>`n$ackGuard"))
@@ -613,7 +652,9 @@ $o=Get-Content -Raw $Owed|ConvertFrom-Json -DateKind String
     }
     $movementAfter=Movement-Counts $trace
     Proof ((Get-RebaseRecordIdentity $movementAfter) -ceq (Get-RebaseRecordIdentity $movementBefore)) "$mode replay/adoption native command delta: rebase=0 continue=0 push=0"
+    $executedModes.Add($mode);Write-Output "CENSUS 7926 mode=$mode completed=true metered=true"
   }
+  Assert-True ($executedModes.Count-eq$Modes.Count-and(@($executedModes|Sort-Object)-join',')-ceq(@($Modes|Sort-Object)-join',')) '7926 complete executed-mode census'
   Remove-Item Env:SYNTHETIC_7926_CONFIG -ErrorAction SilentlyContinue
   Remove-Item Env:GIT_TRACE2_EVENT -ErrorAction SilentlyContinue
   Write-Output "EVIDENCE 7926 production lifecycle proofs=$script:rebaseProofCount synthetic=true baseline=177f2d55176d122b267444c3de240927f98285ff"

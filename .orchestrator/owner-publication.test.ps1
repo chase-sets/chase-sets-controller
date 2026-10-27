@@ -449,12 +449,12 @@ function Invoke-ReaderInventory {
     'invoke-heavy-verifier.test.ps1'=@(313,631,1108,1152,1164,1213,1217,1228,1253,1335,1772,1852,1862,1876,2170,2175,2194,2200,2427,2434,2446,2449,2459,2470,2492,2497,2509,2514,2531,2545)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(978)
-    'landed-integration-evidence-test-support.ps1'=@(219)
-    'landed-integration-r3.test.ps1'=@(42)
+    'interrupted-integration-test-support.ps1'=@(987)
+    'landed-integration-evidence-test-support.ps1'=@(245)
+    'landed-integration-r3.test.ps1'=@(49)
     'lane-stall-watchdog.test.ps1'=@(528,574,577)
     'lease-contract.test.ps1'=@(87,88)
-    'product-census-budget.test.ps1'=@(134,197,236)
+    'product-census-budget.test.ps1'=@(243,308,347)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"

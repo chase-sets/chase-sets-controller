@@ -1,61 +1,87 @@
 . (Join-Path $PSScriptRoot 'product-census-test-support.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
 
-function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0,[switch]$DeterministicMeter) {
+function ConvertTo-CensusAuthBudgetSubject([string]$Source) {
+  $clock='[Diagnostics.Stopwatch]::new()'
+  $replacement='$deterministicBudgetMeter'
+  Assert-CensusFixture ([regex]::Matches($Source,[regex]::Escape($clock)).Count -eq 1) 'one auth budget clock'
+  $converted=$Source.Replace($clock,$replacement)
+  Assert-CensusFixture ($converted.Replace($replacement,$clock) -ceq $Source) 'auth clock inverse diff'
+  return $converted
+}
+
+function Get-CensusBudgetMeterPrelude {
+  # Reuse the established meter, including its bounded native capture reader.
+  return "function New-DeterministicBudgetMeter {`n${function:New-DeterministicBudgetMeter}`n}`nfunction Stop-CensusFixtureGitTree {`n${function:Stop-CensusFixtureGitTree}`n}`n`$deterministicBudgetMeter = New-DeterministicBudgetMeter`n"
+}
+
+function Copy-CensusController($Fixture,[int]$CensusLatencyMs=0,[switch]$DeterministicMeter,[switch]$PreserveRepositorySelector) {
   Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object Extension -In @('.ps1','.psm1','.cjs','.cs') |
     Copy-Item -Destination $Fixture.runtime
-  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'contracts') -Destination $Fixture.runtime -Recurse
+  $contracts=Join-Path $Fixture.runtime 'contracts'
+  [void][IO.Directory]::CreateDirectory($contracts)
+  Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'contracts') | Copy-Item -Destination $contracts -Recurse -Force
   # Bind only the product selector in the offline subject to an unmistakably
   # synthetic repository. No real PR/API identity is fabricated. The platform
   # proof constant and every native ownership/Git read are unchanged.
-  foreach ($name in @('landed-integration-dispatch.ps1','dispatch-lane.ps1')) {
+  foreach ($name in $(if($PreserveRepositorySelector){@()}else{@('landed-integration-dispatch.ps1','dispatch-lane.ps1')})) {
     $path = Join-Path $Fixture.runtime $name
     $text = [IO.File]::ReadAllText($path)
     $text = $text.Replace("-ceq 'chase-sets/chase-sets'", "-ceq '$SyntheticIntegrationRepository'")
     [IO.File]::WriteAllText($path,$text)
   }
+  if($DeterministicMeter){
+    $path=Join-Path $Fixture.runtime 'dispatch-lane.ps1';$text=[IO.File]::ReadAllText($path)
+    $clock="if ([DateTime]::UtcNow -ge `$deadline) { throw 'INTEGRATION_BARRIER_EXPIRED' }"
+    $count=[regex]::Matches($text,[regex]::Escape($clock)).Count
+    if($count-eq1){
+      $identity=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+      $terminal="if ((Get-DispatchProcessIdentityState $PID '$identity') -cne 'live') { throw 'INTEGRATION_BARRIER_EXPIRED' } # R3_IDENTITY_BOUND_BARRIER"
+      $converted=$text.Replace($clock,$terminal)
+      Assert-CensusFixture ($converted.Replace($terminal,$clock)-ceq$text) 'R3 barrier inverse diff'
+      [IO.File]::WriteAllText($path,$converted)
+    }else{Assert-CensusFixture ($count-eq0-and[regex]::Matches($text,'# R3_IDENTITY_BOUND_BARRIER').Count-eq1) 'R3 barrier unique reversible anchor'}
+  }
   if($DeterministicMeter){Install-CensusDeterministicBudgetMeter $Fixture $CensusLatencyMs}
 }
 
-# Install the R3 single-anchor census meter in the copied runtime. The copied
+# Install the census meter in the copied runtime. The copied
 # dispatcher is the subject under test: its two budget clocks and one process
 # wait are replaced, while the production checkout and its real Stopwatch stay
 # untouched. A latency value is a test-only control which delays each fresh
-# evaluation before the unchanged evaluator runs.
+# evaluation before the unchanged evaluator runs. It is telemetry, not a charge.
 function Install-CensusDeterministicBudgetMeter($Fixture,[int]$LatencyMs=0) {
   $path=Join-Path $Fixture.runtime 'dispatch-ownership.ps1'
   $source=[IO.File]::ReadAllText($path)
+  $marker='$deterministicBudgetMeter = New-DeterministicBudgetMeter'
+  if($source.Contains($marker)){
+    Assert-CensusFixture ([regex]::Matches($source,[regex]::Escape($marker)).Count-eq1-and
+      -not$source.Contains('[Diagnostics.Stopwatch]::new()')-and-not$source.Contains('$process.WaitForExit([int]$remaining)')) 'copied meter remains installed exactly once'
+  } else {
   $metered=ConvertTo-DeterministicBudgetSubject $source
+  $anchor='function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budget) {'
+  Assert-CensusFixture ([regex]::Matches($metered,[regex]::Escape($anchor)).Count -eq 1) 'one metered census Git entry'
+  $metered=$metered.Replace($anchor,$anchor+"`n    `$Budget.watch.Charge(1)")
   if($LatencyMs -gt 0){
-    $anchor='function Invoke-ProductCensusGit([string]$Checkout, [string[]]$Arguments, $Budget) {'
-    if([regex]::Matches($metered,[regex]::Escape($anchor)).Count-ne1){throw 'census latency installer anchor is not unique'}
-    $metered=$metered.Replace($anchor,$anchor+"`n    [Threading.Thread]::Sleep($LatencyMs) # SYNTHETIC_DISPATCH_CENSUS_LATENCY")
+    $anchor='$Budget.watch.Charge(1)'
+    Assert-CensusFixture ([regex]::Matches($metered,[regex]::Escape($anchor)).Count-eq1) 'one census evaluation latency anchor'
+    $metered=$metered.Replace($anchor,$anchor+"`n    if(`$Budget.watch.ElapsedMilliseconds -eq 1){`$latencyTelemetry=[Diagnostics.Stopwatch]::StartNew(); [Threading.Thread]::Sleep($LatencyMs); [Console]::Error.WriteLine(('CENSUS_LATENCY generation={0} realMs={1} charges={2}' -f `$Budget.watch.restarts,`$latencyTelemetry.ElapsedMilliseconds,`$Budget.watch.ElapsedMilliseconds))} # SYNTHETIC_DISPATCH_CENSUS_LATENCY")
   }
-  $meterCode=@'
-$deterministicBudgetMeter = [pscustomobject]@{ processWaits=0 }
-$deterministicBudgetMeter | Add-Member -MemberType ScriptProperty -Name ElapsedMilliseconds -Value { 0L }
-$deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name Restart -Value { }
-$deterministicBudgetMeter | Add-Member -MemberType ScriptMethod -Name WaitForProcess -Value {
-  param($Process,$Reads,$Bounds)
-  $exit=$Process.WaitForExitAsync()
-  while($true){
-    $pending=[Threading.Tasks.Task[]]@(@($exit)+@($Reads|Where-Object{-not$_.IsCompleted}))
-    if($exit.IsCompleted-or@(0,1|Where-Object{$Reads[$_].IsCompletedSuccessfully-and$Reads[$_].Result-eq$Bounds[$_]}).Count){break}
-    [void][Threading.Tasks.Task]::WaitAny($pending)
-  }
-  if(-not$Process.HasExited){
-    $rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)
-    $tree=@($rows|Where-Object ProcessId -EQ $Process.Id)
-    for($i=0;$i-lt$tree.Count;$i++){$tree+=@($rows|Where-Object{$_.ParentProcessId-eq$tree[$i].ProcessId-and$_.CreationDate-gt$tree[$i].CreationDate})}
-    $descendants=@(foreach($row in @($tree|Select-Object -Skip 1)){$member=Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue;if($member){[void]$member.Handle;$member}})
-    $Process.Kill();foreach($member in $descendants){$member.Kill()}
-    $Process.WaitForExit();foreach($member in $descendants){$member.WaitForExit();$member.Dispose()}
-  }
-  $this.processWaits++
-  $Process.HasExited
-}
-'@
+  $meterCode=Get-CensusBudgetMeterPrelude
   [IO.File]::WriteAllText($path,$meterCode+"`n"+$metered,[Text.UTF8Encoding]::new($false))
+  }
+  $auth=Join-Path $Fixture.runtime 'landed-integration-evidence.psm1'
+  if(Test-Path -LiteralPath $auth){
+    $text=[IO.File]::ReadAllText($auth)
+    if($text.Contains('[Diagnostics.Stopwatch]::new()')){[IO.File]::WriteAllText($auth,(ConvertTo-CensusAuthBudgetSubject $text),[Text.UTF8Encoding]::new($false))}
+    else{Assert-CensusFixture ([regex]::Matches($text,[regex]::Escape('$deterministicBudgetMeter')).Count-eq1) 'copied auth meter remains installed exactly once'}
+  }
+}
+
+function Initialize-R3CensusSubject([string]$Runtime,[int]$LatencyMs=0,[switch]$PreserveRepositorySelector) {
+  [void][IO.Directory]::CreateDirectory($Runtime)
+  Copy-CensusController ([pscustomobject]@{runtime=$Runtime}) $LatencyMs -DeterministicMeter -PreserveRepositorySelector:$PreserveRepositorySelector
+  return $Runtime
 }
 
 function New-CensusIntegrationFixture([string]$Parent,[int]$CensusLatencyMs=0,[switch]$DeterministicMeter) {
