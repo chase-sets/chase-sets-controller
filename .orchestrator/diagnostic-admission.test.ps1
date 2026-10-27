@@ -31,12 +31,12 @@ function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }
 function Get-Sha256([string]$Path) { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($Path))).ToLowerInvariant() }
-function Write-Declaration([string]$RelativePath, [string]$Hash, [double]$Maximum = 20, [bool]$Enabled = $true) {
+function Write-Declaration([string]$RelativePath, [string]$Hash, [double]$Maximum = 4, [bool]$Enabled = $true) {
   $definition=@{ enabled=$Enabled; kind='standalone-node'; path=$RelativePath; sha256=$Hash; maxBudgetSeconds=$Maximum }
   [IO.File]::WriteAllText($declarationPath, (@{ schema='host-heavy-diagnostic-declarations/v1'; diagnostics=@{ 'worst13-no-fit'=$definition; 'staged-import-chromium-control'=$definition } } | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
 }
 function Invoke-Diagnostic([hashtable]$Overrides = @{}, [string]$MarkerName = 'marker', [hashtable]$ChildEnvironment = @{}, [string]$DiagnosticName = 'worst13-no-fit') {
-  $parameters = [ordered]@{ '-Diagnostic'=$DiagnosticName; '-DiagnosticScriptPath'=$scriptRelative; '-DiagnosticSha256'=$scriptHash; '-DiagnosticBudgetSeconds'='10'; '-Worktree'=$worktree; '-Lane'='lane-test'; '-Branch'='codex/test'; '-ClaimedHead'=$head; '-ContainerRoot'=$container }
+  $parameters = [ordered]@{ '-Diagnostic'=$DiagnosticName; '-DiagnosticScriptPath'=$scriptRelative; '-DiagnosticSha256'=$scriptHash; '-DiagnosticBudgetSeconds'='2'; '-Worktree'=$worktree; '-Lane'='lane-test'; '-Branch'='codex/test'; '-ClaimedHead'=$head; '-ContainerRoot'=$container }
   foreach ($entry in $Overrides.GetEnumerator()) { if ($null -eq $entry.Value) { [void]$parameters.Remove($entry.Key) } else { $parameters[$entry.Key]=$entry.Value } }
   $args=@('-NoProfile','-NonInteractive','-File',$guard); foreach ($entry in $parameters.GetEnumerator()) { $args += @($entry.Key,[string]$entry.Value) }
   $marker=Join-Path $root "$MarkerName.marker"; $environment=@{ DIAGNOSTIC_MARKER=$marker; DIAGNOSTIC_PID=(Join-Path $root "$MarkerName.pid") }; foreach($entry in $ChildEnvironment.GetEnumerator()) { $environment[$entry.Key]=$entry.Value }; $result=Invoke-Child $args $environment
@@ -79,7 +79,7 @@ process.exitCode = 7;
   Assert-True ($receipt.Count -eq 1) 'declared diagnostic leaves one durable receipt'
   $successReceipt=Get-Content -LiteralPath $receipt[0].FullName -Raw | ConvertFrom-Json -DateKind String
   $resultHash=Get-Sha256 $resultPath
-  Assert-True ($successReceipt.schema -ceq 'host-heavy-diagnostic/v1' -and $successReceipt.diagnostic.name -ceq 'worst13-no-fit' -and $successReceipt.diagnostic.kind -ceq 'standalone-node' -and $successReceipt.diagnostic.scriptPath -ceq $scriptRelative -and $successReceipt.diagnostic.sha256 -ceq $scriptHash -and $successReceipt.diagnostic.budgetSeconds -eq 10 -and $successReceipt.containerRoot -ceq ([IO.Path]::GetFullPath($container).TrimEnd('\','/')) -and $successReceipt.declarationSha256 -ceq $scriptHash -and $successReceipt.exit -eq 7 -and $successReceipt.nativeExit -eq 7 -and $successReceipt.timedOut -eq $false -and $successReceipt.resultSha256 -ceq $resultHash -and $successReceipt.resources.peakWorkingSetBytes -gt 0 -and $successReceipt.resources.jobPeakMemoryBytes -ge 0 -and $successReceipt.resources.jobTotalUserTime100ns -ge 0 -and $successReceipt.resources.jobTotalKernelTime100ns -ge 0 -and $successReceipt.resources.jobTotalProcesses -ge 3 -and -not (Test-Path -LiteralPath $lockRoot) -and -not (Test-Path -LiteralPath (Join-Path $root 'caller-node-options.marker'))) 'receipt, result hash, child resources and preload-only NODE_OPTIONS bind'
+  Assert-True ($successReceipt.schema -ceq 'host-heavy-diagnostic/v1' -and $successReceipt.diagnostic.name -ceq 'worst13-no-fit' -and $successReceipt.diagnostic.kind -ceq 'standalone-node' -and $successReceipt.diagnostic.scriptPath -ceq $scriptRelative -and $successReceipt.diagnostic.sha256 -ceq $scriptHash -and $successReceipt.diagnostic.budgetSeconds -eq 2 -and $successReceipt.containerRoot -ceq ([IO.Path]::GetFullPath($container).TrimEnd('\','/')) -and $successReceipt.declarationSha256 -ceq $scriptHash -and $successReceipt.exit -eq 7 -and $successReceipt.nativeExit -eq 7 -and $successReceipt.timedOut -eq $false -and $successReceipt.resultSha256 -ceq $resultHash -and $successReceipt.resources.peakWorkingSetBytes -gt 0 -and $successReceipt.resources.jobPeakMemoryBytes -ge 0 -and $successReceipt.resources.jobTotalUserTime100ns -ge 0 -and $successReceipt.resources.jobTotalKernelTime100ns -ge 0 -and $successReceipt.resources.jobTotalProcesses -ge 3 -and -not (Test-Path -LiteralPath $lockRoot) -and -not (Test-Path -LiteralPath (Join-Path $root 'caller-node-options.marker'))) 'receipt, result hash, child resources and preload-only NODE_OPTIONS bind'
   Remove-Item -LiteralPath $resultPath -Force
   Write-Output 'PASS diagnostic declared route receipt=1 exit=7 nativeExit=7 resultSha256=1 jobTotalProcesses-ge-3=1 preload-only=1 released=1'
 
@@ -98,7 +98,7 @@ process.exitCode = 7;
     @{ Name='zero'; Override=@{ '-DiagnosticBudgetSeconds'='0' }; Text='diagnostic budget must be finite and greater than zero' },
     @{ Name='over-day'; Override=@{ '-DiagnosticBudgetSeconds'='86401' }; Text='diagnostic budget must be finite and greater than zero' },
     @{ Name='missing-budget'; Override=@{ '-DiagnosticBudgetSeconds'=$null }; Text='diagnostic budget is required' },
-    @{ Name='above-max'; Override=@{ '-DiagnosticBudgetSeconds'='21' }; Text='diagnostic budget exceeds declared maximum' },
+    @{ Name='above-max'; Override=@{ '-DiagnosticBudgetSeconds'='5' }; Text='diagnostic budget exceeds declared maximum' },
     @{ Name='hash-mismatch'; Override=@{ '-DiagnosticSha256'=('0'*64) }; Text='diagnostic SHA-256 does not match host declaration' },
     @{ Name='undeclared'; Override=@{ '-Diagnostic'='not-declared' }; Text='diagnostic name is not declared' },
     @{ Name='case-sensitive-name'; Override=@{ '-Diagnostic'='Worst13-no-fit' }; Text='diagnostic name is not declared' }
