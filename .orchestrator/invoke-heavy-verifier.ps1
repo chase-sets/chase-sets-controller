@@ -1038,6 +1038,19 @@ function Assert-HeavyAdmissionTime {
     throw 'heavy-verifier: caller eligibility: admission deadline'
   }
 }
+function Assert-HeavyAdmissionAfterLock([bool]$LockCreated) {
+  if (-not $LockCreated) { return }
+  try {
+    Assert-HeavyAdmissionTime
+  } catch {
+    # No owner record or queue mutation exists yet. Release only the empty
+    # directory this invocation just acquired, then refuse the expired census.
+    if ((Test-SafeDirectory $lockPath) -and -not (Test-Path -LiteralPath $ownerPath)) {
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+    }
+    throw 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted'
+  }
+}
 try { . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') }
 catch { throw "heavy-verifier: caller eligibility: ownership reader unavailable: $($_.Exception.Message)" }
 $callerBinding = Assert-HeavyCallerEligibility
@@ -2849,6 +2862,7 @@ try {
       Describe-ExistingLock
     }
   }
+  Assert-HeavyAdmissionAfterLock $queueLockCreated
   if ($queueContext) {
     try { Remove-QueueTicket $queueContext }
     catch {

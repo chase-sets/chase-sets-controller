@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([string]$GuardRevision = '',
-  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget')][string]$Mutant = '')
+  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -34,6 +34,11 @@ if ($Mutant -ceq 'restore-scaled-budget') {
   Assert-True ($source.Contains($needle)) 'restore-scaled-budget target exists'
   $source = $source.Replace($needle,
     '$censusDeadlineMs = [int][Math]::Min([Math]::Min(30000, [Math]::Max(5000, 2000 * $beforePaths.Count)), [Math]::Min($RemainingMs, $Evaluation.deadline-$Evaluation.watch.ElapsedMilliseconds))')
+}
+if ($Mutant -ceq 'omit-lock-expiry-recheck') {
+  $needle = '  Assert-HeavyAdmissionAfterLock $queueLockCreated'
+  Assert-True ($source.Contains($needle)) 'omit-lock-expiry-recheck target exists'
+  $source = $source.Replace($needle, '')
 }
 # Instrument only clock construction in extracted production functions.
 $source = $source.Replace('[Diagnostics.Stopwatch]::StartNew()', '(New-CensusClock)')
@@ -302,10 +307,11 @@ try {
   Assert-True ($fixture.Calls -eq 0) 'expired admission does not start a census'
   Write-Output 'PASS budget-composition six total / three fences / unchanged shared clocks'
 
-  # Execute the actual reservation/fallback block with an I/O seam. No mutex,
-  # lock directory, owner record or command body is created by these controls.
+  # Execute the actual reservation/fallback and queue-mutation boundary with
+  # an I/O seam. No mutex, lock directory, owner record or command body is
+  # created by these controls.
   $boundaryStart = $source.IndexOf('  $queueLockCreated = $false', [StringComparison]::Ordinal)
-  $boundaryEnd = $source.IndexOf('  if ($queueContext) {', $boundaryStart, [StringComparison]::Ordinal)
+  $boundaryEnd = $source.IndexOf('} finally {', $boundaryStart, [StringComparison]::Ordinal)
   Assert-True ($boundaryStart -ge 0 -and $boundaryEnd -gt $boundaryStart) 'actual reservation boundary exists'
   $reservationBoundary = [scriptblock]::Create($source.Substring($boundaryStart, $boundaryEnd - $boundaryStart))
   foreach ($expiredBeforeRead in @($true, $false)) {
@@ -313,6 +319,7 @@ try {
     $script:heavyAdmissionBudget = @{ watch = $effectClock; deadline = 210000 }
     $effects = @{ attempts = 0; reclamations = 0 }
     $reason = ''
+    $queueContext = $null
     try {
       & {
         function New-Item {
@@ -331,6 +338,37 @@ try {
       $effects.reclamations -eq 0) "admission-effects-after-expiry beforeRead=$expiredBeforeRead reason=$reason"
   }
   Write-Output 'PASS admission-effects-after-expiry: zero reservation/reclamation after checked expiry'
+
+  # The lock acquisition itself can consume the final admission budget. The
+  # real reservation boundary must release that newly acquired empty lock
+  # before queue mutation or owner publication, rather than trusting the
+  # pre-acquisition check.
+  $lockBoundaryClock = [pscustomobject]@{ ElapsedMilliseconds = 0L }
+  $script:heavyAdmissionBudget = @{ watch = $lockBoundaryClock; deadline = 210000 }
+  $lockEffects = @{ attempts = 0; releases = 0; queueRemovals = 0 }
+  $lockReason = ''
+  try {
+    & {
+      $lockPath = Join-Path $root 'synthetic-lock.d'
+      $ownerPath = Join-Path $lockPath 'owner.json'
+      $queueContext = [pscustomobject]@{ IsHead = $true }
+      function New-Item {
+        [CmdletBinding()]param($ItemType, $Path)
+        $lockEffects.attempts++
+        $lockBoundaryClock.ElapsedMilliseconds = 210000
+        return [pscustomobject]@{ FullName = $Path; PSIsContainer = $true }
+      }
+      function Test-SafeDirectory { return $true }
+      function Test-Path { return $false }
+      function Remove-Item { $lockEffects.releases++ }
+      function Remove-QueueTicket { $lockEffects.queueRemovals++ }
+      & $reservationBoundary
+    }
+  } catch { $lockReason = $_.Exception.Message }
+  Assert-True ($lockReason -ceq 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted' -and
+    $lockEffects.attempts -eq 1 -and $lockEffects.releases -eq 1 -and
+    $lockEffects.queueRemovals -eq 0) "lock-acquired-expiry reason=$lockReason attempts=$($lockEffects.attempts) releases=$($lockEffects.releases) queueRemovals=$($lockEffects.queueRemovals)"
+  Write-Output 'PASS lock-acquired-expiry: released empty lock before queue mutation or owner publication'
 
   Reset-Fixture
   $binding = Get-HeavyCallerBinding
