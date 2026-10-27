@@ -1558,6 +1558,7 @@ $self = Get-Process -Id $PID
   script = $PSCommandPath
   cwd = (Get-Location).Path
   slot = $env:CHASE_SETS_HEAVY_SLOT_ID
+  transport = $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT
   owner = $owner
   pid = $PID
   processStartUtc = $self.StartTime.ToUniversalTime().ToString('o')
@@ -1598,6 +1599,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $start.Environment['HV_HOST_BODY'] = $body
     $start.Environment['HV_HOST_CONTAINER'] = $containerRoot
+    if ($env:HV_FORCE_TRANSPORT) { $start.Environment['CHASE_SETS_HEAVY_SLOT_TRANSPORT'] = $env:HV_FORCE_TRANSPORT }
     foreach ($argument in @('-NoProfile','-File',$runner,$SourceOverride,$input)) { [void]$start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
@@ -1619,6 +1621,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
       $ran.owner.gate -ceq 'script-battery' -and $ran.owner.schemaVersion -eq 4 -and
       $ran.owner.lockId -ceq $ran.slot -and $ran.owner.worktree -ieq $tree -and
       $ran.owner.head -ceq $head -and $ran.owner.childPid -eq $ran.pid -and
+      $null -eq $ran.transport -and
       -not (Test-Path -LiteralPath $controllerLock))
       "host-heavy route executes the complete fixed file under the controller owner (exit=$($result.exitCode) output=$($result.output))"
     $receipt = @(Get-ChildItem -LiteralPath (Join-Path $tree '.orchestrator/artifacts') -Filter 'controller-host-heavy-verifier-*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json -DateKind String })
@@ -1662,20 +1665,22 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
       Remove-Item -LiteralPath $platformLock -Recurse -Force
     }
 
-    $savedTransport = $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT
+    $savedTransport = $env:HV_FORCE_TRANSPORT
     try {
-      $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT = 'forged-controller-transport'
-      $transportMutant = $guardBytes.Replace('[void]$start.Environment.Remove("CHASE_SETS_HEAVY_SLOT_TRANSPORT")', '# transport removal omitted')
+      $env:HV_FORCE_TRANSPORT = 'forged-controller-transport'
+      $transportMutant = $guardBytes.Replace('[void]$start.Environment.Remove("CHASE_SETS_HEAVY_SLOT_TRANSPORT")', '$start.Environment["CHASE_SETS_HEAVY_SLOT_TRANSPORT"] = "forged-controller-transport"')
       Assert-True ($transportMutant -cne $guardBytes) 'nested-transport mutant applied at the transport boundary'
       [IO.File]::WriteAllText($guardCopy, $transportMutant)
       $transportBypass = Invoke-HostHeavyRoute
       $mutantFailure = $null
       $transportRan = if (Test-Path -LiteralPath $body) { Get-Content -LiteralPath $body -Raw | ConvertFrom-Json -DateKind String } else { $null }
       try { Assert-True ($transportRan -and $transportRan.transport -eq $null) 'nested-transport mutant must fail at the forged transport assertion' } catch { $mutantFailure = $_.Exception.Message }
-      Assert-True ($mutantFailure -clike '*ASSERTION FAILED: nested-transport mutant must fail at the forged transport assertion*') $mutantFailure
+      $transportObservation = if ($transportRan) { $transportRan.transport } else { '<no-body>' }
+      Assert-True ($mutantFailure -clike '*ASSERTION FAILED: nested-transport mutant must fail at the forged transport assertion*') ("$mutantFailure observation=$transportObservation exit=$($transportBypass.exitCode) output=$($transportBypass.output)")
       Write-Output "MUTANT_RED host-heavy-route nested-transport $mutantFailure"
+      if (Test-Path -LiteralPath $body) { Remove-Item -LiteralPath $body -Force }
     } finally {
-      if ($null -eq $savedTransport) { Remove-Item Env:CHASE_SETS_HEAVY_SLOT_TRANSPORT -ErrorAction SilentlyContinue } else { $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT = $savedTransport }
+      if ($null -eq $savedTransport) { Remove-Item Env:HV_FORCE_TRANSPORT -ErrorAction SilentlyContinue } else { $env:HV_FORCE_TRANSPORT = $savedTransport }
       [IO.File]::WriteAllText($guardCopy, $guardBytes)
     }
 
