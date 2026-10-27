@@ -1,5 +1,183 @@
-param([switch]$Baseline, [switch]$NativeDbOnly)
+param([switch]$Baseline, [switch]$NativeDbOnly,
+  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'harness-controls')][string]$Control = '')
 $ErrorActionPreference = 'Stop'
+function Read-FixtureOwner([string]$OwnerPath) {
+  $stream=[IO.File]::Open($OwnerPath,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
+  try {
+    $reader=[IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$true)
+    try { $raw=$reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally { $stream.Dispose() }
+  return $raw
+}
+function Select-NativeReply($Lines, [int]$Correlation, [string]$Status) {
+  $typedReplies = @($Lines | ForEach-Object {
+    try { "$_" | ConvertFrom-Json -DateKind String } catch { }
+  } | Where-Object { $_.correlation -eq $Correlation -and $_.status -ceq $Status })
+  if ($typedReplies.Count -ne 1) { throw "native reply must be unique for correlation=$Correlation status=$Status; actual=$($typedReplies.Count)" }
+  return $typedReplies[0]
+}
+function Wait-FixtureSignal([string]$Path, $Producer, [string]$Name) {
+  while (-not [IO.File]::Exists($Path)) {
+    if ($Producer.HasExited) { throw "$Name producer exited before signal: $($Producer.ExitCode)" }
+    Start-Sleep -Milliseconds 25
+  }
+}
+function Release-FixtureChildren([string]$Artifacts, $Children) {
+  if (Test-Path $Artifacts) {
+    [IO.File]::WriteAllText((Join-Path $Artifacts 'release'), 'release')
+  }
+  foreach ($entry in $Children) { [void]$entry.Process.WaitForExit() }
+}
+function Get-FixtureDefinition([string]$Source, [string]$Name) {
+  $errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$null,[ref]$errors)
+  if ($errors) { throw "fixture source does not parse: $errors" }
+  $definition=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $Name},$true))
+  if ($definition.Count -ne 1) { throw "fixture requires one definition of $Name" }
+  return $definition[0].Extent.Text
+}
+function Assert-Harness($Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+function Test-TransitionPause {
+  $testSource=[IO.File]::ReadAllText($PSCommandPath)
+  $guardSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'))
+  $writer=Get-FixtureDefinition $guardSource 'Write-OwnerRecord'
+  $initialize=Get-FixtureDefinition $guardSource 'Initialize-OwnerRename'
+  $anchor='[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
+  Assert-Harness ($writer.Split($anchor).Count -eq 2) 'transition-pause-injection has one exact publication anchor'
+  $controlRoot=Join-Path ([IO.Path]::GetTempPath()) ('hhv-transition-'+[guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($controlRoot)
+  $rows=[Collections.Generic.List[object]]::new()
+  foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
+    foreach ($site in @('Read-FixtureOwner','Wait-NativeOwner')) {
+      foreach ($variant in @('candidate','share-read-mutant')) {
+        $lockPath=Join-Path $controlRoot "$kind-$site-$variant"
+        [void][IO.Directory]::CreateDirectory($lockPath)
+        $ownerPath=Join-Path $lockPath 'owner.json'
+        $before=@{schemaVersion=4;state='launching';native=@{linux=$null}}
+        $after=@{schemaVersion=4;state='started';native=@{linux=$null}}
+        if ($kind -like 'native-*') { $before.schemaVersion=6; $after.schemaVersion=6 }
+        if ($kind -ceq 'native-tuple') {
+          $before.state='started'
+          $after.native.linux=@{outerPid=42;startTicks='123';bootId='12345678-1234-1234-1234-123456789abc';nspid=@(42,1);inode='456'}
+        }
+        . ([scriptblock]::Create($writer))
+        $beforeRaw=Write-OwnerRecord $before -CreateNew
+        $pending=Join-Path $lockPath 'pending'; $release=Join-Path $lockPath 'publication.release'
+        $pause="[IO.File]::WriteAllText('$pending','pending'); while (-not [IO.File]::Exists('$release')) { Start-Sleep -Milliseconds 10 }; "
+        $publisher=Join-Path $lockPath 'publisher.ps1'
+        $scriptText='$ErrorActionPreference="Stop"; $lockPath=' + "'$lockPath'; " + '$ownerPath=' + "'$ownerPath'`n" + $initialize + "`nInitialize-OwnerRename`n" + $writer.Replace($anchor,$pause+$anchor) + "`n" + '$after=' + "'$($after|ConvertTo-Json -Depth 16 -Compress)'|ConvertFrom-Json -AsHashtable; Write-OwnerRecord `$after"
+        [IO.File]::WriteAllText($publisher,$scriptText)
+        $start=[Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+        $start.UseShellExecute=$false; $start.CreateNoWindow=$true; $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+        foreach ($arg in @('-NoProfile','-File',$publisher)) { $start.ArgumentList.Add($arg) }
+        $child=[Diagnostics.Process]::Start($start)
+        $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
+        try {
+          Wait-FixtureSignal $pending $child 'transition pause'
+          $reader=Get-FixtureDefinition $testSource $site
+          if ($site -ceq 'Wait-NativeOwner') {
+            # Execute precisely its snapshot/decoder, not the surrounding wait.
+            $begin=$reader.IndexOf('$stream=')
+            $end=$reader.IndexOf("`n          if (`$record.schemaVersion",$begin)
+            $reader='param($OwnerPath)' + "`n" + '$path=$OwnerPath;' + $reader.Substring($begin,$end-$begin) + '; return $raw'
+          }
+          $openLine=@($reader -split "`n" | Where-Object { $_.Contains('$stream=[IO.File]::Open(') })[0]
+          Assert-Harness ([bool]$openLine) "$site has a snapshot open to pause"
+          $reader=$reader.Replace($openLine,$openLine+"`n [IO.File]::WriteAllText('$release','release'); `$child.WaitForExit()")
+          if ($variant -ceq 'share-read-mutant') { $reader=$reader.Replace('([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete)','[IO.FileShare]::Read') }
+          if ($site -ceq 'Read-FixtureOwner') {
+            . ([scriptblock]::Create($reader))
+            $observed=Read-FixtureOwner $ownerPath
+          } else { $observed=& ([scriptblock]::Create($reader)) $ownerPath }
+          $output=$stdout.GetAwaiter().GetResult(); $errorText=$stderr.GetAwaiter().GetResult()
+          $failure=$null
+          try {
+            Assert-Harness ($child.ExitCode -eq 0) "$site $kind paused publication succeeds while the snapshot handle is open"
+          } catch { $failure=$_.Exception.Message }
+          $rows.Add(@{site=$site;transition=$kind;variant=$variant;exit=$child.ExitCode;assertion=$failure;output=$output;error=$errorText})
+          if ($variant -ceq 'candidate') {
+            if ($failure) { throw $failure }
+            Assert-Harness ($observed -ceq $beforeRaw) "$site $kind takes one old-record snapshot"
+            $fresh=Read-FixtureOwner $ownerPath
+            Assert-Harness ($fresh -ceq $output.Trim() -and ($fresh|ConvertFrom-Json).state -ceq 'started') "$site $kind reopens the published state and tuple"
+          } else {
+            Assert-Harness ($failure -clike '*paused publication succeeds*') "$site $kind share mutant dies at its publication assertion"
+            Write-Output "MUTANT_RED share-read/$site/$kind $failure"
+          }
+        } finally {
+          [IO.File]::WriteAllText($release,'release')
+          [void]$child.WaitForExit()
+        }
+      }
+    }
+  }
+  [IO.File]::WriteAllText((Join-Path $controlRoot 'results.json'),($rows|ConvertTo-Json -Depth 16))
+  Write-Output "CONTROL transition-pause-injection GREEN evidence=$controlRoot"
+}
+function Test-HarnessControls {
+  $lines=@('{"correlation":1,"status":"refused","proof":"expected"}', '{"correlation":2,"status":"refused","proof":"wrong-correlation"}', '{"correlation":1,"status":"completed","proof":"wrong-status"}', 'not json')
+  foreach ($order in @(@(0,1,2,3),@(3,2,1,0),@(1,0,3,2))) {
+    $reply=Select-NativeReply $lines[$order] 1 'refused'
+    Assert-Harness ($reply.proof -ceq 'expected') 'typed reply is bound to correlation and status regardless of stream order'
+  }
+  foreach ($bad in @(@($lines[1]),@($lines[0],$lines[0]))) {
+    $refused=$false
+    try { [void](Select-NativeReply $bad 1 'refused') } catch { $refused=$_.Exception.Message -clike 'native reply must be unique*' }
+    Assert-Harness $refused 'missing or duplicated typed reply is refused'
+  }
+  $source=[IO.File]::ReadAllText($PSCommandPath)
+  $selector=Get-FixtureDefinition $source 'Select-NativeReply'
+  foreach ($seam in @('$_.correlation -eq $Correlation -and ', ' -and $_.status -ceq $Status')) {
+    $mutant=$selector.Replace($seam,'')
+    . ([scriptblock]::Create($mutant))
+    $killed=$false
+    try { $reply=Select-NativeReply $lines 1 'refused'; Assert-Harness ($reply.proof -ceq 'expected') 'typed reply is bound to correlation and status regardless of stream order' } catch { $killed=$true; Write-Output "MUTANT_RED reply-selector $($_.Exception.Message)" }
+    Assert-Harness $killed 'typed-reply mutant is killed by the correlation/status assertion'
+  }
+  . ([scriptblock]::Create($selector))
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('hhv-signal-'+[guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($root)
+  $signal=Join-Path $root 'signal'
+  [IO.File]::WriteAllText($signal,'signal')
+  Wait-FixtureSignal $signal ([pscustomobject]@{HasExited=$true;ExitCode=7}) 'positive'
+  $refused=$false
+  try { Wait-FixtureSignal (Join-Path $root 'absent') ([pscustomobject]@{HasExited=$true;ExitCode=7}) 'negative' } catch { $refused=$_.Exception.Message -ceq 'negative producer exited before signal: 7' }
+  Assert-Harness $refused 'terminal producer without signal deterministically fails naming exit and code'
+  $wait=Get-FixtureDefinition $source 'Wait-FixtureSignal'
+  . ([scriptblock]::Create($wait.Replace('if ($Producer.HasExited)', 'if (-not $Producer.HasExited)')))
+  $failure=$null
+  try { Wait-FixtureSignal (Join-Path $root 'absent') ([pscustomobject]@{HasExited=$false;ExitCode=$null}) 'live' } catch { $failure=$_.Exception.Message }
+  Assert-Harness ($failure -ceq 'live producer exited before signal: ') 'inverted terminal guard fails at its premature producer-exit assertion'
+  Write-Output "MUTANT_RED signal-terminal $failure"
+  . ([scriptblock]::Create($wait))
+  $cleanup=Get-FixtureDefinition $source 'Release-FixtureChildren'
+  foreach ($variant in @('candidate','omit-release-mutant')) {
+    $releasePath=Join-Path $root 'release'
+    if (Test-Path $releasePath) { Remove-Item -LiteralPath $releasePath }
+    $process=[pscustomobject]@{ReleasePath=$releasePath;Observed=$false}
+    $process | Add-Member ScriptMethod WaitForExit {
+      Assert-Harness ([IO.File]::Exists($this.ReleasePath)) 'failure cleanup releases fixture before observing child exit'
+      $this.Observed=$true
+    }
+    $definition=$cleanup
+    if ($variant -ceq 'omit-release-mutant') { $definition=$definition.Replace("(Join-Path `$Artifacts 'release')", "(Join-Path `$Artifacts 'wrong-release')") }
+    . ([scriptblock]::Create($definition))
+    $failure=$null
+    try { Release-FixtureChildren $root @(@{Process=$process}) } catch { $failure=$_.Exception.Message }
+    if ($variant -ceq 'candidate') {
+      Assert-Harness (-not $failure -and $process.Observed) 'failure cleanup observes child terminal state after release'
+    } else {
+      Assert-Harness ($failure -clike '*ASSERTION FAILED: failure cleanup releases fixture before observing child exit*') 'release mutant dies at its release-before-exit assertion'
+      Write-Output "MUTANT_RED failure-release $failure"
+    }
+  }
+  . ([scriptblock]::Create($cleanup))
+  Write-Output 'CONTROL harness-controls GREEN reply order, missing/duplicate replies, signal-before-exit and terminal-without-signal'
+}
+if ($Control -ceq 'transition-pause-injection') { Test-TransitionPause; return }
+if ($Control -ceq 'harness-controls') { Test-HarnessControls; return }
 if ($NativeDbOnly) {
   $helper = (Join-Path $PSScriptRoot 'native-db-admission.py').Replace('\','/')
   if ($helper -notmatch '^([A-Za-z]):/(.*)$') { throw 'native fixture requires an absolute drive path' }
@@ -28,9 +206,10 @@ tuples = {}
 def command(mode, root):
     return ['/usr/bin/env','-i','PATH=/usr/bin:/bin',f'HOME={root}','LANG=C','/usr/bin/python3',str(helper),mode,str(root)]
 def line(process):
-    assert select.select([process.stdout], [], [], 30)[0], 'fixture reply deadline'
+    ready, _, _ = select.select([process.stdout], [], [])
+    assert ready, 'fixture producer reached EOF before reply'
     raw = process.stdout.readline()
-    assert raw, process.stderr.read().decode()
+    assert raw, 'fixture producer EOF before reply'
     return json.loads(raw)
 def start():
     root = parent / ('native-db-' + uuid.uuid4().hex)
@@ -48,7 +227,7 @@ def ack(process, publication):
     process.stdin.write((json.dumps(publication)+'\n').encode()); process.stdin.flush()
     process.stdin.close()
 def reconcile(root, expected, success=True):
-    result = subprocess.run(command('reconcile', root), input=(json.dumps({'linux':expected})+'\n').encode(), capture_output=True, timeout=40)
+    result = subprocess.run(command('reconcile', root), input=(json.dumps({'linux':expected})+'\n').encode(), capture_output=True)
     if success:
         assert result.returncode == 0, result.stderr.decode()
         proof = json.loads(result.stdout)
@@ -62,7 +241,7 @@ try:
     ack(process, publication)
     result = line(process)
     assert result['status'] == 'refused' and result['exit'] is None, result
-    assert process.wait(timeout=30) == 0
+    assert process.wait() == 0
     reconcile(root, publication['linux'])
     print('PASS copied native missing-runner refusal and exact cleanup', flush=True)
     root, process, publication = start()
@@ -74,19 +253,18 @@ def raced_open(pid):
     if sys.argv[3]=='absent':
         descriptor=original(pid)
         signal.pidfd_send_signal(descriptor,signal.SIGKILL);os.close(descriptor)
-        deadline=time.monotonic()+30
-        while pathlib.Path('/proc',str(pid)).exists() and time.monotonic()<deadline: time.sleep(.01)
+        while pathlib.Path('/proc',str(pid)).exists(): time.sleep(.01)
         assert not pathlib.Path('/proc',str(pid)).exists()
     raise ProcessLookupError('synthetic pidfd exit race')
 m.os.pidfd_open=raced_open
 m.reconcile(m.execution_root(sys.argv[2]))
 '''
     for state in ('present','absent'):
-        raced = subprocess.run(['/usr/bin/python3','-c',race_source,str(helper),str(root),state], input=(json.dumps(publication)+'\n').encode(), capture_output=True, timeout=40)
+        raced = subprocess.run(['/usr/bin/python3','-c',race_source,str(helper),str(root),state], input=(json.dumps(publication)+'\n').encode(), capture_output=True)
         assert (raced.returncode == 0) == (state == 'absent'), raced.stderr.decode()
         if state == 'present': assert module.identity(publication['linux']['outerPid']) == publication['linux'] and root.exists()
         else: assert not root.exists() and json.loads(raced.stdout)['initAbsent']
-    process.stdin.close(); process.wait(timeout=30)
+    process.stdin.close(); process.wait()
     print('PASS pidfd disappearance race: present identity retains owner, actual absence permits exact cleanup', flush=True)
     runner.write_text('import time\ntime.sleep(300)\n')
     pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes()).hexdigest())
@@ -108,8 +286,7 @@ def counted_identity(target):
     if arm=='wait-absent':
         assert proc.exists(),'held reaper must leave the bound init visible until the injected re-read'
         os.kill(reaper,signal.SIGCONT)
-        deadline=time.monotonic()+30
-        while proc.exists() and time.monotonic()<deadline: time.sleep(.01)
+        while proc.exists(): time.sleep(.01)
         assert not proc.exists(),'bound init death must complete before the injected re-read'
     else:
         assert proc.exists(),'retained init must still resolve at the injected re-read'
@@ -124,8 +301,8 @@ m.reconcile(m.execution_root(sys.argv[2]))
         ppid = int(next(x for x in (outer/'status').read_text().splitlines() if x.startswith('PPid:')).split()[1])
         assert pathlib.Path('/proc', str(ppid), 'comm').read_text().strip() == 'unshare', 'init parent must be the fixed unshare'
         return ppid
-    def esrch(arm, root, expected, timeout=40):
-        return subprocess.run(['/usr/bin/python3','-c',esrch_source,str(helper),str(root),arm,str(expected['outerPid']),str(reaper_of(expected))], input=(json.dumps({'linux':expected})+'\n').encode(), capture_output=True, timeout=timeout)
+    def esrch(arm, root, expected):
+        return subprocess.run(['/usr/bin/python3','-c',esrch_source,str(helper),str(root),arm,str(expected['outerPid']),str(reaper_of(expected))], input=(json.dumps({'linux':expected})+'\n').encode(), capture_output=True)
     def retained(run, root, expected, diagnostic):
         assert run.returncode != 0 and diagnostic in run.stderr, run.stderr.decode()
         assert module.identity(expected['outerPid']) == expected and root.exists(), 'retained owner requires the live matching init and its exact root'
@@ -136,10 +313,10 @@ m.reconcile(m.execution_root(sys.argv[2]))
     root, process, publication = start()
     expected = publication['linux']
     ack(process, publication)
-    retained(esrch('bound-nokill', root, expected, 60), root, expected, b'exact init absence unknown')
+    retained(esrch('bound-nokill', root, expected), root, expected, b'exact init absence unknown')
     retained(esrch('wait-present', root, expected), root, expected, b'synthetic ESRCH inside bounded wait')
     released(esrch('bound-kill', root, expected), root, expected)
-    process.wait(timeout=30)
+    process.wait()
     print('PASS bound ESRCH at pidfd_send_signal: undelivered kill expires into a retained owner, injected bounded-wait re-read with the init present retains, delivered kill releases exactly that root', flush=True)
     root, process, publication = start()
     expected = publication['linux']
@@ -155,7 +332,7 @@ m.reconcile(m.execution_root(sys.argv[2]))
             os.kill(reaper, module.signal.SIGCONT)
     assert b'INJECTED bounded-wait re-read' in raced.stderr, raced.stderr.decode()
     released(raced, root, expected)
-    process.wait(timeout=30)
+    process.wait()
     print('PASS bound ESRCH at the bounded-wait identity re-read after complete /proc absence releases exactly that root', flush=True)
     runner.write_text('''import json, os, pathlib, time
 root = pathlib.Path(os.environ['HOME'])
@@ -174,7 +351,7 @@ time.sleep(10)
     pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes()).hexdigest())
     root, process, publication = start()
     process.stdin.close()
-    assert process.wait(timeout=30) != 0, 'midlaunch parent EOF must refuse'
+    assert process.wait() != 0, 'midlaunch parent EOF must refuse'
     assert not (root/'scratch').exists(), 'midlaunch parent loss must not start payload'
     reconcile(root, publication['linux'])
     print('PASS midlaunch parent-channel loss: tuple acknowledgement absent, no payload, independent exact cleanup', flush=True)
@@ -188,33 +365,30 @@ time.sleep(10)
     reconcile(root, wrong_boot, False)
     assert module.identity(expected['outerPid']) == expected
     ack(process, publication)
-    deadline = time.monotonic()+30
-    while not (root/'scratch/proof.json').exists() and time.monotonic()<deadline:
+    while not (root/'scratch/proof.json').exists() and process.poll() is None and not (root/'result.json').exists():
         time.sleep(.05)
-    assert (root/'scratch/proof.json').exists(), (root/'result.json').read_text() if (root/'result.json').exists() else 'payload missing'
+    assert (root/'scratch/proof.json').exists(), 'payload missing: result terminal: ' + (root/'result.json').read_text() if (root/'result.json').exists() else f'payload missing: producer exited ({process.poll()})'
     proof = json.loads((root/'scratch/proof.json').read_text())
     assert proof['uid'] == proof['gid'] == 65534 and proof['groups'] == [], proof
     assert 'NoNewPrivs:\t1' in proof['status']
     assert set(proof['env']) <= {'PATH','HOME','LANG','TMPDIR','LC_CTYPE'}, proof['env']
     assert proof['mount'] != os.readlink('/proc/self/ns/mnt')
     assert proof['proc'] != os.readlink('/proc/self/ns/pid')
-    deadline = time.monotonic()+30
-    while not (root/'scratch/grandchild').exists() and time.monotonic()<deadline:
+    while not (root/'scratch/grandchild').exists() and process.poll() is None and not (root/'result.json').exists():
         time.sleep(.025)
-    assert (root/'scratch/grandchild').exists(), 'real double-fork/setsid grandchild missing'
+    assert (root/'scratch/grandchild').exists(), f'real double-fork/setsid grandchild missing: producer exit={process.poll()}, result terminal={(root/"result.json").exists()}'
     inner = int((root/'scratch/grandchild').read_text())
     members = []
-    deadline = time.monotonic()+30
-    while not members and time.monotonic()<deadline:
+    while not members and process.poll() is None and pathlib.Path('/proc',str(expected['outerPid'])).exists():
         for outer in pathlib.Path(f"/proc/{expected['outerPid']}/task/{expected['outerPid']}/children").read_text().split():
             observed = module.identity(int(outer))
             if observed['nspid'] == [int(outer), inner]: members.append(observed)
         if not members: time.sleep(.025)
-    assert len(members)==1, 'exact reparented deepest grandchild identity'
-    process.kill(); process.wait(timeout=30)
+    assert len(members)==1, f'exact reparented deepest grandchild identity: producer exit={process.poll()}, init absent={not pathlib.Path("/proc",str(expected["outerPid"])).exists()}'
+    process.kill(); process.wait()
     assert module.identity(expected['outerPid']) == expected, 'helper death must not imply Linux init death'
     reconcile(root, expected)
-    process.wait(timeout=30)
+    process.wait()
     assert not pathlib.Path('/proc',str(expected['outerPid'])).exists()
     assert not root.exists()
     assert all(not pathlib.Path('/proc', str(member['outerPid'])).exists() for member in members), 'deepest namespace descendants must die'
@@ -228,21 +402,22 @@ time.sleep(10)
     assert text.count(gate)==1, 'tuple-gate mutation must have one exact site'
     helper.write_text(text.replace(gate, '    # Synthetic tuple-publication bypass.\n'))
     root, process, publication = start()
-    deadline=time.monotonic()+30
-    while not (root/'scratch/proof.json').exists() and time.monotonic()<deadline:
+    while not (root/'scratch/proof.json').exists() and process.poll() is None and not (root/'result.json').exists():
         time.sleep(.025)
-    assert (root/'scratch/proof.json').exists(), 'tuple bypass must violate the pre-ack no-payload assertion'
-    process.kill(); process.wait(timeout=30)
+    assert (root/'scratch/proof.json').exists(), f'tuple bypass must violate the pre-ack no-payload assertion: producer exit={process.poll()}, result terminal={(root/"result.json").exists()}'
+    process.kill(); process.wait()
     reconcile(root, publication['linux'])
     helper.write_text(text)
     print('PASS tuple-gate bypass discrimination: same request, runner, tools and environment; only init acknowledgement gate removed; inert payload entered before acknowledgement', flush=True)
 finally:
+    for process in processes:
+        if process.stdin and not process.stdin.closed: process.stdin.close()
     for root, expected in tuples.items():
         if root.exists() or pathlib.Path('/proc',str(expected['outerPid'])).exists():
             reconcile(root, expected)
     for process in processes:
         if process.poll() is None:
-            process.wait(timeout=30)
+            process.wait()
     assert all(not root.exists() for root in roots), 'owned execution roots remain'
     assert fixture.resolve().parent == parent and fixture.name.startswith('native-db-component-')
     shutil.rmtree(fixture)
@@ -256,7 +431,7 @@ finally:
   $process = [Diagnostics.Process]::Start($start)
   $output = $process.StandardOutput.ReadToEndAsync(); $errors = $process.StandardError.ReadToEndAsync()
   $process.StandardInput.WriteLine($fixture); $process.StandardInput.Close()
-  while (-not $process.WaitForExit(1000)) {}
+  [void]$process.WaitForExit()
   Write-Output $output.GetAwaiter().GetResult()
   Write-Output $errors.GetAwaiter().GetResult()
   if ($process.ExitCode -ne 0) { throw "native copied-runtime qualification failed: $($process.ExitCode)" }
@@ -283,15 +458,14 @@ finally:
     return $entry
   }
   function Complete-NativeFixture($Entry, [int]$Exit) {
-    if (-not $Entry.process.WaitForExit(30000)) { throw 'native fixture did not finish' }
+    [void]$Entry.process.WaitForExit()
     $text=$Entry.out.GetAwaiter().GetResult()+$Entry.err.GetAwaiter().GetResult()
     if ($Entry.process.ExitCode -ne $Exit) { throw "native fixture expected $Exit got $($Entry.process.ExitCode): $text" }
     return $text
   }
-  function Wait-NativeOwner([int]$Schema, [string]$LockName = 'verify-lock.d') {
+  function Wait-NativeOwner([int]$Schema, [string]$LockName = 'verify-lock.d', [hashtable]$Producer) {
     $path=Join-Path $runtime "$LockName/owner.json"
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while ([DateTime]::UtcNow -lt $deadline) {
+    while ($true) {
       if (Test-Path $path) {
         try {
           $stream=[IO.File]::Open($path,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
@@ -303,9 +477,9 @@ finally:
           if ($record.schemaVersion -eq $Schema -and $record.state -ceq 'started' -and ($Schema -ne 6 -or $record.native.linux)) { return $record }
         } catch {}
       }
+      if ($Producer -and $Producer.process.HasExited) { throw "native fixture producer exited before owner publication: $($Producer.process.ExitCode)" }
       Start-Sleep -Milliseconds 50
     }
-    throw 'native fixture owner publication expired'
   }
   $linuxSetup = @'
 import pathlib, sys
@@ -370,7 +544,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     $exit = $LASTEXITCODE
     Write-Output ($reply -join "`n")
     if ($exit -ne 73) { throw "native missing runner expected 73, got $exit" }
-    $record = ($reply | Where-Object { "$_".StartsWith('{') } | Select-Object -Last 1) | ConvertFrom-Json -DateKind String
+    $record = Select-NativeReply $reply $request.correlation 'refused'
     if ($record.status -cne 'refused' -or -not $record.owner -or -not $record.evidencePath) { throw 'native missing runner lacks typed refusal/evidence' }
     $evidence=Get-Content -LiteralPath $record.evidencePath -Raw | ConvertFrom-Json -DateKind String
     if (-not $evidence.cleanup.initAbsent -or -not $evidence.cleanup.rootAbsent -or $evidence.releasedUtc -notmatch 'T.*Z$') { throw 'native evidence lacks actual release and independent cleanup proof' }
@@ -395,7 +569,7 @@ inputs=root/'inputs'; (inputs/'synthetic/tools').mkdir(parents=True)
 shutil.copy2(pathlib.Path(sys.executable).resolve(),inputs/'synthetic/tools/node')
 helper=root/'admission.py'; text=helper.read_text().replace("Path('/srv/chase-sets-native-db-input')","Path("+repr(str(inputs))+")"); helper.write_text(text)
 runner=root/'absent-runner.mjs'
-runner.write_text("import pathlib,os,time\nr=pathlib.Path(os.environ['HOME'])\n(r/'ready').write_text('inert')\nwhile not (r/'release').exists(): time.sleep(.025)\n")
+runner.write_text("import pathlib,os,time\nr=pathlib.Path(os.environ['HOME'])\n(r/'ready').write_text('inert')\nwhile not (r/'release').exists() and not pathlib.Path("+repr(str(root/'release'))+").exists(): time.sleep(.025)\n")
 pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes()).hexdigest())
 '@
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $inertSetup $linuxRoot
@@ -405,13 +579,13 @@ pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes(
     $request.stagedInputDirectory="$linuxRoot/inputs/synthetic"; $request.correlation=2
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $native=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $nativeOwner=Wait-NativeOwner 6
+    $nativeOwner=Wait-NativeOwner 6 -Producer $native
     $readyPython=@'
-import pathlib,sys,time
+import json,pathlib,sys,time
 root=pathlib.Path(sys.argv[1]); assert root.parent==pathlib.Path('/srv/chase-sets-pg-probe') and root.name.startswith('native-db-') and root.resolve()==root
-deadline=time.monotonic()+30
-while not (root/'scratch/ready').exists() and time.monotonic()<deadline: time.sleep(.025)
-assert (root/'scratch/ready').exists(), 'inert payload did not enter'
+pid=json.loads((root/'linux.json').read_text())['outerPid']
+while not (root/'scratch/ready').exists() and pathlib.Path('/proc',str(pid)).exists() and not (root/'result.json').exists(): time.sleep(.025)
+assert (root/'scratch/ready').exists(), 'inert payload did not enter: init absent or result terminal'
 '@
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $nativeOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'native winning body absent' }
@@ -424,10 +598,11 @@ assert (root/'scratch/ready').exists(), 'inert payload did not enter'
     [void](Complete-NativeFixture $native 0)
     if (Test-Path (Join-Path $runtime 'verify-lock.d')) { throw 'native owner did not release after exact cleanup' }
     $windows=Start-NativeFixture @('-Gate','verify:static')
-    [void](Wait-NativeOwner 4)
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while (-not (Test-Path (Join-Path $artifacts 'static-body')) -and -not $windows.process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
-    if (-not (Test-Path (Join-Path $artifacts 'static-body'))) { [void](Complete-NativeFixture $windows 0); throw 'Windows Gate fixture body absent' }
+    [void](Wait-NativeOwner 4 -Producer $windows)
+    while (-not (Test-Path (Join-Path $artifacts 'static-body'))) {
+      if ($windows.process.HasExited) { throw "Windows Gate fixture producer exited before static-body signal: $($windows.process.ExitCode)" }
+      Start-Sleep -Milliseconds 25
+    }
     $request.correlation=3
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $loser=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
@@ -441,7 +616,7 @@ assert (root/'scratch/ready').exists(), 'inert payload did not enter'
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'),$slotMutant)
     try {
       $bypass=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-      $bypassOwner=Wait-NativeOwner 6 'native-bypass-lock.d'
+      $bypassOwner=Wait-NativeOwner 6 'native-bypass-lock.d' $bypass
       & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $bypassOwner.native.root
       if ($LASTEXITCODE -ne 0) { throw 'slot bypass did not violate the native no-body assertion' }
       & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $releasePython $bypassOwner.native.root
@@ -456,17 +631,17 @@ assert (root/'scratch/ready').exists(), 'inert payload did not enter'
     $request.correlation=4
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $interrupted=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $interruptedOwner=Wait-NativeOwner 6
+    $interruptedOwner=Wait-NativeOwner 6 -Producer $interrupted
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $interruptedOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'midpayload fixture did not enter payload' }
-    $retainedRaw=[IO.File]::ReadAllText((Join-Path $runtime 'verify-lock.d/owner.json'))
-    $interrupted.process.Kill(); [void]$interrupted.process.WaitForExit(30000)
+    $retainedRaw=Read-FixtureOwner (Join-Path $runtime 'verify-lock.d/owner.json')
+    $interrupted.process.Kill(); [void]$interrupted.process.WaitForExit()
     $oldChild=Get-Process -Id $interruptedOwner.childPid -ErrorAction SilentlyContinue
     if ($oldChild) {
       if ($oldChild.StartTime.ToUniversalTime().Ticks -ne [DateTimeOffset]::Parse($interruptedOwner.childProcessStartUtc).Ticks) { throw 'interrupted child identity changed' }
-      $oldChild.Kill(); [void]$oldChild.WaitForExit(30000)
+      $oldChild.Kill(); [void]$oldChild.WaitForExit()
     }
-    if ([IO.File]::ReadAllText((Join-Path $runtime 'verify-lock.d/owner.json')) -cne $retainedRaw) { throw 'Windows death changed owner bytes' }
+    if ((Read-FixtureOwner (Join-Path $runtime 'verify-lock.d/owner.json')) -cne $retainedRaw) { throw 'Windows death changed owner bytes' }
     $observePython=@'
 import json,pathlib,runpy,sys
 module=runpy.run_path(sys.argv[1]); expected=json.loads(sys.argv[2])
@@ -483,10 +658,10 @@ assert pathlib.Path(sys.argv[3]).is_dir(), 'exact R still requires independent c
     $request.correlation=5
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $resumed=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $resumedOwner=Wait-NativeOwner 6
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while ($resumedOwner.lockId -ceq $interruptedOwner.lockId -and [DateTime]::UtcNow -lt $deadline) {
-      Start-Sleep -Milliseconds 100; $resumedOwner=Wait-NativeOwner 6
+    $resumedOwner=Wait-NativeOwner 6 -Producer $resumed
+    while ($resumedOwner.lockId -ceq $interruptedOwner.lockId) {
+      if ($resumed.process.HasExited) { throw "resumed claimant exited before publishing a new owner: $($resumed.process.ExitCode)" }
+      Start-Sleep -Milliseconds 100; $resumedOwner=Wait-NativeOwner 6 -Producer $resumed
     }
     if ($resumedOwner.lockId -ceq $interruptedOwner.lockId) { throw 'later claimant did not reconcile prior owner' }
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $resumedOwner.native.root
@@ -509,18 +684,18 @@ pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes(
     $request.correlation=6
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $failed=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $failedOwner=Wait-NativeOwner 6
+    $failedOwner=Wait-NativeOwner 6 -Producer $failed
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $failedOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'failure fixture body absent' }
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $releasePython $failedOwner.native.root
-    $failedReply=(Complete-NativeFixture $failed 1).Trim() | ConvertFrom-Json -DateKind String
+    $failedReply=Select-NativeReply ((Complete-NativeFixture $failed 1) -split "`n") $request.correlation 'completed'
     $failedEvidence=Get-Content $failedReply.evidencePath -Raw | ConvertFrom-Json -DateKind String
     if ($failedReply.status -cne 'completed' -or $failedEvidence.result.exit -ne 7 -or -not $failedEvidence.cleanup.rootAbsent) { throw 'payload failure must preserve exit, not import PASS, and still clean exactly' }
     Write-Output 'PASS inert payload failure: actual exit 7 retained, lifecycle completed is not PASS, wrapper exit 1 and exact cleanup'
     $request.correlation=7
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $helperLost=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $helperLostOwner=Wait-NativeOwner 6
+    $helperLostOwner=Wait-NativeOwner 6 -Producer $helperLost
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $helperLostOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'helper-loss body absent' }
     $killHelper=@'
@@ -544,29 +719,32 @@ finally: os.close(descriptor)
     if ($helperReplyText -notmatch '"status":"unknown"' -or (Test-Path (Join-Path $runtime 'verify-lock.d'))) { throw 'lost helper must report unknown and independently finish exact cleanup' }
     Write-Output 'PASS midpayload helper death: exact pidfd target, typed unknown, independent cleanup and no successful result import'
     $precleanupMarker=Join-Path $artifacts 'precleanup'
-    $pause="[IO.File]::WriteAllText('$precleanupMarker','paused'); while (`$true) { Start-Sleep -Milliseconds 25 }"
+    $pause="[IO.File]::WriteAllText('$precleanupMarker','paused'); while (-not [IO.File]::Exists('$precleanupMarker-release')) { Start-Sleep -Milliseconds 25 }"
     $pausedCopy=$copy.Replace('$script:nativeResult = $result', $pause+'; $script:nativeResult = $result')
     if ($pausedCopy -ceq $copy) { throw 'precleanup fixture pause did not apply' }
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'),$pausedCopy)
     $request.correlation=8
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $precleanup=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $precleanupOwner=Wait-NativeOwner 6
+    $precleanupOwner=Wait-NativeOwner 6 -Producer $precleanup
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $precleanupOwner.native.root
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $releasePython $precleanupOwner.native.root
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while (-not (Test-Path $precleanupMarker) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
-    if (-not (Test-Path $precleanupMarker)) { throw 'precleanup boundary was not reached' }
-    $precleanupRaw=[IO.File]::ReadAllText((Join-Path $runtime 'verify-lock.d/owner.json'))
-    $precleanup.process.Kill(); [void]$precleanup.process.WaitForExit(30000)
-    if ([IO.File]::ReadAllText((Join-Path $runtime 'verify-lock.d/owner.json')) -cne $precleanupRaw) { throw 'precleanup wrapper death changed owner bytes' }
+    while (-not (Test-Path $precleanupMarker)) {
+      if ($precleanup.process.HasExited) { throw "precleanup producer exited before boundary signal: $($precleanup.process.ExitCode)" }
+      Start-Sleep -Milliseconds 25
+    }
+    $precleanupRaw=Read-FixtureOwner (Join-Path $runtime 'verify-lock.d/owner.json')
+    $precleanup.process.Kill(); [void]$precleanup.process.WaitForExit()
+    if ((Read-FixtureOwner (Join-Path $runtime 'verify-lock.d/owner.json')) -cne $precleanupRaw) { throw 'precleanup wrapper death changed owner bytes' }
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'),$copy)
     $request.correlation=9
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
     $next=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $nextOwner=Wait-NativeOwner 6
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while ($nextOwner.lockId -ceq $precleanupOwner.lockId -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $nextOwner=Wait-NativeOwner 6 }
+    $nextOwner=Wait-NativeOwner 6 -Producer $next
+    while ($nextOwner.lockId -ceq $precleanupOwner.lockId) {
+      if ($next.process.HasExited) { throw "next claimant exited before publishing a new owner: $($next.process.ExitCode)" }
+      Start-Sleep -Milliseconds 100; $nextOwner=Wait-NativeOwner 6 -Producer $next
+    }
     if ($nextOwner.lockId -ceq $precleanupOwner.lockId) { throw 'precleanup owner was not independently reconciled' }
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $absencePython "$($precleanupOwner.native.linux.outerPid)" $precleanupOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'precleanup release omitted Linux/root absence' }
@@ -578,11 +756,19 @@ finally: os.close(descriptor)
     $identities=@($nativeOwner,$bypassOwner,$interruptedOwner,$resumedOwner,$failedOwner,$helperLostOwner,$precleanupOwner,$nextOwner) | Where-Object { $null -ne $_ }
     if (Test-Path $artifacts) { [IO.File]::WriteAllText((Join-Path $artifacts 'native-case-identities.json'),(@($identities) | ConvertTo-Json -Depth 16)) }
     if (Test-Path $artifacts) { [IO.File]::WriteAllText((Join-Path $artifacts 'static-release'),'release') }
-    foreach ($entry in $nativeChildren) {
-      if (-not $entry.process.HasExited) { [void]$entry.process.WaitForExit(1000) }
-      if (-not $entry.process.HasExited -and $entry.process.StartTime.ToUniversalTime().Ticks -eq $entry.start) {
-        $entry.process.Kill(); [void]$entry.process.WaitForExit(30000)
+    if ($precleanupMarker) { [IO.File]::WriteAllText("$precleanupMarker-release",'release') }
+    $releaseFixture = "import pathlib,sys; root=pathlib.Path(sys.argv[1]); assert root.parent==pathlib.Path('/srv/chase-sets-pg-probe') and root.name.startswith('native-db-component-') and root.resolve()==root; (root/'release').write_text('release') if root.exists() else None"
+    & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $releaseFixture $linuxRoot
+    if ($LASTEXITCODE -ne 0) { throw 'native fixture release marker failed' }
+    $releaseRoot = "import pathlib,sys; root=pathlib.Path(sys.argv[1]); assert root.parent==pathlib.Path('/srv/chase-sets-pg-probe') and root.name.startswith('native-db-') and root.resolve()==root; (root/'scratch/release').write_text('release') if (root/'scratch').exists() else None"
+    foreach ($identity in $identities) {
+      if ($identity.native.root) {
+        & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $releaseRoot $identity.native.root
+        if ($LASTEXITCODE -ne 0) { throw "owned synthetic native release signal failed: $($identity.native.root)" }
       }
+    }
+    foreach ($entry in $nativeChildren) {
+      if (-not $entry.process.HasExited) { [void]$entry.process.WaitForExit() }
       if ($entry.process.HasExited) {
         [IO.File]::WriteAllText((Join-Path $artifacts "process-$($entry.process.Id).log"), $entry.out.GetAwaiter().GetResult()+$entry.err.GetAwaiter().GetResult())
       }
@@ -590,10 +776,10 @@ finally: os.close(descriptor)
     foreach ($fixtureLock in @('verify-lock.d','native-bypass-lock.d')) {
     $retainedPath=Join-Path $runtime "$fixtureLock/owner.json"
     if (Test-Path $retainedPath) {
-      $retained=Get-Content $retainedPath -Raw | ConvertFrom-Json -DateKind String
+      $retained=(Read-FixtureOwner $retainedPath) | ConvertFrom-Json -DateKind String
       if ($retained.schemaVersion -eq 6 -and $retained.native.linux) {
         $live=Get-Process -Id $retained.childPid -ErrorAction SilentlyContinue
-        if ($live -and $live.StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse($retained.childProcessStartUtc).Ticks) { $live.Kill(); [void]$live.WaitForExit(30000) }
+        if ($live -and $live.StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse($retained.childProcessStartUtc).Ticks) { $live.Kill(); [void]$live.WaitForExit() }
         $cleanup=@{linux=$retained.native.linux} | ConvertTo-Json -Compress -Depth 8
         $cleanup | & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 "$linuxRoot/admission.py" reconcile $retained.native.root
         if ($LASTEXITCODE -ne 0) { throw 'owned synthetic Linux processes could not be reconciled' }
@@ -612,7 +798,7 @@ shutil.rmtree(root)
   }
   return
 }
-if (-not $Baseline) { & $PSCommandPath -NativeDbOnly }
+if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
 $source = $PSScriptRoot
 $root = Join-Path ([IO.Path]::GetTempPath()) ('host-heavy-test-' + [guid]::NewGuid().ToString('N'))
 $runtime = Join-Path $root '.orchestrator'
@@ -648,7 +834,7 @@ function Start-Child([string]$Executable, [string[]]$Arguments, [hashtable]$Envi
   return $entry
 }
 function Complete($Entry, [int]$Exit) {
-  Assert ($Entry.Process.WaitForExit(30000)) 'fixture exits within existing 30 second bound'
+  [void]$Entry.Process.WaitForExit()
   $text = $Entry.Out.GetAwaiter().GetResult() + $Entry.Err.GetAwaiter().GetResult()
   Write-Output $text
   Assert ($Entry.Process.ExitCode -eq $Exit) "expected exit $Exit; actual $($Entry.Process.ExitCode)"
@@ -709,6 +895,10 @@ const forged = {...descriptor, publicKey:crypto.generateKeyPairSync('ec',{namedC
 child('forged-key', {CHASE_SETS_HEAVY_SLOT_TRANSPORT:Buffer.from(JSON.stringify(forged)).toString('base64')});
 child('forged-command', {CHASE_SETS_HEAVY_SLOT_TRANSPORT:Buffer.from(JSON.stringify({...descriptor,commandIdentity:'c'.repeat(64)})).toString('base64')});
 child('copied-token', {CHASE_SETS_HEAVY_SLOT_ID:'a'.repeat(32)});
+if (process.env.HOST_READY_LATENCY_INJECTION === '1') {
+  fs.writeFileSync(path.join(out, 'ready-delay-started'), 'started');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40000);
+}
 fs.writeFileSync(path.join(out,'ready.json'), JSON.stringify({token:process.env.CHASE_SETS_HEAVY_SLOT_ID, transport:process.env.CHASE_SETS_HEAVY_SLOT_TRANSPORT, owner}));
 if (process.env.HOST_WAIT === '1') {
   while (!fs.existsSync(path.join(out,'release'))) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
@@ -739,12 +929,11 @@ process.exit(Number(process.env.HOST_EXIT || 0));
   $classification = "const c=require(process.env.HOST_RUNTIME+'/heavy-admission-preload.cjs'); if(c.classifyCommand([process.execPath,'pnpm.mjs','run','test'])!=='repository-gate'||c.classifyCommand([process.execPath,'data.cjs','pnpm.mjs','run','test'])!==null)process.exit(1);"
   Complete (Start-Child $node @('-e', $classification)) 0
   $common = @('-NoProfile', '-File', $guard, '-Worktree', $worktree, '-Lane', 'host-fixture', '-ImmutableHead', $head, '-ContainerRoot', $root)
-  $run = Start-Child $pwsh ($common + @('-Gate', 'verify:test-db')) @{HOST_WAIT='1'}
+  $run = Start-Child $pwsh ($common + @('-Gate', 'verify:test-db')) @{HOST_WAIT='1';HOST_READY_LATENCY_INJECTION=$(if($Control -ceq 'host-ready-latency-injection'){'1'}else{'0'})}
   $ready = Join-Path $artifacts 'ready.json'
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  while (-not (Test-Path $ready) -and -not $run.Process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
-  if (-not (Test-Path $ready)) { Complete $run 0; throw 'host body never became ready' }
+  Wait-FixtureSignal $ready $run.Process 'host body'
   $state = Get-Content $ready -Raw | ConvertFrom-Json
+  if ($Control -ceq 'forced-failure-release') { throw 'INJECTED forced-failure-release' }
   # This process is a sibling of the guarded root, with the exact copied token
   # and descriptor. The kernel pipe client/ancestry check must still refuse it.
   $sibling = Start-Child $node @((Join-Path $worktree 'scripts/vitest.mjs'), 'run') @{
@@ -800,11 +989,35 @@ process.exit(Number(process.env.HOST_EXIT || 0));
   Assert (@(Get-ChildItem $runtime -Filter 'dispatch-launch-*.json').Count -eq 0) 'no fabricated dispatch'
   Write-Output 'PASS host Gate and closed workspace test: exact-once bodies, nested controls, one slot, bound receipts and exact exit'
 } finally {
+  Release-FixtureChildren $artifacts $children
+  $census = [Collections.Generic.List[object]]::new()
   foreach ($entry in $children) {
     if (-not $entry.Process.HasExited) {
-      # Never clean a live or ambiguous owner. Preserve the fixture for diagnosis.
-      Write-Warning "fixture still live pid=$($entry.Process.Id); preserved root=$root"
+      [void]$entry.Process.WaitForExit()
     }
+    $census.Add(@{pid=$entry.Process.Id;start=$entry.Start;exited=$entry.Process.HasExited})
+    if (Test-Path $artifacts) {
+      [IO.File]::WriteAllText((Join-Path $artifacts "process-$($entry.Process.Id).log"), $entry.Out.GetAwaiter().GetResult()+$entry.Err.GetAwaiter().GetResult())
+    }
+  }
+  # Receipts and the ready record bind transitive roots to the launches above.
+  $rootIdentities=@()
+  if (Test-Path (Join-Path $artifacts 'ready.json')) {
+    $readyOwner=(Get-Content (Join-Path $artifacts 'ready.json') -Raw|ConvertFrom-Json -DateKind String).owner
+    $rootIdentities+=@{pid=$readyOwner.childPid;start=[DateTimeOffset]::Parse($readyOwner.childProcessStartUtc).UtcTicks}
+  }
+  foreach ($receiptFile in @(Get-ChildItem $artifacts -Filter 'host-heavy-verifier-*.json' -ErrorAction SilentlyContinue)) {
+    $rootIdentity=(Get-Content $receiptFile.FullName -Raw|ConvertFrom-Json -DateKind String).root
+    $rootIdentities+=@{pid=$rootIdentity.pid;start=[DateTimeOffset]::Parse($rootIdentity.processStartUtc).UtcTicks}
+  }
+  foreach ($identity in $rootIdentities) {
+    $owned=Get-Process -Id $identity.pid -ErrorAction SilentlyContinue
+    if ($owned -and $owned.StartTime.ToUniversalTime().Ticks -eq $identity.start) { [void]$owned.WaitForExit() }
+    $live=Get-Process -Id $identity.pid -ErrorAction SilentlyContinue
+    $census.Add(@{pid=$identity.pid;start=$identity.start;exited=(-not $live -or $live.StartTime.ToUniversalTime().Ticks -ne $identity.start)})
+  }
+  if (Test-Path $artifacts) {
+    [IO.File]::WriteAllText((Join-Path $artifacts 'owned-process-census.json'), ($census | ConvertTo-Json -Depth 8))
   }
   # Evidence is retained for the governing reviewer, including baseline refusal.
   Write-Output "FIXTURE $root"
