@@ -1634,7 +1634,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
     $receipt = @(Get-ChildItem -LiteralPath (Join-Path $tree '.orchestrator/artifacts') -Filter 'controller-host-heavy-verifier-*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json -DateKind String })
     $expectedSources = @('.orchestrator/host-heavy-verifier.test.ps1','.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/native-db-admission.py','.orchestrator/heavy-admission-preload.cjs','.orchestrator/heavy-slot.cjs','.orchestrator/heavy-nested-owner.cs','.orchestrator/heavy-nested-client.cjs','.orchestrator/heavy-admission-holder-launcher.cjs','.orchestrator/dispatch-ownership.ps1')
     $sourcesBound = $receipt.Count -eq 1 -and @($expectedSources | Where-Object { -not $receipt[0].sources.$_ -or $receipt[0].sources.$_ -cne ((& git -C $tree rev-parse "HEAD:$_").Trim()) }).Count -eq 0
-    Assert-True ($receipt.Count -eq 1 -and $sourcesBound -and $receipt[0].slot.name -ceq 'controller-verify-lock.d' -and
+    Assert-True ($receipt.Count -eq 1 -and $sourcesBound -and $receipt[0].controller.head -ceq ((& git -C $controllerRoot rev-parse HEAD).Trim()) -and $receipt[0].controller.sources.'.orchestrator/invoke-heavy-verifier.ps1' -ceq ((& git -C $controllerRoot rev-parse 'HEAD:.orchestrator/invoke-heavy-verifier.ps1').Trim()) -and $receipt[0].slot.name -ceq 'controller-verify-lock.d' -and
       $receipt[0].command.arguments[0] -ceq '-NoProfile' -and $receipt[0].command.arguments[1] -ceq '-NonInteractive' -and
       $receipt[0].command.arguments[2] -ceq '-File' -and $receipt[0].command.arguments[3] -ieq $targetPath -and
       $receipt[0].sources.$relative -ceq ((& git -C $tree rev-parse "HEAD:$relative").Trim()))
