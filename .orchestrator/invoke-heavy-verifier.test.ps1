@@ -1342,6 +1342,10 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   # #9627: the inert fixture-equivalence stand-in records its body at $body.
   [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-equivalence.check.ps1'), $fixtureStandInCheck)
   [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-harness.ps1'), $fixtureStandInHarness)
+  $hostHeavyDependencies = @('host-heavy-verifier.test.ps1','invoke-heavy-verifier.ps1','native-db-admission.py','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')
+  foreach ($dependency in $hostHeavyDependencies) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $nativeTree ".orchestrator/$dependency") -Force
+  }
   [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/host-heavy-verifier.test.ps1'), @"
 `$ownerPath = '$((Join-Path $orchestrator 'controller-verify-lock.d/owner.json').Replace("'", "''"))'
 `$owner = Get-Content -LiteralPath `$ownerPath -Raw | ConvertFrom-Json -DateKind String
@@ -1349,7 +1353,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
 "@)
   $env:HV_FIXTURE_BODY = $body
   $env:HV_FIXTURE_RUNTIME = $orchestrator
-  & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 .orchestrator/host-heavy-verifier.test.ps1 package.json role-body.cjs pnpm-lock.yaml
+  & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 .orchestrator/host-heavy-verifier.test.ps1 .orchestrator/invoke-heavy-verifier.ps1 .orchestrator/native-db-admission.py .orchestrator/heavy-admission-preload.cjs .orchestrator/heavy-slot.cjs .orchestrator/heavy-nested-owner.cs .orchestrator/heavy-nested-client.cjs .orchestrator/heavy-admission-holder-launcher.cjs .orchestrator/dispatch-ownership.ps1 package.json role-body.cjs pnpm-lock.yaml
   & git -C $nativeTree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert standalone battery'
   Assert-True ($LASTEXITCODE -eq 0) 'inert battery committed in disposable fixture'
   $nativeHead=(& git -C $nativeTree rev-parse HEAD).Trim()
