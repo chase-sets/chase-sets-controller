@@ -31,6 +31,53 @@
       }
     },
     {
+      "identity": "test:rebase-integration.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "rebase-foundation", "weight": 1 },
+        { "name": "rebase-historical", "weight": 1 },
+        { "name": "rebase-ordinary-live", "weight": 1 },
+        { "name": "rebase-ordinary-retry", "weight": 1 },
+        { "name": "rebase-successor", "weight": 1 },
+        { "name": "rebase-publication", "weight": 1 },
+        { "name": "rebase-amend", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["rebase-foundation", "rebase-historical", "rebase-ordinary-live", "rebase-ordinary-retry", "rebase-successor", "rebase-publication", "rebase-amend"]
+      }
+    },
+    {
+      "identity": "test:lane-stall-watchdog.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "watchdog-foundation", "weight": 1 },
+        { "name": "watchdog-capacity", "weight": 1 },
+        { "name": "watchdog-policy-ac", "weight": 1 },
+        { "name": "watchdog-policy-protected", "weight": 1 },
+        { "name": "watchdog-policy-consumed", "weight": 1 },
+        { "name": "watchdog-policy-unlinked", "weight": 1 },
+        { "name": "watchdog-policy-authentication", "weight": 1 },
+        { "name": "watchdog-policy-scalars", "weight": 1 },
+        { "name": "watchdog-policy-joins", "weight": 1 },
+        { "name": "watchdog-policy-legacy", "weight": 1 },
+        { "name": "watchdog-policy-pos", "weight": 1 },
+        { "name": "watchdog-policy-mutants-admission", "weight": 1 },
+        { "name": "watchdog-policy-mutants-lineage", "weight": 1 },
+        { "name": "watchdog-policy-mutants-envelope", "weight": 1 },
+        { "name": "watchdog-policy-mutants-history", "weight": 1 },
+        { "name": "watchdog-policy-mutants-binding", "weight": 1 },
+        { "name": "watchdog-policy-mutants-joins", "weight": 1 },
+        { "name": "watchdog-host-hold-cases", "weight": 1 },
+        { "name": "watchdog-host-hold-mutants", "weight": 1 },
+        { "name": "watchdog-historical", "weight": 1 },
+        { "name": "watchdog-ordinary", "weight": 1 },
+        { "name": "watchdog-successor", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["watchdog-foundation", "watchdog-capacity", "watchdog-policy-ac", "watchdog-policy-protected", "watchdog-policy-consumed", "watchdog-policy-unlinked", "watchdog-policy-authentication", "watchdog-policy-scalars", "watchdog-policy-joins", "watchdog-policy-legacy", "watchdog-policy-pos", "watchdog-policy-mutants-admission", "watchdog-policy-mutants-lineage", "watchdog-policy-mutants-envelope", "watchdog-policy-mutants-history", "watchdog-policy-mutants-binding", "watchdog-policy-mutants-joins", "watchdog-host-hold-cases", "watchdog-host-hold-mutants", "watchdog-historical", "watchdog-ordinary", "watchdog-successor"]
+      }
+    },
+    {
       "identity": "test:cleanup-orphan-worktree-dirs.test.ps1",
       "selector": "-Part",
       "parts": [

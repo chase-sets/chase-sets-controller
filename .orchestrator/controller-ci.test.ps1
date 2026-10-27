@@ -1,5 +1,21 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci.ps1') -Mode Library
+$controllerRoot=Split-Path -Parent $PSScriptRoot
+foreach($identity in @('test:rebase-integration.test.ps1','test:lane-stall-watchdog.test.ps1')){
+  Assert-Ci ($null -eq (Get-CiRestriction $identity $controllerRoot)) "historical carrier remains restricted: $identity"
+}
+foreach($identity in @('test:dispatch-ownership.test.ps1','test:landed-integration-r3.test.ps1')){
+  $restriction=Get-CiRestriction $identity $controllerRoot
+  Assert-Ci ($restriction.classification -ceq 'LOCAL_ONLY' -and $restriction.notHermetic -and -not $restriction.reason.Contains('b3b4ac2')) "remaining carrier restriction drift: $identity"
+  $reference=[regex]::Match($restriction.reason,'interrupted-integration-test-support.ps1:([0-9,]+)')
+  Assert-Ci $reference.Success 'remaining carrier restriction needs candidate file:line references'
+  $lines=[IO.File]::ReadAllLines((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
+  foreach($number in $reference.Groups[1].Value.Split(',')){
+    $line=$lines[[int]$number-1]
+    Assert-Ci ($line -cmatch 'Get-(LiveDispatchOwnership|FleetLoadObservation|FleetLoadWindow)') "stale carrier restriction reference: $identity line $number"
+  }
+}
+Write-Output 'PASS historical carrier restrictions lifted; remaining ownership and retained-fleet restrictions cite candidate reads'
 function Refuses([scriptblock]$Body) {
   $refused=$false
   try { & $Body | Out-Null } catch { $refused=$true }

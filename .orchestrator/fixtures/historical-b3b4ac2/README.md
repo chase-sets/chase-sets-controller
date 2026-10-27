@@ -2,6 +2,14 @@
 
 Pinned to controller commit `b3b4ac2d0d6e3d1aa6666e5b6179178ebcfaa780`. Only this read closure is retained; no live checkout or Git object database is consulted.
 
+The 18 files below are the existing historical dispatch fixture's launcher-read
+closure: the dispatcher, its dot-sourced/imported helpers and their dependencies,
+the heavy-wrapper admission sources it reads, and its planning/review contracts.
+They are not a mirror of the historical `.orchestrator` tree. The tracked
+`* -text` policy preserves the original LF blob bytes, so `git hash-object
+--no-filters <path>` equals each pin below. The fixture loader checks those raw
+bytes before launching; it never substitutes candidate files for a missing file.
+
 - .orchestrator/board-set.ps1 | blob `81cbced1c1f824367a006f52c79906ec4834b4d8`
 - .orchestrator/contracts/planning-repair-v1.md | blob `e026ccf1f5711320d634d84dabfa669f80b0bf3a`
 - .orchestrator/contracts/review-v2.md | blob `66dda6d29e95ffd48c0c2fd12fdd1d1ed0f44952`
