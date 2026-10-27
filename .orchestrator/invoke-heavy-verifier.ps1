@@ -99,6 +99,9 @@ param(
   # fixed -Phase fixture and one validated evidence directory (#9627).
   [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][switch]$ControllerFixtureEquivalence,
   [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][string]$ControllerFixtureEvidenceDirectory,
+  # The complete default host-heavy-verifier file is a controller-slot member.
+  # Its target and grammar are closed below; no command or payload is accepted.
+  [Parameter(Mandatory, ParameterSetName = "ControllerHostHeavyVerifier")][switch]$ControllerHostHeavyVerifier,
   # The lane-injected Node preload pauses a classified heavy process before its
   # command body and starts this same lock owner in attached mode.
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)]
@@ -117,14 +120,21 @@ $isAttachedAdmission = $PSCmdlet.ParameterSetName -ceq "Attach"
 $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
 $isControllerFixture = $PSCmdlet.ParameterSetName -ceq "ControllerFixtureEquivalence"
+$isControllerHostHeavyVerifier = $PSCmdlet.ParameterSetName -ceq "ControllerHostHeavyVerifier"
 $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isWorkspaceDbTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceDbTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
-$isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture)
-$isControllerSlot = $isControllerBattery -or $isControllerPrecursor -or $isControllerFixture
+$isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier)
+$isControllerSlot = $isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier
 $isQueueSlot = $isProductSlot -or $isControllerSlot
 $hasControllerBatteryClaimant = $isControllerBattery -and $ControllerBatteryClaimantPid -gt 0
+$hostHeavyPayloadKeys = @('QuarantineQueue','TestQueueFixture','TestCancelAfterAcquisition','TestReplaceOwnerBeforeCleanup',
+  'TestReplaceOwnerBeforeReclaim','TestDelayIdentityRevalidationMilliseconds','TestDelayChildPublicationMilliseconds',
+  'TestDelayDiagnosticLaunchMilliseconds')
+if ($isControllerHostHeavyVerifier -and @($hostHeavyPayloadKeys | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0) {
+  throw 'heavy-verifier: ControllerHostHeavyVerifier accepts no payload or test switches'
+}
 
 function Test-UtcIdentity([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
@@ -233,7 +243,7 @@ trap {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
-  if ($isHostVerifier) {
+  if ($isHostVerifier -or $isControllerHostHeavyVerifier) {
     [Console]::Error.WriteLine($_.Exception.Message)
     exit 73
   }
@@ -1028,6 +1038,16 @@ function Assert-HeavyCallerEligibility($Expected = $null) {
       ($binding.Record.laneRole -cne 'implementation' -or $binding.Row -eq 13)) {
     throw "heavy-verifier: caller eligibility: role=$($binding.Record.laneRole) routing-row=$($binding.Row) cannot reserve heavy verification"
   }
+  if ($isControllerHostHeavyVerifier -and $binding.Record) {
+    try {
+      $callerWorktree = [IO.Path]::GetFullPath([string]$binding.Record.worktree).TrimEnd('\','/')
+      if (-not [string]::Equals($callerWorktree, $worktreeFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'target worktree does not match caller identity'
+      }
+    } catch {
+      throw "heavy-verifier: caller eligibility: $($_.Exception.Message)"
+    }
+  }
   if ($Expected -and ($Expected.Path -cne $binding.Path -or -not [string]::Equals($Expected.Raw, $binding.Raw, [StringComparison]::Ordinal) -or
       -not [string]::Equals($Expected.RoutingRaw, $binding.RoutingRaw, [StringComparison]::Ordinal))) { throw 'heavy-verifier: caller eligibility: launch or routing identity changed' }
   Assert-HeavyAdmissionTime
@@ -1387,6 +1407,65 @@ function Assert-ControllerFixtureGitState {
   }
   $script:fixtureCheckPath = [IO.Path]::GetFullPath((Join-Path $worktreeFull $fixtureCheckScript))
 }
+
+# The complete default host-heavy verifier is a controller-slot route, but its
+# authority is the tracked test file and native helper set, not an arbitrary
+# command or caller-supplied path.
+$hostHeavyVerifierScript = ".orchestrator/host-heavy-verifier.test.ps1"
+$hostHeavyVerifierFiles = @(
+  $hostHeavyVerifierScript,
+  ".orchestrator/invoke-heavy-verifier.ps1",
+  ".orchestrator/native-db-admission.py",
+  ".orchestrator/heavy-admission-preload.cjs",
+  ".orchestrator/heavy-slot.cjs",
+  ".orchestrator/heavy-nested-owner.cs",
+  ".orchestrator/heavy-nested-client.cjs",
+  ".orchestrator/heavy-admission-holder-launcher.cjs",
+  ".orchestrator/dispatch-ownership.ps1"
+)
+$hostHeavyVerifierBlobs = [ordered]@{}
+$hostHeavyVerifierPath = $null
+$hostHeavyControllerBlobs = [ordered]@{}
+$hostHeavyControllerRoot = $null
+$hostHeavyControllerHead = $null
+function Assert-ControllerHostHeavyControllerState {
+  $root = if ($env:CHASE_SETS_CONTROLLER_ROOT) { [IO.Path]::GetFullPath($env:CHASE_SETS_CONTROLLER_ROOT) } else { [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)) }
+  $status = @(& git -C $root status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
+  if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'heavy-verifier: controller source root must be a clean exact-head worktree' }
+  $head = (@(& git -C $root rev-parse HEAD 2>$null) -join '').Trim()
+  if ($head -notmatch '^[a-f0-9]{40}$') { throw 'heavy-verifier: controller source root head is unavailable' }
+  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1')
+  $blobs = [ordered]@{}
+  foreach ($relative in $files) {
+    $tracked = @(& git -C $root ls-tree $head -- $relative 2>$null) -join ''
+    if ($tracked -notmatch "^100(?:644|755) blob ([a-f0-9]{40})`t$([regex]::Escape($relative))$") { throw "heavy-verifier: controller source is not one exact tracked regular script: $relative" }
+    $path = Join-Path $root $relative
+    if (-not (Test-PrecursorSafeFile $path) -or -not (Test-ControllerFixtureSourceBytes $path $Matches[1])) { throw "heavy-verifier: controller source bytes do not match its exact HEAD blob: $relative" }
+    $blobs[$relative] = $Matches[1]
+  }
+  $script:hostHeavyControllerRoot = $root
+  $script:hostHeavyControllerHead = $head
+  $script:hostHeavyControllerBlobs = $blobs
+}
+function Assert-ControllerHostHeavyGitState {
+  $status = @(& git -C $worktreeFull status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
+  if ($LASTEXITCODE -ne 0) { throw "heavy-verifier: unable to verify the host-heavy verifier worktree is clean" }
+  if ($status.Count -ne 0) { throw "heavy-verifier: host-heavy verifier requires a clean exact-head worktree" }
+  if (-not (Test-PrecursorSafeDirectory $worktreeFull) -or
+      -not (Test-PrecursorSafeDirectory (Join-Path $worktreeFull ".orchestrator"))) {
+    throw "heavy-verifier: host-heavy verifier worktree or runtime root is unsafe"
+  }
+  foreach ($relative in $hostHeavyVerifierFiles) {
+    $tracked = Invoke-GitIdentityProbe @("ls-tree", $acquiredGitIdentity.Head, "--", $relative) "host-heavy verifier source"
+    $blob = if ($tracked -cmatch "^100(?:644|755) blob ([a-f0-9]{40})`t$([regex]::Escape($relative))$") { $Matches[1] } else { $null }
+    if (-not $blob) { throw "heavy-verifier: host-heavy verifier source is not one exact tracked regular script: $relative" }
+    $sourcePath = Join-Path $worktreeFull $relative
+    if (-not (Test-PrecursorSafeFile $sourcePath)) { throw "heavy-verifier: host-heavy verifier source is absent or unsafe: $relative" }
+    if (-not (Test-ControllerFixtureSourceBytes $sourcePath $blob)) { throw "heavy-verifier: host-heavy verifier source bytes do not match the exact HEAD blob: $relative" }
+    $script:hostHeavyVerifierBlobs[$relative] = $blob
+  }
+  $script:hostHeavyVerifierPath = [IO.Path]::GetFullPath((Join-Path $worktreeFull $hostHeavyVerifierScript))
+}
 function Resolve-ControllerFixtureEvidence([string]$Value) {
   $parent = Split-Path -Parent $container
   if ([string]::IsNullOrEmpty($parent)) { throw "heavy-verifier: controller fixture evidence root is unavailable" }
@@ -1447,11 +1526,15 @@ if ($isControllerFixture) {
   Assert-ControllerFixtureEvidenceFresh
   $fixtureWrapperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($PSCommandPath))).ToLowerInvariant()
 }
+if ($isControllerHostHeavyVerifier) {
+  Assert-ControllerHostHeavyControllerState
+  Assert-ControllerHostHeavyGitState
+}
 
 # Controller release batteries and precursors own a separate slot (Todd ruling
 # 2026-09-10): they never wait on, and never block, the platform heavy verifier.
 # The fixture-equivalence route shares that controller slot.
-$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "controller-verify-lock.d" } else { "verify-lock.d" }
+$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "controller-verify-lock.d" } else { "verify-lock.d" }
 $lockPath = Join-Path $container (".orchestrator\" + $lockDirectoryName)
 $ownerPath = Join-Path $lockPath "owner.json"
 $queueFileStem = if ($isControllerSlot) { 'controller-verify-queue' } else { 'verify-queue' }
@@ -1484,7 +1567,7 @@ $command = if ($isAttachedAdmission) {
   $guarded.Path
 } elseif ($isNativeDb) {
   'C:\Windows\System32\wsl.exe'
-} elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) {
+} elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) {
   (Get-Process -Id $PID -ErrorAction Stop).Path
 } elseif ($isDiagnostic) {
   $hostNode
@@ -1536,6 +1619,8 @@ $arguments = if ($isAttachedAdmission) {
     }
   }
   $fixed
+} elseif ($isControllerHostHeavyVerifier) {
+  @("-NoProfile", "-NonInteractive", "-File", $hostHeavyVerifierPath)
 } elseif ($isControllerFixture) {
   # Never -BaselineHead or -RunDirectory: the check keeps its immutable oracle
   # and runs every fixture step in one call.
@@ -1557,7 +1642,7 @@ $arguments = if ($isAttachedAdmission) {
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
   else { @($pnpmScript, "run", $Gate) }
 }
-$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
+$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
 $identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"
 $commandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityInput))).ToLowerInvariant()
 $lockId = [guid]::NewGuid().ToString("N")
@@ -2521,6 +2606,7 @@ function Assert-LiveGitIdentityUnchanged([switch]$AfterExecution) {
     Assert-ControllerPrecursorArtifactState
   }
   if ($isControllerFixture) { Assert-ControllerFixtureGitState }
+  if ($isControllerHostHeavyVerifier) { Assert-ControllerHostHeavyGitState }
 }
 function Test-ThisOwner {
   $snapshot = Get-OwnerSnapshot
@@ -2659,7 +2745,7 @@ function Invoke-NativeLaunch {
 # per-child PowerShell host probe. Controller batteries and precursors keep
 # their own continuation on the controller slot and never publish a product
 # descriptor. Non-Windows hosts are unchanged.
-$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isNativeDb -and -not $isDiagnostic
+$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isControllerHostHeavyVerifier -and -not $isNativeDb -and -not $isDiagnostic
 $nestedOwner = $null
 $nestedBinding = $null
 $script:nestedTransport = $null
@@ -2814,7 +2900,7 @@ function Stop-NestedOwner {
 # acquisition or stale-owner reclamation never delays them (Todd ruling
 # 2026-09-10, review r3 F3).
 $coordinationKey = $container.ToUpperInvariant()
-if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { $coordinationKey += "`n" + $lockDirectoryName }
+if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { $coordinationKey += "`n" + $lockDirectoryName }
 $mutexHash = [Convert]::ToHexString(
   [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($coordinationKey))
 ).ToLowerInvariant()
@@ -3204,9 +3290,10 @@ try {
         $workspaceDbOutcome = 'test-failed'
       }
     }
-    if ($isHostVerifier -or $isControllerFixture) {
+    if ($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
+      if ($isControllerHostHeavyVerifier) { Assert-ControllerHostHeavyControllerState; Assert-ControllerHostHeavyGitState }
       if (-not (Test-ThisOwner)) { throw "heavy-verifier: receipt refused because exact owner changed" }
     }
     if ($isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
@@ -3271,6 +3358,31 @@ try {
       finally { $stream.Dispose() }
       [Console]::Error.WriteLine("heavy-verifier: receipt=$receiptPath exit=$exitCode")
     }
+    if ($isControllerHostHeavyVerifier) {
+      $receiptRoot = Join-Path $worktreeFull ".orchestrator/artifacts"
+      if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) }
+      if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
+        throw "heavy-verifier: host-heavy receipt directory is unsafe"
+      }
+      $receiptPath = Join-Path $receiptRoot "controller-host-heavy-verifier-$lockId.json"
+      $receipt = [ordered]@{
+        schema = "controller-host-heavy-verifier/v1"; authority = "controller-host-heavy-verifier"
+        worktree = $worktreeFull; cwd = $worktreeFull; head = $acquiredGitIdentity.Head
+        lane = $Lane; identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
+        slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
+        controller = [ordered]@{ worktree = $hostHeavyControllerRoot; head = $hostHeavyControllerHead; sources = $hostHeavyControllerBlobs }
+        target = [ordered]@{ worktree = $worktreeFull; head = $acquiredGitIdentity.Head; sources = $hostHeavyVerifierBlobs }
+        sources = $hostHeavyVerifierBlobs
+        command = [ordered]@{ executable = $command; arguments = @($arguments) }
+        wrapper = [ordered]@{ pid = $PID; processStartUtc = $started }
+        root = [ordered]@{ pid = $child.Id; processStartUtc = $childStarted }
+        exit = $exitCode; nativeExit = $nativeExitCode; released = $false
+      }
+      $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+      try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($receipt | ConvertTo-Json -Depth 8)); $stream.Write($bytes); $stream.Flush($true) }
+      finally { $stream.Dispose() }
+      [Console]::Error.WriteLine("heavy-verifier: host-heavy receipt=$receiptPath exit=$exitCode")
+    }
     if ($isControllerPrecursor -and $exitCode -eq 0) {
       Assert-ControllerPrecursorArtifactState -AfterSuccess
     }
@@ -3301,7 +3413,7 @@ try {
     $child.StandardInput.Close()
     $child.Kill(); [void]$child.WaitForExit(30000)
   }
-  if (($isHostVerifier -or $isControllerFixture) -and $null -ne $child -and
+  if (($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) -and $null -ne $child -and
       ($owner.state -cne 'started' -or
        (Get-ProcessIdentityState $owner.childPid $owner.childProcessStartUtc) -cne 'dead' -or
        (Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false)) {
@@ -3316,6 +3428,12 @@ if ($releaseMismatch) {
   [Console]::Error.WriteLine("heavy-verifier: refusing cleanup because lock ownership no longer matches this caller (admission-root=$admissionCleanupDiagnostic)")
   if ($isNativeDb) { Write-NativeReply 'unknown' 'Exact owner, Windows descendants, Linux init and root absence were not all established; cleanup refused.' }
   exit 1
+}
+if ($isControllerHostHeavyVerifier -and $receiptPath -and (Test-SafeFile $receiptPath)) {
+  $releasedReceipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -AsHashtable -DateKind String
+  $releasedReceipt['released'] = $true
+  $releasedReceipt['releasedUtc'] = [DateTime]::UtcNow.ToString('o')
+  [IO.File]::WriteAllText($receiptPath, ($releasedReceipt | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 }
 if ($isControllerFixture -and $null -ne $child) {
   # Written only after the exact owner and its whole process tree are released.
