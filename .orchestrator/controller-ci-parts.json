@@ -518,6 +518,10 @@
           "weight": 1
         },
         {
+          "name": "host-heavy-verifier",
+          "weight": 1
+        },
+        {
           "name": "precursor",
           "weight": 1
         },
@@ -532,6 +536,7 @@
           "teardown",
           "role-admission",
           "fixture-equivalence",
+          "host-heavy-verifier",
           "precursor",
           "legacy"
         ]
@@ -755,7 +760,8 @@
             "  [string]$GuardRevision = \"\""
           ],
           "replacement": [
-            "  [string]$GuardRevision = \"\", [string]$Part = ''"
+            "  [string]$GuardRevision = \"\", [string]$Part = '',",
+            "  [switch]$HostHeavyVerifierOnly"
           ]
         },
         {
@@ -766,6 +772,255 @@
           ],
           "replacement": [
             "$ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); foreach($selector in @(Get-HeavySuitePartSelector $Part $PSBoundParameters)){Set-Variable -Name $selector -Value $true}"
+          ]
+        },
+        {
+          "offset": 349,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "if ($HostHeavyVerifierOnly) { $DiscriminatorOnly = $true }"
+          ]
+        },
+        {
+          "offset": 409,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  transport = $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT"
+          ]
+        },
+        {
+          "offset": 1342,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  $hostHeavyDependencies = @('host-heavy-verifier.test.ps1','invoke-heavy-verifier.ps1','native-db-admission.py','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')",
+            "  foreach ($dependency in $hostHeavyDependencies) {",
+            "    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $nativeTree \".orchestrator/$dependency\") -Force",
+            "  }",
+            "  [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/host-heavy-verifier.test.ps1'), @\"",
+            "`$ownerPath = '$((Join-Path $orchestrator 'controller-verify-lock.d/owner.json').Replace(\"'\", \"''\"))'",
+            "`$owner = Get-Content -LiteralPath `$ownerPath -Raw | ConvertFrom-Json -DateKind String",
+            "[IO.File]::WriteAllText('$($body.Replace(\"'\", \"''\"))', (@{argv=@([Environment]::GetCommandLineArgs()|Select-Object -Skip 1);script=`$PSCommandPath;cwd=(Get-Location).Path;owner=`$owner} | ConvertTo-Json -Compress -Depth 8))",
+            "\"@)"
+          ]
+        },
+        {
+          "offset": 1345,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  & git -C $nativeTree add .orchestrator/host-heavy-verifier.test.ps1 .orchestrator/invoke-heavy-verifier.ps1 .orchestrator/native-db-admission.py .orchestrator/heavy-admission-preload.cjs .orchestrator/heavy-slot.cjs .orchestrator/heavy-nested-owner.cs .orchestrator/heavy-nested-client.cjs .orchestrator/heavy-admission-holder-launcher.cjs .orchestrator/dispatch-ownership.ps1"
+          ]
+        },
+        {
+          "offset": 1362,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  $modes.ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}"
+          ]
+        },
+        {
+          "offset": 1418,
+          "remove": 1,
+          "original": [
+            "      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence')) {"
+          ],
+          "replacement": [
+            "      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence','ControllerHostHeavyVerifier')) {"
+          ]
+        },
+        {
+          "offset": 1455,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  $hostPositive = $base + $modes.ControllerHostHeavyVerifier",
+            "  $hostResult = Invoke-RoleWrapper $hostPositive",
+            "  Assert-True ($hostResult.Code -eq 0 -and (Test-Path $body)) \"implementation-row7 ControllerHostHeavyVerifier executes under ownership (exit=$($hostResult.Code) $($hostResult.Output))\"",
+            "  $hostRan = [IO.File]::ReadAllText($body) | ConvertFrom-Json -DateKind String",
+            "  Assert-True (($hostRan.argv -join '|') -ceq '-NoProfile|-NonInteractive|-File|' + [IO.Path]::GetFullPath((Join-Path $nativeTree '.orchestrator/host-heavy-verifier.test.ps1')) -and",
+            "    $hostRan.owner.gate -ceq 'script-battery' -and -not (Test-Path (Join-Path $orchestrator 'controller-verify-lock.d'))) 'implementation-row7 ControllerHostHeavyVerifier fixed command and controller release'",
+            "  Remove-Item -LiteralPath $body",
+            "  Remove-Item -LiteralPath $reservationMarker",
+            "  Write-Output 'PASS implementation-row7 ControllerHostHeavyVerifier exit=0 marker=1 fixed-command=1'"
+          ]
+        },
+        {
+          "offset": 1528,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "function Test-ControllerHostHeavyVerifier {",
+            "  $tree = Join-Path $container 'host-heavy-route'",
+            "  $controllerRoot = Split-Path -Parent $PSScriptRoot",
+            "  $cloneOutput = @(& git clone --quiet $controllerRoot $tree 2>&1)",
+            "  Assert-True ($LASTEXITCODE -eq 0) \"host-heavy route clone: $cloneOutput\"",
+            "  $body = Join-Path $root 'host-heavy-route-body.json'",
+            "  $hostSource = @'",
+            "$ownerPath = Join-Path $env:HV_HOST_CONTAINER '.orchestrator/controller-verify-lock.d/owner.json'",
+            "$owner = Get-Content -LiteralPath $ownerPath -Raw | ConvertFrom-Json -DateKind String",
+            "$self = Get-Process -Id $PID",
+            "[IO.File]::WriteAllText($env:HV_HOST_BODY, (@{",
+            "  argv = @([Environment]::GetCommandLineArgs() | Select-Object -Skip 1)",
+            "  script = $PSCommandPath",
+            "  cwd = (Get-Location).Path",
+            "  slot = $env:CHASE_SETS_HEAVY_SLOT_ID",
+            "  transport = $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT",
+            "  owner = $owner",
+            "  pid = $PID",
+            "  processStartUtc = $self.StartTime.ToUniversalTime().ToString('o')",
+            "} | ConvertTo-Json -Compress -Depth 12))",
+            "exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))",
+            "'@",
+            "  $relative = '.orchestrator/host-heavy-verifier.test.ps1'",
+            "  $sourcePath = Join-Path $tree $relative",
+            "  [IO.File]::WriteAllText($sourcePath, $hostSource)",
+            "  & git -C $tree add --force -- $relative",
+            "  Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route source staged'",
+            "  & git -C $tree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'host-heavy verifier stand-in'",
+            "  Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route source committed'",
+            "  $branch = (& git -C $tree branch --show-current).Trim()",
+            "  $head = (& git -C $tree rev-parse HEAD).Trim()",
+            "  & git -C $tree checkout --quiet --detach $head",
+            "  Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route detached target'",
+            "  $targetPath = [IO.Path]::GetFullPath($sourcePath)",
+            "  $guardRoot = Join-Path $root 'host-heavy-guard'",
+            "  New-Item -ItemType Directory -Path $guardRoot | Out-Null",
+            "  Copy-Item -LiteralPath $guard -Destination (Join-Path $guardRoot 'invoke-heavy-verifier.ps1')",
+            "  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $guardRoot",
+            "  $guardCopy = Join-Path $guardRoot 'invoke-heavy-verifier.ps1'",
+            "  $runner = Join-Path $guardRoot 'run.ps1'",
+            "  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')",
+            "  $containerRoot = $container",
+            "  $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'",
+            "  function Invoke-HostHeavyRoute([hashtable]$Extra = @{}, [string]$SourceOverride = $guardCopy) {",
+            "    $input = Join-Path $guardRoot ('input-' + [guid]::NewGuid().ToString('N') + '.json')",
+            "    $parameters = [ordered]@{",
+            "      ControllerHostHeavyVerifier = $true; Worktree = $tree; Lane = 'host-heavy-route'",
+            "      ImmutableHead = $head; ContainerRoot = $containerRoot",
+            "    }",
+            "    foreach ($entry in $Extra.GetEnumerator()) { $parameters[$entry.Key] = $entry.Value }",
+            "    [IO.File]::WriteAllText($input, ($parameters | ConvertTo-Json -Depth 8))",
+            "    $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))",
+            "    $start.UseShellExecute = $false; $start.CreateNoWindow = $true",
+            "    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true",
+            "    $start.Environment['HV_HOST_BODY'] = $body",
+            "    $start.Environment['HV_HOST_CONTAINER'] = $containerRoot",
+            "    if ($env:HV_FORCE_TRANSPORT) { $start.Environment['CHASE_SETS_HEAVY_SLOT_TRANSPORT'] = $env:HV_FORCE_TRANSPORT }",
+            "    foreach ($argument in @('-NoProfile','-File',$runner,$SourceOverride,$input)) { [void]$start.ArgumentList.Add($argument) }",
+            "    $process = [Diagnostics.Process]::Start($start)",
+            "    $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()",
+            "    [void]$process.WaitForExit()",
+            "    return [pscustomobject]@{ exitCode=$process.ExitCode; output=($stdout.GetAwaiter().GetResult()+\"`n\"+$stderr.GetAwaiter().GetResult()).Trim() }",
+            "  }",
+            "  function Assert-HostHeavyRefused($Result, [string]$Pattern, [string]$Name) {",
+            "    Assert-True ($Result.exitCode -eq 73 -and $Result.output -match $Pattern -and",
+            "      -not (Test-Path -LiteralPath $body) -and -not (Test-Path -LiteralPath $controllerLock))",
+            "      \"host-heavy route $Name refuses before body/reservation (exit=$($Result.exitCode) output=$($Result.output))\"",
+            "    Write-Output \"PASS host-heavy-route $Name exit=73 body=0 owner=0\"",
+            "  }",
+            "  try {",
+            "    $result = Invoke-HostHeavyRoute",
+            "    $ran = Get-Content -LiteralPath $body -Raw | ConvertFrom-Json -DateKind String",
+            "    Assert-True ($result.exitCode -eq 0 -and $ran.script -ieq $targetPath -and",
+            "      [IO.Path]::GetFullPath($ran.cwd) -ieq [IO.Path]::GetFullPath($tree) -and",
+            "      ($ran.argv -join '|') -ceq ('-NoProfile|-NonInteractive|-File|' + $targetPath) -and",
+            "      $ran.owner.gate -ceq 'script-battery' -and $ran.owner.schemaVersion -eq 4 -and",
+            "      $ran.owner.lockId -ceq $ran.slot -and $ran.owner.worktree -ieq $tree -and",
+            "      $ran.owner.head -ceq $head -and $ran.owner.childPid -eq $ran.pid -and",
+            "      $null -eq $ran.transport -and",
+            "      -not (Test-Path -LiteralPath $controllerLock))",
+            "      \"host-heavy route executes the complete fixed file under the controller owner (exit=$($result.exitCode) output=$($result.output))\"",
+            "    $receipt = @(Get-ChildItem -LiteralPath (Join-Path $tree '.orchestrator/artifacts') -Filter 'controller-host-heavy-verifier-*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json -DateKind String })",
+            "    $expectedSources = @('.orchestrator/host-heavy-verifier.test.ps1','.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/native-db-admission.py','.orchestrator/heavy-admission-preload.cjs','.orchestrator/heavy-slot.cjs','.orchestrator/heavy-nested-owner.cs','.orchestrator/heavy-nested-client.cjs','.orchestrator/heavy-admission-holder-launcher.cjs','.orchestrator/dispatch-ownership.ps1')",
+            "    $sourcesBound = $receipt.Count -eq 1 -and @($expectedSources | Where-Object { -not $receipt[0].sources.$_ -or $receipt[0].sources.$_ -cne ((& git -C $tree rev-parse \"HEAD:$_\").Trim()) }).Count -eq 0",
+            "    Assert-True ($receipt.Count -eq 1 -and $sourcesBound -and $receipt[0].slot.name -ceq 'controller-verify-lock.d' -and",
+            "      $receipt[0].command.arguments[0] -ceq '-NoProfile' -and $receipt[0].command.arguments[1] -ceq '-NonInteractive' -and",
+            "      $receipt[0].command.arguments[2] -ceq '-File' -and $receipt[0].command.arguments[3] -ieq $targetPath -and",
+            "      $receipt[0].sources.$relative -ceq ((& git -C $tree rev-parse \"HEAD:$relative\").Trim()))",
+            "      'host-heavy route receipt binds controller slot, fixed command, target blob and helper set'",
+            "    Remove-Item -LiteralPath $body -Force",
+            "    Write-Output 'PASS host-heavy-route fixed-file command cwd target-head controller-slot receipt released=1'",
+            "",
+            "    $guardBytes = [IO.File]::ReadAllText($guardCopy)",
+            "    try {",
+            "      $headMutant = $guardBytes.Replace('throw \"heavy-verifier: explicit immutable HEAD requires detached Git state at the exact supplied SHA; command body was not executed\"',",
+            "        'Write-Verbose \"stale-head mutant\"')",
+            "      Assert-True ($headMutant -cne $guardBytes) 'stale-head mutant applied at its identity guard'",
+            "      [IO.File]::WriteAllText($guardCopy, $headMutant)",
+            "      $staleBypass = Invoke-HostHeavyRoute @{ ImmutableHead = ('0' * 40) }",
+            "      $mutantFailure = $null",
+            "      try { Assert-True (-not (Test-Path -LiteralPath $body)) 'stale-head mutant must fail at the no-body assertion' } catch { $mutantFailure = $_.Exception.Message }",
+            "      Assert-True ($mutantFailure -clike '*ASSERTION FAILED: stale-head mutant must fail at the no-body assertion*') $mutantFailure",
+            "      Write-Output \"MUTANT_RED host-heavy-route stale-head $mutantFailure\"",
+            "    } finally { [IO.File]::WriteAllText($guardCopy, $guardBytes) }",
+            "",
+            "    $platformLock = Join-Path $orchestrator 'verify-lock.d'",
+            "    New-Item -ItemType Directory -Path $platformLock | Out-Null",
+            "    try {",
+            "      $slotMutant = $guardBytes.Replace('$lockDirectoryName = if ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { \"controller-verify-lock.d\" } else { \"verify-lock.d\" }',",
+            "        '$lockDirectoryName = if ($isControllerHostHeavyVerifier) { \"verify-lock.d\" } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture) { \"controller-verify-lock.d\" } else { \"verify-lock.d\" }')",
+            "      Assert-True ($slotMutant -cne $guardBytes) 'slot-bypass mutant applied at the controller slot guard'",
+            "      [IO.File]::WriteAllText($guardCopy, $slotMutant)",
+            "      $slotBypass = Invoke-HostHeavyRoute",
+            "      $mutantFailure = $null",
+            "      try { Assert-True (-not (Test-Path -LiteralPath $body)) 'slot-bypass mutant must fail at the controller-slot body assertion' } catch { $mutantFailure = $_.Exception.Message }",
+            "      Assert-True ($mutantFailure -clike '*ASSERTION FAILED: slot-bypass mutant must fail at the controller-slot body assertion*') $mutantFailure",
+            "      Write-Output \"MUTANT_RED host-heavy-route slot-bypass $mutantFailure\"",
+            "    } finally {",
+            "      [IO.File]::WriteAllText($guardCopy, $guardBytes)",
+            "      Remove-Item -LiteralPath $platformLock -Recurse -Force",
+            "    }",
+            "",
+            "    $savedTransport = $env:HV_FORCE_TRANSPORT",
+            "    try {",
+            "      $env:HV_FORCE_TRANSPORT = 'forged-controller-transport'",
+            "      $transportMutant = $guardBytes.Replace('[void]$start.Environment.Remove(\"CHASE_SETS_HEAVY_SLOT_TRANSPORT\")', '$start.Environment[\"CHASE_SETS_HEAVY_SLOT_TRANSPORT\"] = \"forged-controller-transport\"')",
+            "      Assert-True ($transportMutant -cne $guardBytes) 'nested-transport mutant applied at the transport boundary'",
+            "      [IO.File]::WriteAllText($guardCopy, $transportMutant)",
+            "      $transportBypass = Invoke-HostHeavyRoute",
+            "      $mutantFailure = $null",
+            "      $transportRan = if (Test-Path -LiteralPath $body) { Get-Content -LiteralPath $body -Raw | ConvertFrom-Json -DateKind String } else { $null }",
+            "      try { Assert-True ($transportRan -and $transportRan.transport -eq $null) 'nested-transport mutant must fail at the forged transport assertion' } catch { $mutantFailure = $_.Exception.Message }",
+            "      $transportObservation = if ($transportRan) { $transportRan.transport } else { '<no-body>' }",
+            "      Assert-True ($mutantFailure -clike '*ASSERTION FAILED: nested-transport mutant must fail at the forged transport assertion*') (\"$mutantFailure observation=$transportObservation exit=$($transportBypass.exitCode) output=$($transportBypass.output)\")",
+            "      Write-Output \"MUTANT_RED host-heavy-route nested-transport $mutantFailure\"",
+            "      if (Test-Path -LiteralPath $body) { Remove-Item -LiteralPath $body -Force }",
+            "    } finally {",
+            "      if ($null -eq $savedTransport) { Remove-Item Env:HV_FORCE_TRANSPORT -ErrorAction SilentlyContinue } else { $env:HV_FORCE_TRANSPORT = $savedTransport }",
+            "      [IO.File]::WriteAllText($guardCopy, $guardBytes)",
+            "    }",
+            "",
+            "    $result = Invoke-HostHeavyRoute @{ CommandPath = (Join-Path $PSHOME 'pwsh.exe'); CommandArgumentList = @('-NoProfile','-Command','exit 0') }",
+            "    Assert-True (-not (Test-Path -LiteralPath $body) -and $result.output -match 'parameter set|cannot be found|parameter cannot') \"host-heavy route rejects an arbitrary command seam (exit=$($result.exitCode) output=$($result.output))\"",
+            "    Write-Output 'MUTANT_RED host-heavy-route arbitrary-command parameter-set assertion'",
+            "    Assert-HostHeavyRefused (Invoke-HostHeavyRoute @{ ImmutableHead = ('0' * 40) }) 'exact supplied SHA|does not match' 'stale-head'",
+            "",
+            "    $dirty = Join-Path $tree 'dirty-host-heavy.txt'; [IO.File]::WriteAllText($dirty, 'dirty')",
+            "    try { Assert-HostHeavyRefused (Invoke-HostHeavyRoute) 'clean exact-head worktree|source bytes' 'dirty-target' }",
+            "    finally { Remove-Item -LiteralPath $dirty -Force }",
+            "    Assert-HostHeavyRefused (Invoke-HostHeavyRoute @{ TestQueueFixture = (Join-Path $tree $relative) }) 'accepts no payload or test switches' 'unknown-payload'",
+            "    Write-Output 'PASS host-heavy-route target clean/stale and payload refusals'",
+            "  } finally {",
+            "    if (Test-Path -LiteralPath $body) { Remove-Item -LiteralPath $body -Force }",
+            "    if (Test-Path -LiteralPath $tree) {",
+            "      & git -C $tree status --porcelain | Out-Null",
+            "      Remove-Item -LiteralPath $tree -Recurse -Force",
+            "    }",
+            "  }",
+            "}",
+            ""
+          ]
+        },
+        {
+          "offset": 1988,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  if ($HostHeavyVerifierOnly) { Test-ControllerHostHeavyVerifier; return }"
           ]
         }
       ]

@@ -5,7 +5,6 @@ param(
   [switch]$RulingFourOnly,
   [switch]$EligibilityOnly,
   [switch]$RoleAdmissionOnly,
-  [switch]$HostHeavyVerifierOnly,
   [ValidateSet('', 'role-spoof', 'missing-role', 'host-denied', 'bypass-check')][string]$EligibilityMutant = '',
   [switch]$PrecursorAdmissionDiscriminatorOnly,
   [switch]$PrecursorOnly,
@@ -15,7 +14,8 @@ param(
   [switch]$TeardownOnly,
   # #9627 named bypass mutants of the ControllerFixtureEquivalence route.
   [ValidateSet('', 'arbitrary-phase', 'forward-baseline', 'unchecked-evidence', 'untracked-check', 'unbound-source-bytes', 'unchecked-ancestry', 'platform-slot', 'early-release', 'bypass-eligibility')][string]$FixtureMutant = '',
-  [string]$GuardRevision = "", [string]$Part = ''
+  [string]$GuardRevision = "", [string]$Part = '',
+  [switch]$HostHeavyVerifierOnly
 )
 $ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); foreach($selector in @(Get-HeavySuitePartSelector $Part $PSBoundParameters)){Set-Variable -Name $selector -Value $true}
 $ErrorActionPreference = "Stop"
@@ -348,7 +348,8 @@ while (-not (Test-Path (Join-Path $Root "release-$Stage"))) { Start-Sleep -Milli
   Write-Output 'PASS native DB closed entry'
   return
 }
-if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $HostHeavyVerifierOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly -or $TeardownOnly)) {
+if ($HostHeavyVerifierOnly) { $DiscriminatorOnly = $true }
+if (-not ($DiscriminatorOnly -or $RulingFourOnly -or $RoleAdmissionOnly -or $PrecursorAdmissionDiscriminatorOnly -or $PrecursorOnly -or $LegacyOnly -or $FixtureEquivalenceOnly -or $TeardownOnly)) {
   & $PSCommandPath -NativeDbOnly
 }
 function Assert-PrecursorAdmissionSurface([string]$Source) {
@@ -1353,7 +1354,8 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
 "@)
   $env:HV_FIXTURE_BODY = $body
   $env:HV_FIXTURE_RUNTIME = $orchestrator
-  & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 .orchestrator/host-heavy-verifier.test.ps1 .orchestrator/invoke-heavy-verifier.ps1 .orchestrator/native-db-admission.py .orchestrator/heavy-admission-preload.cjs .orchestrator/heavy-slot.cjs .orchestrator/heavy-nested-owner.cs .orchestrator/heavy-nested-client.cjs .orchestrator/heavy-admission-holder-launcher.cjs .orchestrator/dispatch-ownership.ps1 package.json role-body.cjs pnpm-lock.yaml
+  & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 package.json role-body.cjs pnpm-lock.yaml
+  & git -C $nativeTree add .orchestrator/host-heavy-verifier.test.ps1 .orchestrator/invoke-heavy-verifier.ps1 .orchestrator/native-db-admission.py .orchestrator/heavy-admission-preload.cjs .orchestrator/heavy-slot.cjs .orchestrator/heavy-nested-owner.cs .orchestrator/heavy-nested-client.cjs .orchestrator/heavy-admission-holder-launcher.cjs .orchestrator/dispatch-ownership.ps1
   & git -C $nativeTree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert standalone battery'
   Assert-True ($LASTEXITCODE -eq 0) 'inert battery committed in disposable fixture'
   $nativeHead=(& git -C $nativeTree rev-parse HEAD).Trim()
@@ -1370,8 +1372,8 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
     ControllerPrecursor=@{ControllerPrecursor='fail-closed-guard-evidence';ControllerPrecursorArtifactPath='.orchestrator/artifacts/denied.json';ControllerPrecursorScenario='ReceiptClaims'}
     Attach=@{AdmissionKind='build';GuardedPid=$PID;GuardedProcessStartUtc=$record.childStartIdentity;AdmissionNonce=('a'*32);AdmissionCommand='build'}
     ControllerFixtureEquivalence=@{ControllerFixtureEquivalence=$true;ControllerFixtureEvidenceDirectory=(Join-Path $fixtureEvidenceRoot 'role-denied')}
-    ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}
   }
+  $modes.ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}
   # Derive mode completeness from the production parameter declaration.
   $tokens=$null; $errors=$null
   $modeAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
