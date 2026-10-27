@@ -12,12 +12,12 @@ function Test-SuitePart([string]$Part, [string]$Name) {
 
 function Get-HeavySuitePartMap {
   return [ordered]@{'native-db'='NativeDbOnly';'teardown'='TeardownOnly';'role-admission'='RoleAdmissionOnly'
-    'fixture-equivalence'='FixtureEquivalenceOnly';'precursor'='PrecursorOnly';'legacy'='LegacyOnly'}
+    'fixture-equivalence'='FixtureEquivalenceOnly';'host-heavy-verifier'='HostHeavyVerifierOnly';'precursor'='PrecursorOnly';'legacy'='LegacyOnly'}
 }
 
 function Get-HeavySuitePartSelector([string]$Part,$BoundParameters) {
   $map=Get-HeavySuitePartMap
-  Assert-SuiteSelection $Part @($map.Keys) $BoundParameters @('NativeDbOnly','DiscriminatorOnly','RulingFourOnly','EligibilityOnly','RoleAdmissionOnly','EligibilityMutant','PrecursorAdmissionDiscriminatorOnly','PrecursorOnly','LegacyOnly','FixtureEquivalenceOnly','TeardownOnly','FixtureMutant')
+  Assert-SuiteSelection $Part @($map.Keys) $BoundParameters @('NativeDbOnly','DiscriminatorOnly','RulingFourOnly','EligibilityOnly','RoleAdmissionOnly','HostHeavyVerifierOnly','EligibilityMutant','PrecursorAdmissionDiscriminatorOnly','PrecursorOnly','LegacyOnly','FixtureEquivalenceOnly','TeardownOnly','FixtureMutant')
   if($Part){return $map[$Part]}
 }
 
