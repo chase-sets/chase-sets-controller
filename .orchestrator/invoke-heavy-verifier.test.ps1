@@ -1578,7 +1578,6 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
   Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route source staged'
   & git -C $tree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'host-heavy verifier stand-in'
   Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route source committed'
-  $branch = (& git -C $tree branch --show-current).Trim()
   $head = (& git -C $tree rev-parse HEAD).Trim()
   & git -C $tree checkout --quiet --detach $head
   Assert-True ($LASTEXITCODE -eq 0) 'host-heavy route detached target'
