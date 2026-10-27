@@ -1425,6 +1425,28 @@ $hostHeavyVerifierFiles = @(
 )
 $hostHeavyVerifierBlobs = [ordered]@{}
 $hostHeavyVerifierPath = $null
+$hostHeavyControllerBlobs = [ordered]@{}
+$hostHeavyControllerRoot = $null
+$hostHeavyControllerHead = $null
+function Assert-ControllerHostHeavyControllerState {
+  $root = if ($env:CHASE_SETS_CONTROLLER_ROOT) { [IO.Path]::GetFullPath($env:CHASE_SETS_CONTROLLER_ROOT) } else { [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)) }
+  $status = @(& git -C $root status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
+  if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'heavy-verifier: controller source root must be a clean exact-head worktree' }
+  $head = (@(& git -C $root rev-parse HEAD 2>$null) -join '').Trim()
+  if ($head -notmatch '^[a-f0-9]{40}$') { throw 'heavy-verifier: controller source root head is unavailable' }
+  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1')
+  $blobs = [ordered]@{}
+  foreach ($relative in $files) {
+    $tracked = @(& git -C $root ls-tree $head -- $relative 2>$null) -join ''
+    if ($tracked -notmatch "^100(?:644|755) blob ([a-f0-9]{40})`t$([regex]::Escape($relative))$") { throw "heavy-verifier: controller source is not one exact tracked regular script: $relative" }
+    $path = Join-Path $root $relative
+    if (-not (Test-PrecursorSafeFile $path) -or -not (Test-ControllerFixtureSourceBytes $path $Matches[1])) { throw "heavy-verifier: controller source bytes do not match its exact HEAD blob: $relative" }
+    $blobs[$relative] = $Matches[1]
+  }
+  $script:hostHeavyControllerRoot = $root
+  $script:hostHeavyControllerHead = $head
+  $script:hostHeavyControllerBlobs = $blobs
+}
 function Assert-ControllerHostHeavyGitState {
   $status = @(& git -C $worktreeFull status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
   if ($LASTEXITCODE -ne 0) { throw "heavy-verifier: unable to verify the host-heavy verifier worktree is clean" }
@@ -1505,6 +1527,7 @@ if ($isControllerFixture) {
   $fixtureWrapperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($PSCommandPath))).ToLowerInvariant()
 }
 if ($isControllerHostHeavyVerifier) {
+  Assert-ControllerHostHeavyControllerState
   Assert-ControllerHostHeavyGitState
 }
 
@@ -3270,7 +3293,7 @@ try {
     if ($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
-      if ($isControllerHostHeavyVerifier) { Assert-ControllerHostHeavyGitState }
+      if ($isControllerHostHeavyVerifier) { Assert-ControllerHostHeavyControllerState; Assert-ControllerHostHeavyGitState }
       if (-not (Test-ThisOwner)) { throw "heavy-verifier: receipt refused because exact owner changed" }
     }
     if ($isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
@@ -3347,6 +3370,8 @@ try {
         worktree = $worktreeFull; cwd = $worktreeFull; head = $acquiredGitIdentity.Head
         lane = $Lane; identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
         slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
+        controller = [ordered]@{ worktree = $hostHeavyControllerRoot; head = $hostHeavyControllerHead; sources = $hostHeavyControllerBlobs }
+        target = [ordered]@{ worktree = $worktreeFull; head = $acquiredGitIdentity.Head; sources = $hostHeavyVerifierBlobs }
         sources = $hostHeavyVerifierBlobs
         command = [ordered]@{ executable = $command; arguments = @($arguments) }
         wrapper = [ordered]@{ pid = $PID; processStartUtc = $started }

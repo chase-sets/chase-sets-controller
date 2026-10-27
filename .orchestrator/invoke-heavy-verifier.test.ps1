@@ -1605,6 +1605,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
     $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $start.Environment['HV_HOST_BODY'] = $body
     $start.Environment['HV_HOST_CONTAINER'] = $containerRoot
+    $start.Environment['CHASE_SETS_CONTROLLER_ROOT'] = $controllerRoot
     if ($env:HV_FORCE_TRANSPORT) { $start.Environment['CHASE_SETS_HEAVY_SLOT_TRANSPORT'] = $env:HV_FORCE_TRANSPORT }
     foreach ($argument in @('-NoProfile','-File',$runner,$SourceOverride,$input)) { [void]$start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($start)
