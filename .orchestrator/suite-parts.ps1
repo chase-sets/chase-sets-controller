@@ -78,6 +78,8 @@ function Get-LaneWatchdogPartMap {
     'watchdog-policy-mutants-history'='watchdog-policy-mutants-history'
     'watchdog-policy-mutants-binding'='watchdog-policy-mutants-binding'
     'watchdog-policy-mutants-joins'='watchdog-policy-mutants-joins'
+    'watchdog-host-hold-cases'='watchdog-host-hold-cases'
+    'watchdog-host-hold-mutants'='watchdog-host-hold-mutants'
     'watchdog-historical'='watchdog-historical'
     'watchdog-ordinary'='watchdog-ordinary'
     'watchdog-successor'='watchdog-successor'
@@ -105,11 +107,17 @@ function Get-HistoricalSuitePartOwners([ValidateSet('rebase','watchdog')][string
           $key='case:'+($node.Value -split '/')[0];$part='watchdog-policy-'+$families[$family]
         }
       }
+    }elseif($Suite -ceq 'watchdog' -and $function -ceq 'Test-HostHold' -and
+      ($node -is [Management.Automation.Language.StringConstantExpressionAst] -or $node -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and
+      $node.Parent -is [Management.Automation.Language.CommandAst] -and $node.Parent.GetCommandName() -ceq 'New-Spec' -and $node.Value -clike 'h1-*'){
+      $key='case:host-hold-'+$node.Value;$part='watchdog-host-hold-cases'
     }elseif($Suite -ceq 'watchdog' -and $function -ceq 'Test-PolicyFallbackMutants'){
       continue # Mutant names are read from their tables below, not from guard source strings.
     }elseif($node -is [Management.Automation.Language.CommandAst] -or $node -is [Management.Automation.Language.ThrowStatementAst]){
       $key='proof:'+([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($node.Extent.Text)))).ToLowerInvariant()
       if($Suite -ceq 'watchdog'){
+        if($function -cin @('Invoke-HoldWatchdog','Write-HostHold','Get-HoldEffects','Assert-NoHoldEffects','Assert-HostHoldResult','Assert-HoldUnknown','Test-HostHold')){$part='watchdog-host-hold-cases'}
+        if($function -ceq 'Test-HostHoldMutants'){$part='watchdog-host-hold-mutants'}
         $parent=$node.Parent
         while($parent){
           if($parent -is [Management.Automation.Language.IfStatementAst] -and $parent.Clauses[0].Item1.Extent.Text -ceq '$CapacityOnly'){$part='watchdog-capacity';break}
@@ -122,9 +130,24 @@ function Get-HistoricalSuitePartOwners([ValidateSet('rebase','watchdog')][string
     }
   }
   if($Suite -ceq 'watchdog'){
+    foreach($assignment in $ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst]},$true)){
+      if($assignment.Left.Extent.Text -ceq '$hostHoldKills'){
+        foreach($arm in @('cases','mutants')){$owners['arm:host-hold-'+$arm]='watchdog-host-hold-'+$arm}
+      }
+      $parent=$assignment.Parent;$function=''
+      while($parent){if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$function=$parent.Name;break};$parent=$parent.Parent}
+      if($function -ceq 'Test-HostHoldMutants' -and $assignment.Left.Extent.Text -ceq '$mutants'){
+        foreach($table in $assignment.Right.FindAll({param($n)$n -is [Management.Automation.Language.HashtableAst]},$true)){
+          foreach($pair in $table.KeyValuePairs){$owners['mutant:host-hold-'+$pair.Item1.Value]='watchdog-host-hold-mutants'}
+        }
+      }
+    }
     foreach($table in $ast.FindAll({param($n)$n -is [Management.Automation.Language.HashtableAst]},$true)){
       $parent=$table.Parent;$function=''
       while($parent){if($parent -is [Management.Automation.Language.FunctionDefinitionAst]){$function=$parent.Name;break};$parent=$parent.Parent}
+      if($function -ceq 'Test-HostHold'){
+        foreach($pair in $table.KeyValuePairs){if($pair.Item1.Value -ceq 'name'){$owners['case:host-hold-bad-'+[string]$pair.Item2.SafeGetValue()]='watchdog-host-hold-cases'}}
+      }
       if($function -cne 'Test-PolicyFallbackMutants'){continue}
       $name='';$case=''
       foreach($pair in $table.KeyValuePairs){

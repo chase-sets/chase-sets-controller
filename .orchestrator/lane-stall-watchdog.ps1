@@ -6,6 +6,11 @@ param(
   [string]$TranscriptPath,
   [string]$ObservedAt=([DateTime]::UtcNow.ToString('o')),
   [Parameter(DontShow)][string]$ObservationFixture,
+  # Host fairness holds are closed, exact-lane authority. The producer writes
+  # the record before stopping a lane; the reducer only reads it here.
+  [Parameter(DontShow)][string]$HostHoldPath,
+  # Test-only barrier between observation and the pre-dispatch hold recheck.
+  [Parameter(DontShow)][string]$HostHoldBarrierFixture,
   [Parameter(DontShow)][string]$IntegrationAuthorityFixturePath,
   [Parameter(DontShow)][string]$DispatchScript=(Join-Path $PSScriptRoot 'dispatch-lane.ps1'),
   [Parameter(DontShow)][string]$LogScript=(Join-Path $PSScriptRoot 'log-event.ps1'),
@@ -60,6 +65,62 @@ function Get-DescendantState($Spec){
   }catch{return 'ambiguous'}
 }
 function Get-Tail([string]$Path){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return ''};$text=[IO.File]::ReadAllText($Path);return $text.Substring([Math]::Max(0,$text.Length-16384))}
+function Read-HostHold([string]$Path,$Spec,[string]$RuntimeRoot){
+  if([string]::IsNullOrWhiteSpace($Path)){return $null}
+  try{
+    $resolved=[IO.Path]::GetFullPath($Path)
+    $runtime=[IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\','/')
+    if(-not[string]::Equals((Split-Path -Parent $resolved).TrimEnd('\','/'),$runtime,[StringComparison]::OrdinalIgnoreCase)){
+      throw 'WATCHDOG_HOST_HOLD_UNKNOWN'
+    }
+    # Only a truly absent entry is no hold. A directory, or any reparse point
+    # (including a dangling one), is unreadable authority and fails closed.
+    $info=[IO.FileInfo]::new($resolved);$info.Refresh()
+    if([int]$info.Attributes-eq-1){return $null}
+    if(($info.Attributes-band([IO.FileAttributes]::Directory-bor[IO.FileAttributes]::ReparsePoint))-ne0){throw 'WATCHDOG_HOST_HOLD_UNKNOWN'}
+    $hold=Get-Content -LiteralPath $resolved -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $keys=@('schemaVersion','authority','state','holdId','label','attemptId','launchId','worktree','branch','head','recordedAt')
+    $actual=@($hold.PSObject.Properties.Name)
+    if($actual.Count-ne$keys.Count-or@($keys|Where-Object{$_-cnotin$actual}).Count-ne0-or
+      $hold.schemaVersion-cne'watchdog-host-hold/v1'-or$hold.authority-cne'host'-or$hold.state-cnotin@('HELD','RELEASED')-or$hold.holdId-cnotmatch'^[a-f0-9-]{36}$'-or
+      $hold.label-cne[string]$Spec.label-or$hold.attemptId-cne[string]$Spec.attemptId-or$hold.launchId-cne[string]$Spec.launchId-or
+      $hold.worktree-isnot[string]-or-not[string]::Equals([IO.Path]::GetFullPath($hold.worktree).TrimEnd('\','/'),[IO.Path]::GetFullPath([string]$Spec.worktree).TrimEnd('\','/'),[StringComparison]::OrdinalIgnoreCase)-or
+      $hold.branch-cne[string]$Spec.branch-or$hold.head-cne[string]$Spec.head-or-not(Test-WatchdogZonedInstant $hold.recordedAt)){
+      throw 'WATCHDOG_HOST_HOLD_UNKNOWN'
+    }
+    return $hold
+  }catch{throw "WATCHDOG_HOST_HOLD_UNKNOWN: $($_.Exception.Message)"}
+}
+function Get-HostHoldObservationPath([string]$RuntimeRoot,[string]$Label){
+  return Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "watchdog-host-hold-observed-$Label.json"
+}
+function Read-HostHoldObservation([string]$RuntimeRoot,[string]$Label){
+  $path=Get-HostHoldObservationPath $RuntimeRoot $Label
+  if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null}
+  try{
+    $value=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $keys=@('schemaVersion','state','label','attemptId','launchId','holdId','observedAt')
+    $actual=@($value.PSObject.Properties.Name)
+    if($actual.Count-ne$keys.Count-or@($keys|Where-Object{$_-cnotin$actual}).Count-ne0-or
+      $value.schemaVersion-cne'watchdog-host-hold-observation/v1'-or$value.state-cne'HELD'-or$value.label-cne$Label-or
+      $value.attemptId-isnot[string]-or$value.launchId-isnot[string]-or$value.holdId-cnotmatch'^[a-f0-9-]{36}$'-or
+      -not(Test-WatchdogZonedInstant $value.observedAt)){throw 'WATCHDOG_HOST_HOLD_OBSERVATION_UNKNOWN'}
+    return $value
+  }catch{throw "WATCHDOG_HOST_HOLD_UNKNOWN: $($_.Exception.Message)"}
+}
+function Write-HostHoldObservation([string]$RuntimeRoot,$Hold){
+  $path=Get-HostHoldObservationPath $RuntimeRoot ([string]$Hold.label)
+  $value=[ordered]@{schemaVersion='watchdog-host-hold-observation/v1';state='HELD';label=[string]$Hold.label;attemptId=[string]$Hold.attemptId;launchId=[string]$Hold.launchId;holdId=[string]$Hold.holdId;observedAt=[datetimeoffset]::UtcNow.ToString('o')}
+  $temporary="$path.$([guid]::NewGuid().ToString('N')).tmp"
+  [IO.File]::WriteAllText($temporary,($value|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+  try{[IO.File]::Move($temporary,$path,$true)}finally{if(Test-Path -LiteralPath $temporary){Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}}
+}
+function Assert-HostHoldRelease($Hold,[string]$RuntimeRoot,[string]$Label){
+  if($Hold.state-cne'RELEASED'){return $true}
+  $observed=Read-HostHoldObservation $RuntimeRoot $Label
+  if($null-ne$observed-and[string]$observed.holdId-cne[string]$Hold.holdId){return $false}
+  return $true
+}
 # 8098: the account pool fails a turn with HTTP 503 `upstream rate limited,
 # retry later: All credentials for model <x> are cooling down (last error: credential_quota)` (or the
 # analogous 429 `model_cooldown` wording). The Codex harness writes it as `stream disconnected -
@@ -526,6 +587,7 @@ if($implementation -and $spec.state-ceq'launching' -and $null -eq $routeIdentity
 }
 if(-not(Test-WatchdogEnvelopeFields $spec $keys $Label $routeFacts)){throw 'WATCHDOG_UNKNOWN_SPEC_INVALID'}
 $runtimeFull=[IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\','/')
+$effectiveHostHoldPath=if($HostHoldPath){[IO.Path]::GetFullPath($HostHoldPath)}else{Join-Path $runtimeFull "watchdog-host-hold-$Label.json"}
 $expectedPartial=Join-Path $runtimeFull "$Label.jsonl";$expectedError=Join-Path $runtimeFull "$Label.err.log"
 $expectedOwner=Join-Path $runtimeFull "dispatch-launch-$($spec.launchId).json"
 if(-not[string]::Equals([IO.Path]::GetFullPath([string]$spec.partialReportPath),$expectedPartial,[StringComparison]::OrdinalIgnoreCase)){throw 'WATCHDOG_UNKNOWN_SPEC_PARTIAL_PATH'}
@@ -536,6 +598,14 @@ $detachedReview=$laneRole-ceq'review'-and$spec.branch-is[string]-and$spec.branch
 if((-not$detachedReview-and$spec.branch-cnotmatch'^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$')-or$spec.head-cnotmatch'^[a-f0-9]{40}$'){throw 'WATCHDOG_UNKNOWN_SPEC_GIT_IDENTITY'}
 if(-not(Test-Path -LiteralPath ([string]$spec.originalPromptPath) -PathType Leaf)){throw 'WATCHDOG_UNKNOWN_SPEC_ORIGINAL_PROMPT'}
 if(-not(Test-Path -LiteralPath ([string]$spec.worktree) -PathType Container)){throw 'WATCHDOG_UNKNOWN_SPEC_WORKTREE'}
+$hostHold=Read-HostHold $effectiveHostHoldPath $spec $runtimeFull
+if($hostHold-and$hostHold.state-ceq'HELD'){ # HOST_HOLD_OBSERVATION_GUARD
+  Write-HostHoldObservation $runtimeFull $hostHold
+  [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
+}
+if($hostHold -and -not(Assert-HostHoldRelease $hostHold $runtimeFull $Label)){
+  [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
+}
 $fixture=if($ObservationFixture){Get-Content -LiteralPath $ObservationFixture -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}else{$null}
 if(-not$fixture-and(Test-Path -LiteralPath $expectedOwner -PathType Leaf)){
   $record=Get-ValidatedDispatchOwnershipRecord $expectedOwner $runtimeFull ([IO.Path]::GetTempPath())
@@ -609,6 +679,20 @@ $refuseNoFallback={
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='NO_QUALIFIED_FALLBACK';relaunch=$false;relaunchCount=[int]$spec.relaunchCount;implementationAttemptIncrement=0;row=[int]$spec.row;model=[string]$spec.model;effort=[string]$spec.effort}|ConvertTo-Json -Compress;return
 }
 $nextCount=[int]$spec.relaunchCount+1
+if($HostHoldBarrierFixture){
+  [IO.File]::WriteAllText($HostHoldBarrierFixture+'.ready','pre-dispatch')
+  $barrierDeadline=[DateTime]::UtcNow.AddSeconds(300)
+  while(-not[IO.File]::Exists($HostHoldBarrierFixture+'.continue')){if([DateTime]::UtcNow-gt$barrierDeadline){throw 'WATCHDOG_HOST_HOLD_BARRIER_TIMEOUT'};Start-Sleep -Milliseconds 20}
+}
+# Recheck immediately before any dispatch: a hold published after observation still vetoes.
+$hostHold=Read-HostHold $effectiveHostHoldPath $spec $runtimeFull
+if($hostHold-and$hostHold.state-ceq'HELD'){ # HOST_HOLD_DISPATCH_GUARD
+  Write-HostHoldObservation $runtimeFull $hostHold
+  [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
+}
+if($hostHold -and -not(Assert-HostHoldRelease $hostHold $runtimeFull $Label)){
+  [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
+}
 if($nextCount-gt3){
   try{& $LogScript -Log dispatch -Kind lane-blocked -WatchdogSchema watchdog-relaunch/v1 -WatchdogAttemptId ([string]$spec.attemptId) -WatchdogLaunchId ([string]$spec.launchId) -DeathSignature $signature -ObservationIdentity $observationIdentity -RelaunchCount 3 -ResumedPartial $partial -WatchdogObservedAt $observed.ToString('o') -Lane $Label -Harness ([string]$spec.harness) -Model ([string]$spec.model) -Effort ([string]$spec.effort) -Row ([string]$spec.row) -Placement ([string]$spec.placement) -Outcome HARNESS_CEILING -OutFile $HistoryPath -NoBoard|Out-Null}catch{if($_.Exception.Message-notmatch'WATCHDOG_OBSERVATION_DUPLICATE'){throw}}
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='HARNESS_CEILING';relaunch=$false;relaunchCount=3;implementationAttemptIncrement=0}|ConvertTo-Json -Compress;return

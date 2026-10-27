@@ -113,7 +113,7 @@ exit 0
   return $caseObject
 }
 function Lane($Case,[switch]$Progress){
-  $lane=@{label=$Case.label;runtimeRoot=$Case.runtime;transcriptPath=$Case.transcript}
+  $lane=@{label=$Case.label;runtimeRoot=$Case.runtime;transcriptPath=$Case.transcript;hostHoldPath=(Join-Path $Case.runtime "watchdog-host-hold-$($Case.label).json")}
   if($Progress){$lane.progressPath=$Case.progress};return $lane
 }
 function Batch($Lanes,[string]$Name,[string[]]$Extra=@(),[string]$Subject=$entry,[double]$Window=3,[int]$Unchanged=1){
@@ -195,9 +195,17 @@ try{
     $forwarded=Get-Content $capture -Raw|ConvertFrom-Json -DateKind String
     $detection=@($r.events|Where-Object event -eq DETECTED)[0]
     Check ($forwarded.label-ceq$terminal.label-and$forwarded.runtimeRoot-ceq$terminal.runtime-and$forwarded.transcriptPath-ceq$terminal.transcript-and$forwarded.observedAt-ceq$detection.observedAt) 'AC1 exact detection time forwarded unchanged'
-    $wsl=Lane $terminal;foreach($key in @('runtimeRoot','transcriptPath')){$p=$wsl[$key];$wsl[$key]='/mnt/'+$p.Substring(0,1).ToLowerInvariant()+'/'+$p.Substring(3).Replace('\','/')}
+    $wsl=Lane $terminal;foreach($key in @('runtimeRoot','transcriptPath','hostHoldPath')){$p=$wsl[$key];$wsl[$key]='/mnt/'+$p.Substring(0,1).ToLowerInvariant()+'/'+$p.Substring(3).Replace('\','/')}
     $r=Batch @($wsl) 'AC1-retained-wsl-path';Check ($r.exit-eq0-and$r.events[-1].reason-eq'ALL_TERMINAL') 'AC1 retained drive mount translated without WSL'
     $dead=New-Producer 'synthetic-dead' dead
+    $holdPublisher=Join-Path $PSScriptRoot 'watchdog-host-hold.ps1'
+    $published=Run-Native $holdPublisher @('-State','HELD','-RuntimeRoot',$dead.runtime,'-Label',$dead.label) 'AC5-publish-held'
+    Check ($published.exit-eq0) 'AC5 production hold publisher publishes before batch observation'
+    $heldBatch=Batch @((Lane $dead)) 'AC5-batch-held-observation' @() $entry 0.35
+    Check ($heldBatch.exit-eq0-and@($heldBatch.events|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'OBSERVATION_ONLY'}).Count-ge1-and@($heldBatch.events|Where-Object{$_.relaunch-eq$true}).Count-eq0) ("AC5 batch keeps held lane watched without relaunch exit={0} events={1} stdout={2} stderr={3}" -f $heldBatch.exit,(($heldBatch.events|ConvertTo-Json -Compress -Depth 6)),$heldBatch.stdout,$heldBatch.stderr)
+    $released=Run-Native $holdPublisher @('-State','RELEASED','-RuntimeRoot',$dead.runtime,'-Label',$dead.label) 'AC5-publish-released'
+    Check ($released.exit-eq0) 'AC5 production hold publisher releases exact hold'
+    Write-Output 'PASS AC5 production hold publication and batch observation-only integration'
     $calls=Join-Path $root 'stub-dispatches.txt';$dispatch=Join-Path $root 'safe-dispatch.ps1'
     [IO.File]::WriteAllText($dispatch,'[IO.File]::AppendAllText('''+$calls.Replace("'","''")+''',"stub dispatch`n");exit 19')
     $stale=[datetimeoffset]::UtcNow.AddSeconds(-600).ToString('o')

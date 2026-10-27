@@ -36,15 +36,17 @@ function Native-Path([string]$Path){
 function Read-Lane($Value){
   $keys=@($Value.PSObject.Properties.Name)
   if($Value.label-isnot[string]-or$Value.label-cnotmatch'^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$'-or
-    @($keys|Where-Object{$_-cnotin@('label','runtimeRoot','transcriptPath','progressPath')}).Count-ne0){throw 'INPUT_LANE'}
+    @($keys|Where-Object{$_-cnotin@('label','runtimeRoot','transcriptPath','progressPath','hostHoldPath')}).Count-ne0){throw 'INPUT_LANE'}
   $runtime=Native-Path $Value.runtimeRoot
   $transcript=Native-Path $Value.transcriptPath
   if(-not[string]::Equals($transcript,(Join-Path $runtime "$($Value.label).jsonl"),[StringComparison]::OrdinalIgnoreCase)){throw 'INPUT_TRANSCRIPT'}
   $progress=if($Value.progressPath){Native-Path $Value.progressPath}else{$transcript}
+  $hostHold=if($Value.hostHoldPath){Native-Path $Value.hostHoldPath}else{Join-Path $runtime "watchdog-host-hold-$($Value.label).json"}
+  if([IO.Path]::GetFullPath($hostHold)-cne[IO.Path]::GetFullPath((Join-Path $runtime "watchdog-host-hold-$($Value.label).json"))){throw 'INPUT_HOST_HOLD'}
   foreach($path in @($transcript,$progress,(Join-Path $runtime "watchdog-lane-$($Value.label).json"))){
     if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw 'INPUT_MISSING'}
   }
-  return [pscustomobject]@{label=$Value.label;runtimeRoot=$runtime;transcriptPath=$transcript;progressPath=$progress;size=(Get-Item -LiteralPath $transcript).Length;progressSize=(Get-Item -LiteralPath $progress).Length;unchanged=0;terminal=$false;unresolved=$false}
+  return [pscustomobject]@{label=$Value.label;runtimeRoot=$runtime;transcriptPath=$transcript;progressPath=$progress;hostHoldPath=$hostHold;size=(Get-Item -LiteralPath $transcript).Length;progressSize=(Get-Item -LiteralPath $progress).Length;unchanged=0;terminal=$false;unresolved=$false}
 }
 function Assert-Transport{
   if(-not(Test-Path -LiteralPath $TransportPath -PathType Leaf)-or-not(Test-Path -LiteralPath $ReducerScript -PathType Leaf)){throw 'TRANSPORT_MISSING'}
@@ -59,6 +61,7 @@ function Observe($Lane,[string]$DetectedAt){
   $arguments=@('-NoProfile','-NonInteractive','-File',$ReducerScript,'-Label',$Lane.label,
     '-RuntimeRoot',$Lane.runtimeRoot,'-HistoryPath',(Join-Path $Lane.runtimeRoot 'dispatch-log.jsonl'),
     '-TranscriptPath',$Lane.transcriptPath,'-ObservedAt',$DetectedAt)
+  $arguments+=@('-HostHoldPath',$Lane.hostHoldPath)
   if($DispatchScript){$arguments+=@('-DispatchScript',$DispatchScript)}
   if($SynchronousDispatch){$arguments+='-SynchronousDispatch'}
   foreach($argument in $arguments){[void]$start.ArgumentList.Add($argument)}

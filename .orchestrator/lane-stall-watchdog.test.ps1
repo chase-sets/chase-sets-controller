@@ -1,11 +1,12 @@
-param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control,[string]$Part='')
+param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control,[ValidateSet('','cases','all')][string]$HostHoldControl='', [string]$Part='')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 $SuitePartOwners=Get-HistoricalSuitePartOwners 'watchdog' ([IO.File]::ReadAllText($PSCommandPath))
 $watchdogParts=@((Get-LaneWatchdogPartMap).Keys)
-Assert-SuiteSelection $Part (@('all')+$watchdogParts) $PSBoundParameters @('BeforeFixControl','Row15MeasuredControl','AuthorityOnly','RetiredOnly','SonnetOnly','ExplicitRoutingOnly','CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','PolicyFallbackCase','WatchdogScript','Named8098Control','Named8186Control')
+Assert-SuiteSelection $Part (@('all')+$watchdogParts) $PSBoundParameters @('BeforeFixControl','Row15MeasuredControl','AuthorityOnly','RetiredOnly','SonnetOnly','ExplicitRoutingOnly','CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','PolicyFallbackCase','WatchdogScript','Named8098Control','Named8186Control','HostHoldControl')
 if($Part -ceq 'all'){$Part=''}
 if($Part -eq 'watchdog-capacity'){$CapacityOnly=$true}
+if($Part -eq 'watchdog-host-hold-cases'){$HostHoldControl='cases'}
 $policyPartFamily=''
 if($Part -like 'watchdog-policy-*' -and $Part -notlike 'watchdog-policy-mutants-*'){
   $PolicyFallbackOnly=$true
@@ -27,7 +28,7 @@ if($Part -in @('watchdog-historical','watchdog-ordinary','watchdog-successor')){
 }
 $runtime=Join-Path $root 'runtime';$worktree=Join-Path $root 'worktree';$history=Join-Path $runtime 'history.jsonl';$calls=Join-Path $runtime 'calls.txt'
 $watchdog=if($WatchdogScript){$WatchdogScript}else{Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1'}
-function Assert-True($Condition,[string]$Message){if(-not$Condition){throw "ASSERTION FAILED: $Message"}}
+function Assert-True($Condition,[string]$Message){if(-not$Condition){[Console]::Error.WriteLine(("ASSERTION FAILED: $Message"-split"\r?\n")[0]);throw "ASSERTION FAILED: $Message"}}
 function Get-Harness([string]$Model){if($Model-like'claude-*'){'claude'}else{'codex'}}
 function New-Spec([string]$Label,[string]$Model='gpt-6.1-sol',[string]$Effort='high',[int]$Count=0,[int]$Row=4,[string]$Placement='provisional'){
   $partial=Join-Path $runtime "$Label.jsonl";$error=Join-Path $runtime "$Label.err.log";Set-Content -LiteralPath $partial -Value 'unmistakably synthetic partial report';Set-Content -LiteralPath $error -Value 'native owner ended'
@@ -687,6 +688,214 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
 '@
   $env:SYNTHETIC_WATCHDOG_CALLS=$calls
   $env:SYNTHETIC_WATCHDOG_ORCH=$PSScriptRoot
+  # AC5 (BR8490-H1): a host hold is exact-lane authority. Every case drives the
+  # real watchdog entrypoint as a subprocess in this private runtime and varies
+  # only the hold record; the lane, observation and inert dispatch stub match.
+  $hostHoldKills=[ordered]@{
+    'bypass-hold'='AC5 held lane is observation-only'
+    'bypass-observation-hold'='AC5 held lane past the relaunch window stays observation-only'
+    'bypass-predispatch-hold'='AC5 hold published before dispatch vetoes relaunch'
+    'hold-fail-open'='AC5 corrupt hold fails closed'
+    'hold-identity-unbound'='AC5 foreign-launch release fails closed'
+    'stale-release-unbound'='AC5 stale same-launch release must not clear newer hold'
+    'release-ignored'='AC5 exact host release resumes ordinary recovery'
+  }
+  function Invoke-HoldWatchdog($Item,[string]$Name,[int]$AgeSeconds=299,[string[]]$Extra=@()){
+    $argv=@('-NoProfile','-NonInteractive','-File',$watchdog,'-Label',$Item.spec.label,'-RuntimeRoot',$runtime,'-HistoryPath',$history,'-TranscriptPath',$Item.partial,'-ObservationFixture',(New-Observation $Name 'dead' 'none' $AgeSeconds),'-DispatchScript',$stub,'-SynchronousDispatch')+$Extra
+    $out=(& (Get-Command pwsh).Source @argv 2>&1|Out-String);$code=$LASTEXITCODE
+    $json=@($out-split "\r?\n"|Where-Object{$_-match'^\{.*\}\s*$'})|Select-Object -Last 1
+    [pscustomobject]@{Exit=$code;Output=$out;Result=$(if($json){$json|ConvertFrom-Json -DateKind String}else{$null})}
+  }
+  function Write-HostHold($Item,[string]$State='HELD',[hashtable]$Changes=@{},[string]$Path=''){
+    if(-not$Path){$Path=Join-Path $runtime "watchdog-host-hold-$($Item.spec.label).json"}
+    $existing=$null
+    if($State-ceq'RELEASED' -and (Test-Path -LiteralPath $Path -PathType Leaf)){$existing=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json -DateKind String}
+    $record=[ordered]@{schemaVersion='watchdog-host-hold/v1';authority='host';state=$State;holdId=$(if($existing){[string]$existing.holdId}else{[guid]::NewGuid().ToString()});label=$Item.spec.label;attemptId=$Item.spec.attemptId;launchId=$Item.spec.launchId;worktree=$Item.spec.worktree;branch=$Item.spec.branch;head=$Item.spec.head;recordedAt=[datetimeoffset]::UtcNow.ToString('o')}
+    foreach($key in $Changes.Keys){if($null-eq$Changes[$key]){$record.Remove($key)}else{$record[$key]=$Changes[$key]}}
+    [IO.File]::WriteAllText($Path,($record|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$Path
+  }
+  function Get-HoldEffects($Item){
+    [pscustomobject]@{
+      calls=Get-CallCount
+      history=$(if(Test-Path $history){(Get-FileHash $history).Hash}else{'absent'})
+      prompts=@(Get-ChildItem -LiteralPath $runtime -Filter '*.prompt.txt' -File).Count
+      acks=@(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-start-*.json' -File).Count
+      moves=@(Get-ChildItem -LiteralPath $runtime -Filter 'watchdog-policy-move-*.json' -File).Count
+      spec=(Get-FileHash (Join-Path $runtime "watchdog-lane-$($Item.spec.label).json")).Hash
+      partial=(Get-FileHash $Item.partial).Hash
+    }
+  }
+  function Assert-NoHoldEffects($Before,$Item,[string]$Message){
+    $after=Get-HoldEffects $Item
+    Assert-True (($after|ConvertTo-Json -Compress)-ceq($Before|ConvertTo-Json -Compress)) "$Message (before=$($Before|ConvertTo-Json -Compress) after=$($after|ConvertTo-Json -Compress))"
+  }
+  function Assert-HostHoldResult($Run,[string]$Message){
+    Assert-True ($Run.Exit-eq0-and$null-ne$Run.Result-and$Run.Result.status-ceq'OBSERVATION_ONLY'-and$Run.Result.relaunch-eq$false-and$Run.Result.diagnosis-ceq'HOST_HOLD'-and$Run.Result.holdState-ceq'HELD') "$Message (exit=$($Run.Exit) output=$($Run.Output.Trim()))"
+  }
+  function Assert-HoldUnknown($Item,[string]$Name,[string]$Message,[string[]]$Extra=@()){
+    $before=Get-HoldEffects $Item;$run=Invoke-HoldWatchdog $Item $Name 299 $Extra
+    Assert-True ($run.Exit-ne0-and$run.Output-cmatch'WATCHDOG_HOST_HOLD_UNKNOWN'-and($null-eq$run.Result-or$run.Result.relaunch-ne$true)) "$Message (exit=$($run.Exit) output=$($run.Output.Trim()))"
+    Assert-NoHoldEffects $before $Item "$Message had dispatch, prompt, ack, history or record effects"
+  }
+  function Test-HostHold {
+    $sleeper=$null
+    try{
+      # Control: an unheld genuine dead lane relaunches through the ordinary path.
+      $unheld=New-Spec 'h1-unheld';$before=Get-CallCount;$run=Invoke-HoldWatchdog $unheld 'h1-unheld'
+      Assert-True ($run.Exit-eq0) "AC5 unheld dead lane control (exit=$($run.Exit) output=$($run.Output.Trim()))"
+      Assert-Recovery $unheld $run.Result 'gpt-6.1-sol' 'high' 'provisional' $before
+      Write-Output 'PASS AC5 unheld dead lane relaunches through ordinary recovery'
+      # The synthetic 05:44Z shape: host stopped a dead-looking lane and holds it.
+      # The recorded child is a live process this test owns; the reducer must not
+      # kill it, reclaim its records or dispatch, across repeated polls.
+      $sleeper=[Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]::new((Get-Command pwsh).Source,'-NoProfile -NonInteractive -Command Start-Sleep -Seconds 900'))
+      $held=New-Spec 'h1-held';$held.spec.childPid=[long]$sleeper.Id;$held.spec.childStartIdentity=$sleeper.StartTime.ToUniversalTime().ToString('o');Save-Spec $held
+      $holdPath=Write-HostHold $held 'HELD';$holdHash=(Get-FileHash $holdPath).Hash;$before=Get-HoldEffects $held
+      foreach($poll in 1..3){
+        $run=Invoke-HoldWatchdog $held "h1-held-poll$poll"
+        Assert-HostHoldResult $run "AC5 held lane is observation-only (poll $poll)"
+        Assert-NoHoldEffects $before $held "AC5 held lane is observation-only (poll $poll)"
+      }
+      Assert-True (-not$sleeper.HasExited-and(Get-FileHash $holdPath).Hash-ceq$holdHash) 'AC5 held lane child was killed or hold record changed'
+      Write-Output 'PASS AC5 held lane is observation-only across repeated polls: no dispatch, prompt, ack, history, record or kill'
+      # Hold has no expiry: the 300 s relaunch window does not end observation.
+      $late=New-Spec 'h1-held-late';[void](Write-HostHold $late 'HELD');$before=Get-HoldEffects $late
+      $run=Invoke-HoldWatchdog $late 'h1-held-late' 301
+      Assert-HostHoldResult $run 'AC5 held lane past the relaunch window stays observation-only'
+      Assert-NoHoldEffects $before $late 'AC5 held lane past the relaunch window stays observation-only'
+      Write-Output 'PASS AC5 held lane past the relaunch window stays observation-only'
+      # Race: the hold is published after observation and before dispatch.
+      $race=New-Spec 'h1-race';$barrier=Join-Path $root 'h1-race.barrier';$before=Get-HoldEffects $race
+      $raceOut=Join-Path $root 'h1-race.out';$raceErr=Join-Path $root 'h1-race.err'
+      $argv=@('-NoProfile','-NonInteractive','-File',$watchdog,'-Label',$race.spec.label,'-RuntimeRoot',$runtime,'-HistoryPath',$history,'-TranscriptPath',$race.partial,'-ObservationFixture',(New-Observation 'h1-race' 'dead' 'none' 299),'-DispatchScript',$stub,'-SynchronousDispatch','-HostHoldBarrierFixture',$barrier)
+      $proc=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $argv -RedirectStandardOutput $raceOut -RedirectStandardError $raceErr -PassThru -WindowStyle Hidden
+      $deadline=[DateTime]::UtcNow.AddSeconds(300)
+      while(-not(Test-Path -LiteralPath "$barrier.ready")){if($proc.HasExited-or[DateTime]::UtcNow-gt$deadline){throw "SETUP: race watchdog never reached the pre-dispatch barrier (exited=$($proc.HasExited)) $(Get-Content -Raw $raceOut -ErrorAction SilentlyContinue) $(Get-Content -Raw $raceErr -ErrorAction SilentlyContinue)"};Start-Sleep -Milliseconds 50}
+      [void](Write-HostHold $race 'HELD');[IO.File]::WriteAllText("$barrier.continue",'continue')
+      if(-not$proc.WaitForExit(300000)){throw 'SETUP: race watchdog did not exit'};$proc.WaitForExit()
+      $raceText=(Get-Content -Raw $raceOut)+(Get-Content -Raw $raceErr);$raceJson=@($raceText-split "\r?\n"|Where-Object{$_-match'^\{.*\}\s*$'})|Select-Object -Last 1
+      $raceRun=[pscustomobject]@{Exit=$proc.ExitCode;Output=$raceText;Result=$(if($raceJson){$raceJson|ConvertFrom-Json -DateKind String}else{$null})}
+      Assert-HostHoldResult $raceRun 'AC5 hold published before dispatch vetoes relaunch'
+      Assert-NoHoldEffects $before $race 'AC5 hold published before dispatch vetoes relaunch'
+      Write-Output 'PASS AC5 hold published between observation and dispatch vetoes relaunch'
+      # Unreadable or unbound authority fails closed with no effect; a stale,
+      # foreign or replaced release cannot clear a hold.
+      $corrupt=New-Spec 'h1-corrupt';[IO.File]::WriteAllText((Join-Path $runtime 'watchdog-host-hold-h1-corrupt.json'),'{not json')
+      Assert-HoldUnknown $corrupt 'h1-corrupt' 'AC5 corrupt hold fails closed'
+      $foreign=New-Spec 'h1-foreign-launch';[void](Write-HostHold $foreign 'RELEASED' @{launchId=[guid]::NewGuid().ToString()})
+      Assert-HoldUnknown $foreign 'h1-foreign-launch' 'AC5 foreign-launch release fails closed'
+      $replay=New-Spec 'h1-stale-release';$oldRelease=Write-HostHold $replay 'RELEASED' @{recordedAt='2000-01-01T00:00:00.0000000Z'};$staleBytes=[IO.File]::ReadAllBytes($oldRelease)
+      [void](Write-HostHold $replay 'HELD' @{holdId=[guid]::NewGuid().ToString()});$heldRun=Invoke-HoldWatchdog $replay 'h1-stale-release-held';Assert-HostHoldResult $heldRun 'AC5 stale-release held control'
+      $before=Get-HoldEffects $replay;[IO.File]::WriteAllBytes($oldRelease,$staleBytes);$run=Invoke-HoldWatchdog $replay 'h1-stale-release-replay'
+      Assert-HostHoldResult $run 'AC5 stale same-launch release must not clear newer hold';Assert-NoHoldEffects $before $replay 'AC5 stale same-launch release had dispatch effects'
+      Write-Output 'PASS AC5 stale same-launch release cannot clear newer hold'
+      $bad=@(
+        @{name='foreign-attempt';state='RELEASED';changes=@{attemptId='synthetic-other-attempt'}},
+        @{name='foreign-label';state='RELEASED';changes=@{label='h1-other-lane'}},
+        @{name='foreign-head';state='RELEASED';changes=@{head=('b'*40)}},
+        @{name='foreign-branch';state='HELD';changes=@{branch='synthetic/other'}},
+        @{name='foreign-worktree';state='HELD';changes=@{worktree=(Join-Path $root 'other-worktree')}},
+        @{name='lane-authority';state='RELEASED';changes=@{authority='lane'}},
+        @{name='schema';state='HELD';changes=@{schemaVersion='watchdog-host-hold/v2'}},
+        @{name='state-case';state='held';changes=@{}},
+        @{name='state-unknown';state='EXPIRED';changes=@{}},
+        @{name='extra-field';state='RELEASED';changes=@{expiresAt='2026-10-26T00:00:00Z'}},
+        @{name='missing-field';state='HELD';changes=@{recordedAt=$null}},
+        @{name='unzoned-time';state='HELD';changes=@{recordedAt='2026-10-26T00:00:00'}}
+      )
+      foreach($case in $bad){
+        $item=New-Spec "h1-bad-$($case.name)";[void](Write-HostHold $item $case.state $case.changes)
+        Assert-HoldUnknown $item "h1-bad-$($case.name)" "AC5 $($case.name) hold fails closed"
+      }
+      $dir=New-Spec 'h1-bad-directory';New-Item -ItemType Directory -Path (Join-Path $runtime 'watchdog-host-hold-h1-bad-directory.json')|Out-Null
+      Assert-HoldUnknown $dir 'h1-bad-directory' 'AC5 directory hold fails closed'
+      $replaced=New-Spec 'h1-bad-reparse';$target=Write-HostHold $replaced 'RELEASED' @{} (Join-Path $root 'h1-reparse-target.json')
+      New-Item -ItemType SymbolicLink -Path (Join-Path $runtime 'watchdog-host-hold-h1-bad-reparse.json') -Target $target|Out-Null
+      Assert-HoldUnknown $replaced 'h1-bad-reparse' 'AC5 replaced (reparse) release fails closed'
+      $dangling=New-Spec 'h1-bad-dangling';$gone=Write-HostHold $dangling 'HELD' @{} (Join-Path $root 'h1-dangling-target.json')
+      New-Item -ItemType SymbolicLink -Path (Join-Path $runtime 'watchdog-host-hold-h1-bad-dangling.json') -Target $gone|Out-Null;Remove-Item -LiteralPath $gone
+      Assert-HoldUnknown $dangling 'h1-bad-dangling' 'AC5 dangling reparse hold fails closed'
+      $outside=New-Spec 'h1-bad-outside';$outsidePath=Write-HostHold $outside 'RELEASED' @{} (Join-Path $root 'watchdog-host-hold-h1-bad-outside.json')
+      Assert-HoldUnknown $outside 'h1-bad-outside' 'AC5 hold outside the runtime root fails closed' @('-HostHoldPath',$outsidePath)
+      Write-Output "PASS AC5 unreadable, foreign, stale and replaced holds fail closed with no effect (cases=$($bad.Count+6))"
+      # Exact host release of the held lane resumes ordinary recovery.
+      [void](Write-HostHold $held 'RELEASED');$held.spec.childPid=[long]999992;$held.spec.childStartIdentity='2000-01-01T00:00:01.0000000Z';Save-Spec $held
+      $before=Get-CallCount;$run=Invoke-HoldWatchdog $held 'h1-released'
+      Assert-True ($run.Exit-eq0-and$null-ne$run.Result-and$run.Result.status-ceq'RELAUNCHED') "AC5 exact host release resumes ordinary recovery (exit=$($run.Exit) output=$($run.Output.Trim()))"
+      Assert-Recovery $held $run.Result 'gpt-6.1-sol' 'high' 'provisional' $before
+      Write-Output 'PASS AC5 exact host release resumes ordinary recovery'
+    } finally {
+      if($sleeper){if(-not$sleeper.HasExited){$sleeper.Kill()};$sleeper.Dispose()}
+    }
+    Write-Output 'PASS AC5 host-hold cases'
+  }
+  function Get-FirstAssertion([string]$Text) {
+    # Assertions write one raw "ASSERTION FAILED:" line to stderr before throwing;
+    # the console error view (source echo, wrapping) is never parsed.
+    foreach ($line in ($Text -split "\r?\n")) { if ($line -cmatch '^ASSERTION FAILED: (.*)$') { return $Matches[1].TrimEnd() } }
+    return $null
+  }
+  function Test-HostHoldMutants {
+    $source=[IO.File]::ReadAllText($watchdog).Replace("`r`n","`n")
+    $observeGuard="if(`$hostHold-and`$hostHold.state-ceq'HELD'){ # HOST_HOLD_OBSERVATION_GUARD"
+    $dispatchGuard="if(`$hostHold-and`$hostHold.state-ceq'HELD'){ # HOST_HOLD_DISPATCH_GUARD"
+    $catch='    return $hold'+"`n"+'  }catch{throw "WATCHDOG_HOST_HOLD_UNKNOWN: $($_.Exception.Message)"}'
+    $identity='$hold.attemptId-cne[string]$Spec.attemptId-or$hold.launchId-cne[string]$Spec.launchId-or'
+    $releaseBinding='if($hostHold -and -not(Assert-HostHoldRelease $hostHold $runtimeFull $Label)){'
+    foreach($anchor in @($observeGuard,$dispatchGuard,$catch,$identity,$releaseBinding)){$count=([regex]::Matches($source,[regex]::Escape($anchor))).Count;Assert-True (($count-eq1)-or($anchor-ceq$releaseBinding-and$count-eq2)) "SETUP host-hold mutation anchor not unique: $anchor"}
+    $mutants=[ordered]@{
+      'bypass-hold'=$source.Replace($observeGuard,'if($false){').Replace($dispatchGuard,'if($false){')
+      'bypass-observation-hold'=$source.Replace($observeGuard,'if($false){')
+      'bypass-predispatch-hold'=$source.Replace($dispatchGuard,'if($false){')
+      'hold-fail-open'=$source.Replace($catch,('    return $hold'+"`n"+'  }catch{return $null}'))
+      'hold-identity-unbound'=$source.Replace($identity,'')
+      'stale-release-unbound'=$source.Replace($releaseBinding,'if($false){')
+      'release-ignored'=$source.Replace($observeGuard,"if(`$hostHold){").Replace($dispatchGuard,"if(`$hostHold){")
+    }
+    $mutantRoot=Join-Path $root 'mutants-host-hold';New-Item -ItemType Directory $mutantRoot|Out-Null
+    $names=@($mutants.Keys|ForEach-Object{[string]$_})
+    if($Part -ceq 'watchdog-host-hold-mutants'){$names=@($names|Where-Object{$SuitePartOwners['mutant:host-hold-'+$_] -ceq $Part})}
+    $survivors=0
+    foreach($name in $names){
+      $dir=Join-Path $mutantRoot $name;New-Item -ItemType Directory $dir|Out-Null
+      Get-ChildItem $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $dir
+      New-Item -ItemType Directory -Force -Path (Join-Path $dir 'controller-skills/model-routing')|Out-Null
+      Copy-Item (Join-Path $PSScriptRoot 'controller-skills/model-routing/capability-matrix.json') (Join-Path $dir 'controller-skills/model-routing/capability-matrix.json')
+      $path=Join-Path $dir 'lane-stall-watchdog.ps1';Assert-True ($mutants[$name]-cne$source) "SETUP host-hold mutant unchanged: $name"
+      [IO.File]::WriteAllText($path,$mutants[$name],[Text.UTF8Encoding]::new($false))
+      $parseErrors=$null;[void][Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$parseErrors);Assert-True ($parseErrors.Count-eq0) "SETUP host-hold mutant does not parse: $name"
+    }
+    # Children are independent private roots; run them concurrently to bound wall time.
+    $results=$names|ForEach-Object -ThrottleLimit 3 -Parallel {
+      $clock=[Diagnostics.Stopwatch]::StartNew();$dir=Join-Path $using:mutantRoot $_
+      # Raw stdout/stderr files inside the mutant's private directory.
+      $childArgs=@('-NoProfile','-NonInteractive','-File',(Join-Path $dir 'lane-stall-watchdog.test.ps1'),'-HostHoldControl','cases','-WatchdogScript',(Join-Path $dir 'lane-stall-watchdog.ps1'))
+      $child=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $childArgs -RedirectStandardOutput (Join-Path $dir 'child.out') -RedirectStandardError (Join-Path $dir 'child.err') -NoNewWindow -PassThru
+      $child.WaitForExit()
+      $out=foreach($stream in @('child.out','child.err')){$file=[IO.File]::Open((Join-Path $dir $stream),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete);try{[IO.StreamReader]::new($file).ReadToEnd()}finally{$file.Dispose()}}
+      $out=$out-join"`n"
+      [pscustomobject]@{Name=$_;Exit=$child.ExitCode;Output=$out;Seconds=[int]$clock.Elapsed.TotalSeconds}
+    }
+    foreach($name in $names){
+      $r=@($results|Where-Object Name -ceq $name)[0]
+      [IO.File]::WriteAllText((Join-Path $mutantRoot "$name.log"),"exit=$($r.Exit)`n$($r.Output)")
+      $first=Get-FirstAssertion $r.Output
+      $want=$hostHoldKills[$name]
+      # Killed only by its own assertion: setup throws, other assertions or a PASS are survivors.
+      $killed=$r.Exit-ne0-and$first-and($first-ceq$want-or$first.StartsWith("$want ",[StringComparison]::Ordinal))-and$r.Output-notmatch'(?m)^PASS AC5 host-hold cases'
+      $died=if($first){$first.Substring(0,[Math]::Min(140,$first.Length))}else{'<no assertion>'}
+      Write-Output ("MUTANT H1 {0} {1} exit={2} wall={3}s expected='{4}' died='{5}'" -f $name,$(if($killed){'KILLED'}else{'NOT-KILLED'}),$r.Exit,$r.Seconds,$want,$died)
+      if(-not$killed){$survivors++}
+    }
+    Assert-True ($survivors-eq0) "host-hold mutants survived: $survivors"
+    Write-Output "PASS AC5 host-hold mutants=$($names.Count) survivors=0"
+  }
+  if($Part -ceq 'watchdog-host-hold-mutants'){Test-HostHoldMutants;return}
+  if($HostHoldControl){
+    Test-HostHold
+    if($HostHoldControl-ceq'all'){Test-HostHoldMutants}
+    return
+  }
   function Test-ExplicitRoutingRelaunch {
     $env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK='1'
     try {
@@ -714,6 +923,9 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $PSCommandPath -CapacityOnly -WatchdogScript $watchdog
     Assert-True ($LASTEXITCODE -eq 0) 'isolated capacity watchdog cases failed'
     Assert-True ((Get-CallCount) -eq $beforeCapacity) 'capacity child changed parent dispatch fixture'
+    & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $PSCommandPath -HostHoldControl all -WatchdogScript $watchdog
+    Assert-True ($LASTEXITCODE -eq 0) 'isolated host-hold watchdog cases or mutants failed'
+    Assert-True ((Get-CallCount) -eq $beforeCapacity) 'host-hold child changed parent dispatch fixture'
   }
   }
   if($CapacityOnly) {

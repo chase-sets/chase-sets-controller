@@ -948,8 +948,11 @@ if (-not $ValidatePlanOnly) {
       Stop-Battery "BATTERY_BRANCH_IDENTITY_INVALID"
     }
     $lane = Split-Path -Leaf $controller
+    $claimantProcess = Get-Process -Id $PID -ErrorAction Stop
+    $claimantStartUtc = $claimantProcess.StartTime.ToUniversalTime().ToString('o')
     & $verifier -ControllerBattery -Worktree $controller -Lane $lane -Branch $branch `
       -ClaimedHead $ExpectedControllerHead -ContainerRoot (Split-Path -Parent $controller) `
+      -ControllerBatteryClaimantPid $PID -ControllerBatteryClaimantStartUtc $claimantStartUtc `
       -ControllerBatteryEvidenceReceiptPath $EvidenceReceiptPath `
       -ControllerBatteryResultPath $ResultPath `
       -ControllerBatteryBaselineHead $BaselineHead `
