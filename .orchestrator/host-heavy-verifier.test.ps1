@@ -1,5 +1,5 @@
 param([switch]$Baseline, [switch]$NativeDbOnly,
-  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'harness-controls')][string]$Control = '')
+  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'claimant-pause-injection', 'native-terminal-controls', 'harness-controls')][string]$Control = '')
 $ErrorActionPreference = 'Stop'
 function Read-FixtureOwner([string]$OwnerPath) {
   $stream=[IO.File]::Open($OwnerPath,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
@@ -176,8 +176,184 @@ function Test-HarnessControls {
   . ([scriptblock]::Create($cleanup))
   Write-Output 'CONTROL harness-controls GREEN reply order, missing/duplicate replies, signal-before-exit and terminal-without-signal'
 }
+function Test-NativeTerminalControls {
+  $source=[IO.File]::ReadAllText($PSCommandPath)
+  $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$null)
+  $root=Join-Path ([IO.Path]::GetTempPath()) ('hhv-native-terminal-'+[guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($root)
+  $terminal=@{process=[pscustomobject]@{HasExited=$true;ExitCode=7}}
+  foreach ($name in @('owner','static-body','resumed','precleanup','next')) {
+    $message=switch ($name) {
+      owner { 'native fixture producer exited before owner publication: 7' }
+      static-body { 'Windows Gate fixture producer exited before static-body signal: 7' }
+      resumed { 'resumed claimant exited before publishing a new owner: 7' }
+      precleanup { 'precleanup producer exited before boundary signal: 7' }
+      next { 'next claimant exited before publishing a new owner: 7' }
+    }
+    if ($name -ceq 'owner') {
+      $definition=Get-FixtureDefinition $source 'Wait-NativeOwner'
+      $guard='$Producer -and $Producer.process.HasExited'
+      $body=$definition+"`nWait-NativeOwner 6 -Producer `$terminal"
+    } else {
+      $loop=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.WhileStatementAst] -and $n.Extent.Text.Contains($message.Split(':')[0])},$true))
+      Assert-Harness ($loop.Count -eq 1) "$name has one native terminal wait"
+      $body=$loop[0].Extent.Text
+      $guard=switch ($name) {
+        static-body { '$windows.process.HasExited' }
+        resumed { '$resumed.process.HasExited' }
+        precleanup { '$precleanup.process.HasExited' }
+        next { '$next.process.HasExited' }
+      }
+    }
+    foreach ($variant in @('candidate','omit-terminal-mutant')) {
+      $runtime=Join-Path $root ([guid]::NewGuid().ToString('N'))
+      $artifacts=$runtime; [void][IO.Directory]::CreateDirectory((Join-Path $runtime 'verify-lock.d'))
+      $precleanupMarker=Join-Path $runtime 'precleanup'
+      $windows=$resumed=$precleanup=$next=$terminal
+      $resumedOwner=$interruptedOwner=$nextOwner=$precleanupOwner=[pscustomobject]@{lockId='old'}
+      # A deterministic later signal makes a missing terminal arm return, not hang.
+      function Start-Sleep {
+        param($Milliseconds)
+        [IO.File]::WriteAllText((Join-Path $runtime 'verify-lock.d/owner.json'),'{"schemaVersion":6,"state":"started","native":{"linux":{"outerPid":42}}}')
+        [IO.File]::WriteAllText((Join-Path $artifacts 'static-body'),'late')
+        [IO.File]::WriteAllText($precleanupMarker,'late')
+      }
+      Set-Item function:Wait-NativeOwner -Value { param($Schema,$Producer) [pscustomobject]@{lockId='new'} }
+      $script=$body
+      if ($variant -ceq 'omit-terminal-mutant') { $script=$script.Replace("if ($guard)",'if ($false)') }
+      $failure=$null
+      try { & ([scriptblock]::Create($script)) | Out-Null } catch { $failure=$_.Exception.Message }
+      $assertion=$null
+      try { Assert-Harness ($failure -ceq $message) "$name terminal state fails before a later signal: expected '$message'; actual '$failure'" } catch { $assertion=$_.Exception.Message }
+      if ($variant -ceq 'candidate') { if ($assertion) { throw $assertion } }
+      else {
+        Assert-Harness ($assertion -clike "ASSERTION FAILED: $name terminal state fails before a later signal*") "$name mutant reaches its terminal assertion"
+        Write-Output "MUTANT_RED native-$name $assertion"
+      }
+    }
+  }
+  $texts=@{}
+  foreach ($name in @('fixture','readyPython')) {
+    $assignment=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq ('$'+$name)},$true))
+    Assert-Harness ($assignment.Count -eq 1) "$name has one embedded native fixture"
+    $texts[$name]=$assignment[0].Right.Expression.Value
+  }
+  $python=@'
+import ast, copy, json, subprocess, sys, types
+texts=json.load(sys.stdin)
+rows=[]
+for name,source in texts.items():
+    tree=ast.parse(source)
+    for parent in ast.walk(tree):
+        for field,value in ast.iter_fields(parent):
+            if not isinstance(value,list): continue
+            for index,node in enumerate(value[:-1]):
+                if not isinstance(node,ast.While) or not isinstance(value[index+1],ast.Assert): continue
+                following=value[index+1]
+                arms=[]
+                for arm in node.test.values if isinstance(node.test,ast.BoolOp) else []:
+                    rendered=ast.unparse(arm)
+                    if 'process.poll()' in rendered: arms.append(('producer-exit',arm))
+                    elif 'result.json' in rendered: arms.append(('result-terminal',arm))
+                    elif "'/proc'" in rendered: arms.append(('init-absent',arm))
+                if not arms: continue
+                for terminal,target in arms:
+                    label=f'{name}:{node.lineno}:{terminal}'
+                    for mutant in (False,True):
+                        state={'late':False}
+                        class Path:
+                            def __init__(self,*parts): self.text='/'.join(map(str,parts))
+                            def __truediv__(self,part): return Path(self.text,part)
+                            def exists(self):
+                                if 'result.json' in self.text: return terminal=='result-terminal'
+                                if '/proc' in self.text: return terminal!='init-absent'
+                                return state['late']
+                            def read_text(self): return '42' if '/children' in self.text else '{"status":"completed"}'
+                        def poll(): return 7 if terminal=='producer-exit' else None
+                        def pace(_): state['late']=True
+                        env={'root':Path('/fixture'),'pathlib':types.SimpleNamespace(Path=Path),
+                             'process':types.SimpleNamespace(poll=poll),'time':types.SimpleNamespace(sleep=pace),
+                             'members':[],'expected':{'outerPid':41},'inner':1,'pid':41,
+                             'module':types.SimpleNamespace(identity=lambda outer:{'nspid':[outer,1]})}
+                        loop=copy.deepcopy(node)
+                        if mutant:
+                            arm_index=node.test.values.index(target)
+                            loop.test.values[arm_index]=ast.Constant(True)
+                        block=ast.fix_missing_locations(ast.Module(body=[loop,copy.deepcopy(following)],type_ignores=[]))
+                        failure=None
+                        try: exec(compile(block,'native-wait-control','exec'),env)
+                        except AssertionError as error: failure=str(error)
+                        assertion=None
+                        try:
+                            diagnostic=eval(compile(ast.Expression(following.msg),'native-diagnostic','eval'),env)
+                            assert failure==diagnostic and not state['late'], f'{label} terminal state must fail at the native missing-signal assertion before a later signal; actual={failure!r}'
+                        except AssertionError as error: assertion=str(error)
+                        if mutant:
+                            assert assertion is not None, f'{label} mutant survived'
+                            print('MUTANT_RED '+assertion,flush=True)
+                        else:
+                            assert assertion is None, assertion
+                        rows.append((label,mutant,failure,assertion))
+    if name=='fixture':
+        function=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='line')
+        for index in (1,3):
+            for mutant in (False,True):
+                fn=copy.deepcopy(function)
+                if mutant: fn.body[index].test=ast.Constant(True)
+                env={'select':types.SimpleNamespace(select=lambda *args:([] if index==1 else [1],[],[])),
+                     'json':types.SimpleNamespace(loads=lambda raw:{})}
+                exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'native-eof-control','exec'),env)
+                failure=None
+                try: env['line'](types.SimpleNamespace(stdout=types.SimpleNamespace(readline=lambda:b'')))
+                except AssertionError as error: failure=str(error)
+                expected='fixture producer reached EOF before reply' if index==1 else 'fixture producer EOF before reply'
+                assertion=None
+                try: assert failure==expected, f'line:{index} EOF must fail at its named assertion; actual={failure!r}'
+                except AssertionError as error: assertion=str(error)
+                if mutant:
+                    assert assertion is not None
+                    print('MUTANT_RED '+assertion,flush=True)
+                else: assert assertion is None,assertion
+                rows.append((f'line:{index}',mutant,failure,assertion))
+assert len(rows)==24, rows
+print('CONTROL native Python terminal guards GREEN cases='+str(len(rows)),flush=True)
+'@
+  $start=[Diagnostics.ProcessStartInfo]::new('C:\Windows\System32\wsl.exe')
+  $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+  $start.RedirectStandardInput=$true; $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+  $start.Environment['WSLENV']=''
+  foreach ($arg in @('-d','Ubuntu','--exec','/usr/bin/python3','-c',$python)) { $start.ArgumentList.Add($arg) }
+  $child=[Diagnostics.Process]::Start($start)
+  $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
+  $child.StandardInput.WriteLine(($texts|ConvertTo-Json -Compress)); $child.StandardInput.Close()
+  [void]$child.WaitForExit()
+  Write-Output $stdout.GetAwaiter().GetResult(); Write-Output $stderr.GetAwaiter().GetResult()
+  Assert-Harness ($child.ExitCode -eq 0) 'native Python terminal control exits zero'
+  Write-Output 'CONTROL native-terminal-controls GREEN'
+}
+if ($Control -ceq 'native-terminal-controls') { Test-NativeTerminalControls; return }
 if ($Control -ceq 'transition-pause-injection') { Test-TransitionPause; return }
 if ($Control -ceq 'harness-controls') { Test-HarnessControls; return }
+if ($Control -ceq 'claimant-pause-injection' -and -not $NativeDbOnly) {
+  foreach ($kind in @('ordinary-started','native-started','native-tuple')) {
+    foreach ($site in @('Read-FixtureOwner','Wait-NativeOwner')) {
+      foreach ($variant in @('candidate','share-read-mutant')) {
+        $start=[Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+        $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+        $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+        $start.Environment['HHV_PAUSE_KIND']=$kind; $start.Environment['HHV_PAUSE_SITE']=$site; $start.Environment['HHV_PAUSE_VARIANT']=$variant
+        foreach ($arg in @('-NoProfile','-File',$PSCommandPath,'-NativeDbOnly','-Control','claimant-pause-injection')) { $start.ArgumentList.Add($arg) }
+        $child=[Diagnostics.Process]::Start($start)
+        $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
+        [void]$child.WaitForExit()
+        Write-Output $stdout.GetAwaiter().GetResult(); Write-Output $stderr.GetAwaiter().GetResult()
+        Assert-Harness ($child.ExitCode -eq 0) "$kind $site $variant full claimant control exits zero"
+      }
+    }
+  }
+  Write-Output 'CONTROL claimant-pause-injection GREEN twelve complete claimant cases'
+  return
+}
 if ($NativeDbOnly) {
   $helper = (Join-Path $PSScriptRoot 'native-db-admission.py').Replace('\','/')
   if ($helper -notmatch '^([A-Za-z]):/(.*)$') { throw 'native fixture requires an absolute drive path' }
@@ -423,6 +599,7 @@ finally:
     shutil.rmtree(fixture)
     print('PASS copied native fixture cleanup: all owned processes exited; exact fixture root absent', flush=True)
 '@
+  if ($Control -cne 'claimant-pause-injection') {
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = 'C:\Windows\System32\wsl.exe'; $start.UseShellExecute = $false; $start.CreateNoWindow = $true
   $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -435,6 +612,7 @@ finally:
   Write-Output $output.GetAwaiter().GetResult()
   Write-Output $errors.GetAwaiter().GetResult()
   if ($process.ExitCode -ne 0) { throw "native copied-runtime qualification failed: $($process.ExitCode)" }
+  }
   $fixtureId = [guid]::NewGuid().ToString('N')
   $windowsRoot = Join-Path ([IO.Path]::GetTempPath()) "native-wrapper-$fixtureId"
   $linuxRoot = "/srv/chase-sets-pg-probe/native-db-component-$fixtureId"
@@ -513,6 +691,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     $requestPath = Join-Path $artifacts 'request.json'
     [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 12 -Compress))
     $nativeMode=@('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
+    if ($Control -cne 'claimant-pause-injection') {
     $missing=Start-NativeFixture $nativeMode -OmitBranch
     if ((Complete-NativeFixture $missing 73) -notmatch 'supply both') { throw 'native missing-branch refusal lost its boundary' }
     $exactHead=$head; $head='0'*40
@@ -553,6 +732,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     $replay=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
     $replayText=Complete-NativeFixture $replay 73
     if ($replayText -notmatch 'correlation already consumed' -or (Test-Path (Join-Path $runtime 'verify-lock.d'))) { throw 'duplicate correlation must refuse before acquisition' }
+    }
     foreach ($name in @('heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')) {
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime
     }
@@ -578,8 +758,6 @@ pathlib.Path(str(runner)+'.sha256').write_text(hashlib.sha256(runner.read_bytes(
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'),$copy)
     $request.stagedInputDirectory="$linuxRoot/inputs/synthetic"; $request.correlation=2
     [IO.File]::WriteAllText($requestPath,($request | ConvertTo-Json -Depth 12 -Compress))
-    $native=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
-    $nativeOwner=Wait-NativeOwner 6 -Producer $native
     $readyPython=@'
 import json,pathlib,sys,time
 root=pathlib.Path(sys.argv[1]); assert root.parent==pathlib.Path('/srv/chase-sets-pg-probe') and root.name.startswith('native-db-') and root.resolve()==root
@@ -587,6 +765,87 @@ pid=json.loads((root/'linux.json').read_text())['outerPid']
 while not (root/'scratch/ready').exists() and pathlib.Path('/proc',str(pid)).exists() and not (root/'result.json').exists(): time.sleep(.025)
 assert (root/'scratch/ready').exists(), 'inert payload did not enter: init absent or result terminal'
 '@
+    if ($Control -ceq 'claimant-pause-injection') {
+      $kind=$env:HHV_PAUSE_KIND; $site=$env:HHV_PAUSE_SITE; $variant=$env:HHV_PAUSE_VARIANT
+      Assert-Harness ($kind -cin @('ordinary-started','native-started','native-tuple') -and $site -cin @('Read-FixtureOwner','Wait-NativeOwner') -and $variant -cin @('candidate','share-read-mutant')) 'full claimant control has explicit case identity'
+      $pending=Join-Path $artifacts 'publication-pending'; $publicationRelease=Join-Path $artifacts 'publication-release'; $done=Join-Path $artifacts 'publication-done'
+      $predicate=switch ($kind) {
+        ordinary-started { '$Record.schemaVersion -eq 4 -and $Record.state -ceq "started"' }
+        native-started { '$Record.schemaVersion -eq 6 -and $Record.state -ceq "started" -and -not $Record.native.linux' }
+        native-tuple { '$Record.schemaVersion -eq 6 -and $Record.state -ceq "started" -and $Record.native.linux' }
+      }
+      $publication='[ChaseSets.HeavyAdmission.OwnerRename]::Publish($temporaryPath, $ownerPath, $destination)'
+      Assert-Harness ($copy.Split($publication).Count -eq 2) 'full claimant pause has one exact publication anchor'
+      $hook="if ($predicate) { [IO.File]::WriteAllText('$pending',`$raw); while (-not [IO.File]::Exists('$publicationRelease')) { Start-Sleep -Milliseconds 10 }; try { $publication; [IO.File]::WriteAllText('$done','published') } catch { [IO.File]::WriteAllText('$done','failed'); throw } } else { $publication }"
+      [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'),$copy.Replace($publication,$hook))
+      $mode=if ($kind -ceq 'ordinary-started') { @('-Gate','verify:static') } else { $nativeMode }
+      $claimant=Start-NativeFixture $mode
+      try {
+        Wait-FixtureSignal $pending $claimant.process 'full claimant publication pause'
+        $attempt=Get-Content $pending -Raw | ConvertFrom-Json -DateKind String
+        $reader=Get-FixtureDefinition ([IO.File]::ReadAllText($PSCommandPath)) $site
+        if ($site -ceq 'Wait-NativeOwner') {
+          $begin=$reader.IndexOf('$stream='); $end=$reader.IndexOf("`n          if (`$record.schemaVersion",$begin)
+          $reader='param($OwnerPath)' + "`n" + '$path=$OwnerPath;' + $reader.Substring($begin,$end-$begin) + '; return $raw'
+        }
+        $openLine=@($reader -split "`n" | Where-Object { $_.Contains('$stream=[IO.File]::Open(') })[0]
+        Assert-Harness ([bool]$openLine) "$site full claimant snapshot has one open"
+        $reader=$reader.Replace($openLine,$openLine+"`n [IO.File]::WriteAllText('$publicationRelease','release'); Wait-FixtureSignal '$done' `$claimant.process 'held-handle publication'")
+        if ($variant -ceq 'share-read-mutant') { $reader=$reader.Replace('([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete)','[IO.FileShare]::Read') }
+        if ($site -ceq 'Read-FixtureOwner') {
+          & { . ([scriptblock]::Create($reader)); Read-FixtureOwner (Join-Path $runtime 'verify-lock.d/owner.json') } | Out-Null
+        } else { & ([scriptblock]::Create($reader)) (Join-Path $runtime 'verify-lock.d/owner.json') | Out-Null }
+        $failure=$null
+        try { Assert-Harness ((Get-Content $done -Raw) -ceq 'published') "$site $kind full claimant publishes while the snapshot handle is held" } catch { $failure=$_.Exception.Message }
+        if ($variant -ceq 'share-read-mutant') {
+          Assert-Harness ($failure -ceq "ASSERTION FAILED: $site $kind full claimant publishes while the snapshot handle is held") 'full claimant observer mutant dies at its publication assertion'
+          Write-Output "MUTANT_RED full-claimant/$kind/$site $failure"
+        } else {
+          if ($failure) { throw $failure }
+          $schema=if ($kind -ceq 'ordinary-started') { 4 } else { 6 }
+          $observed=Wait-NativeOwner $schema -Producer $claimant
+          Assert-Harness ($observed.childPid -eq $attempt.childPid -and $observed.state -ceq 'started') "$kind full claimant publishes the exact started child"
+          if ($schema -eq 6) {
+            Assert-Harness ([bool]$observed.native.linux) "$kind full claimant publishes its Linux tuple"
+            $nativeOwner=$observed
+            & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $observed.native.root
+            Assert-Harness ($LASTEXITCODE -eq 0) "$kind full claimant enters inert payload after tuple publication"
+          } else { Wait-FixtureSignal (Join-Path $artifacts 'static-body') $claimant.process 'full ordinary claimant body' }
+        }
+      } finally {
+        [IO.File]::WriteAllText($publicationRelease,'release')
+        [IO.File]::WriteAllText((Join-Path $artifacts 'static-release'),'release')
+        $release="import pathlib,sys; r=pathlib.Path(sys.argv[1]); assert r.resolve()==r and r.parent==pathlib.Path('/srv/chase-sets-pg-probe') and r.name.startswith('native-db-component-'); (r/'release').write_text('release')"
+        & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/python3 -c $release $linuxRoot
+        Assert-Harness ($LASTEXITCODE -eq 0) 'full claimant control releases its own inert runner'
+        [void]$claimant.process.WaitForExit()
+      }
+      $text=$claimant.out.GetAwaiter().GetResult()+$claimant.err.GetAwaiter().GetResult()
+      [IO.File]::WriteAllText((Join-Path $artifacts 'claimant.log'),$text)
+      if ($variant -ceq 'candidate') {
+        Assert-Harness ($claimant.process.ExitCode -eq 0) "$kind full claimant completes successfully: $text"
+        if ($kind -cne 'ordinary-started') {
+          $reply=Select-NativeReply ($text -split "`n") $request.correlation 'completed'
+          $completion=Get-Content $reply.evidencePath -Raw | ConvertFrom-Json -DateKind String
+          Assert-Harness ($reply.owner.lockId -ceq $observed.lockId -and $completion.owner.native.linux.outerPid -eq $observed.native.linux.outerPid -and $completion.cleanup.initAbsent -and $completion.cleanup.rootAbsent) "$kind completion is bound to the published Linux tuple and exact absence proof"
+        }
+        Assert-Harness (-not (Test-Path (Join-Path $runtime 'verify-lock.d'))) "$kind full claimant releases its private owner"
+      } else {
+        Assert-Harness ($claimant.process.ExitCode -ne 0) "$kind observer mutant refuses instead of silently accepting publication failure"
+        if ($attempt.native.linux) {
+          @{linux=$attempt.native.linux} | ConvertTo-Json -Compress -Depth 8 | & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 "$linuxRoot/admission.py" reconcile $attempt.native.root
+          Assert-Harness ($LASTEXITCODE -eq 0) 'full claimant mutant independently reconciles its exact unpublished tuple'
+        }
+      }
+      $owned=Get-Process -Id $attempt.childPid -ErrorAction SilentlyContinue
+      if ($owned -and $owned.StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse($attempt.childProcessStartUtc).UtcTicks) { [void]$owned.WaitForExit() }
+      $live=Get-Process -Id $attempt.childPid -ErrorAction SilentlyContinue
+      Assert-Harness (-not $live -or $live.StartTime.ToUniversalTime().Ticks -ne [DateTimeOffset]::Parse($attempt.childProcessStartUtc).UtcTicks) "$kind full claimant child identity is absent"
+      Write-Output "CONTROL full-claimant GREEN kind=$kind site=$site variant=$variant wrapper=$($claimant.process.Id) child=$($attempt.childPid) exit=$($claimant.process.ExitCode)"
+      return
+    }
+    $native=Start-NativeFixture @('-NativeDbProfile','reconciliation-pg16/v1','-NativeRequestPath',$requestPath)
+    $nativeOwner=Wait-NativeOwner 6 -Producer $native
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $readyPython $nativeOwner.native.root
     if ($LASTEXITCODE -ne 0) { throw 'native winning body absent' }
     $loser=Start-NativeFixture @('-Gate','verify:static')
