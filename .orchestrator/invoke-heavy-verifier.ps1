@@ -112,6 +112,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:heavyAdmissionBudget = @{ watch=[Diagnostics.Stopwatch]::StartNew(); deadline=210000; observations=0; fences=0 }
 $isAttachedAdmission = $PSCmdlet.ParameterSetName -ceq "Attach"
 $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
@@ -624,6 +625,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
     foreach ($id in $cached.Starts.Keys) {
       try { $ticks = (Get-Process -Id $id -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
       catch { $unchanged = $false; break }
+      Assert-DispatchObservationTime
       if ($ticks -ne $cached.Starts[$id]) { $unchanged = $false; break }
     }
     # Windows parent edges are immutable within exact live process identities.
@@ -633,7 +635,14 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
   $script:heavyCallerAncestry = $null
   $chain = @{}
   $snapshot = @{}
-  foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop)) {
+  $cimBounds = @{}
+  if ($Evaluation) {
+    $remaining = [Math]::Min($Evaluation.deadline - $Evaluation.watch.ElapsedMilliseconds, $RemainingMs)
+    if ($remaining -lt 1000) { throw 'dispatch census evaluation exhausted' }
+    $cimBounds.OperationTimeoutSec = [uint32][Math]::Floor($remaining / 1000)
+  }
+  foreach ($row in @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate @cimBounds -ErrorAction Stop)) {
+    Assert-DispatchObservationTime
     $id = [int]$row.ProcessId
     if ($snapshot.ContainsKey($id)) { throw 'ambiguous process snapshot' }
     $snapshot[$id] = $row
@@ -661,6 +670,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
     }
     $process = Get-Process -Id $RootPid -ErrorAction Stop
     $ticks = $process.StartTime.ToUniversalTime().Ticks
+    Assert-DispatchObservationTime
     if (($ticks - ($ticks % 10)) -ne $row.CreationDate.ToUniversalTime().Ticks -or $ticks -gt $childTicks -or
         ($chain.Count -eq 0 -and $ticks -ne $expected)) { throw 'process ancestry PID reused' }
     $chain[$RootPid] = $ticks
@@ -687,6 +697,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
     if (-not $snapshot.ContainsKey($id) -or -not $snapshot[$id].CreationDate) { $starts = $null; break }
     try { $ticks = (Get-Process -Id $id -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
     catch { $starts = $null; break }
+    Assert-DispatchObservationTime
     if ($ticks - ($ticks % 10) -ne $snapshot[$id].CreationDate.ToUniversalTime().Ticks) { $starts = $null; break }
     $starts[$id] = $ticks
   }
@@ -696,6 +707,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
 function Get-HeavyRoutingRow($Record, [string]$RuntimeRoot) {
   $path = Join-Path $RuntimeRoot 'dispatch-log.jsonl'
   $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  Assert-DispatchObservationTime
   if ($file.PSIsContainer -or $file.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { throw 'routing history missing or unsafe' }
   if (-not ('ChaseSets.HeavyAdmission.RoutingHistory' -as [type])) {
     # Stream the complete history in managed code, not one PowerShell pipeline
@@ -707,8 +719,13 @@ using System.IO;
 using System.Text.Json;
 namespace ChaseSets.HeavyAdmission {
   public static class RoutingHistory {
-    public static IEnumerable<string> RelevantRows(string path, string label, string transcript) {
-      foreach (string line in File.ReadLines(path)) {
+    public static IEnumerable<string> RelevantRows(string path, string label, string transcript, Action checkExpiry) {
+      using (var reader = new StreamReader(path)) {
+      checkExpiry();
+      while (true) {
+        string line = reader.ReadLine();
+        checkExpiry();
+        if (line == null) break;
         if (String.IsNullOrWhiteSpace(line)) continue;
         using (JsonDocument document = JsonDocument.Parse(line)) {
           JsonElement schema;
@@ -721,13 +738,15 @@ namespace ChaseSets.HeavyAdmission {
           if (relevant) yield return line;
         }
       }
+      }
     }
   }
 }
 '@
   }
+  Assert-DispatchObservationTime
   $candidates = @()
-  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows($path, $Record.label, (Split-Path -Leaf $Record.transcriptPath))) {
+  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows($path, $Record.label, (Split-Path -Leaf $Record.transcriptPath), [Action]{ Assert-DispatchObservationTime })) {
     $row = ConvertFrom-DispatchClosedJson $line
     if ($null -eq $row) { throw 'routing history malformed' }
     $keys = @(Get-DispatchRoutingLedgerKeys $row.dispatchRoutingSchema $row)
@@ -789,24 +808,106 @@ function Write-AdmissionPending([int]$BudgetMs) {
     }
   }
 }
-function Get-HeavyOwnershipCensusDeadlineMs([int]$CandidateCount) {
-  # Serial Git identity probes need fleet-sized time, not fleet-sized authority.
-  # Allow 2s per candidate (reported throughput: 3-8 records/5s), retaining the
-  # 5s floor and a 30s census budget ceiling. No retry or cached identity proof.
-  return [int][Math]::Min([long]30000, [Math]::Max([long]5000, 2000 * [long]$CandidateCount))
+function Assert-DispatchObservationTime {
+  $budgets = (Get-Variable dispatchCheckedBudgets -ErrorAction SilentlyContinue).Value
+  foreach ($budget in $budgets) {
+    if ($budget.watch.ElapsedMilliseconds -ge $budget.deadline) {
+      throw 'dispatch census evaluation deadline'
+    }
+  }
 }
-function Get-HeavyCallerBinding([switch]$Recheck) {
-  $result = [ordered]@{ Record = $null; Raw = $null; Path = $null; Row = $null; RoutingRaw = $null; Reason = $null }
+
+function Test-DispatchCensusReobservation($Ownership) {
+  $retry = $false
+  foreach ($diagnostic in $Ownership.health.diagnostics) {
+    if ((Get-LaneDiagnosticSeverity $diagnostic.code) -cne 'blocking') { continue }
+    if ($diagnostic.code -cin @('ownership-record-invalid','ownership-deadline-truncated',
+        'terminal-transcript-live-process','product-census-git-deadline') -or
+        ($diagnostic.code -ceq 'worktree-outside-container' -and $diagnostic.reason -ceq 'git-deadline')) {
+      $retry = $true
+    } else { return $false }
+  }
+  return $retry
+}
+
+function Get-DispatchBlockingDiagnostics($Ownership) {
+  return (@($Ownership.health.diagnostics | Where-Object {
+    (Get-LaneDiagnosticSeverity ([string]$_.code)) -ceq 'blocking'
+  } | ForEach-Object { "$($_.code):$($_.lane)" }) -join ',')
+}
+
+function Get-DispatchCensusPaths([string]$RuntimeRoot, [int]$Limit = [int]::MaxValue) {
+  $iterator = [IO.Directory]::EnumerateFiles($RuntimeRoot, 'dispatch-launch-*.json').GetEnumerator()
+  try {
+    Assert-DispatchObservationTime
+    for ($index = 0; $index -lt $Limit; $index++) {
+      $more = $iterator.MoveNext()
+      Assert-DispatchObservationTime
+      if (-not $more) { break }
+      $iterator.Current
+    }
+  } finally { $iterator.Dispose() }
+}
+
+function Get-HeavyCallerBinding {
+  $evaluation = @{watch=[Diagnostics.Stopwatch]::StartNew();deadline=90000;productPasses=0}
+  $admission = $script:heavyAdmissionBudget
+  if (-not $admission) { $admission = @{watch=[Diagnostics.Stopwatch]::StartNew();deadline=210000;observations=0;fences=1} }
+  $evaluation.deadline = [Math]::Min($evaluation.deadline, $admission.deadline - $admission.watch.ElapsedMilliseconds)
+  $dispatchCheckedBudgets = @($evaluation, $admission)
+  $anchor = $null
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $remaining = [Math]::Min($evaluation.deadline - $evaluation.watch.ElapsedMilliseconds,
+      $admission.deadline - $admission.watch.ElapsedMilliseconds)
+    $reserved = [Math]::Max(0, 3 - $admission.fences)
+    if ($remaining -le 0 -or $admission.observations -ge 6 - $reserved) {
+      return [pscustomobject]@{Reason='dispatch census evaluation exhausted'}
+    }
+    $admission.observations++
+    $binding = Get-HeavyCallerObservation $evaluation $remaining
+    if ($anchor -and ($binding.Record -or -not $binding.Reason) -and ($anchor.Path -cne $binding.Path -or $anchor.Raw -cne $binding.Raw -or
+        $anchor.RoutingRaw -cne $binding.RoutingRaw)) {
+      $binding.Reason = 'dispatch census changed authority'; return $binding
+    }
+    if ($binding.Record) { $anchor = $binding }
+    if ($evaluation.watch.ElapsedMilliseconds -ge $evaluation.deadline -or
+        $admission.watch.ElapsedMilliseconds -ge $admission.deadline) { $binding.Reason='dispatch census evaluation exhausted' }
+    if (-not $binding.Reason -or ($binding.Reason -cne 'dispatch census changed' -and -not $binding.Retryable)) { return $binding }
+  }
+  return $binding
+}
+
+
+function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
+  $result = [ordered]@{ Record = $null; Raw = $null; Path = $null; Row = $null; RoutingRaw = $null; Reason = $null; Retryable = $false }
   try {
     $runtime = Join-Path $container '.orchestrator'
     $rootPid = if ($isAttachedAdmission) { $GuardedPid } else { $PID }
     $rootStart = if ($isAttachedAdmission) { $GuardedProcessStartUtc } else { (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o') }
+    Assert-DispatchObservationTime
     $observedGitIdentities = @{}
-    # This bounded sample selects time only; the census and subsequent exact
-    # record enumeration still prove completeness. Other census callers retain
-    # their own budgets, including the separate product-census proof allowance.
-    $candidateCount = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Select-Object -First 15).Count
-    $censusDeadlineMs = Get-HeavyOwnershipCensusDeadlineMs $candidateCount
+    $beforePaths = @(Get-DispatchCensusPaths $runtime | Sort-Object)
+    $beforeBytes = @{}
+    foreach ($path in $beforePaths) {
+      if (-not [IO.File]::Exists($path)) { throw 'dispatch census changed' }
+      $beforeBytes[$path] = [IO.File]::ReadAllText($path)
+      Assert-DispatchObservationTime
+      $candidate = Get-ValidatedDispatchOwnershipRecord $path $runtime ([IO.Path]::GetTempPath())
+      Assert-DispatchObservationTime
+      if ($candidate -and (Test-DispatchSamePath $candidate.worktree $acquiredGitIdentity.Worktree)) {
+        if ($Evaluation.ContainsKey('selectedPath') -and $Evaluation.selectedPath -cne $path -and
+            $beforePaths -ccontains $Evaluation.selectedPath) { throw 'dispatch census unknown or incomplete' }
+        if ($Evaluation.ContainsKey('selectedPath') -and
+            ($Evaluation.selectedPath -cne $path -or $Evaluation.selectedRaw -cne $beforeBytes[$path])) { throw 'selected dispatch bytes changed' }
+        $Evaluation.selectedPath = $path; $Evaluation.selectedRaw = $beforeBytes[$path]
+      }
+    }
+    if ($Evaluation.ContainsKey('selectedPath') -and -not $beforeBytes.ContainsKey($Evaluation.selectedPath)) { throw 'selected dispatch bytes changed' }
+    Assert-DispatchObservationTime
+    # Record count bounds the census. Only the shared checked clocks bound time;
+    # a nested per-record estimate must not truncate otherwise-valid authority.
+    $censusDeadlineMs = [int][Math]::Min($RemainingMs, $Evaluation.deadline-$Evaluation.watch.ElapsedMilliseconds)
+    if ($censusDeadlineMs -le 0) { throw 'dispatch census evaluation exhausted' }
     Write-AdmissionPending $censusDeadlineMs
     $live = Get-LiveDispatchOwnership -RuntimeRoot $runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $container -DeadlineMs $censusDeadlineMs -GitIdentityResolver {
       param($Worktree)
@@ -814,23 +915,38 @@ function Get-HeavyCallerBinding([switch]$Recheck) {
       $observedGitIdentities[$Worktree] = $identity
       return $identity
     }
+    Assert-DispatchObservationTime
+    if ($Evaluation.ContainsKey('selectedPath') -and (-not [IO.File]::Exists($Evaluation.selectedPath) -or
+        [IO.File]::ReadAllText($Evaluation.selectedPath) -cne $Evaluation.selectedRaw)) { throw 'selected dispatch bytes changed' }
+    Assert-DispatchObservationTime
     if ($live.health.counts.truncated -gt 0 -or $live.health.counts.rejected -gt 0 -or
-        $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0) { throw 'dispatch census unknown or incomplete' }
-    $paths = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Sort-Object)
+        $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0) {
+      $result.Retryable = Test-DispatchCensusReobservation $live
+      throw 'dispatch census unknown or incomplete'
+    }
+    $paths = @(Get-DispatchCensusPaths $runtime | Sort-Object)
     if ($paths.Count -ne $live.health.counts.examined) { throw 'dispatch census changed' }
+    if (($beforePaths -join "`n") -cne ($paths -join "`n")) { throw 'dispatch census changed' }
     $snapshots = @{}
     $records = @{}
     $oldestLaunch = [long]::MaxValue
     foreach ($path in $paths) {
       $snapshots[$path] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path))
+      Assert-DispatchObservationTime
       $record = Get-ValidatedDispatchOwnershipRecord $path $runtime ([IO.Path]::GetTempPath())
+      Assert-DispatchObservationTime
       if ($null -eq $record) { throw 'dispatch record malformed or missing role' }
+      if ($beforeBytes[$path] -cne $snapshots[$path]) {
+        if (Test-DispatchSamePath $record.worktree $acquiredGitIdentity.Worktree) { throw 'selected dispatch bytes changed' }
+        throw 'dispatch census changed'
+      }
       $records[$path] = $record
       $startIdentity = if ($record.childPid) { $record.childStartIdentity } else { $record.launcherStartIdentity }
       $oldestLaunch = [Math]::Min($oldestLaunch, [DateTimeOffset]::Parse($startIdentity).UtcTicks)
     }
     $candidatePids = @($records.Values | ForEach-Object { [int]$_.launcherPid; if ($_.childPid) { [int]$_.childPid } })
     $before = Get-HeavyCallerAncestry $rootPid $rootStart $oldestLaunch $candidatePids @($records.Values)
+    Assert-DispatchObservationTime
     $matches = @()
     $pendingLaunches = @()
     foreach ($path in $paths) {
@@ -870,6 +986,7 @@ function Get-HeavyCallerBinding([switch]$Recheck) {
       $result.Record = $matches[0].Record; $result.Path = $matches[0].Path; $result.Raw = $matches[0].Raw
       if ($result.Record.laneRole -ceq 'implementation') {
         $routing = Get-HeavyRoutingRow $result.Record $runtime
+        Assert-DispatchObservationTime
         $result.Row = $routing.Row; $result.RoutingRaw = $routing.Raw
       }
     }
@@ -877,29 +994,32 @@ function Get-HeavyCallerBinding([switch]$Recheck) {
     # every captured ancestor again without repeating the full CIM enumeration.
     foreach ($id in $before.Keys) {
       $process = Get-Process -Id $id -ErrorAction Stop
+      Assert-DispatchObservationTime
       if ($process.StartTime.ToUniversalTime().Ticks -ne $before[$id]) { throw 'ancestry changed' }
     }
-    $afterPaths = @([IO.Directory]::EnumerateFiles($runtime, 'dispatch-launch-*.json') | Sort-Object)
+    $afterPaths = @(Get-DispatchCensusPaths $runtime | Sort-Object)
     $foreignChanged = ($paths -join "`n") -cne ($afterPaths -join "`n")
     foreach ($path in $paths) {
       if (-not [IO.File]::Exists($path) -or -not [string]::Equals([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path)), $snapshots[$path], [StringComparison]::Ordinal)) {
         if ($path -ceq $result.Path) { throw 'selected dispatch bytes changed' }
         $foreignChanged = $true
       }
+      Assert-DispatchObservationTime
     }
     if ($foreignChanged) {
-      if ($Recheck) { throw 'dispatch census kept changing' }
-      # Foreign lifecycle bytes are not selected authority. Re-census their
-      # semantics once instead of denying an unrelated healthy transition.
-      $fresh = Get-HeavyCallerBinding -Recheck
-      if ($fresh.Reason -or $fresh.Path -cne $result.Path -or -not [string]::Equals($fresh.Raw, $result.Raw, [StringComparison]::Ordinal) -or
-          -not [string]::Equals($fresh.RoutingRaw, $result.RoutingRaw, [StringComparison]::Ordinal)) { throw "dispatch census changed authority: $($fresh.Reason)" }
-      return $fresh
+      throw 'dispatch census changed'
+    }
+    # Preserve the selected-owner refusal above, but never accept a complete
+    # census with a blocking diagnostic merely because its counters are zero.
+    if ((Get-DispatchBlockingDiagnostics $live)) {
+      $result.Retryable = Test-DispatchCensusReobservation $live
+      throw 'dispatch census unknown or incomplete'
     }
   } catch { $result.Reason = $_.Exception.Message }
   return [pscustomobject]$result
 }
 function Assert-HeavyCallerEligibility($Expected = $null) {
+  if ($script:heavyAdmissionBudget) { $script:heavyAdmissionBudget.fences++ }
   $binding = Get-HeavyCallerBinding
   if ($binding.Reason) { throw "heavy-verifier: caller eligibility: $($binding.Reason)" }
   $workspaceDbImplementationLane = $isWorkspaceDbTest -and $binding.Record -and
@@ -910,7 +1030,26 @@ function Assert-HeavyCallerEligibility($Expected = $null) {
   }
   if ($Expected -and ($Expected.Path -cne $binding.Path -or -not [string]::Equals($Expected.Raw, $binding.Raw, [StringComparison]::Ordinal) -or
       -not [string]::Equals($Expected.RoutingRaw, $binding.RoutingRaw, [StringComparison]::Ordinal))) { throw 'heavy-verifier: caller eligibility: launch or routing identity changed' }
+  Assert-HeavyAdmissionTime
   return $binding
+}
+function Assert-HeavyAdmissionTime {
+  if ($script:heavyAdmissionBudget -and $script:heavyAdmissionBudget.watch.ElapsedMilliseconds -ge $script:heavyAdmissionBudget.deadline) {
+    throw 'heavy-verifier: caller eligibility: admission deadline'
+  }
+}
+function Assert-HeavyAdmissionAfterLock([bool]$LockCreated) {
+  if (-not $LockCreated) { return }
+  try {
+    Assert-HeavyAdmissionTime
+  } catch {
+    # No owner record or queue mutation exists yet. Release only the empty
+    # directory this invocation just acquired, then refuse the expired census.
+    if ((Test-SafeDirectory $lockPath) -and -not (Test-Path -LiteralPath $ownerPath)) {
+      Remove-Item -LiteralPath $lockPath -Force -ErrorAction Stop
+    }
+    throw 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted'
+  }
 }
 try { . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') }
 catch { throw "heavy-verifier: caller eligibility: ownership reader unavailable: $($_.Exception.Message)" }
@@ -2684,7 +2823,10 @@ $coordinationMutex = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-ver
 $mutexHeld = $false
 try {
   try {
-    $mutexHeld = $coordinationMutex.WaitOne()
+    $remaining = $script:heavyAdmissionBudget.deadline - $script:heavyAdmissionBudget.watch.ElapsedMilliseconds
+    Assert-HeavyAdmissionTime
+    $mutexHeld = $coordinationMutex.WaitOne([int][Math]::Max(0, $remaining))
+    if (-not $mutexHeld) { throw 'heavy-verifier: caller eligibility: admission deadline' }
   } catch [Threading.AbandonedMutexException] {
     $mutexHeld = $true
   }
@@ -2705,11 +2847,14 @@ try {
     }
   }
   $queueLockCreated = $false
+  Assert-HeavyAdmissionTime
   try {
     New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
     $queueLockCreated = $true
   } catch {
+    Assert-HeavyAdmissionTime
     if (-not (Invoke-StaleLockReclamation)) { Describe-ExistingLock }
+    Assert-HeavyAdmissionTime
     try {
       New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
       $queueLockCreated = $true
@@ -2717,6 +2862,7 @@ try {
       Describe-ExistingLock
     }
   }
+  Assert-HeavyAdmissionAfterLock $queueLockCreated
   if ($queueContext) {
     try { Remove-QueueTicket $queueContext }
     catch {
@@ -2772,6 +2918,7 @@ try {
       Start-NestedOwner $ownedRaw $GuardedPid $GuardedProcessStartUtc "attached" $nestedBinding
       $script:nestedTransport = New-NestedTransportDescriptor
     }
+    Assert-HeavyAdmissionTime
     Write-AdmissionResult $true "admitted" $owner
     while ($true) {
       $guardedState = Get-ProcessIdentityState $GuardedPid $GuardedProcessStartUtc
@@ -2907,6 +3054,7 @@ try {
     # The child is started normally, then assigned immediately. The assignment
     # window is limited to the native Process.Start-to-AssignProcessToJobObject
     # sequence; KillOnClose and descendant cleanup remain fail-closed.
+    Assert-HeavyAdmissionTime
     $child = [Diagnostics.Process]::Start($start)
     if ($isTimedRoute -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
     if ($TestDelayChildPublicationMilliseconds -gt 0) {

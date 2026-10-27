@@ -140,11 +140,13 @@ function Stop-CensusFixtureGitTree($Process) {
 
 function ConvertTo-DeterministicBudgetSubject([string]$Source) {
   $clock = '[Diagnostics.Stopwatch]::new()'; $wait = '$process.WaitForExit([int]$remaining)'
+  $resolverClock = '[Diagnostics.Stopwatch]::StartNew()'
   $meteredWait = '$deterministicBudgetMeter.WaitForProcess($process,@($outRead,$errRead),@($stdout.Length,$stderr.Length))'
-  Assert-CensusFixture (([regex]::Matches($Source,[regex]::Escape($clock))).Count -eq 2 -and
+  Assert-CensusFixture (([regex]::Matches($Source,[regex]::Escape($clock))).Count -eq 1 -and
+    ([regex]::Matches($Source,[regex]::Escape($resolverClock))).Count -eq 1 -and
     ([regex]::Matches($Source,[regex]::Escape($wait))).Count -eq 1) 'deterministic meter replaces exactly the two budget clocks and the one budget wait'
-  $metered = $Source.Replace($wait,$meteredWait).Replace($clock,'$deterministicBudgetMeter')
-  Assert-CensusFixture ($metered.Replace($meteredWait,$wait).Replace('$deterministicBudgetMeter',$clock) -ceq $Source) 'deterministic subject differs only at the budget reads'
+  $metered = $Source.Replace($wait,$meteredWait).Replace($clock,'$deterministicBudgetMeter').Replace($resolverClock,'($deterministicBudgetMeter)')
+  Assert-CensusFixture ($metered.Replace($meteredWait,$wait).Replace('($deterministicBudgetMeter)',$resolverClock).Replace('$deterministicBudgetMeter',$clock) -ceq $Source) 'deterministic subject differs only at the budget reads'
   return $metered
 }
 

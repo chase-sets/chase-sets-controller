@@ -24,8 +24,13 @@ foreach ($definition in $ast.FindAll({ param($n)
   }, $false)) {
   . ([scriptblock]::Create($definition.Extent.Text))
 }
-$budget = Get-HeavyOwnershipCensusDeadlineMs 12
-Assert-True ($budget -eq 24000) 'fixture uses the actual 12-candidate holder budget'
+# The waiter protocol fixture is independent of the caller's budget selection.
+$budget = 24000
+. (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
+function Get-HeavyCallerBinding {
+  $evaluation = @{ watch = [pscustomobject]@{ ElapsedMilliseconds = 0 }; deadline = $budget }
+  Get-HeavyCallerObservation $evaluation $budget
+}
 
 # The VM executes the complete production acquire path with synthetic OS/time
 # boundaries. No holder process, heavy body, real admission or lock is created.
