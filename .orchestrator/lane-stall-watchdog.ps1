@@ -9,6 +9,8 @@ param(
   # Host fairness holds are closed, exact-lane authority. The producer writes
   # the record before stopping a lane; the reducer only reads it here.
   [Parameter(DontShow)][string]$HostHoldPath,
+  # Test-only barrier between observation and the pre-dispatch hold recheck.
+  [Parameter(DontShow)][string]$HostHoldBarrierFixture,
   [Parameter(DontShow)][string]$IntegrationAuthorityFixturePath,
   [Parameter(DontShow)][string]$DispatchScript=(Join-Path $PSScriptRoot 'dispatch-lane.ps1'),
   [Parameter(DontShow)][string]$LogScript=(Join-Path $PSScriptRoot 'log-event.ps1'),
@@ -71,9 +73,11 @@ function Read-HostHold([string]$Path,$Spec,[string]$RuntimeRoot){
     if(-not[string]::Equals((Split-Path -Parent $resolved).TrimEnd('\','/'),$runtime,[StringComparison]::OrdinalIgnoreCase)){
       throw 'WATCHDOG_HOST_HOLD_UNKNOWN'
     }
-    if(-not(Test-Path -LiteralPath $resolved -PathType Leaf)){return $null}
-    $item=Get-Item -LiteralPath $resolved -Force -ErrorAction Stop
-    if($item.PSIsContainer-or($item.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'WATCHDOG_HOST_HOLD_UNKNOWN'}
+    # Only a truly absent entry is no hold. A directory, or any reparse point
+    # (including a dangling one), is unreadable authority and fails closed.
+    $info=[IO.FileInfo]::new($resolved);$info.Refresh()
+    if([int]$info.Attributes-eq-1){return $null}
+    if(($info.Attributes-band([IO.FileAttributes]::Directory-bor[IO.FileAttributes]::ReparsePoint))-ne0){throw 'WATCHDOG_HOST_HOLD_UNKNOWN'}
     $hold=Get-Content -LiteralPath $resolved -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
     $keys=@('schemaVersion','authority','state','label','attemptId','launchId','worktree','branch','head','recordedAt')
     $actual=@($hold.PSObject.Properties.Name)
@@ -565,7 +569,7 @@ if((-not$detachedReview-and$spec.branch-cnotmatch'^[A-Za-z0-9][A-Za-z0-9._/-]{0,
 if(-not(Test-Path -LiteralPath ([string]$spec.originalPromptPath) -PathType Leaf)){throw 'WATCHDOG_UNKNOWN_SPEC_ORIGINAL_PROMPT'}
 if(-not(Test-Path -LiteralPath ([string]$spec.worktree) -PathType Container)){throw 'WATCHDOG_UNKNOWN_SPEC_WORKTREE'}
 $hostHold=Read-HostHold $effectiveHostHoldPath $spec $runtimeFull
-if($hostHold-and$hostHold.state-ceq'HELD'){
+if($hostHold-and$hostHold.state-ceq'HELD'){ # HOST_HOLD_OBSERVATION_GUARD
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
 }
 $fixture=if($ObservationFixture){Get-Content -LiteralPath $ObservationFixture -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}else{$null}
@@ -641,8 +645,14 @@ $refuseNoFallback={
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='NO_QUALIFIED_FALLBACK';relaunch=$false;relaunchCount=[int]$spec.relaunchCount;implementationAttemptIncrement=0;row=[int]$spec.row;model=[string]$spec.model;effort=[string]$spec.effort}|ConvertTo-Json -Compress;return
 }
 $nextCount=[int]$spec.relaunchCount+1
+if($HostHoldBarrierFixture){
+  [IO.File]::WriteAllText($HostHoldBarrierFixture+'.ready','pre-dispatch')
+  $barrierDeadline=[DateTime]::UtcNow.AddSeconds(300)
+  while(-not[IO.File]::Exists($HostHoldBarrierFixture+'.continue')){if([DateTime]::UtcNow-gt$barrierDeadline){throw 'WATCHDOG_HOST_HOLD_BARRIER_TIMEOUT'};Start-Sleep -Milliseconds 20}
+}
+# Recheck immediately before any dispatch: a hold published after observation still vetoes.
 $hostHold=Read-HostHold $effectiveHostHoldPath $spec $runtimeFull
-if($hostHold-and$hostHold.state-ceq'HELD'){
+if($hostHold-and$hostHold.state-ceq'HELD'){ # HOST_HOLD_DISPATCH_GUARD
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
 }
 if($nextCount-gt3){
