@@ -462,10 +462,10 @@ function Invoke-ReaderInventory {
       $table.Add(@{site="${name}:$line";api=$lines[$line-1].Trim();shareBefore='unchanged fixture API';shareAfter='unchanged';decoder='unchanged fixture decoder';callers='fixture-local assertion/observation';owner='fixture-only: synthetic lock or retained-byte assertion, not production publication'})
     }
   }
-  foreach($line in @(462,469,560,562,593,691)) {
+  foreach($line in @(5,1136)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='1/3/libuv';shareAfter='unchanged';decoder='unchanged';callers='interruption / teardown / embedded Node';owner='#9624, deliberately not converted'})
   }
-  foreach($line in @(20,32,33,92,124,125,154,162,174,194,195,205,209,315,396,399,504,505,531,533)) {
+  foreach($line in @(374,387,446,477,478,507,515,527,546,547,556,559,667,750,753,764,938,939,965,967)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='Python read_text/read_bytes or pipe read';shareAfter='unchanged';decoder='unchanged Python decoder';callers='embedded native fixture setup / proc observation / pipe transport';owner='#9624; non-heavy-owner fixture/proc/transport reads, explicitly retained'})
   }
   $table.Add(@{site='controller-install-lock.psm1:230';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
