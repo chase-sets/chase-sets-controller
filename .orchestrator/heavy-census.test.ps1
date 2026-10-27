@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param([string]$GuardRevision = '',
-  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget')][string]$Mutant = '',
-  [switch]$SafetyOnly)
+  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -21,12 +20,6 @@ function New-CensusClock {
   return $clock
 }
 $ownershipSource = Read-Source 'dispatch-ownership.ps1'
-# Before the additive seam commit, meter the existing private construction.
-# No authority, timeout, counter or census result is replaced.
-if (-not $ownershipSource.Contains('[scriptblock]$ClockResolver')) {
-  $ownershipSource = $ownershipSource.Replace('watch=[Diagnostics.Stopwatch]::new();deadline=$DeadlineMs',
-    'watch=(New-CensusClock);deadline=$DeadlineMs')
-}
 . ([scriptblock]::Create($ownershipSource))
 $source = Read-Source 'invoke-heavy-verifier.ps1'
 if ($Mutant -ceq 'omit-truncation') {
@@ -59,7 +52,6 @@ function Get-HeavyCallerAncestry {
   if ($fixture.Mode -ceq 'churn-late' -and $fixture.Calls -eq 1) { & $fixture.Hook }
   if ($fixture.Mode -ceq 'churn-persistent') { & $fixture.Hook }
   if ($fixture.Mode -ceq 'churn-selected') { & $fixture.Hook }
-  if ($fixture.Mode -ceq 'native-expired') { $fixture.Now = 90001 }
   return @{ 9011 = $instant.Ticks }
 }
 function Get-DispatchGitIdentity([string]$Worktree) {
@@ -85,7 +77,7 @@ function Get-LiveDispatchOwnership {
       & $callerGitResolver $Worktree
     }
   }
-  if ($ownershipSource.Contains('[scriptblock]$ClockResolver')) { $parameters.ClockResolver = { New-CensusClock } }
+  $parameters.ClockResolver = { New-CensusClock }
   if ($fixture.Mode -ceq 'deadline-persistent' -or
       ($fixture.Mode -ceq 'deadline-once' -and $fixture.Calls -eq 1)) { $parameters.DeadlineMs = 0 }
   $fixture.Last = & $census @parameters
@@ -100,6 +92,7 @@ function Get-LiveDispatchOwnership {
 }
 function Reset-Fixture([string]$Mode = 'healthy', [int]$Cost = 0, [long]$AdmissionElapsed = 0) {
   foreach ($entry in $recordBytes.GetEnumerator()) { [IO.File]::WriteAllText($entry.Key, $entry.Value) }
+  [IO.File]::WriteAllText($caller.transcriptPath, '{"type":"item.completed"}' + [Environment]::NewLine)
   foreach ($path in @($replacementPath, $tailPath)) {
     if ($path -and [IO.File]::Exists($path)) { [IO.File]::Delete($path) }
   }
@@ -109,8 +102,16 @@ function Reset-Fixture([string]$Mode = 'healthy', [int]$Cost = 0, [long]$Admissi
   $script:heavyAdmissionBudget = @{ watch = (New-CensusClock); deadline = 210000; observations = 0; fences = 1 }
   $fixture.Now = $AdmissionElapsed
 }
-function Assert-Refusal([string]$Reason, [string]$Case) {
-  $binding = Get-HeavyCallerBinding
+function Assert-Refusal([string]$Reason, [string]$Case, [switch]$Observation) {
+  if ($Observation) {
+    # Discriminate each census health guard within one observation. Aggregate
+    # retry/ceiling policy is exercised separately by budget-composition.
+    $evaluation = @{ watch = (New-CensusClock); deadline = 90000 }
+    $dispatchCheckedBudgets = @($evaluation, $script:heavyAdmissionBudget)
+    $binding = Get-HeavyCallerObservation $evaluation $evaluation.deadline
+  } else {
+    $binding = Get-HeavyCallerBinding
+  }
   Assert-True ($binding.Reason -ceq $Reason) "$Case reason=$($binding.Reason) expected=$Reason"
   return $binding
 }
@@ -164,6 +165,66 @@ try {
   $replacementRaw = $replacement | ConvertTo-Json -Compress
   $tailPath = Join-Path $runtime 'dispatch-launch-00000000-0000-0000-0000-000000000100.json'
 
+
+  $failures = [Collections.Generic.List[string]]::new()
+  $referenceBinding = $null
+  foreach ($cost in @(0, 1000, 4000, 7000)) {
+    Reset-Fixture 'healthy' $cost
+    $binding = Get-HeavyCallerBinding
+    $counts = $fixture.Last.health.counts
+    $reason = $binding.Reason
+    Write-Output "slow-probe-verdict-equivalence cost=$cost candidates=$($counts.candidates) examined=$($counts.examined) truncated=$($counts.truncated) gitCalls=$($fixture.GitCalls) observations=$($fixture.Calls) reason=$reason"
+    if ($reason) { $failures.Add("cost=$cost reason=$reason"); continue }
+    if (-not $referenceBinding) { $referenceBinding = $binding }
+    Assert-True ($binding.Path -ceq $referenceBinding.Path -and $binding.Raw -ceq $referenceBinding.Raw -and
+      $binding.RoutingRaw -ceq $referenceBinding.RoutingRaw -and $binding.Row -eq 7) 'slow-probe-verdict-equivalence exact path/bytes/routing'
+    Assert-True ($counts.candidates -eq 11 -and $counts.examined -eq 11 -and $counts.active -eq 11 -and $counts.truncated -eq 0 -and
+      $fixture.GitCalls -eq 11 -and $fixture.Calls -eq 1) 'slow-probe-verdict-equivalence complete fresh probes without retry'
+  }
+  Assert-True ($failures.Count -eq 0) "slow-probe-verdict-equivalence: $($failures -join '; ')"
+  Write-Output 'PASS slow-probe-verdict-equivalence costs=0,1000,4000,7000'
+
+  Reset-Fixture 'healthy' 4000 180000
+  $null = Assert-Refusal 'dispatch census evaluation exhausted' 'slow-probe-ceiling'
+  Assert-True ($fixture.Last.health.counts.truncated -gt 0 -and $fixture.Calls -eq 1) 'slow-probe-ceiling ends mid-census without re-observation'
+  Assert-True (-not [IO.Directory]::Exists((Join-Path $runtime 'verify-lock.d')) -and
+    -not [IO.Directory]::Exists((Join-Path $runtime 'controller-verify-lock.d'))) 'slow-probe-ceiling no reservation'
+  Write-Output 'PASS slow-probe-ceiling reason=dispatch census evaluation exhausted; no reservation/body'
+
+  foreach ($elapsed in @(0, 140000, 180000, 209999)) {
+    Reset-Fixture 'healthy' 0 $elapsed
+    $binding = Get-HeavyCallerBinding
+    $remaining = [Math]::Min(90000, 210000 - $elapsed)
+    Assert-True (-not $binding.Reason -and $fixture.Pending.Count -eq 1 -and
+      $fixture.Pending[0] -eq $remaining -and $fixture.Pending[0] -le 210000) "pending-budget-is-ceiling elapsed=$elapsed pending=$($fixture.Pending -join ',')"
+    Write-Output "PASS pending-budget-is-ceiling elapsed=$elapsed budgetMs=$($fixture.Pending[0])"
+  }
+
+  foreach ($cost in @(0, 4000)) {
+    foreach ($mode in @('invalid', 'process-unknown', 'git-failed', 'legacy', 'cap-tail', 'transcript-unknown', 'duplicate')) {
+      Reset-Fixture $mode $cost
+      if ($mode -ceq 'invalid') { [IO.File]::WriteAllText($foreignPath, '{}') }
+      if ($mode -ceq 'legacy') {
+        $legacy = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+        $legacy.schemaVersion = 3
+        $legacy.PSObject.Properties.Remove('label'); $legacy.PSObject.Properties.Remove('transcriptPath')
+        [IO.File]::WriteAllText($foreignPath, ($legacy | ConvertTo-Json -Compress))
+      }
+      if ($mode -ceq 'cap-tail') {
+        [IO.File]::WriteAllText($tailPath, $replacementRaw.Replace($replacement.launchId, '00000000-0000-0000-0000-000000000100'))
+        $fixture.MaxRecords = 11
+      }
+      if ($mode -ceq 'transcript-unknown') { [IO.File]::WriteAllText($caller.transcriptPath, 'not-json' + [Environment]::NewLine) }
+      if ($mode -ceq 'duplicate') {
+        $duplicate = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+        $duplicate.worktree = $caller.worktree; $duplicate.lane = $caller.lane
+        [IO.File]::WriteAllText($foreignPath, ($duplicate | ConvertTo-Json -Compress))
+      }
+      $null = Assert-Refusal 'dispatch census unknown or incomplete' "slow-probe-adverse-matrix $mode cost=$cost" -Observation
+      Write-Output "PASS slow-probe-adverse-matrix $mode cost=$cost"
+    }
+  }
+
   foreach ($mode in @('churn-early', 'churn-late', 'equal-count-replace')) {
     Reset-Fixture $mode
     $fixture.Hook = {
@@ -202,7 +263,7 @@ try {
   Assert-True ($fixture.Calls -eq 3) 'persistent deadline has exactly three observations'
   Write-Output 'PASS deadline-once/deadline-persistent'
 
-  Reset-Fixture 'native-expired'
+  Reset-Fixture 'native-expired' 90001
   $null = Assert-Refusal 'dispatch census evaluation exhausted' 'native-read-return-expired'
   Assert-True ($fixture.Calls -eq 1) 'expired returned observation never binds'
   Write-Output 'PASS native-read-return-expired'
@@ -227,27 +288,12 @@ try {
   Assert-True ($fixture.Calls -eq 0) 'expired admission does not start a census'
   Write-Output 'PASS budget-composition six total / three fences / unchanged shared clocks'
 
-  foreach ($cost in @(0)) {
-    foreach ($mode in @('invalid', 'process-unknown', 'git-failed', 'legacy', 'cap-tail')) {
-      Reset-Fixture $mode $cost
-      if ($mode -ceq 'invalid') { [IO.File]::WriteAllText($foreignPath, '{}') }
-      if ($mode -ceq 'legacy') {
-        $legacy = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
-        $legacy.schemaVersion = 3
-        $legacy.PSObject.Properties.Remove('label'); $legacy.PSObject.Properties.Remove('transcriptPath')
-        [IO.File]::WriteAllText($foreignPath, ($legacy | ConvertTo-Json -Compress))
-      }
-      if ($mode -ceq 'cap-tail') {
-        [IO.File]::WriteAllText($tailPath, $replacementRaw.Replace($replacement.launchId, '00000000-0000-0000-0000-000000000100'))
-        $fixture.MaxRecords = 11
-      }
-      $null = Assert-Refusal 'dispatch census unknown or incomplete' "slow-probe-adverse-matrix $mode cost=$cost"
-      Write-Output "PASS slow-probe-adverse-matrix $mode cost=$cost"
-    }
-  }
   Reset-Fixture
   $binding = Get-HeavyCallerBinding
   Assert-True (-not $binding.Reason -and $binding.Path -ceq $callerPath -and $fixture.GitCalls -eq 11) 'restored exact caller, complete real census'
+  $again = Assert-HeavyCallerEligibility $binding
+  Assert-True ($again.Raw -ceq $binding.Raw -and $again.RoutingRaw -ceq $binding.RoutingRaw -and
+    $fixture.GitCalls -eq 22 -and $fixture.Calls -eq 2) 'canonical eligibility recheck reads fresh ownership and Git'
   Write-Output 'PASS restored exact caller; no heavy reservation or command body executed'
 } finally {
   $resolved = [IO.Path]::GetFullPath($root)

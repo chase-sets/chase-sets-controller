@@ -849,12 +849,6 @@ function Get-DispatchCensusPaths([string]$RuntimeRoot, [int]$Limit = [int]::MaxV
   } finally { $iterator.Dispose() }
 }
 
-function Get-HeavyOwnershipCensusDeadlineMs([int]$CandidateCount) {
-  # Serial Git identity probes need fleet-sized time, not fleet-sized authority.
-  # Allow 2s per candidate (reported throughput: 3-8 records/5s), retaining the
-  # 5s floor and a 30s census budget ceiling. No retry or cached identity proof.
-  return [int][Math]::Min([long]30000, [Math]::Max([long]5000, 2000 * [long]$CandidateCount))
-}
 function Get-HeavyCallerBinding {
   $evaluation = @{watch=[Diagnostics.Stopwatch]::StartNew();deadline=90000;productPasses=0}
   $admission = $script:heavyAdmissionBudget
@@ -909,13 +903,10 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
       }
     }
     if ($Evaluation.ContainsKey('selectedPath') -and -not $beforeBytes.ContainsKey($Evaluation.selectedPath)) { throw 'selected dispatch bytes changed' }
-    # This bounded sample selects time only; the census and subsequent exact
-    # record enumeration still prove completeness. Other census callers retain
-    # their own budgets, including the separate product-census proof allowance.
-    $candidateCount = @(Get-DispatchCensusPaths $runtime 15).Count
-    $censusDeadlineMs = Get-HeavyOwnershipCensusDeadlineMs $candidateCount
     Assert-DispatchObservationTime
-    $censusDeadlineMs = [int][Math]::Min($censusDeadlineMs, [Math]::Min($RemainingMs, $Evaluation.deadline-$Evaluation.watch.ElapsedMilliseconds))
+    # Record count bounds the census. Only the shared checked clocks bound time;
+    # a nested per-record estimate must not truncate otherwise-valid authority.
+    $censusDeadlineMs = [int][Math]::Min($RemainingMs, $Evaluation.deadline-$Evaluation.watch.ElapsedMilliseconds)
     if ($censusDeadlineMs -le 0) { throw 'dispatch census evaluation exhausted' }
     Write-AdmissionPending $censusDeadlineMs
     $live = Get-LiveDispatchOwnership -RuntimeRoot $runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $container -DeadlineMs $censusDeadlineMs -GitIdentityResolver {
