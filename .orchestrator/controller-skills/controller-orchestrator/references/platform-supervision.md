@@ -37,7 +37,10 @@ unknown. Routine observation posts nothing.
 
 Never hand-edit the platform checkout or the WSL executor checkout; platform
 defects go to the platform's self loop, which owns every platform-repository
-issue. Upgrade the executor only while no Chase Sets supervisor is live.
+issue. This thread chooses the next platform fix, labels a platform issue
+`ready` only after an independent readiness review, and decides each unpark
+and resume, recording the decision on the platform issue. Upgrade the
+executor only while no Chase Sets supervisor is live.
 
 ## Returns
 

@@ -132,8 +132,9 @@ No flow snapshot, replan reconciliation, or metrics check exists in the cycle.
 ### Orchestration platform
 
 The orchestration platform loop and its migration belong to the controller
-thread. This orchestrator does not observe, start, stop, upgrade or repair
-platform supervisors or executors and never touches the platform checkout.
+thread. This orchestrator does not observe, start, stop, resume, unpark,
+upgrade or repair platform runs, supervisors or executors, never labels a
+platform issue `ready`, and never touches the platform checkout.
 Once per cycle, before step 7, it applies `orchestrator-shared` Platform
 handoff from `.orchestrator/platform-handoff.json` and complete issue reads:
 it resumes unfinished take-backs, takes back held issues that meet a

@@ -72,9 +72,13 @@ carries `dispatch:platform-return`.
   or that issue's PR or branch.
 - The platform loop works only issues with `dispatch:platform` and without
   `dispatch:platform-return`.
-- The controller loop owns `.orchestrator/platform-handoff.json`, the platform
-  run, acknowledgment when no platform supervisor runs, and platform fixes
-  from take-back causes.
+- The controller loop owns `.orchestrator/platform-handoff.json`; every
+  orchestration platform run, the platform's self loop included: starts,
+  resumes, unparks, `ready` labels on platform issues, recovery and the choice
+  of the next platform fix; acknowledgment when no platform supervisor runs;
+  and platform fixes from take-back causes. The product loop does none of
+  these. When the controller loop asks for a quiet window before a platform
+  gate, the product loop holds new heavy admissions until it is released.
 
 `.orchestrator/platform-handoff.json` has exactly the fields `schemaVersion`
 (`platform-handoff/v1`), `accepting` (boolean), `maxInFlight` (an integer of
