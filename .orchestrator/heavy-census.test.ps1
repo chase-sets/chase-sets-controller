@@ -62,6 +62,8 @@ function Write-AdmissionPending([int]$BudgetMs) { $fixture.Pending.Add($BudgetMs
 function Get-LiveDispatchOwnership {
   param($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$DeadlineMs, [scriptblock]$GitIdentityResolver)
   $fixture.Calls++
+  Assert-True ($fixture.Pending.Count -gt 0 -and $fixture.Pending[-1] -eq $DeadlineMs -and
+    $DeadlineMs -le 210000) 'every census receives its exact pending heartbeat budget'
   $callerGitResolver = $GitIdentityResolver
   $parameters = @{
     RuntimeRoot = $RuntimeRoot; TempRoot = $TempRoot; ContainerRoot = $ContainerRoot; DeadlineMs = $DeadlineMs
@@ -81,7 +83,7 @@ function Get-LiveDispatchOwnership {
   if ($fixture.Mode -ceq 'deadline-persistent' -or
       ($fixture.Mode -ceq 'deadline-once' -and $fixture.Calls -eq 1)) { $parameters.DeadlineMs = 0 }
   $fixture.Last = & $census @parameters
-  if ($fixture.Mode -ceq 'churn-early' -and $fixture.Calls -eq 1) { & $fixture.Hook }
+  if ($fixture.Mode -cin @('churn-early', 'churn-overlap') -and $fixture.Calls -eq 1) { & $fixture.Hook }
   if ($fixture.Mode -ceq 'equal-count-replace' -and $fixture.Calls -eq 1) { & $fixture.Hook }
   if ($fixture.Mode -ceq 'cap-tail') {
     # Remove only the excluded tail after the real cap refuses. Counts now match
@@ -235,6 +237,16 @@ try {
     Assert-True (-not $binding.Reason -and $binding.Path -ceq $callerPath -and $fixture.Calls -eq 2) "$mode fresh complete retry: $($binding.Reason)"
     Write-Output "PASS $mode observations=$($fixture.Calls)"
   }
+  Reset-Fixture 'churn-overlap'
+  $fixture.Hook = {
+    $overlap = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+    $overlap.worktree = $caller.worktree; $overlap.lane = $caller.lane
+    [IO.File]::WriteAllText($foreignPath, ($overlap | ConvertTo-Json -Compress))
+  }
+  $null = Assert-Refusal 'dispatch census unknown or incomplete' 'churn-overlap'
+  Assert-True ($fixture.Calls -eq 2) 'fresh re-observation refuses an overlapping writer'
+  Write-Output 'PASS churn-overlap observations=2; no admission'
+
   Reset-Fixture 'churn-persistent'
   $fixture.Hook = {
     $row = [IO.File]::ReadAllText($foreignPath) | ConvertFrom-Json -DateKind String
@@ -287,6 +299,36 @@ try {
   $null = Assert-Refusal 'dispatch census evaluation exhausted' 'budget-composition admission expiry'
   Assert-True ($fixture.Calls -eq 0) 'expired admission does not start a census'
   Write-Output 'PASS budget-composition six total / three fences / unchanged shared clocks'
+
+  # Execute the actual reservation/fallback block with an I/O seam. No mutex,
+  # lock directory, owner record or command body is created by these controls.
+  $boundaryStart = $source.IndexOf('  $queueLockCreated = $false', [StringComparison]::Ordinal)
+  $boundaryEnd = $source.IndexOf('  if ($queueContext) {', $boundaryStart, [StringComparison]::Ordinal)
+  Assert-True ($boundaryStart -ge 0 -and $boundaryEnd -gt $boundaryStart) 'actual reservation boundary exists'
+  $reservationBoundary = [scriptblock]::Create($source.Substring($boundaryStart, $boundaryEnd - $boundaryStart))
+  foreach ($expiredBeforeRead in @($true, $false)) {
+    $effectClock = [pscustomobject]@{ ElapsedMilliseconds = $(if ($expiredBeforeRead) { 210000 } else { 0 }) }
+    $script:heavyAdmissionBudget = @{ watch = $effectClock; deadline = 210000 }
+    $effects = @{ attempts = 0; reclamations = 0 }
+    $reason = ''
+    try {
+      & {
+        function New-Item {
+          [CmdletBinding()]param($ItemType, $Path)
+          $effects.attempts++
+          $effectClock.ElapsedMilliseconds = 210000
+          throw [IO.IOException]::new('synthetic acquisition read returned expired')
+        }
+        function Invoke-StaleLockReclamation { $effects.reclamations++; return $false }
+        function Describe-ExistingLock { throw 'synthetic fallback must not run after expiry' }
+        & $reservationBoundary
+      }
+    } catch { $reason = $_.Exception.Message }
+    Assert-True ($reason -ceq 'heavy-verifier: caller eligibility: admission deadline' -and
+      $effects.attempts -eq $(if ($expiredBeforeRead) { 0 } else { 1 }) -and
+      $effects.reclamations -eq 0) "admission-effects-after-expiry beforeRead=$expiredBeforeRead reason=$reason"
+  }
+  Write-Output 'PASS admission-effects-after-expiry: zero reservation/reclamation after checked expiry'
 
   Reset-Fixture
   $binding = Get-HeavyCallerBinding
