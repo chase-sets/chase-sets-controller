@@ -99,14 +99,45 @@ foreach ($argument in @('-NoProfile','-NonInteractive','-File',$verifier)) { [vo
 foreach ($argument in @('-Gate','test:scripts','-Worktree',$worktreeFull,'-Lane',$Lane,'-Branch',$Branch,'-ClaimedHead',$ClaimedHead,'-ContainerRoot',$containerRoot)) { [void]$start.ArgumentList.Add($argument) }
 $process = $null
 $exitCode = 74
+$queuePollSeconds = 30
+$queueWaitCapSeconds = 3600
+$queueWatch = $null
+$queueTicket = $null
 try {
-  $process = [Diagnostics.Process]::Start($start)
-  $stdout = $process.StandardOutput.ReadToEndAsync()
-  $stderr = $process.StandardError.ReadToEndAsync()
-  $process.WaitForExit()
-  [IO.File]::WriteAllText($stdoutPath, $stdout.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
-  [IO.File]::WriteAllText($stderrPath, $stderr.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
-  $exitCode = [int]$process.ExitCode
+  while ($true) {
+    if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds) {
+      $message = "long-product-gate: queued wait cap $queueWaitCapSeconds seconds reached"
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      $exitCode = 73
+      break
+    }
+    $process = [Diagnostics.Process]::Start($start)
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $presentationError = $stderr.GetAwaiter().GetResult()
+    [IO.File]::AppendAllText($stdoutPath, $stdout.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($stderrPath, $presentationError, [Text.UTF8Encoding]::new($false))
+    $exitCode = [int]$process.ExitCode
+    $process.Dispose(); $process = $null
+    if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) { break }
+    $ticketMatch = [regex]::Match($presentationError, '\Aheavy-verifier: queued; ticket=([0-9]+) ')
+    if (-not $ticketMatch.Success) { break }
+    $presentedTicket = $ticketMatch.Groups[1].Value
+    if ($queueTicket -and $presentedTicket -cne $queueTicket) {
+      $message = 'long-product-gate: queue ticket changed'
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      break
+    }
+    if (-not $queueWatch) {
+      $queueWatch = [Diagnostics.Stopwatch]::StartNew()
+      $queueTicket = $presentedTicket
+    }
+    $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
+    [Threading.Thread]::Sleep($queueSleepMilliseconds)
+  }
   $endedUtc = [DateTime]::UtcNow.ToString('o')
   $terminal = [ordered]@{}
   foreach ($entry in $pending.GetEnumerator()) { $terminal[$entry.Key] = $entry.Value }

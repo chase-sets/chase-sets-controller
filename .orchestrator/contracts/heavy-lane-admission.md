@@ -155,7 +155,7 @@ ASSERTION FAILED: preload foreign-head exit code is 73 (actual 0; stderr=; stdou
 The baseline refusal retains the literal existing diagnostic, including its
 existing repeated suffix; the candidate tests assert complete refusal text,
 not just a substring. No launch claim is re-encoded with a replacement head.
-## Long Product Gate Admission (#230)
+## Long Product Gate Admission
 
 CONTRACT_VERSION: heavy-lane-admission/v1
 
@@ -174,6 +174,21 @@ owner cleanup succeeds. Missing, torn, foreign, late, interrupted, or
 nonzero results are incomplete. A host watch expiry never kills the product
 child and never turns an incomplete result into a pass.
 
+On exit 73 only, stderr starting exactly with `heavy-verifier: queued;`
+causes the same supervisor to re-present the fixed verifier with identical
+arguments every 30 seconds. The launch id and recorded supervisor PID/start
+identity remain the claimant key; the verifier refreshes that ticket's
+`presentedUtc` within its existing 600-second retention. Every presentation's
+stderr is appended to the same launch log. The pending result stays unchanged.
+An unparseable ticket refuses; a changed ticket finalizes incomplete with
+`long-product-gate: queue ticket changed`. Total queued waiting is capped at
+3600 seconds from the first queued refusal, using a monotonic clock. Expiry
+finalizes incomplete with exit 73 and a named cap diagnostic. Every other
+exit/refusal finalizes immediately. Interruption leaves pending/non-PASS and
+uses the existing ownership recovery rules; it does not reclaim or relaunch.
+
 Only the existing verifier owns admission, census, slot, Git identity, clean
-tree, receipt and child cleanup authority. The supervisor adds no timeout,
-census clock, retry, slot, reclaim, scheduler, or product command behavior.
+tree, receipt and child cleanup authority. Queue re-presentation adds no
+product-child timeout, census clock, slot, reclaim, scheduler or arbitrary
+command behavior. The host's 900-second watch is unchanged; watch expiry is
+not a child kill or a queue-wait extension.
