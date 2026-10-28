@@ -52,6 +52,13 @@ per-process manifest. The verifier merges the manifests without allowing a
 child to overwrite its parent's records and requires the declared entry to
 be present.
 
+After admission succeeds, the diagnostic launcher unconditionally sets
+`CHASE_SETS_HEAVY_ADMITTED=1` in the child environment, overwriting any caller
+value. It does not set this flag for non-diagnostic gates. Refused admissions
+never launch the diagnostic payload. Other caller inputs, including `CHROME`
+and `OPENSSL`, are inherited unchanged; the existing admission-specific Node
+options, configuration, script-shell and slot-transport handling still applies.
+
 The diagnostic receipt schema is `host-heavy-diagnostic/v1`. A completed
 diagnostic reports its native exit code in `nativeExit`; a result file written
 beside the entry during the run is hashed as `resultSha256`, while a

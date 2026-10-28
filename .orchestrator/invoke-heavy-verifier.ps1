@@ -3153,6 +3153,7 @@ try {
         originalScriptShell = $start.Environment['npm_config_script_shell']
       }
       if ($isDiagnostic) {
+        $start.Environment["CHASE_SETS_HEAVY_ADMITTED"] = "1"
         # The preload appends its process id so descendants publish independent
         # manifests and cannot truncate the parent's module records.
         $diagnosticModuleManifestPath = Join-Path $container (".orchestrator\diagnostic-modules-$lockId")

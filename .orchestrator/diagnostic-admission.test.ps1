@@ -219,7 +219,16 @@ function Test-IgnoredChromiumPackage {
   Invoke-FixtureGit @('commit','-m','ignored package fixture') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
   $source=Join-Path $root 'fixture-chromium-control.mjs'
-  Set-Content -LiteralPath $source -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'ignored-package-ran');"
+  Set-Content -LiteralPath $source -Value @'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, `payload-started:${process.env.CHASE_SETS_HEAVY_ADMITTED}`);
+assert.equal(process.env.CHASE_SETS_HEAVY_ADMITTED, '1', 'diagnostic-admitted-env-must-be-one');
+if (process.env.DIAGNOSTIC_EXPECT_INPUTS === '1') {
+  assert.equal(process.env.CHROME, 'fixture chrome path with spaces', 'diagnostic-chrome-passthrough');
+  assert.equal(process.env.OPENSSL, 'fixture openssl path with spaces', 'diagnostic-openssl-passthrough');
+}
+'@
   $scriptRelative=[string]$chromiumDeclaration.path
   $scriptPath=Join-Path $worktree $scriptRelative
   New-Item -ItemType Directory -Path (Split-Path -Parent $scriptPath) -Force | Out-Null
@@ -238,6 +247,32 @@ function Test-IgnoredChromiumPackage {
     -not (Test-Path -LiteralPath $lockRoot)) 'tmp-package-receipt: exact head, pinned path, fixture hash and native exit bind'
   Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'tmp-package-completed: receipt leaves exact-head fixture clean'
   Write-Output 'PASS diagnostic tmp-package clean-exact-head=1 untracked-ignored=1 real-route=1 receipt=1 exit=0'
+
+  $environmentCase=Invoke-Diagnostic @{} 'diagnostic-admitted-env-overwrite' @{
+    CHASE_SETS_HEAVY_ADMITTED='0'; CHROME='fixture chrome path with spaces'; OPENSSL='fixture openssl path with spaces'; DIAGNOSTIC_EXPECT_INPUTS='1'
+  } 'staged-import-chromium-control'
+  Assert-TmpPackageRuns $environmentCase
+  Assert-True ((Get-Content -LiteralPath $environmentCase.Marker -Raw) -ceq 'payload-started:1') 'diagnostic-admitted-env-overwrite: caller zero becomes one in the real payload'
+  Write-Output 'PASS diagnostic-admitted-env-must-be-one caller-zero=overwritten CHROME=unchanged OPENSSL=unchanged exit=0'
+
+  Add-Content -LiteralPath $scriptPath -Value '// hash mismatch must refuse before the flag-asserting payload starts'
+  Assert-True ((Get-Sha256 $scriptPath) -cne $scriptHash) 'diagnostic-admitted-env-refusal-setup: bytes differ from declaration'
+  $refusedEnvironment=Invoke-Diagnostic @{} 'diagnostic-admitted-env-refused' @{ CHASE_SETS_HEAVY_ADMITTED='1' } 'staged-import-chromium-control'
+  Assert-Refused $refusedEnvironment 'declared diagnostic SHA-256 does not match the script'
+  Copy-Item -LiteralPath $source -Destination $scriptPath -Force
+  Write-Output 'PASS diagnostic-admitted-env-refusal hash-mismatch=73 payload-started=0 caller-one-cannot-admit=1'
+
+  $environmentGuard=New-TestOnlyDiagnosticGuard 'diagnostic-admitted-env-mutant'
+  $guardText=[IO.File]::ReadAllText($environmentGuard)
+  $anchor='$start.Environment["CHASE_SETS_HEAVY_ADMITTED"] = "1"'
+  Assert-True (([regex]::Matches($guardText,[regex]::Escape($anchor))).Count -eq 1) 'diagnostic-admitted-env-mutant-setup: exactly one assignment target'
+  [IO.File]::WriteAllText($environmentGuard, $guardText.Replace($anchor, '# mutant: drop diagnostic admission environment assignment'))
+  $environmentMutant=Invoke-Diagnostic @{} 'diagnostic-admitted-env-mutant' @{ CHASE_SETS_HEAVY_ADMITTED='0' } 'staged-import-chromium-control' $environmentGuard
+  Assert-True ($environmentMutant.Result.Code -eq 1 -and (Test-Path -LiteralPath $environmentMutant.Marker) -and
+    (Get-Content -LiteralPath $environmentMutant.Marker -Raw) -ceq 'payload-started:0' -and
+    $environmentMutant.Result.Stderr.Contains('diagnostic-admitted-env-must-be-one') -and
+    $environmentMutant.Result.Stderr.Contains('AssertionError')) "diagnostic-admitted-env-mutant-launched: payload must fail its named assertion, not setup (exit=$($environmentMutant.Result.Code) stderr=$($environmentMutant.Result.Stderr))"
+  Write-Output 'KILLED mutant drop-diagnostic-admitted-env at assertion=diagnostic-admitted-env-must-be-one launched=1 payload-reached=1 child-value=0 payload-exit=1'
 
   $packageRoot=Split-Path -Parent $scriptPath
   $compiled=Join-Path $packageRoot 'compiled'
