@@ -330,7 +330,7 @@ try {
       $mutantPath = New-Mutant $source $mutantName $fixture
       $id = [guid]::NewGuid().ToString(); $result = Join-Path $fixture.runtime "long-product-gate-$id.json"
       if ($mutantName -ceq 'direct-host') {
-        $mutantArgs = @('-NoProfile','-NonInteractive','-File',$mutantPath,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-23','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
+        $mutantArgs = @('-NoProfile','-NonInteractive','-File',$mutantPath,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-230','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
         $mutantOut = Join-Path $fixture.root 'mutant.out'; $mutantErr = Join-Path $fixture.root 'mutant.err'
         $mutantProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $mutantArgs -RedirectStandardOutput $mutantOut -RedirectStandardError $mutantErr -WindowStyle Hidden -PassThru
         $mutantProcess.WaitForExit()
