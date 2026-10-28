@@ -547,10 +547,11 @@
       "selector": "-Part",
       "parts": [
         { "name": "supervisor", "weight": 1 },
+        { "name": "queue", "weight": 1 },
         { "name": "mutants", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["supervisor", "mutants"]
+        "parts": ["supervisor", "queue", "mutants"]
       }
     }
   ],
