@@ -107,7 +107,6 @@ param(
   # Closed product route: the tracked child is the fixed test:scripts
   # supervisor, never a caller-supplied command or payload.
   [Parameter(DontShow)][switch]$LongProductGate,
-  [Parameter(DontShow)][string]$LongProductGateTestVerifierPath,
   [Parameter(DontShow)][string]$ResumeAdmissionObservedPath,
   [Parameter(DontShow)][string]$ResumeAdmissionContinuePath,
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$SemanticAttemptId,
@@ -143,9 +142,6 @@ if ($LongProductGate -and $LaneRole -cne 'implementation') {
 }
 if ($LongProductGate -and $TestArgumentList) {
   throw 'dispatch-lane: long product gate accepts no test command or payload'
-}
-if ($LongProductGateTestVerifierPath -and (-not $LongProductGate -or -not $TestRuntimeRoot -or -not $ExecutablePath)) {
-  throw 'dispatch-lane: long product gate test verifier requires the isolated test route'
 }
 if (($ResumeAdmissionObservedPath -or $ResumeAdmissionContinuePath) -and
     (-not $ExecutablePath -or -not $ResumeAdmissionObservedPath -or -not $ResumeAdmissionContinuePath)) { throw 'dispatch-lane: resume admission barrier requires paired isolated test paths and executable override' }
@@ -1320,9 +1316,6 @@ try {
       '-Branch', $admissionBranch, '-ClaimedHead', $admissionHead,
       '-ResultPath', $longProductGateResultPath
     )
-    if ($LongProductGateTestVerifierPath) {
-      $launchArguments += @('-TestMode', '-TestVerifierPath', [IO.Path]::GetFullPath($LongProductGateTestVerifierPath))
-    }
   }
   $startParameters = @{
     FilePath = $exe

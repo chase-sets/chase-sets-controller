@@ -15,15 +15,11 @@ param(
   [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')][string]$Lane,
   [Parameter(Mandatory)][string]$Branch,
   [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string]$ClaimedHead,
-  [Parameter(Mandatory)][string]$ResultPath,
-  [Parameter(DontShow)][switch]$TestMode,
-  [Parameter(DontShow)][string]$TestVerifierPath,
-  [Parameter(DontShow)][switch]$TestNoOwnerWait,
-  [Parameter(DontShow)][string]$TestDispatchOwnershipPath
+  [Parameter(Mandatory)][string]$ResultPath
 )
 
 $ErrorActionPreference = 'Stop'
-$dispatchOwnership = if ($TestDispatchOwnershipPath) { [IO.Path]::GetFullPath($TestDispatchOwnershipPath) } else { Join-Path $PSScriptRoot 'dispatch-ownership.ps1' }
+$dispatchOwnership = Join-Path $PSScriptRoot 'dispatch-ownership.ps1'
 if (-not (Test-Path -LiteralPath $dispatchOwnership -PathType Leaf)) { throw 'long-product-gate: dispatch ownership contract is missing' }
 . $dispatchOwnership
 
@@ -57,13 +53,9 @@ if (-not (Test-Path -LiteralPath $worktreeFull -PathType Container) -or
     -not $worktreeFull.StartsWith($containerRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
   throw 'long-product-gate: worktree is not a child of the controller container'
 }
-if ($TestVerifierPath -and -not $TestMode) { throw 'long-product-gate: test verifier requires test mode' }
-if ($TestMode -and [string]::IsNullOrWhiteSpace($TestVerifierPath)) { throw 'long-product-gate: test mode requires the fixture verifier' }
-if ($TestNoOwnerWait -and -not $TestMode) { throw 'long-product-gate: owner-wait seam requires test mode' }
-
 $recordPath = Join-Path $runtimeFull "dispatch-launch-$LaunchId.json"
 $record = $null
-$recordDeadline = if ($TestNoOwnerWait) { [DateTimeOffset]::UtcNow } else { [DateTimeOffset]::UtcNow.AddSeconds(30) }
+$recordDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
 while ($null -eq $record -and [DateTimeOffset]::UtcNow -lt $recordDeadline) {
   $candidate = Get-ValidatedDispatchOwnershipRecord $recordPath $runtimeFull ([IO.Path]::GetTempPath())
   if ($candidate -and $candidate.state -ceq 'started') {
@@ -91,7 +83,7 @@ $pending = [ordered]@{
 }
 Write-AtomicResult $pending
 
-$verifier = if ($TestMode) { [IO.Path]::GetFullPath($TestVerifierPath) } else { Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1' }
+$verifier = Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'
 if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) { throw 'long-product-gate: fixed verifier is missing' }
 $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source)
 $start = [Diagnostics.ProcessStartInfo]::new()
@@ -104,11 +96,7 @@ $start.RedirectStandardError = $true
 $stdoutPath = Join-Path $runtimeFull "long-product-gate-$LaunchId.stdout.log"
 $stderrPath = Join-Path $runtimeFull "long-product-gate-$LaunchId.stderr.log"
 foreach ($argument in @('-NoProfile','-NonInteractive','-File',$verifier)) { [void]$start.ArgumentList.Add($argument) }
-if ($TestMode) {
-  foreach ($argument in @('-Worktree',$worktreeFull,'-Lane',$Lane,'-Branch',$Branch,'-ClaimedHead',$ClaimedHead)) { [void]$start.ArgumentList.Add($argument) }
-} else {
-  foreach ($argument in @('-Gate','test:scripts','-Worktree',$worktreeFull,'-Lane',$Lane,'-Branch',$Branch,'-ClaimedHead',$ClaimedHead,'-ContainerRoot',$containerRoot)) { [void]$start.ArgumentList.Add($argument) }
-}
+foreach ($argument in @('-Gate','test:scripts','-Worktree',$worktreeFull,'-Lane',$Lane,'-Branch',$Branch,'-ClaimedHead',$ClaimedHead,'-ContainerRoot',$containerRoot)) { [void]$start.ArgumentList.Add($argument) }
 $process = $null
 $exitCode = 74
 try {
