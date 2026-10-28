@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('supervisor','mutants')][string]$Part = '',
-  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks')][string]$Mutant = ''
+  [ValidateSet('supervisor','queue','mutants')][string]$Part = '',
+  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')][string]$Mutant = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,11 +42,19 @@ function New-ControllerScriptFixture([string]$Root) {
   $orchestrator = Join-Path $Root '.orchestrator'
   Copy-Item -LiteralPath (Join-Path $controllerRoot '.orchestrator') -Destination $orchestrator -Recurse
   $child = @'
-param([string]$ReadyPath,[string]$ReleasePath)
+param([string]$ReadyPath,[string]$ReleasePath,[string]$PublishBarrier)
 $ready = [ordered]@{ pid = $PID; parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId; startedUtc = [DateTime]::UtcNow.ToString('o') }
 $readyTemporary = "$ReadyPath.$PID.tmp"
-[IO.File]::WriteAllText($readyTemporary, ($ready | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-[IO.File]::Move($readyTemporary, $ReadyPath, $true)
+$stream = [IO.File]::Open($readyTemporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try {
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($ready | ConvertTo-Json -Compress))
+  $stream.Write($bytes); $stream.Flush($true)
+  if ($PublishBarrier) {
+    [IO.File]::WriteAllText("$PublishBarrier.open", 'writer open')
+    while (-not [IO.File]::Exists($PublishBarrier)) { Start-Sleep -Milliseconds 25 }
+  }
+} finally { $stream.Dispose() }
+if ($readyTemporary -cne $ReadyPath) { [IO.File]::Move($readyTemporary, $ReadyPath, $true) }
 while (-not [IO.File]::Exists($ReleasePath)) { Start-Sleep -Milliseconds 25 }
 exit 0
 '@
@@ -59,7 +67,7 @@ exit 0
   $replacement = @"
 if (`$Gate -ceq 'test:scripts') {
   `$command = (Get-Command pwsh -CommandType Application -ErrorAction Stop | Select-Object -First 1 -ExpandProperty Source)
-  `$arguments = @('-NoProfile','-NonInteractive','-File',(Join-Path `$container '.orchestrator/fixture-heavy-child.ps1'),(Join-Path `$container '.orchestrator/fixture-child-ready.txt'),(Join-Path `$container '.orchestrator/fixture-child-release.txt'))
+  `$arguments = @('-NoProfile','-NonInteractive','-File',(Join-Path `$container '.orchestrator/fixture-heavy-child.ps1'),(Join-Path `$container ".orchestrator/fixture-child-ready-`$Lane.txt"),(Join-Path `$container ".orchestrator/fixture-child-release-`$Lane.txt"))
 }
 $needle
 "@
@@ -68,8 +76,8 @@ $needle
   Write-Text $verifierPath $fixtureVerifier
   return $orchestrator
 }
-function New-LongGateFixture([string]$Root) {
-  $runtime = Join-Path $Root '.orchestrator'; $worktree = Join-Path $Root 'lane-23'
+function New-LongGateFixture([string]$Root, [string]$Lane = 'lane-23') {
+  $runtime = Join-Path $Root '.orchestrator'; $worktree = Join-Path $Root $Lane
   New-Item -ItemType Directory -Path $worktree -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $worktree '.orchestrator/artifacts') -Force | Out-Null
   Invoke-CheckedGit $worktree @('init','--initial-branch=synthetic/long-gate') | Out-Null
@@ -81,6 +89,7 @@ function New-LongGateFixture([string]$Root) {
   [pscustomobject]@{
     root = $Root; runtime = $runtime; worktree = $worktree; branch = (Invoke-CheckedGit $worktree @('branch','--show-current'))
     head = (Invoke-CheckedGit $worktree @('rev-parse','HEAD')); orchestrator = (Join-Path $Root '.orchestrator')
+    ready = (Join-Path $runtime "fixture-child-ready-$Lane.txt"); release = (Join-Path $runtime "fixture-child-release-$Lane.txt")
   }
 }
 function Invoke-LongGateProcess($Fixture, [string]$Supervisor, [string]$LaunchId, [string]$ResultPath, [switch]$Preseed, [switch]$NoWait) {
@@ -127,7 +136,7 @@ function Stop-ExactStartedProcess([Diagnostics.Process]$Process) {
   if ($Process -and -not $Process.HasExited) { $Process.Kill(); $Process.WaitForExit() }
 }
 function Invoke-InterruptionCase($Fixture, [switch]$Mutant) {
-  foreach ($path in @((Join-Path $Fixture.runtime 'fixture-child-ready.txt'),(Join-Path $Fixture.runtime 'fixture-child-release.txt'))) {
+  foreach ($path in @($Fixture.ready,$Fixture.release)) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
   }
   $label = 'interruption-' + [guid]::NewGuid().ToString('N')
@@ -143,7 +152,7 @@ function Invoke-InterruptionCase($Fixture, [switch]$Mutant) {
     $ack = Wait-ProcessPath $ackPath $hostProcess 'interruption dispatch acknowledgement was not published'
     $recordPath = $ack.ownershipRecordPath; $result = $ack.longProductGate.resultPath
     $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json -DateKind String
-    $ready = Wait-ProcessPath (Join-Path $Fixture.runtime 'fixture-child-ready.txt') $hostProcess 'real verifier native child was not running before interruption'
+    $ready = Wait-ProcessPath $Fixture.ready $hostProcess 'real verifier native child was not running before interruption'
     $slotOwnerPath = Join-Path $Fixture.runtime 'verify-lock.d/owner.json'
     $slotOwner = Wait-ProcessPath $slotOwnerPath $hostProcess 'real verifier slot owner was not published before interruption'
     $supervisorProcess = Get-Process -Id ([int]$record.childPid) -ErrorAction Stop
@@ -178,7 +187,7 @@ function Invoke-InterruptionCase($Fixture, [switch]$Mutant) {
     Assert-True ($pending.status -ceq 'pending' -and $pending.dispatchReleased -eq $false) 'interruption remains incomplete and never publishes PASS'
     Assert-True ((Get-Process -Id ([int]$slotOwner.pid) -ErrorAction SilentlyContinue) -and (Get-Process -Id ([int]$ready.pid) -ErrorAction SilentlyContinue)) 'interruption kills neither verifier nor native child'
     Assert-True ([IO.File]::ReadAllText($historyPath) -ceq $historyBefore) 'interruption consumes no attempt and appends no relaunch row'
-    Write-Text (Join-Path $Fixture.runtime 'fixture-child-release.txt') 'release'
+    Write-Text $Fixture.release 'release'
     $supervisorProcess.WaitForExit(); $supervisorProcess.Dispose(); $supervisorProcess = $null
     $verifierProcess.WaitForExit(); $nativeProcess.WaitForExit()
     $completed = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json -DateKind String
@@ -188,11 +197,249 @@ function Invoke-InterruptionCase($Fixture, [switch]$Mutant) {
     Assert-True ([IO.File]::ReadAllText($historyPath) -ceq $historyBefore) 'proven-dead recovery consumes no attempt'
     Write-Output 'PASS AC4 interruption preserves pending result, verifier/native child, ownership and attempt'
   } finally {
-    $release = Join-Path $Fixture.runtime 'fixture-child-release.txt'; Write-Text $release 'release'
+    Write-Text $Fixture.release 'release'
     if ($supervisorProcess) { $supervisorProcess.WaitForExit() }
     foreach ($process in @($hostProcess,$supervisorProcess,$verifierProcess,$nativeProcess)) { Stop-ExactStartedProcess $process }
     if ($recordPath -and (Test-Path -LiteralPath $recordPath)) { Remove-Item -LiteralPath $recordPath -Force }
   }
+}
+function Replace-FixtureOnce([string]$Source, [string]$Needle, [string]$Replacement) {
+  Assert-True (([regex]::Matches($Source, [regex]::Escape($Needle))).Count -eq 1) "fixture substitution occurs exactly once: $Needle"
+  return $Source.Replace($Needle, $Replacement)
+}
+function Test-ReadyHandoff($Fixture, [switch]$NonAtomic) {
+  $source = [IO.File]::ReadAllText((Join-Path $Fixture.orchestrator 'fixture-heavy-child.ps1'))
+  if ($NonAtomic) { $source = Replace-FixtureOnce $source '$readyTemporary = "$ReadyPath.$PID.tmp"' '$readyTemporary = $ReadyPath' }
+  $path = Join-Path $Fixture.root ('ready-child-' + [guid]::NewGuid().ToString('N') + '.ps1')
+  Write-Text $path $source
+  $ready = "$path.ready"; $release = "$path.release"; $publish = "$path.publish"
+  $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-NonInteractive','-File',$path,$ready,$release,$publish) -WindowStyle Hidden -PassThru
+  $failure = $null
+  try {
+    Wait-ForPathOrExit "$publish.open" $process 'ready writer did not reach its publication barrier'
+    Assert-True (-not (Test-Path -LiteralPath $ready)) 'ready handoff hides the final path while its exclusive writer is open'
+    Write-Text $publish 'publish'
+    $value = Wait-ProcessPath $ready $process 'atomic ready publication was not readable'
+    Assert-True ($value.pid -eq $process.Id) 'ready handoff publishes complete native-child identity'
+  } catch { $failure = $_.Exception.Message } finally {
+    Write-Text $publish 'publish'; Write-Text $release 'release'; $process.WaitForExit(); $process.Dispose()
+  }
+  if ($NonAtomic) {
+    Assert-True ($failure -ceq 'ASSERTION FAILED: ready handoff hides the final path while its exclusive writer is open') 'MUTANT non-atomic-ready reaches the named handoff assertion'
+    Write-Output 'PASS MUTANT non-atomic-ready killed at ready handoff hides the final path while its exclusive writer is open'
+  } else {
+    if ($failure) { throw $failure }
+    Write-Output 'PASS atomic ready handoff with an exclusive writer held behind a barrier'
+  }
+}
+function Start-FixtureDispatch($Fixture) {
+  $request = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+  $label = 'queue-' + [guid]::NewGuid().ToString('N')
+  $prompt = Join-Path $Fixture.runtime "$label.prompt.txt"; Write-Text $prompt 'fixture queue dispatch'
+  $ackPath = Join-Path $Fixture.runtime "dispatch-start-$request.json"
+  $arguments = @('-NoProfile','-NonInteractive','-File',(Join-Path $Fixture.orchestrator 'dispatch-lane.ps1'),'-Harness','codex','-Model','gpt-6.1-sol','-Effort','high','-LaneRole','implementation','-Row','4','-Placement','provisional',
+    '-Issue','90230','-PromptFile',$prompt,'-Worktree',$Fixture.worktree,'-Label',$label,'-ExecutablePath',(Join-Path $PSHOME 'pwsh.exe'),
+    '-LongProductGate','-TestRuntimeRoot',$Fixture.runtime,'-TestTempRoot',$testRoot,'-StartRequestIdentity',$request,'-StartAcknowledgementPath',$ackPath)
+  $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -RedirectStandardOutput (Join-Path $Fixture.root "$label.out") -RedirectStandardError (Join-Path $Fixture.root "$label.err") -WindowStyle Hidden -PassThru
+  return [pscustomobject]@{process=$process;ackPath=$ackPath;label=$label;ack=$null;supervisor=$null}
+}
+function Read-FixtureAck($Dispatch) {
+  $Dispatch.ack = Wait-ProcessPath $Dispatch.ackPath $Dispatch.process 'queue dispatch acknowledgement was not published'
+  $Dispatch.supervisor = Get-Process -Id ([int]$Dispatch.ack.childPid) -ErrorAction SilentlyContinue
+}
+function Wait-QueuePoll($Fixture, $Dispatch, [int]$Number) {
+  $path = Join-Path $Fixture.runtime "fixture-queue-poll-$Number.json"
+  while (-not (Test-Path -LiteralPath $path)) {
+    if ($Dispatch.process.HasExited) { return $null }
+    Start-Sleep -Milliseconds 25
+  }
+  return Wait-ProcessPath $path $Dispatch.process 'queue poll publication was not complete'
+}
+function Invoke-QueueCase([string]$Mode, [string]$Mutation = '') {
+  $root = Join-Path $fixtureRoot ('queue-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $root | Out-Null
+  New-ControllerScriptFixture $root | Out-Null
+  $holder = New-LongGateFixture $root 'lane-24'
+  $leader = New-LongGateFixture $root 'lane-25'
+  $client = New-LongGateFixture $root 'lane-26'
+  $supervisorPath = Join-Path $client.orchestrator 'long-product-gate.ps1'
+  $original = [IO.File]::ReadAllText($supervisorPath)
+  $leaderRelease = Join-Path $client.runtime 'fixture-leader-release.txt'
+  $leaderHeld = Join-Path $client.runtime 'fixture-leader-held.txt'
+  $holderDispatch = $null; $leaderDispatch = $null; $clientDispatch = $null
+  $failure = $null
+  try {
+    $holderDispatch = Start-FixtureDispatch $holder; Read-FixtureAck $holderDispatch
+    Wait-ProcessPath $holder.ready $holderDispatch.process 'real slot holder did not start its native child' | Out-Null
+    # An admitted holder has removed its own queue ticket. Keep the first
+    # real refused claimant alive, so the client queues behind its reservation.
+    $holdLeader = @'
+[IO.File]::WriteAllText((Join-Path $runtimeFull 'fixture-leader-held.txt'), 'held')
+while (-not [IO.File]::Exists((Join-Path $runtimeFull 'fixture-leader-release.txt'))) { Start-Sleep -Milliseconds 25 }
+$retryProcess = [Diagnostics.Process]::Start($start)
+$retryOut = $retryProcess.StandardOutput.ReadToEndAsync(); $retryErr = $retryProcess.StandardError.ReadToEndAsync()
+$retryProcess.WaitForExit()
+[IO.File]::AppendAllText($stdoutPath, $retryOut.GetAwaiter().GetResult())
+[IO.File]::AppendAllText($stderrPath, $retryErr.GetAwaiter().GetResult())
+$exitCode = $retryProcess.ExitCode; $retryProcess.Dispose()
+exit $exitCode
+'@
+    Write-Text $supervisorPath (Replace-FixtureOnce $original 'exit $exitCode' $holdLeader)
+    $leaderDispatch = Start-FixtureDispatch $leader; Read-FixtureAck $leaderDispatch
+    Wait-ForPathOrExit $leaderHeld $leaderDispatch.process 'first real refused claimant did not retain its reservation'
+    $leaderResult = Wait-ProcessPath $leaderDispatch.ack.longProductGate.resultPath $leaderDispatch.process 'leader refusal was not recorded'
+    Assert-True ($leaderResult.status -ceq 'incomplete' -and $leaderResult.exit -eq 73) 'real occupied slot refuses the first live claimant'
+
+    $clockPath = Join-Path $client.runtime 'fixture-queue-clock.txt'; Write-Text $clockPath '0'
+    $clock = @'
+$queueWatch = [pscustomobject]@{}
+$queueWatch | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-queue-clock.txt')))
+$queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [TimeSpan]::FromSeconds([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-queue-clock.txt')) - $this.StartedAt) }
+'@
+    $poll = @'
+$fixturePoll = 1 + $fixturePoll
+$pollPath = Join-Path $runtimeFull "fixture-queue-poll-$fixturePoll.json"
+$pollValue = @{ticket=$presentedTicket;pid=$PID;arguments=@($start.ArgumentList)} | ConvertTo-Json -Compress
+[IO.File]::WriteAllText("$pollPath.tmp", $pollValue)
+[IO.File]::Move("$pollPath.tmp", $pollPath)
+while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
+'@
+    $copy = Replace-FixtureOnce $original '$queueWatch = [Diagnostics.Stopwatch]::StartNew()' $clock
+    $copy = Replace-FixtureOnce $copy '$presentationWatch = [Diagnostics.Stopwatch]::StartNew()' ($clock.Replace('$queueWatch', '$presentationWatch'))
+    $copy = Replace-FixtureOnce $copy '[Threading.Thread]::Sleep($queueSleepMilliseconds)' $poll
+    if ($Mode -ceq 'expire-admit') {
+      $firstRefusal = @'
+$process.WaitForExit()
+if (-not $queueTicket) {
+  [IO.File]::WriteAllText((Join-Path $runtimeFull 'fixture-first-refusal.txt'), 'refused')
+  while (-not [IO.File]::Exists((Join-Path $runtimeFull 'fixture-first-refusal.continue'))) { Start-Sleep -Milliseconds 25 }
+}
+'@
+      $copy = Replace-FixtureOnce $copy '$process.WaitForExit()' $firstRefusal
+    }
+    if ($Mutation -ceq 'single-shot') {
+      $copy = Replace-FixtureOnce $copy 'if ($exitCode -ne 73 -or -not $presentationError.StartsWith' 'if ($true -or $exitCode -ne 73 -or -not $presentationError.StartsWith'
+    }
+    if ($Mutation -ceq 'no-cap') {
+      $copy = Replace-FixtureOnce $copy 'if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds)' 'if ($false)'
+    }
+    if ($Mutation -ceq 'replacement-line') {
+      $copy = Replace-FixtureOnce $copy 'if ($replacementPossible)' 'if ($false)'
+    }
+    if ($Mutation -ceq 'fresh-ticket') {
+      $discardReservation = @'
+while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
+if ($fixturePoll -eq 1) {
+  $queueFile = Join-Path $runtimeFull 'verify-queue.json'
+  $queue = [IO.File]::ReadAllText($queueFile) | ConvertFrom-Json -DateKind String
+  $queue.tickets = @($queue.tickets | Where-Object number -NE ([long]$presentedTicket))
+  [IO.File]::WriteAllText($queueFile, ($queue | ConvertTo-Json -Depth 10 -Compress))
+}
+'@
+      $copy = Replace-FixtureOnce $copy 'while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }' $discardReservation
+    }
+    Write-Text $supervisorPath $copy
+    $clientDispatch = Start-FixtureDispatch $client; Read-FixtureAck $clientDispatch
+    if ($Mode -ceq 'expire-admit') {
+      Wait-ForPathOrExit (Join-Path $client.runtime 'fixture-first-refusal.txt') $clientDispatch.process 'real verifier did not reach the first queued refusal barrier'
+      Write-Text $clockPath '601'
+      Write-Text (Join-Path $client.runtime 'fixture-first-refusal.continue') 'continue'
+    }
+    $first = Wait-QueuePoll $client $clientDispatch 1
+    Assert-True ($null -ne $first) 'queued gate re-presents instead of finalizing its first queued refusal'
+    $pendingPath = $clientDispatch.ack.longProductGate.resultPath
+    $pendingBytes = Read-SharedText $pendingPath
+    $pending = $pendingBytes | ConvertFrom-Json -DateKind String
+    Assert-True ($pending.status -ceq 'pending' -and $null -eq $pending.exit) 'queued refusal leaves the result pending'
+    $stderrPath = Join-Path $client.runtime "long-product-gate-$($clientDispatch.ack.launchId).stderr.log"
+    $queuePath = Join-Path $client.runtime 'verify-queue.json'
+    $queueBefore = Read-SharedText $queuePath
+    $queue = $queueBefore | ConvertFrom-Json -DateKind String
+    $ticketBefore = @($queue.tickets | Where-Object number -EQ ([long]$first.ticket))[0]
+    Assert-True ($ticketBefore.pid -eq $clientDispatch.supervisor.Id -and $ticketBefore.claimantKey -like "launch:$($clientDispatch.ack.launchId)*") 'real queue ticket belongs to the recorded supervisor claimant'
+    if ($Mode -ceq 'expire-admit') {
+      $ticketBefore.presentedUtc = [DateTime]::UtcNow.AddSeconds(-601).ToString('o')
+      Write-Text $queuePath ($queue | ConvertTo-Json -Depth 10 -Compress)
+      Write-Text $clockPath '601'
+      Write-Text $holder.release 'release'; $holderDispatch.process.WaitForExit()
+      Write-Text $leader.release 'release'; Write-Text $leaderRelease 'release'; $leaderDispatch.process.WaitForExit()
+      Assert-True ($holderDispatch.process.ExitCode -eq 0 -and $leaderDispatch.process.ExitCode -eq 0) 'expiry predecessors release through real admission'
+      $afterPrune = Read-SharedText $queuePath | ConvertFrom-Json -DateKind String
+      Assert-True (@($afterPrune.tickets | Where-Object number -EQ ([long]$first.ticket)).Count -eq 0) 'real verifier prunes the expired client reservation'
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-1.json.continue') 'continue'
+      Wait-ProcessPath $client.ready $clientDispatch.process 'expired client replacement did not execute through real admission' | Out-Null
+      Write-Text $client.release 'release'; $clientDispatch.process.WaitForExit()
+      $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
+      $afterAdmission = Read-SharedText $queuePath | ConvertFrom-Json -DateKind String
+      Assert-True ($afterAdmission.nextTicket -eq $afterPrune.nextTicket + 1 -and $clientDispatch.process.ExitCode -eq 0 -and $result.status -ceq 'passed' -and $result.nativeExit -eq 0 -and $result.dispatchReleased -eq $true -and -not (Test-Path -LiteralPath (Join-Path $client.runtime 'verify-lock.d'))) 'expired ticket replacement is a valid admitted run and releases slot and dispatch'
+      $history = Read-SharedText $stderrPath
+      Assert-True ($history.Contains("long-product-gate: queue ticket replaced before admission (previous=$($first.ticket))")) 'expired admission records the queue ticket replacement warning'
+      Assert-True ($history.Contains("long-product-gate: admission ticket comparison unavailable (previous=$($first.ticket))") -and [regex]::Matches($history, '(?m)^heavy-verifier: queued;').Count -eq 1 -and $history -like '*heavy-verifier: nested-owner pipe=*') 'expired admission records unavailable comparison and preserves queue and admission history'
+      Write-Output "PASS expired queued ticket=$($first.ticket) pruned, replacement admitted and released; named replacement warning recorded"
+    } elseif ($Mode -ceq 'interrupt') {
+      $ownerPath = Join-Path $client.runtime 'verify-lock.d/owner.json'; $ownerBytes = Read-SharedText $ownerPath
+      $ledgerPath = Join-Path $client.runtime 'dispatch-log.jsonl'; $ledgerBytes = Read-SharedText $ledgerPath
+      $clientDispatch.supervisor.Kill(); $clientDispatch.supervisor.WaitForExit(); $clientDispatch.process.WaitForExit()
+      . (Join-Path $client.orchestrator 'dispatch-ownership.ps1')
+      $scavenge = Invoke-DispatchOwnershipScavenge $client.runtime $testRoot
+      $watchdog = & (Join-Path $client.orchestrator 'lane-stall-watchdog.ps1') -Label $holderDispatch.label -RuntimeRoot $client.runtime -HistoryPath $ledgerPath | ConvertFrom-Json -DateKind String
+      Assert-True ((Read-SharedText $pendingPath) -ceq $pendingBytes -and (Read-SharedText $queuePath) -ceq $queueBefore) 'queued supervisor interruption preserves pending result and reserved queue bytes'
+      Assert-True ($scavenge.removed -eq 0 -and (Read-SharedText $ownerPath) -ceq $ownerBytes -and -not $holderDispatch.process.HasExited -and -not $leaderDispatch.process.HasExited) 'queued interruption never reclaims or kills another claimant'
+      Assert-True ($watchdog.relaunch -eq $false -and (Read-SharedText $ledgerPath) -ceq $ledgerBytes -and -not (Test-Path -LiteralPath $client.ready)) 'queued interruption neither relaunches nor consumes an attempt or executes the gate'
+      Write-Output 'PASS queued supervisor interruption preserves pending result, reservation and live holder; no reclaim/relaunch/attempt'
+      return
+    } else {
+      if ($Mode -ceq 'cap') { Write-Text $clockPath '3601' }
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-1.json.continue') 'continue'
+      $second = Wait-QueuePoll $client $clientDispatch 2
+      if ($Mode -ceq 'cap') {
+        Assert-True ($null -eq $second) 'queue wait cap finalizes without a second verifier presentation'
+        $clientDispatch.process.WaitForExit()
+        $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and (Read-SharedText $stderrPath) -like '*long-product-gate: queued wait cap 3600 seconds reached*' -and -not (Test-Path -LiteralPath $client.ready)) 'queue wait cap names 3600 seconds and refuses without execution'
+        Write-Output 'PASS queued wait cap 3600 seconds: fake clock, incomplete exit 73, no execution'
+        return
+      }
+      $history = Read-SharedText $stderrPath
+      $tickets = @([regex]::Matches($history, '(?m)^heavy-verifier: queued; ticket=([0-9]+) ') | ForEach-Object { $_.Groups[1].Value })
+      Assert-True ($null -ne $second -and $tickets.Count -eq 2 -and @($tickets | Select-Object -Unique).Count -eq 1) 'queued presentations preserve the same reserved ticket number'
+      Assert-True (($first.arguments -join "`n") -ceq ($second.arguments -join "`n") -and $first.pid -eq $second.pid) 'queued presentations keep identical verifier arguments and supervisor identity'
+      $ticketAfter = @((Read-SharedText $queuePath | ConvertFrom-Json -DateKind String).tickets | Where-Object number -EQ ([long]$first.ticket))[0]
+      Assert-True ($ticketAfter.presentedUtc -cne $ticketBefore.presentedUtc -and (Read-SharedText $pendingPath) -ceq $pendingBytes) 'queued presentation refreshes presentedUtc without changing pending result bytes'
+      Write-Text $holder.release 'release'; $holderDispatch.process.WaitForExit()
+      $holderDispatch.supervisor.Dispose(); $holderDispatch.supervisor = $null; $holderDispatch.process.Dispose(); $holderDispatch.process = $null
+      Write-Text $leader.release 'release'; Write-Text $leaderRelease 'release'; $leaderDispatch.process.WaitForExit()
+      Assert-True ($leaderDispatch.process.ExitCode -eq 0) 'reserved leader consumes its ticket through real admission before the client'
+      $leaderDispatch.supervisor.Dispose(); $leaderDispatch.supervisor = $null; $leaderDispatch.process.Dispose(); $leaderDispatch.process = $null
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-2.json.continue') 'continue'
+      Wait-ProcessPath $client.ready $clientDispatch.process 'queued real gate did not execute after slot release' | Out-Null
+      Write-Text $client.release 'release'; $clientDispatch.process.WaitForExit()
+      $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
+      Assert-True ($clientDispatch.process.ExitCode -eq 0 -and $result.status -ceq 'passed' -and $result.nativeExit -eq 0 -and $result.dispatchReleased -eq $true -and -not (Test-Path -LiteralPath (Join-Path $client.runtime 'verify-lock.d'))) 're-presented queued gate succeeds and releases its real slot and dispatch'
+      $finalHistory = Read-SharedText $stderrPath
+      Assert-True ([regex]::Matches($finalHistory, '(?m)^heavy-verifier: queued;').Count -eq 2 -and $finalHistory -like '*heavy-verifier: nested-owner pipe=*') 'terminal stderr retains every queued presentation and admitted execution'
+      Assert-True ($finalHistory.Contains("long-product-gate: admission ticket comparison unavailable (previous=$($first.ticket))") -and -not $finalHistory.Contains('long-product-gate: queue ticket replaced before admission')) 'unexpired admission records unavailable comparison without a replacement warning'
+      Write-Output "PASS real queued gate reused ticket=$($first.ticket) twice, refreshed presentation, executed and released"
+    }
+  } catch { $failure = $_.Exception.Message } finally {
+    if ($clientDispatch -and $clientDispatch.supervisor) { Stop-ExactStartedProcess $clientDispatch.supervisor }
+    Write-Text $leaderRelease 'release'
+    foreach ($fixture in @($holder,$leader,$client)) { Write-Text $fixture.release 'release' }
+    foreach ($dispatch in @($clientDispatch,$leaderDispatch,$holderDispatch)) {
+      if ($dispatch) { if ($dispatch.process) { $dispatch.process.WaitForExit(); $dispatch.process.Dispose() }; if ($dispatch.supervisor) { $dispatch.supervisor.Dispose() } }
+    }
+  }
+  if ($Mutation) {
+    $expected = switch ($Mutation) {
+      'single-shot' { 'queued gate re-presents instead of finalizing its first queued refusal' }
+      'fresh-ticket' { 'queued presentations preserve the same reserved ticket number' }
+      'no-cap' { 'queue wait cap finalizes without a second verifier presentation' }
+      'replacement-line' { 'expired admission records the queue ticket replacement warning' }
+    }
+    Assert-True ($failure -ceq "ASSERTION FAILED: $expected") "MUTANT $Mutation reaches its named queue assertion (actual=$failure)"
+    if ($Mutation -ceq 'fresh-ticket') { Assert-True ((Read-SharedText $stderrPath) -like '*long-product-gate: queue ticket changed*') 'changed ticket diagnostic explains the lost reservation' }
+    Write-Output "PASS MUTANT $Mutation killed at $expected"
+  } elseif ($failure) { throw $failure }
 }
 function New-Mutant([string]$Source, [string]$Name, $Fixture) {
   $mutantPath = Join-Path $Fixture.orchestrator "long-product-gate-$Name-mutant.ps1"
@@ -232,6 +479,55 @@ function Get-TestDefinition([string]$Path, [string]$Name) {
   $definitions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name }, $true))
   Assert-True ($definitions.Count -eq 1) "test extraction finds exactly one $Name"
   return $definitions[0].Extent.Text
+}
+function Assert-AdmissionTicketDiagnostics([string]$Source, [string]$LogPath) {
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errors)
+  $samples = @($ast.FindAll({ param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$presentationSeconds'
+  }, $true))
+  Assert-True ($errors.Count -eq 0 -and $samples.Count -eq 1) 'presentation clock sample extracts exactly once'
+  $presentationWatch = [pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds(601)}
+  $queueWatch = [pscustomobject]@{Elapsed=[TimeSpan]::Zero}
+  . ([scriptblock]::Create($samples[0].Extent.Text))
+  Assert-True ($presentationSeconds -eq 601) 'presentation clock includes time before the first queued refusal is observed'
+  $blocks = @($ast.FindAll({ param($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$queueTicket'
+  }, $true))
+  Assert-True ($errors.Count -eq 0 -and $blocks.Count -eq 1) 'admission ticket diagnostic block extracts exactly once'
+  $diagnostics = [scriptblock]::Create($blocks[0].Extent.Text)
+  foreach ($case in @(
+    @{output='heavy-verifier: admitted; ticket=3'; previous=1000; now=1601; comparison='comparison (previous=3 current=3)'; warning=$false; name='exposed unchanged ticket is comparable even after retention'},
+    @{output='heavy-verifier: admitted; ticket=4'; previous=1000; now=1001; comparison='comparison (previous=3 current=4)'; warning=$true; name='exposed replacement warns without an expiry gap'},
+    @{output='heavy-verifier: nested-owner pipe=fixture'; previous=1000; now=1600; comparison='comparison unavailable (previous=3)'; warning=$false; name='unavailable ticket at exactly 600 seconds has no replacement warning'},
+    @{output='heavy-verifier: nested-owner pipe=fixture'; previous=1000; now=1601; comparison='comparison unavailable (previous=3)'; warning=$true; name='unavailable ticket after 600 seconds warns using the previous presentation'}
+  )) {
+    $queueTicket = '3'; $queueRetentionSeconds = 600
+    $presentationSeconds = $case.now; $previousPresentationSeconds = $case.previous
+    $presentationOutput = $case.output; $presentationError = ''; $stderrPath = $LogPath
+    Write-Text $stderrPath ''
+    . $diagnostics
+    $history = Read-SharedText $stderrPath
+    Assert-True ($history.Contains("long-product-gate: admission ticket $($case.comparison)") -and $history.Contains('long-product-gate: queue ticket replaced before admission (previous=3)') -eq $case.warning) $case.name
+  }
+}
+function Test-AdmissionTicketDiagnostics($Fixture, [string]$Source) {
+  $log = Join-Path $Fixture.runtime 'fixture-admission-diagnostics.log'
+  Assert-AdmissionTicketDiagnostics $Source $log
+  Write-Output 'PASS admission ticket diagnostics compare exposed tickets and the strict 600-second previous-presentation boundary'
+  foreach ($mutation in @(
+    @('$presentationSeconds = $presentationWatch.Elapsed.TotalSeconds', '$presentationSeconds = $queueWatch.Elapsed.TotalSeconds', 'presentation clock includes time before the first queued refusal is observed'),
+    @('if ($admissionTicketMatch.Success)', 'if ($false)', 'exposed unchanged ticket is comparable even after retention'),
+    @('$admissionTicket -cne $queueTicket', '$admissionTicket -ceq $queueTicket', 'exposed unchanged ticket is comparable even after retention'),
+    @('-gt $queueRetentionSeconds', '-ge $queueRetentionSeconds', 'unavailable ticket at exactly 600 seconds has no replacement warning'),
+    @('$presentationSeconds - $previousPresentationSeconds', '$presentationSeconds', 'unavailable ticket at exactly 600 seconds has no replacement warning')
+  )) {
+    $mutated = Replace-FixtureOnce $Source $mutation[0] $mutation[1]
+    $failure = $null
+    try { Assert-AdmissionTicketDiagnostics $mutated $log } catch { $failure = $_.Exception.Message }
+    Assert-True ($failure -ceq "ASSERTION FAILED: $($mutation[2])") "MUTANT admission diagnostics reaches $($mutation[2])"
+    Write-Output "PASS MUTANT admission diagnostics killed at $($mutation[2])"
+  }
 }
 function Assert-SharedCensusClockContract([string]$Path) {
   $tokens = $null; $errors = $null
@@ -299,7 +595,21 @@ try {
   $supervisor = $productionSupervisor
   $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'long-product-gate.ps1'))
   $runSupervisor = -not $Part -or $Part -ceq 'supervisor'
+  $runQueue = -not $Part -or $Part -ceq 'queue'
   $runMutants = -not $Part -or $Part -ceq 'mutants'
+  if ($Mutant -cin @('single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')) {
+    if ($Mutant -ceq 'non-atomic-ready') { Test-ReadyHandoff $fixture -NonAtomic }
+    else { Invoke-QueueCase $(if ($Mutant -ceq 'no-cap') { 'cap' } elseif ($Mutant -ceq 'replacement-line') { 'expire-admit' } else { 'admit' }) $Mutant }
+    return
+  }
+  if ($runQueue) {
+    Test-AdmissionTicketDiagnostics $fixture $source
+    Test-ReadyHandoff $fixture
+    Invoke-QueueCase 'admit'
+    Invoke-QueueCase 'expire-admit'
+    Invoke-QueueCase 'cap'
+    Invoke-QueueCase 'interrupt'
+  }
   if ($runSupervisor) {
     Assert-SharedCensusClockContract (Join-Path $fixture.orchestrator 'invoke-heavy-verifier.ps1')
     Write-Output 'PASS AC5 shared v2.161 census clocks 90/210 seconds, cap six, re-observation bounded'
@@ -316,7 +626,7 @@ try {
     Assert-True (-not $dispatch.HasExited) 'normal dispatch remained alive for the supervisor handoff'
     $ack = Wait-ProcessPath $ackPath $dispatch 'normal dispatch acknowledgement was not complete'
     Assert-True ($ack.longProductGate.schema -ceq 'long-product-gate/v1' -and $ack.longProductGate.gate -ceq 'test:scripts' -and $ack.longProductGate.hostWatchSeconds -eq 900 -and $ack.longProductGate.resultPath -like '*long-product-gate-*.json') 'acknowledgement binds the fixed gate, 900-second host watch, and exact launch result'
-    $readyPath = Join-Path $fixture.runtime 'fixture-child-ready.txt'; $releasePath = Join-Path $fixture.runtime 'fixture-child-release.txt'
+    $readyPath = $fixture.ready; $releasePath = $fixture.release
     try { Wait-ForPathOrExit $readyPath $dispatch 'real verifier native child did not publish its barrier' } catch {
       Write-Output ("DISPATCH_STDERR " + (Read-SharedText $dispatchErr)); Write-Output ("DISPATCH_STDOUT " + (Read-SharedText $dispatchOut))
       foreach ($diagnosticFile in @(Get-ChildItem -LiteralPath $fixture.runtime -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^long-product-gate|^dispatch-launch|^watchdog-lane|eligibility-trace|observation-trace' })) { Write-Output ("REAL_ROUTE_FILE " + $diagnosticFile.Name + "`n" + (Read-SharedText $diagnosticFile.FullName)) }
@@ -330,7 +640,7 @@ try {
       if ($dispatch.HasExited) { throw 'real verifier did not publish its started product-slot owner' }
       Start-Sleep -Milliseconds 25
     } while ($true)
-    $readyRecord = Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json -DateKind String
+    $readyRecord = Wait-ProcessPath $readyPath $dispatch 'real native ready publication was not complete'
     Write-Output "REAL_SLOT gate=$($slotOwner.gate) pid=$($slotOwner.pid) childPid=$($slotOwner.childPid) nativePid=$($readyRecord.pid)"
     Assert-True ($slotOwner.gate -ceq 'test:scripts' -and $slotOwner.childPid -eq $readyRecord.pid) 'real verifier owns the fixture product slot and native child'
     Write-Text $releasePath 'release'
@@ -366,6 +676,11 @@ try {
   }
   if ($runMutants) {
     if (-not $Mutant) {
+      Test-ReadyHandoff $fixture -NonAtomic
+      Invoke-QueueCase 'admit' 'single-shot'
+      Invoke-QueueCase 'admit' 'fresh-ticket'
+      Invoke-QueueCase 'cap' 'no-cap'
+      Invoke-QueueCase 'expire-admit' 'replacement-line'
       Test-VerifierOverrideGuardMutant $fixture
       Test-ClockContractMutant $fixture
       Invoke-InterruptionCase $fixture -Mutant
@@ -387,7 +702,7 @@ try {
       $mutantPath = New-Mutant $source $mutantName $fixture
       $id = [guid]::NewGuid().ToString(); $result = Join-Path $fixture.runtime "long-product-gate-$id.json"
       if ($mutantName -ceq 'direct-host') {
-        Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
+        Write-Text $fixture.release 'release'
         $mutantArgs = @('-NoProfile','-NonInteractive','-File',$mutantPath,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-23','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
         $mutantOut = Join-Path $fixture.root 'mutant.out'; $mutantErr = Join-Path $fixture.root 'mutant.err'
         $mutantProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $mutantArgs -RedirectStandardOutput $mutantOut -RedirectStandardError $mutantErr -WindowStyle Hidden -PassThru
@@ -397,7 +712,7 @@ try {
         try { Assert-True ($mutantProcess.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $result)) 'direct host supervisor refuses without the exact dispatch owner' } catch { $failure = $_.Exception.Message }
         Assert-True ($failure -ceq 'ASSERTION FAILED: direct host supervisor refuses without the exact dispatch owner') 'MUTANT direct-host reaches its named assertion'
       } else {
-        Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
+        Write-Text $fixture.release 'release'
         $before = '{"schema":"foreign-result/v1","status":"passed"}'
         $exit = Invoke-LongGateProcess $fixture $mutantPath $id $result -Preseed
         Write-Output "MUTANT_OBSERVED stale-result exit=$exit bytes=$([IO.File]::ReadAllText($result))"
@@ -410,7 +725,7 @@ try {
   }
 } finally {
   if ($dispatch -and -not $dispatch.HasExited) {
-    Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
+    Write-Text $fixture.release 'release'
     $dispatch.WaitForExit()
   }
   $fixturePath = [IO.Path]::GetFullPath($fixtureRoot)
