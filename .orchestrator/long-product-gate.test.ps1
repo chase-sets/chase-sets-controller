@@ -44,7 +44,9 @@ function New-ControllerScriptFixture([string]$Root) {
   $child = @'
 param([string]$ReadyPath,[string]$ReleasePath)
 $ready = [ordered]@{ pid = $PID; parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId; startedUtc = [DateTime]::UtcNow.ToString('o') }
-[IO.File]::WriteAllText($ReadyPath, ($ready | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+$readyTemporary = "$ReadyPath.$PID.tmp"
+[IO.File]::WriteAllText($readyTemporary, ($ready | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+[IO.File]::Move($readyTemporary, $ReadyPath, $true)
 while (-not [IO.File]::Exists($ReleasePath)) { Start-Sleep -Milliseconds 25 }
 exit 0
 '@
