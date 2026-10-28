@@ -448,6 +448,8 @@ function Invoke-ReaderInventory {
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(314,634,1111,1155,1167,1216,1220,1231,1256,1338,1352,1560,1955,2035,2045,2059,2354,2359,2378,2384,2611,2618,2630,2633,2643,2654,2676,2681,2693,2698,2715,2729)
     'long-product-gate.test.ps1'=@(145,152,168,328)
+    # Immutable fixture priority-launch metadata, not a live owner snapshot.
+    'lane-priority.test.ps1'=@(37)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
     'interrupted-integration-test-support.ps1'=@(987)
