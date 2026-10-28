@@ -86,6 +86,14 @@ zero or more), and `idleHours`, `maxHours` and `releaseHours` (positive
 integers). Only the controller loop writes it. An absent, unreadable or
 invalid file means not accepting.
 
+The controller loop also owns the git-ignored, machine-local
+`.orchestrator/lane-priority.json` (`lane-priority/v1`, `priorityClass`:
+`Normal`, `BelowNormal`, or `Idle`). Missing means `BelowNormal`; unreadable
+or invalid means `Normal` with a recorded fallback reason. The legitimate
+`dispatch-lane.ps1 -PriorityClass` parameter overrides the file for one launch.
+Only the agent/supervisor descendant tree inherits this setting, not the host
+orchestrator or pre-launch admission. See `contracts/lane-priority.md`.
+
 Authorities come from complete paginated reads, and an incomplete read makes
 no handoff and no clock-based take-back for that issue this cycle. Label age
 is the newest `LabeledEvent` for `dispatch:platform`; return age is the

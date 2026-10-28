@@ -97,6 +97,8 @@ param(
   # Permit reusing an existing non-empty output stem (e.g. an intentional
   # same-label resume after the prior process was confirmed dead).
   [switch]$Force,
+  # Machine-local tuning, overridden for this launch only when supplied.
+  [ValidateSet('Normal','BelowNormal','Idle')][string]$PriorityClass,
   # Testing override for the harness executable; production resolves it.
   [string]$ExecutablePath,
   # Testing override paired with -ExecutablePath; never used by dispatches.
@@ -133,6 +135,25 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-LanePriority([string]$Path, [string]$Override) {
+  if ($Override) { return @{ priorityClass=$Override; prioritySource='parameter' } }
+  try {
+    if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) {
+      return @{ priorityClass='BelowNormal'; prioritySource='default' }
+    }
+    $configuration = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -ErrorAction Stop
+    if ($configuration.schemaVersion -cne 'lane-priority/v1') {
+      return @{ priorityClass='Normal'; prioritySource='fallback:schemaVersion' }
+    }
+    if ($configuration.priorityClass -cnotin @('Normal','BelowNormal','Idle')) {
+      return @{ priorityClass='Normal'; prioritySource='fallback:priorityClass' }
+    }
+    return @{ priorityClass=[string]$configuration.priorityClass; prioritySource='file' }
+  } catch {
+    return @{ priorityClass='Normal'; prioritySource='fallback:unreadable-or-invalid-json' }
+  }
+}
 
 if ([bool]$StartRequestIdentity -ne [bool]$StartAcknowledgementPath) {
   throw 'dispatch-lane: start acknowledgement path and request identity must be supplied together'
@@ -498,6 +519,7 @@ if ($LaneRole -eq 'implementation' -and ($Row -lt 1 -or [string]::IsNullOrWhiteS
 }
 . (Join-Path $PSScriptRoot "dispatch-claude-stream-audit.ps1"); Import-Module (Join-Path $PSScriptRoot "fleet-exclusive-admission.psm1") -Force -DisableNameChecking
 $runtimeRoot = if ($TestRuntimeRoot) { [IO.Path]::GetFullPath($TestRuntimeRoot) } else { [IO.Path]::GetFullPath($PSScriptRoot) }
+$lanePriority = Get-LanePriority (Join-Path $runtimeRoot 'lane-priority.json') $PriorityClass
 if ($integrationTarget -and (-not (Test-DispatchSamePath $integrationTarget.runtimeRoot $runtimeRoot) -or
     -not (Test-DispatchSamePath $IntegrationTargetPath (Join-Path $runtimeRoot "integration-request-$Label.json")) -or
     -not (Test-DispatchSamePath $PromptFile (Join-Path $runtimeRoot "$Label.prompt.txt")))) { throw 'INTEGRATION_REQUEST_PATH_MISMATCH' }
@@ -1189,6 +1211,7 @@ function Write-WatchdogSpec([string]$State, $ChildPid = $null, $ChildStart = $nu
     branch=$admissionBranch;head=$admissionHead;launchId=$launchId;ownershipRecordPath=[IO.Path]::GetFullPath($ownershipRecordPath)
     launcherPid=$PID;launcherStartIdentity=Get-DispatchProcessStartIdentity $PID
     childPid=$ChildPid;childStartIdentity=$ChildStart;state=$State;exitCode=$ExitCode
+    priorityClass=$lanePriority.priorityClass;prioritySource=$lanePriority.prioritySource
     updatedAt=[DateTime]::UtcNow.ToString('o')
     policyGeneration=[long]$dispatchRouting.policyGeneration
     registryAuthorityDigest=[string]$dispatchRouting.registryAuthorityDigest
@@ -1415,6 +1438,9 @@ try {
     }
   }
 
+  # Admission and census above keep the launcher's original Normal priority.
+  # Both agent and long-gate supervisor trees inherit this class on Windows.
+  [Diagnostics.Process]::GetCurrentProcess().PriorityClass = $lanePriority.priorityClass
   $process = Start-Process @startParameters
   $startedRecord = [ordered]@{}
   foreach ($property in $ownershipRecord.GetEnumerator()) {

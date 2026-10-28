@@ -144,6 +144,13 @@ delivery, then hands off new ones. When Chase Sets `main` or the actual deploy
 is red, handle it as usual and leave platform-side causes to the controller
 thread.
 
+Lane scheduling is controller-owned in the git-ignored, machine-local
+`.orchestrator/lane-priority.json` (`lane-priority/v1`, `priorityClass`:
+`Normal`, `BelowNormal`, or `Idle`). Missing defaults to `BelowNormal`;
+invalid/unreadable falls back to `Normal`. `dispatch-lane.ps1 -PriorityClass`
+overrides one launch. The class/source persist in the watchdog spec; the
+orchestrator stays Normal. See `contracts/lane-priority.md`.
+
 ## 4. Work selection and ready gate
 
 `orchestrator-shared` Platform handoff decides which issues the platform loop

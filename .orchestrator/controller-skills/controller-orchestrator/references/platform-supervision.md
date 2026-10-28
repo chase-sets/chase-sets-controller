@@ -16,6 +16,14 @@ it is found stopped. Raise `maxInFlight` from the weekly platform scorecard
 (`platform-scorecard.ps1`) and that week's `platform-take-back` markers. The
 tunable numbers live only in that file, never in skill text.
 
+This thread also owns the git-ignored, machine-local
+`.orchestrator/lane-priority.json`: `{"schemaVersion":"lane-priority/v1",
+"priorityClass":"BelowNormal"}`. Allowed classes are `Normal`, `BelowNormal`,
+and `Idle`; absent defaults to `BelowNormal`, invalid/unreadable falls back to
+`Normal`. `dispatch-lane.ps1 -PriorityClass Normal` overrides one launch.
+Applied class/source persist in its watchdog spec. Host processes stay Normal;
+only the launched agent/supervisor tree inherits. See `contracts/lane-priority.md`.
+
 ## Runs
 
 Start or resume a platform run only from Windows through the platform
