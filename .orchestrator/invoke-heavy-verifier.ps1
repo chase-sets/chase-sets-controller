@@ -623,44 +623,125 @@ public static class HeavyDiagnosticJob {
 }
 '@
 }
+function Write-DiagnosticProcessAmbiguity([int]$ProcessId, [string]$Reason) {
+  if ($null -eq $script:diagnosticProcessAmbiguities) { $script:diagnosticProcessAmbiguities = @{} }
+  $key = "$ProcessId|$Reason"
+  if (-not $script:diagnosticProcessAmbiguities.ContainsKey($key)) {
+    $script:diagnosticProcessAmbiguities[$key] = $true
+    [Console]::Error.WriteLine("heavy-verifier: diagnostic process observation excluded pid=$ProcessId reason=$Reason")
+  }
+}
+function Test-DiagnosticSnapshotStart([long]$SnapshotTicks, [long]$ExactTicks) {
+  # CIM truncates process creation times to whole microseconds.
+  return $SnapshotTicks -le $ExactTicks -and $ExactTicks - $SnapshotTicks -le 9
+}
 function Get-DiagnosticDescendantPids([int]$RootPid, [long]$RootStartTicks = 0) {
-  if (-not $IsWindows -or $RootPid -le 0) { return @() }
+  $script:diagnosticSnapshotDescendantStarts = @{}
+  if (-not $IsWindows -or $RootPid -le 0 -or $RootStartTicks -le 0) { return @() }
   try {
-    $children = @{}
+    $snapshot = @{}; $excluded = @{}; $children = @{}
     foreach ($processInfo in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
       $processId = 0; $parentId = 0
       if ([int]::TryParse([string]$processInfo.ProcessId, [ref]$processId) -and $processId -gt 0 -and [int]::TryParse([string]$processInfo.ParentProcessId, [ref]$parentId) -and $parentId -gt 0) {
         if ([string]$processInfo.Name -iin @('conhost.exe', 'openconsole.exe')) { continue }
-        if ($RootStartTicks -gt 0) {
-          try { if ([Management.ManagementDateTimeConverter]::ToDateTime([string]$processInfo.CreationDate).ToUniversalTime().Ticks -lt $RootStartTicks) { continue } } catch {}
+        if ($snapshot.ContainsKey($processId) -or $excluded.ContainsKey($processId)) {
+          $snapshot.Remove($processId); $excluded[$processId] = $true
+          Write-DiagnosticProcessAmbiguity $processId 'duplicate-process-identity'
+          continue
         }
-        if (-not $children.ContainsKey($parentId)) { $children[$parentId] = @() }
-        $children[$parentId] = @($children[$parentId]) + $processId
+        try {
+          if ($processInfo.CreationDate -is [DateTime]) { $createdTicks = $processInfo.CreationDate.ToUniversalTime().Ticks }
+          elseif ($processInfo.CreationDate -is [string]) { $createdTicks = [Management.ManagementDateTimeConverter]::ToDateTime($processInfo.CreationDate).ToUniversalTime().Ticks }
+          else { throw 'creation time was neither DateTime nor DMTF' }
+        } catch { Write-DiagnosticProcessAmbiguity $processId 'creation-time-unparseable'; $excluded[$processId] = $true; continue }
+        $snapshot[$processId] = [pscustomobject]@{ Pid=$processId; ParentPid=$parentId; StartTicks=$createdTicks }
       }
     }
-    $pending = @($RootPid); $seen = @{}; $seen[$RootPid] = $true
+    if ($excluded.ContainsKey($RootPid)) { return @() }
+    if (-not $snapshot.ContainsKey($RootPid)) {
+      Write-DiagnosticProcessAmbiguity $RootPid 'root-snapshot-identity-unavailable'
+      return @()
+    }
+    if (-not (Test-DiagnosticSnapshotStart $snapshot[$RootPid].StartTicks $RootStartTicks)) {
+      Write-DiagnosticProcessAmbiguity $RootPid 'root-start-identity-mismatch'
+      return @()
+    }
+    $liveRoot = $null
+    try {
+      $liveRoot = Get-Process -Id $RootPid -ErrorAction Stop
+      [void]$liveRoot.Handle
+      if ($liveRoot.StartTime.ToUniversalTime().Ticks -ne $RootStartTicks) {
+        Write-DiagnosticProcessAmbiguity $RootPid 'root-start-identity-mismatch'
+        return @()
+      }
+    } catch {
+      if ($_.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*') {
+        Write-DiagnosticProcessAmbiguity $RootPid 'root-start-identity-unavailable'
+        return @()
+      }
+    } finally { if ($liveRoot -is [IDisposable]) { $liveRoot.Dispose() } }
+    foreach ($candidate in $snapshot.Values) {
+      if (-not $children.ContainsKey($candidate.ParentPid)) { $children[$candidate.ParentPid] = @() }
+      $children[$candidate.ParentPid] += $candidate
+    }
+    $pending = [Collections.Generic.Queue[object]]::new()
+    $pending.Enqueue([pscustomobject]@{ Pid=$RootPid; StartTicks=$RootStartTicks })
+    $seen = @{}; $seen[$RootPid] = $true
     $result = @()
     while ($pending.Count -gt 0) {
-      $parent = $pending[0]; $pending = if ($pending.Count -gt 1) { @($pending[1..($pending.Count - 1)]) } else { @() }
-      if ($children.ContainsKey($parent)) { foreach ($childPid in @($children[$parent])) {
-        if ($childPid -gt 0 -and -not $seen.ContainsKey($childPid)) { $seen[$childPid] = $true; $result += $childPid; $pending += $childPid }
+      $parent = $pending.Dequeue()
+      if ($children.ContainsKey($parent.Pid)) { foreach ($candidate in $children[$parent.Pid]) {
+        if ($seen.ContainsKey($candidate.Pid)) { continue }
+        if ($candidate.StartTicks -lt $parent.StartTicks) {
+          Write-DiagnosticProcessAmbiguity $candidate.Pid 'parent-creation-order'
+          continue
+        }
+        $seen[$candidate.Pid] = $true
+        $script:diagnosticSnapshotDescendantStarts[$candidate.Pid] = $candidate.StartTicks
+        $result += $candidate.Pid
+        $pending.Enqueue($candidate)
       } }
     }
     return @($result)
-  } catch { return @() }
+  } catch { Write-DiagnosticProcessAmbiguity $RootPid 'process-snapshot-unavailable'; return @() }
+}
+function Stop-ExactVerifierProcess([int]$ProcessId, [long]$StartTicks) {
+  $candidate = $null
+  try {
+    $candidate = Get-Process -Id $ProcessId -ErrorAction Stop
+    [void]$candidate.Handle
+    if ($StartTicks -le 0 -or $candidate.StartTime.ToUniversalTime().Ticks -ne $StartTicks) {
+      [Console]::Error.WriteLine("heavy-verifier: diagnostic process kill skipped pid=$ProcessId reason=start-identity-mismatch")
+      return
+    }
+    # The pinned handle binds this non-tree kill; never enumerate a PID-only tree.
+    if (-not $candidate.HasExited) { $candidate.Kill() }
+  } catch {
+    if ($_.FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*') {
+      [Console]::Error.WriteLine("heavy-verifier: diagnostic process kill skipped pid=$ProcessId reason=identity-or-termination-unavailable")
+    }
+  } finally { if ($candidate) { $candidate.Dispose() } }
 }
 function Stop-DiagnosticTree([int]$RootPid, [long]$RootStartTicks = 0, [int[]]$KnownPids = @()) {
+  # Kernel job membership is handle-bound, not inferred from reusable PIDs.
   if ($IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Terminate($diagnosticJobHandle, 1) }
-  try { if ($child -and -not $child.HasExited) { $child.Kill($true) } } catch { try { if ($child -and -not $child.HasExited) { $child.Kill() } } catch {} }
-  foreach ($descendantPid in @($KnownPids)) { try { Stop-Process -Id $descendantPid -Force -ErrorAction SilentlyContinue } catch {} }
+  Stop-ExactVerifierProcess $RootPid $RootStartTicks
+  foreach ($descendantPid in @($KnownPids | Select-Object -Unique)) {
+    $expectedStart = if ($script:diagnosticObservedDescendantStarts.ContainsKey($descendantPid)) { $script:diagnosticObservedDescendantStarts[$descendantPid] } else { 0 }
+    Stop-ExactVerifierProcess $descendantPid $expectedStart
+  }
 }
 function Test-ObservedDiagnosticDescendants([int[]]$Pids) {
   foreach ($descendantProcessId in @($Pids | Select-Object -Unique)) {
     if ($descendantProcessId -le 0 -or -not $script:diagnosticObservedDescendantStarts.ContainsKey($descendantProcessId)) { continue }
+    $candidate = $null
     try {
       $candidate = Get-Process -Id $descendantProcessId -ErrorAction Stop
-      if ($candidate.StartTime.ToUniversalTime().Ticks -eq $script:diagnosticObservedDescendantStarts[$descendantProcessId]) { return $true }
-    } catch {}
+      [void]$candidate.Handle
+      if ($candidate.StartTime.ToUniversalTime().Ticks -eq $script:diagnosticObservedDescendantStarts[$descendantProcessId]) {
+        if (-not $candidate.HasExited) { return $true }
+      } else { Write-DiagnosticProcessAmbiguity $descendantProcessId 'observed-start-identity-mismatch' }
+    } catch {} finally { if ($candidate) { $candidate.Dispose() } }
   }
   return $false
 }
@@ -2705,8 +2786,11 @@ function Test-NativeNormalRelease($Record) {
 function Complete-NativeReconciliation($Record) {
   if (-not (Test-OwnerShape $Record) -or $null -eq $Record.native.linux) { return $false }
   $reconciler = $null
+  $reconcilerStartTicks = 0
   try {
     $reconciler = [Diagnostics.Process]::Start((New-NativeStart 'reconcile' $Record.native.root))
+    [void]$reconciler.Handle
+    $reconcilerStartTicks = $reconciler.StartTime.ToUniversalTime().Ticks
     $errors = $reconciler.StandardError.ReadToEndAsync()
     $reconciler.StandardInput.WriteLine((@{ linux = $Record.native.linux } | ConvertTo-Json -Compress -Depth 8))
     $reconciler.StandardInput.Close()
@@ -2728,7 +2812,7 @@ function Complete-NativeReconciliation($Record) {
     return $false
   } finally {
     if ($reconciler) {
-      if (-not $reconciler.HasExited) { $reconciler.Kill(); [void]$reconciler.WaitForExit(30000) }
+      if (-not $reconciler.HasExited) { Stop-ExactVerifierProcess $reconciler.Id $reconcilerStartTicks; [void]$reconciler.WaitForExit(30000) }
       $reconciler.Dispose()
     }
   }
@@ -3008,6 +3092,9 @@ try {
 $exitCode = 1
 $releaseMismatch = $false
 $child = $null
+$childStartTicks = 0
+$diagnosticObservedDescendants = @()
+$script:diagnosticObservedDescendantStarts = [hashtable]::new()
 $childStarted = $null
 $childEnded = $null
 $childElapsedMs = $null
@@ -3186,6 +3273,8 @@ try {
     # sequence; KillOnClose and descendant cleanup remain fail-closed.
     Assert-HeavyAdmissionTime
     $child = [Diagnostics.Process]::Start($start)
+    [void]$child.Handle
+    $childStartTicks = $child.StartTime.ToUniversalTime().Ticks
     if ($isTimedRoute -and $IsWindows -and $diagnosticJobHandle -ne [IntPtr]::Zero) { [HeavyDiagnosticJob]::Assign($diagnosticJobHandle, $child.Id) }
     if ($TestDelayChildPublicationMilliseconds -gt 0) {
       Start-Sleep -Milliseconds $TestDelayChildPublicationMilliseconds
@@ -3217,11 +3306,21 @@ try {
       while ($true) {
         try { $child.Refresh(); $workingSet = [long]$child.WorkingSet64; $peakWorkingSet = [long][Math]::Max($peakWorkingSet, $child.PeakWorkingSet64) } catch {}
         if ($IsWindows) {
-          foreach ($descendantPid in @(Get-DiagnosticDescendantPids $child.Id $child.StartTime.ToUniversalTime().Ticks)) {
-            if ($descendantPid -gt 0 -and -not $script:diagnosticObservedDescendantStarts.ContainsKey($descendantPid)) {
-              try { $script:diagnosticObservedDescendantStarts[$descendantPid] = (Get-Process -Id $descendantPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks } catch {}
-            }
-            $diagnosticObservedDescendants += $descendantPid
+          foreach ($descendantPid in @(Get-DiagnosticDescendantPids $child.Id $childStartTicks)) {
+            $observedProcess = $null
+            try {
+              $observedProcess = Get-Process -Id $descendantPid -ErrorAction Stop
+              [void]$observedProcess.Handle
+              $observedStart = $observedProcess.StartTime.ToUniversalTime().Ticks
+              if (-not (Test-DiagnosticSnapshotStart $script:diagnosticSnapshotDescendantStarts[$descendantPid] $observedStart)) {
+                Write-DiagnosticProcessAmbiguity $descendantPid 'snapshot-start-identity-mismatch'
+                continue
+              }
+              $script:diagnosticObservedDescendantStarts[$descendantPid] = $observedStart
+              $diagnosticObservedDescendants += $descendantPid
+            } catch {
+              Write-DiagnosticProcessAmbiguity $descendantPid 'snapshot-start-identity-unavailable'
+            } finally { if ($observedProcess) { $observedProcess.Dispose() } }
           }
           $diagnosticObservedDescendants = @($diagnosticObservedDescendants | Select-Object -Unique)
         }
@@ -3235,7 +3334,7 @@ try {
         $remaining = [int][Math]::Floor(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
         if ($remaining -le 0) {
           $childTimedOut = $true
-          Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
+          Stop-DiagnosticTree $child.Id $childStartTicks @($diagnosticObservedDescendants)
           break
         }
         [void]$child.WaitForExit([Math]::Min(100, $remaining))
@@ -3301,7 +3400,7 @@ try {
     }
     if ($isControllerPrecursor -or $isHostVerifier -or $isControllerFixture) {
       if ($isTimedRoute -and $childTimedOut) {
-        Stop-DiagnosticTree $child.Id $child.StartTime.ToUniversalTime().Ticks @($diagnosticObservedDescendants)
+        Stop-DiagnosticTree $child.Id $childStartTicks @($diagnosticObservedDescendants)
       } else {
         while ((Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false) { Start-Sleep -Milliseconds 100 }
       }
@@ -3451,11 +3550,11 @@ try {
     }
   }
   if ($isTimedRoute -and $child -and -not $child.HasExited) {
-    try { $child.Kill($true); [void]$child.WaitForExit(2000) } catch {}
+    try { Stop-DiagnosticTree $child.Id $childStartTicks @($diagnosticObservedDescendants); [void]$child.WaitForExit(2000) } catch {}
   }
   if ($isNativeDb -and $child -and -not $child.HasExited) {
     $child.StandardInput.Close()
-    $child.Kill(); [void]$child.WaitForExit(30000)
+    Stop-ExactVerifierProcess $child.Id $childStartTicks; [void]$child.WaitForExit(30000)
   }
   if (($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) -and $null -ne $child -and
       ($owner.state -cne 'started' -or

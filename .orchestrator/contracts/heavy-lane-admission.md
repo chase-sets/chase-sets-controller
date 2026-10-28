@@ -73,6 +73,19 @@ total user/kernel time, and total process count are sampled before the Job
 Object is closed. Unsafe or pre-existing receipt paths are refusal failures
 and never produce a success result.
 
+Diagnostic descendant observations accept CIM `DateTime` values directly and
+parse DMTF only for string values. Unknown or invalid creation times are
+excluded and logged, never treated as ownership. Each parent hop must be in
+creation-time order and reach the launched root's exact start identity;
+pre-root processes and reused-parent subtrees are excluded. Snapshot times
+are checked against exact live start identities before recording descendants
+(CIM's whole-microsecond truncation is accounted for). Timeout and fallback
+cleanup pin a process handle and recheck its recorded start identity immediately
+before each non-tree kill. Missing, unreadable, or mismatched identities are
+skipped and logged; no PID-only or recursively inferred tree kill is allowed.
+Windows Job Object termination remains bound to kernel job membership, not
+reusable parent PIDs.
+
 In diagnostic mode, `new Worker`, `process.execve`, and
 `process.binding('spawn_sync' | 'process_wrap')` are refused. Node child-process
 launches are refused unless the child environment carries exactly the host-set,

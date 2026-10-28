@@ -11,7 +11,8 @@ function Start-TestChild([string[]]$Arguments, [hashtable]$Environment = @{}) {
   foreach ($argument in $Arguments) { [void]$start.ArgumentList.Add([string]$argument) }
   foreach ($entry in $Environment.GetEnumerator()) { $start.Environment[$entry.Key] = [string]$entry.Value }
   $process = [Diagnostics.Process]::Start($start)
-  return [pscustomobject]@{ Process = $process; Stdout = $process.StandardOutput.ReadToEndAsync(); Stderr = $process.StandardError.ReadToEndAsync() }
+  [void]$process.Handle
+  return [pscustomobject]@{ Process = $process; StartTicks=$process.StartTime.ToUniversalTime().Ticks; Stdout = $process.StandardOutput.ReadToEndAsync(); Stderr = $process.StandardError.ReadToEndAsync() }
 }
 function Complete-TestChild($Started) {
   $Started.Process.WaitForExit()
@@ -130,12 +131,13 @@ function Invoke-Diagnostic([hashtable]$Overrides = @{}, [string]$MarkerName = 'm
   $marker=Join-Path $root "$MarkerName.marker"; $clockPath=New-DiagnosticClockFixture; $environment=@{ DIAGNOSTIC_MARKER=$marker; DIAGNOSTIC_PID=(Join-Path $root "$MarkerName.pid"); DIAGNOSTIC_CLOCK_FIXTURE=$clockPath }; foreach($entry in $ChildEnvironment.GetEnumerator()) { $environment[$entry.Key]=$entry.Value }; $result=Invoke-Child $args $environment
   return [pscustomobject]@{ Result=$result; Marker=$marker; PidPath=(Join-Path $root "$MarkerName.pid") }
 }
-function New-BarrierDiagnostic([string]$GuardPath, [string]$Name, [switch]$LingeringDescendant) {
+function New-BarrierDiagnostic([string]$GuardPath, [string]$Name, [switch]$LingeringDescendant, [hashtable]$ChildEnvironment = @{}) {
   $clockPath=Join-Path $root "$Name.clock.json"; Set-DiagnosticClock $clockPath ([DateTimeOffset]::UtcNow)
   $barrier=Join-Path $root "$Name.barrier"; $release=Join-Path $root "$Name.release"; $pidPath=Join-Path $root "$Name.pid"; $rootPidPath=Join-Path $root "$Name.root.pid"; $rootRelease=Join-Path $root "$Name.root.release"; $observed=Join-Path $root "$Name.clock-observed"
   $parameters=[ordered]@{ '-Diagnostic'='staged-import-chromium-control'; '-DiagnosticScriptPath'=$scriptRelative; '-DiagnosticSha256'=$scriptHash; '-DiagnosticBudgetSeconds'='900'; '-Worktree'=$worktree; '-Lane'='lane-test'; '-Branch'='codex/test'; '-ClaimedHead'=$head; '-ContainerRoot'=$container }
   $args=@('-NoProfile','-NonInteractive','-File',$GuardPath); foreach ($entry in $parameters.GetEnumerator()) { $args += @($entry.Key,[string]$entry.Value) }
   $environment=@{ DIAGNOSTIC_CLOCK_FIXTURE=$clockPath; DIAGNOSTIC_CLOCK_OBSERVED=$observed; DIAGNOSTIC_BARRIER=$barrier; DIAGNOSTIC_RELEASE=$release; DIAGNOSTIC_CHILD_PID=$pidPath; DIAGNOSTIC_ROOT_PID=$rootPidPath; DIAGNOSTIC_ROOT_RELEASE=$rootRelease; DIAGNOSTIC_LINGERING_DESCENDANT=[string][int][bool]$LingeringDescendant }
+  foreach ($entry in $ChildEnvironment.GetEnumerator()) { $environment[$entry.Key]=$entry.Value }
   $receiptsBefore=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object FullName)
   return [pscustomobject]@{ Started=(Start-TestChild $args $environment); Clock=$clockPath; Observed=$observed; Barrier=$barrier; Release=$release; PidPath=$pidPath; RootPidPath=$rootPidPath; RootRelease=$rootRelease; ReceiptsBefore=$receiptsBefore; Processes=[Collections.Generic.List[Diagnostics.Process]]::new() }
 }
@@ -173,10 +175,18 @@ function Assert-DiagnosticTimeoutExit($Outcome, [string]$Name) {
 }
 function Close-BarrierDiagnostic($Run) {
   New-Item -ItemType File -Path $Run.Release, $Run.RootRelease -Force | Out-Null
-  if (-not $Run.Started.Process.WaitForExit(5000)) { $Run.Started.Process.Kill($true); [void]$Run.Started.Process.WaitForExit(5000) }
+  if (-not $Run.Started.Process.WaitForExit(5000)) { Stop-TestExactProcess $Run.Started.Process $Run.Started.StartTicks }
   foreach ($process in $Run.Processes) {
-    if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
+    if (-not $process.HasExited) { Stop-TestExactProcess $process $process.StartTime.ToUniversalTime().Ticks }
   }
+}
+function Stop-TestExactProcess($Owned, [long]$StartTicks) {
+  $live=$null
+  try {
+    $live=Get-Process -Id $Owned.Id -ErrorAction Stop
+    [void]$live.Handle
+    if ($live.StartTime.ToUniversalTime().Ticks -eq $StartTicks -and -not $live.HasExited) { $live.Kill(); [void]$live.WaitForExit(5000) }
+  } catch {} finally { if ($live) { $live.Dispose() } }
 }
 function Assert-Refused([object]$Case, [string]$ExpectedText) {
   Assert-True ($Case.Result.Code -eq 73) "refused with documented code (actual=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
@@ -205,6 +215,135 @@ function Assert-ClosureMutantKilled($Case, [string]$Name, [scriptblock]$Assertio
   }
   Assert-True $failed "$Name mutant must fail its named policy assertion"
   Write-Output "KILLED mutant $Name at assertion=$AssertionName launched=1 payload-exit=0 body-side-effect=1"
+}
+function Set-TestVerifierSubstitution([string]$Path, [string]$Anchor, [string]$Replacement, [string]$Name) {
+  $text=[IO.File]::ReadAllText($Path)
+  $count=([regex]::Matches($text,[regex]::Escape($Anchor))).Count
+  Assert-True ($count -eq 1) "$Name`: mechanical substitution matched exactly once (count=$count)"
+  [IO.File]::WriteAllText($Path,$text.Replace($Anchor,$Replacement))
+}
+function Test-DiagnosticDescendantSnapshot {
+  $snapshotGuard=New-TestOnlyDiagnosticGuard 'descendant-snapshot'
+  Set-TestVerifierSubstitution $snapshotGuard '@(Get-CimInstance Win32_Process -ErrorAction Stop)' '@($script:testDiagnosticSnapshot)' 'descendant-snapshot-copy'
+  $driver=Join-Path $root 'descendant-snapshot-driver.ps1'
+  Set-Content -LiteralPath $driver -Value @'
+param([string]$Verifier)
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Verifier,[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'snapshot driver source must parse' }
+$definitions=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst]},$false))
+foreach ($definition in $definitions | Where-Object Name -In @('Write-DiagnosticProcessAmbiguity','Test-DiagnosticSnapshotStart','Get-DiagnosticDescendantPids')) {
+  . ([scriptblock]::Create($definition.Extent.Text))
+}
+$instant=[datetime]::SpecifyKind([datetime]'2026-01-01',[DateTimeKind]::Utc)
+$rootStart=$instant.AddTicks(7)
+function Get-Process([int]$Id) { if($Id -ne 100){throw 'unexpected synthetic PID'}; return [pscustomobject]@{StartTime=$rootStart} }
+function Row([int]$Id,[int]$Parent,$Creation) { [pscustomobject]@{ProcessId=$Id;ParentProcessId=$Parent;CreationDate=$Creation;Name='fixture.exe'} }
+$script:testDiagnosticSnapshot=@(
+  (Row 100 99 $instant),
+  (Row 101 100 $instant.AddSeconds(10)),
+  (Row 102 101 ([Management.ManagementDateTimeConverter]::ToDmtfDateTime($instant.AddSeconds(20)))),
+  (Row 103 100 $instant.AddDays(-4)),
+  (Row 104 100 ([Management.ManagementDateTimeConverter]::ToDmtfDateTime($instant.AddDays(-4)))),
+  (Row 105 101 $instant.AddSeconds(5)),
+  (Row 106 100 'unparseable'),
+  (Row 107 100 ([datetimeoffset]$instant)),
+  (Row 108 999 $instant.AddSeconds(40)),
+  (Row 109 106 $instant.AddSeconds(30)),
+  (Row 110 111 $instant.AddSeconds(60)),
+  (Row 111 110 $instant.AddSeconds(60)),
+  (Row 112 101 $instant.AddSeconds(10))
+)
+$ids=@(Get-DiagnosticDescendantPids 100 $rootStart.Ticks)
+Write-Output "FIXTURE descendant-snapshot-classified ids=$($ids -join ',')"
+if (106 -in $ids -or 107 -in $ids -or 109 -in $ids) { throw 'ASSERTION FAILED: descendant-unparseable-must-exclude' }
+if (103 -in $ids -or 104 -in $ids -or 105 -in $ids) { throw 'ASSERTION FAILED: descendant-parent-order-must-hold' }
+if (($ids | Sort-Object) -join ',' -cne '101,102,112') { throw 'ASSERTION FAILED: descendant-exact-root-chain-must-bind' }
+$script:testDiagnosticSnapshot=@((Row 100 99 $instant.AddSeconds(30)),(Row 101 100 $instant.AddSeconds(40)))
+$rootStart=$instant.AddSeconds(30)
+if (@(Get-DiagnosticDescendantPids 100 $instant.AddTicks(7).Ticks).Count) { throw 'ASSERTION FAILED: descendant-reused-root-must-exclude' }
+$script:testDiagnosticSnapshot=@((Row 101 100 $instant.AddSeconds(40)))
+if (@(Get-DiagnosticDescendantPids 100 $rootStart.Ticks).Count) { throw 'ASSERTION FAILED: descendant-missing-root-must-exclude' }
+Write-Output 'PASS descendant snapshot DateTime=1 DMTF=1 ambiguous=excluded pre-root=excluded every-hop=checked exact-root=checked'
+'@
+  $result=Invoke-Child @('-NoProfile','-File',$driver,'-Verifier',$snapshotGuard)
+  Assert-True ($result.Code -eq 0 -and $result.Stdout.Contains('FIXTURE descendant-snapshot-classified') -and
+    $result.Stderr.Contains('creation-time-unparseable') -and $result.Stderr.Contains('parent-creation-order') -and
+    $result.Stderr.Contains('root-start-identity-mismatch')) "descendant-snapshot-must-classify: production function and ambiguity log (exit=$($result.Code) stdout=$($result.Stdout) stderr=$($result.Stderr))"
+  Write-Output $result.Stdout.Trim()
+  foreach ($mutant in @(
+    @{name='empty-catch-include';anchor="catch { Write-DiagnosticProcessAmbiguity `$processId 'creation-time-unparseable'; `$excluded[`$processId] = `$true; continue }";replacement='catch { $createdTicks = $RootStartTicks }';assertion='descendant-unparseable-must-exclude'},
+    @{name='missing-creation-order';anchor='if ($candidate.StartTicks -lt $parent.StartTicks) {';replacement='if ($false) {';assertion='descendant-parent-order-must-hold'}
+  )) {
+    $mutantGuard=New-TestOnlyDiagnosticGuard "descendant-$($mutant.name)"
+    Set-TestVerifierSubstitution $mutantGuard '@(Get-CimInstance Win32_Process -ErrorAction Stop)' '@($script:testDiagnosticSnapshot)' 'descendant-mutant-snapshot-copy'
+    Set-TestVerifierSubstitution $mutantGuard $mutant.anchor $mutant.replacement "descendant-$($mutant.name)-mutant"
+    $result=Invoke-Child @('-NoProfile','-File',$driver,'-Verifier',$mutantGuard)
+    Assert-True ($result.Code -eq 1 -and $result.Stdout.Contains('FIXTURE descendant-snapshot-classified') -and
+      $result.Stderr.Contains("ASSERTION FAILED: $($mutant.assertion)")) "descendant-$($mutant.name)-mutant-launched: named assertion, not setup (exit=$($result.Code) stdout=$($result.Stdout) stderr=$($result.Stderr))"
+    Write-Output "KILLED mutant $($mutant.name) at assertion=$($mutant.assertion) classified=1 exit=1"
+  }
+}
+function Assert-DiagnosticStaleIdentityProtected($Stale, $Result) {
+  Assert-True (-not $Stale.Process.HasExited -and $Stale.Process.StartTime.ToUniversalTime().Ticks -eq $Stale.StartTicks -and
+    $Result.Stderr.Contains("diagnostic process kill skipped pid=$($Stale.Process.Id) reason=start-identity-mismatch")) 'diagnostic-stale-identity-must-not-kill: fixture-owned stale identity survives timeout and is logged'
+}
+function Test-DiagnosticStaleIdentityTimeout {
+  foreach ($mutant in @($false,$true)) {
+    $name=if($mutant){'kill-without-identity-check'}else{'stale-identity-timeout'}
+    $staleRelease=Join-Path $root "$name.stale-release"; $staleReady=Join-Path $root "$name.stale-ready"
+    $stale=Start-TestChild @('-NoProfile','-Command', '[IO.File]::WriteAllText($env:DIAGNOSTIC_STALE_READY,"ready"); while(-not(Test-Path -LiteralPath $env:DIAGNOSTIC_STALE_RELEASE)){Start-Sleep -Milliseconds 25}') @{
+      DIAGNOSTIC_STALE_RELEASE=$staleRelease; DIAGNOSTIC_STALE_READY=$staleReady
+    }
+    $run=$null
+    try {
+      $watch=[Diagnostics.Stopwatch]::StartNew()
+      while (-not (Test-Path -LiteralPath $staleReady) -and -not $stale.Process.HasExited -and $watch.ElapsedMilliseconds -lt 15000) { Start-Sleep -Milliseconds 25 }
+      Assert-True ((Test-Path -LiteralPath $staleReady) -and -not $stale.Process.HasExited) 'stale-identity-fixture-ready: only a live process created by this test is the kill target'
+      $staleGuard=New-TestOnlyDiagnosticGuard $name
+      $anchor='$script:diagnosticObservedDescendantStarts = @{}'
+      $injection=@'
+$script:diagnosticObservedDescendantStarts = @{}
+$testStalePid = [int]$env:DIAGNOSTIC_STALE_PID
+$script:diagnosticObservedDescendantStarts[$testStalePid] = [long]$env:DIAGNOSTIC_STALE_START
+$diagnosticObservedDescendants += $testStalePid
+'@
+      Set-TestVerifierSubstitution $staleGuard $anchor $injection 'stale-identity-recorded-start-copy'
+      if ($mutant) {
+        Set-TestVerifierSubstitution $staleGuard 'if ($StartTicks -le 0 -or $candidate.StartTime.ToUniversalTime().Ticks -ne $StartTicks) {' 'if ($false) {' 'kill-without-identity-check-mutant'
+      }
+      $run=New-BarrierDiagnostic $staleGuard $name -ChildEnvironment @{
+        DIAGNOSTIC_STALE_PID=[string]$stale.Process.Id; DIAGNOSTIC_STALE_START=[string]($stale.StartTicks - [TimeSpan]::TicksPerSecond)
+      }
+      Wait-BarrierDiagnostic $run
+      Set-DiagnosticClock $run.Clock ([DateTimeOffset]::UtcNow.AddSeconds(901))
+      $outcome=Wait-DiagnosticBudgetOutcome $run
+      Assert-DiagnosticTimeoutExit $outcome 'stale-identity-real-timeout-must-complete'
+      $receipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | Where-Object FullName -NotIn $run.ReceiptsBefore)
+      Assert-True ($receipts.Count -eq 1) 'stale-identity-real-timeout-receipt: one new receipt, no setup refusal'
+      $record=Get-Content -LiteralPath $receipts[0].FullName -Raw | ConvertFrom-Json
+      Assert-True ($record.exit -eq 124 -and $record.timedOut -eq $true -and -not (Test-Path -LiteralPath $lockRoot) -and
+        $run.Processes[0].HasExited) 'stale-identity-real-timeout-receipt: real budget expiry, owned child death and lock release'
+      if ($mutant) {
+        Assert-True ($stale.Process.WaitForExit(5000)) 'kill-without-identity-check-mutant-launched: real timeout killed only the fixture-owned stale process'
+        $failed=$false
+        try { Assert-DiagnosticStaleIdentityProtected $stale $outcome.Result } catch {
+          if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: diagnostic-stale-identity-must-not-kill:')) { throw }
+          $failed=$true
+        }
+        Assert-True $failed 'kill-without-identity-check mutant must fail the named survival assertion'
+        Write-Output 'KILLED mutant kill-without-identity-check at assertion=diagnostic-stale-identity-must-not-kill launched=1 timeout-exit=124 fixture-owned-stale-killed=1'
+      } else {
+        Assert-DiagnosticStaleIdentityProtected $stale $outcome.Result
+        Write-Output 'PASS diagnostic-stale-identity-must-not-kill timeout-exit=124 stale-alive=1 mismatch-logged=1 child-dead=1 lock-released=1'
+      }
+    } finally {
+      if ($run) { Close-BarrierDiagnostic $run }
+      New-Item -ItemType File -Path $staleRelease -Force | Out-Null
+      if (-not $stale.Process.WaitForExit(5000)) { Stop-TestExactProcess $stale.Process $stale.StartTicks }
+    }
+  }
 }
 function Assert-RepeatImportRefused($Case, [string]$ExpectedMessage) {
   Assert-True ($Case.Result.Code -eq 73 -and $Case.Result.Stderr.Contains($ExpectedMessage) -and
@@ -497,6 +636,7 @@ try {
   Assert-MutantDiagnosticClockSeamIsRejected
   $testGuard=New-TestOnlyDiagnosticGuard
   Write-Output "PASS fixture verifier clock substitution-count=$script:diagnosticClockSubstitutionCount"
+  Test-DiagnosticDescendantSnapshot
   Test-RepeatDiagnosticImports
   Test-IgnoredChromiumPackage
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value '.orchestrator/'; Set-Content -LiteralPath (Join-Path $worktree 'seed.txt') -Value 'seed'
@@ -725,6 +865,7 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
 }
 '@
   $scriptRelative=$timeoutRelative; $scriptPath=$timeoutPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 900
+  Test-DiagnosticStaleIdentityTimeout
   foreach ($lingering in @($false, $true)) {
     $caseName=if ($lingering) { 'timeout-lingering-descendant' } else { 'timeout-root' }
     $timeoutRun=New-BarrierDiagnostic $testGuard $caseName -LingeringDescendant:$lingering
