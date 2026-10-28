@@ -48,17 +48,27 @@ function New-DiagnosticClockFixture {
   return $path
 }
 function Set-DiagnosticClock([string]$Path, [DateTimeOffset]$Now) {
-  [IO.File]::WriteAllText($Path, (@{ schema='test-diagnostic-clock/v1'; now=$Now.ToString('o') } | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+  $destination = if (Test-Path -LiteralPath $Path) { "$Path.advanced" } else { $Path }
+  $pending = "$destination.pending"
+  [IO.File]::WriteAllText($pending, (@{ schema='test-diagnostic-clock/v1'; now=$Now.ToString('o') } | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+  [IO.File]::Move($pending, $destination)
 }
 function New-TestOnlyDiagnosticGuard {
-  $testOrchestrator = Join-Path $root 'test-orchestrator'
+  param([string]$Name = 'test-orchestrator', [switch]$DisableTimeout)
+  $testOrchestrator = Join-Path $root $Name
   New-Item -ItemType Directory -Path $testOrchestrator -Force | Out-Null
   foreach ($name in @('dispatch-ownership.ps1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','workspace-db-test.mjs','native-db-admission.py','heavy-admission-holder-launcher.cjs')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $testOrchestrator $name) -Force
   }
   $clockFunction = @'
 function Get-TestDiagnosticNow {
-  $fixture = [IO.File]::ReadAllText($env:DIAGNOSTIC_CLOCK_FIXTURE) | ConvertFrom-Json -ErrorAction Stop
+  $clockPath = $env:DIAGNOSTIC_CLOCK_FIXTURE
+  if (Test-Path -LiteralPath "$clockPath.advanced") {
+    $clockPath = "$clockPath.advanced"
+    $script:testExpiredClockReads++
+    [IO.File]::WriteAllText("$($env:DIAGNOSTIC_CLOCK_OBSERVED).$script:testExpiredClockReads", 'past-budget')
+  }
+  $fixture = [IO.File]::ReadAllText($clockPath) | ConvertFrom-Json -ErrorAction Stop
   return ([DateTimeOffset]::Parse([string]$fixture.now)).UtcDateTime
 }
 '@
@@ -69,6 +79,13 @@ function Get-TestDiagnosticNow {
   Assert-True ($clockReadCount -eq 1) "fixture verifier timeout clock substitution matched exactly once (count=$clockReadCount)"
   $testText = $testText.Replace($clockRead, '$remaining = [int][Math]::Floor(($deadline - (Get-TestDiagnosticNow)).TotalMilliseconds)')
   $script:diagnosticClockSubstitutionCount = $clockReadCount
+  if ($DisableTimeout) {
+    $timeoutBranch = 'if ($remaining -le 0) {'
+    $timeoutBranchCount = ([regex]::Matches($testText, [regex]::Escape($timeoutBranch))).Count
+    Assert-True ($timeoutBranchCount -eq 1) "named timeout mutant target matched exactly once (count=$timeoutBranchCount)"
+    # Keep WaitForExit's argument valid while disabling only the expired-budget branch.
+    $testText = $testText.Replace($timeoutBranch, '$remaining = [Math]::Max(100, $remaining); if ($false) {')
+  }
   $path = Join-Path $testOrchestrator 'invoke-heavy-verifier.ps1'
   Copy-Item -LiteralPath $guard -Destination $path -Force
   [IO.File]::WriteAllText($path, $testText, [Text.UTF8Encoding]::new($false))
@@ -112,12 +129,53 @@ function Invoke-Diagnostic([hashtable]$Overrides = @{}, [string]$MarkerName = 'm
   $marker=Join-Path $root "$MarkerName.marker"; $clockPath=New-DiagnosticClockFixture; $environment=@{ DIAGNOSTIC_MARKER=$marker; DIAGNOSTIC_PID=(Join-Path $root "$MarkerName.pid"); DIAGNOSTIC_CLOCK_FIXTURE=$clockPath }; foreach($entry in $ChildEnvironment.GetEnumerator()) { $environment[$entry.Key]=$entry.Value }; $result=Invoke-Child $args $environment
   return [pscustomobject]@{ Result=$result; Marker=$marker; PidPath=(Join-Path $root "$MarkerName.pid") }
 }
-function New-BarrierDiagnostic([string]$GuardPath, [string]$Name) {
-  $clockPath=Join-Path $root "$Name.clock.json"; Set-DiagnosticClock $clockPath ([DateTimeOffset]::UtcNow); $barrier=Join-Path $root "$Name.barrier"; $release=Join-Path $root "$Name.release"; $pidPath=Join-Path $root "$Name.pid"; $marker=Join-Path $root "$Name.marker"
+function New-BarrierDiagnostic([string]$GuardPath, [string]$Name, [switch]$LingeringDescendant) {
+  $clockPath=Join-Path $root "$Name.clock.json"; Set-DiagnosticClock $clockPath ([DateTimeOffset]::UtcNow)
+  $barrier=Join-Path $root "$Name.barrier"; $release=Join-Path $root "$Name.release"; $pidPath=Join-Path $root "$Name.pid"; $rootPidPath=Join-Path $root "$Name.root.pid"; $rootRelease=Join-Path $root "$Name.root.release"; $observed=Join-Path $root "$Name.clock-observed"
   $parameters=[ordered]@{ '-Diagnostic'='staged-import-chromium-control'; '-DiagnosticScriptPath'=$scriptRelative; '-DiagnosticSha256'=$scriptHash; '-DiagnosticBudgetSeconds'='900'; '-Worktree'=$worktree; '-Lane'='lane-test'; '-Branch'='codex/test'; '-ClaimedHead'=$head; '-ContainerRoot'=$container }
   $args=@('-NoProfile','-NonInteractive','-File',$GuardPath); foreach ($entry in $parameters.GetEnumerator()) { $args += @($entry.Key,[string]$entry.Value) }
-  $environment=@{ DIAGNOSTIC_MARKER=$marker; DIAGNOSTIC_PID=$pidPath; DIAGNOSTIC_CLOCK_FIXTURE=$clockPath; DIAGNOSTIC_BARRIER=$barrier; DIAGNOSTIC_RELEASE=$release; DIAGNOSTIC_CHILD_PID=$pidPath }
-  return [pscustomobject]@{ Started=(Start-TestChild $args $environment); Clock=$clockPath; Barrier=$barrier; Release=$release; PidPath=$pidPath; Marker=$marker }
+  $environment=@{ DIAGNOSTIC_CLOCK_FIXTURE=$clockPath; DIAGNOSTIC_CLOCK_OBSERVED=$observed; DIAGNOSTIC_BARRIER=$barrier; DIAGNOSTIC_RELEASE=$release; DIAGNOSTIC_CHILD_PID=$pidPath; DIAGNOSTIC_ROOT_PID=$rootPidPath; DIAGNOSTIC_ROOT_RELEASE=$rootRelease; DIAGNOSTIC_LINGERING_DESCENDANT=[string][int][bool]$LingeringDescendant }
+  $receiptsBefore=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object FullName)
+  return [pscustomobject]@{ Started=(Start-TestChild $args $environment); Clock=$clockPath; Observed=$observed; Barrier=$barrier; Release=$release; PidPath=$pidPath; RootPidPath=$rootPidPath; RootRelease=$rootRelease; ReceiptsBefore=$receiptsBefore; Processes=[Collections.Generic.List[Diagnostics.Process]]::new() }
+}
+function Wait-BarrierDiagnostic($Run) {
+  $watch=[Diagnostics.Stopwatch]::StartNew()
+  while ($watch.ElapsedMilliseconds -lt 60000) {
+    if ($Run.Started.Process.HasExited) {
+      $result=Complete-TestChild $Run.Started
+      Assert-True $false "barrier-child-ready: verifier exited before a live barrier child (exit=$($result.Code) pidFile=$(Test-Path -LiteralPath $Run.PidPath) stderr=$($result.Stderr))"
+    }
+    if ((Test-Path -LiteralPath $Run.PidPath) -and (Test-Path -LiteralPath $Run.Barrier)) {
+      $childPid=[int]([IO.File]::ReadAllText($Run.PidPath))
+      $child=Get-Process -Id $childPid -ErrorAction Stop
+      [void]$child.Handle
+      $Run.Processes.Add($child)
+      Assert-True (-not $child.HasExited -and -not (Test-Path -LiteralPath $Run.Release)) "barrier-child-ready: live native child holds unreleased barrier (pid=$childPid)"
+      Write-Output "PASS barrier-child-ready pid=$childPid live=1 barrier-held=1"
+      return
+    }
+    Start-Sleep -Milliseconds 25
+  }
+  Assert-True $false 'barrier-child-ready: native PID and barrier files must appear before clock advance'
+}
+function Wait-DiagnosticBudgetOutcome($Run) {
+  $watch=[Diagnostics.Stopwatch]::StartNew()
+  # A second expired-clock read proves a complete verifier iteration survived the budget.
+  while (-not $Run.Started.Process.HasExited -and -not (Test-Path -LiteralPath "$($Run.Observed).2") -and $watch.ElapsedMilliseconds -lt 15000) { Start-Sleep -Milliseconds 25 }
+  $completed=$Run.Started.Process.HasExited
+  $result=if ($completed) { Complete-TestChild $Run.Started } else { $null }
+  Assert-True (-not $completed -or $result.Code -ne 73) "timeout-route-setup: admission must not refuse (exit=$(if($result){$result.Code}else{'running'}) stderr=$(if($result){$result.Stderr}else{'<running>'}))"
+  return [pscustomobject]@{ Completed=$completed; Result=$result; SurvivedBudget=(Test-Path -LiteralPath "$($Run.Observed).2") }
+}
+function Assert-DiagnosticTimeoutExit($Outcome, [string]$Name) {
+  Assert-True ($Outcome.Completed -and $Outcome.Result.Code -eq 124) "$Name`: real diagnostic route must exit 124 after budget (exit=$(if($Outcome.Result){$Outcome.Result.Code}else{'running'}) stderr=$(if($Outcome.Result){$Outcome.Result.Stderr}else{'<running>'}))"
+}
+function Close-BarrierDiagnostic($Run) {
+  New-Item -ItemType File -Path $Run.Release, $Run.RootRelease -Force | Out-Null
+  if (-not $Run.Started.Process.WaitForExit(5000)) { $Run.Started.Process.Kill($true); [void]$Run.Started.Process.WaitForExit(5000) }
+  foreach ($process in $Run.Processes) {
+    if (-not $process.HasExited) { $process.Kill($true); [void]$process.WaitForExit(5000) }
+  }
 }
 function Assert-Refused([object]$Case, [string]$ExpectedText) {
   Assert-True ($Case.Result.Code -eq 73) "refused with documented code (actual=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
@@ -137,7 +195,13 @@ try {
   $scriptRelative='.orchestrator/artifacts/diagnostic-success.mjs'; $scriptPath=Join-Path $worktree ($scriptRelative -replace '/','\')
   Set-Content -LiteralPath $scriptPath -Value @'
 import fs from 'node:fs';
-fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'ran-after-preload');
+import { spawn, spawnSync } from 'node:child_process';
+const childEnv = { ...process.env };
+const sync = spawnSync(process.execPath, ['-e', 'process.stdout.write(process.env.NODE_OPTIONS)'], { windowsHide: true, env: childEnv, encoding: 'utf8' });
+if (sync.error || sync.status !== 0 || sync.stdout !== process.env.NODE_OPTIONS) throw new Error('sync child did not inherit the checked preload');
+const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true, env: childEnv });
+await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`async child exit=${code}`))); });
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'ran-after-sync-and-async-children');
 fs.writeFileSync(new URL('./diagnostic-success.result.json', import.meta.url), 'result-written-during-run');
 process.exitCode = 7;
 '@
@@ -148,15 +212,16 @@ process.exitCode = 7;
   Assert-Refused $staleResult 'diagnostic result file already exists'; Remove-Item -LiteralPath $resultPath -Force
   Write-Output 'PASS diagnostic negative stale-result=1 fresh-marker=1'
 
-  Set-Content -LiteralPath (Join-Path $root 'caller-node-options.cjs') -Value "require('node:fs').writeFileSync('$(Join-Path $root 'caller-node-options.marker')','ran')"
+  $callerMarker=Join-Path $root 'caller-node-options.marker' | ConvertTo-Json -Compress
+  Set-Content -LiteralPath (Join-Path $root 'caller-node-options.cjs') -Value "require('node:fs').writeFileSync($callerMarker,'ran')"
   $success=Invoke-Diagnostic @{} 'success' @{ NODE_OPTIONS="--require=$(Join-Path $root 'caller-node-options.cjs')" }; $receipt=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File)
   Assert-True ($success.Result.Code -eq 7 -and (Test-Path -LiteralPath $success.Marker)) "declared diagnostic runs (exit=$($success.Result.Code) stderr=$($success.Result.Stderr))"
   Assert-True ($receipt.Count -eq 1) 'declared diagnostic leaves one durable receipt'
   $successReceipt=Get-Content -LiteralPath $receipt[0].FullName -Raw | ConvertFrom-Json -DateKind String
   $resultHash=Get-Sha256 $resultPath
-  Assert-True ($successReceipt.schema -ceq 'host-heavy-diagnostic/v1' -and $successReceipt.diagnostic.name -ceq 'worst13-no-fit' -and $successReceipt.diagnostic.kind -ceq 'standalone-node' -and $successReceipt.diagnostic.scriptPath -ceq $scriptRelative -and $successReceipt.diagnostic.sha256 -ceq $scriptHash -and $successReceipt.diagnostic.budgetSeconds -eq 2 -and $successReceipt.containerRoot -ceq ([IO.Path]::GetFullPath($container).TrimEnd('\','/')) -and $successReceipt.declarationSha256 -ceq $scriptHash -and $successReceipt.exit -eq 7 -and $successReceipt.nativeExit -eq 7 -and $successReceipt.timedOut -eq $false -and $successReceipt.resultSha256 -ceq $resultHash -and $successReceipt.resources.peakWorkingSetBytes -gt 0 -and $successReceipt.resources.jobPeakMemoryBytes -ge 0 -and $successReceipt.resources.jobTotalUserTime100ns -ge 0 -and $successReceipt.resources.jobTotalKernelTime100ns -ge 0 -and $successReceipt.resources.jobTotalProcesses -ge 1 -and -not (Test-Path -LiteralPath $lockRoot) -and -not (Test-Path -LiteralPath (Join-Path $root 'caller-node-options.marker'))) 'receipt, result hash, root resources and preload-only NODE_OPTIONS bind'
+  Assert-True ($successReceipt.schema -ceq 'host-heavy-diagnostic/v1' -and $successReceipt.diagnostic.name -ceq 'worst13-no-fit' -and $successReceipt.diagnostic.kind -ceq 'standalone-node' -and $successReceipt.diagnostic.scriptPath -ceq $scriptRelative -and $successReceipt.diagnostic.sha256 -ceq $scriptHash -and $successReceipt.diagnostic.budgetSeconds -eq 2 -and $successReceipt.containerRoot -ceq ([IO.Path]::GetFullPath($container).TrimEnd('\','/')) -and $successReceipt.declarationSha256 -ceq $scriptHash -and $successReceipt.exit -eq 7 -and $successReceipt.nativeExit -eq 7 -and $successReceipt.timedOut -eq $false -and $successReceipt.resultSha256 -ceq $resultHash -and $successReceipt.resources.peakWorkingSetBytes -gt 0 -and $successReceipt.resources.jobPeakMemoryBytes -ge 0 -and $successReceipt.resources.jobTotalUserTime100ns -ge 0 -and $successReceipt.resources.jobTotalKernelTime100ns -ge 0 -and $successReceipt.resources.jobTotalProcesses -ge 3 -and -not (Test-Path -LiteralPath $lockRoot) -and -not (Test-Path -LiteralPath (Join-Path $root 'caller-node-options.marker'))) 'receipt, result hash, synchronous/asynchronous child resources and preload-only NODE_OPTIONS bind'
   Remove-Item -LiteralPath $resultPath -Force
-  Write-Output 'PASS diagnostic declared route receipt=1 exit=7 nativeExit=7 resultSha256=1 jobTotalProcesses-ge-1=1 preload-only=1 released=1'
+  Write-Output 'PASS diagnostic declared route receipt=1 exit=7 nativeExit=7 resultSha256=1 jobTotalProcesses-ge-3=1 sync-child=1 async-child=1 preload-only=1 released=1'
 
   $chromiumRoute=Invoke-Diagnostic @{} 'staged-import-chromium-control' @{} 'staged-import-chromium-control'
   $chromiumReceipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -DateKind String } | Where-Object { $_.diagnostic.name -ceq 'staged-import-chromium-control' })
@@ -330,56 +395,76 @@ fs.writeFileSync(`${configuration.diagnostic.moduleManifestPath}-${process.pid}.
 
   $timeoutRelative='.orchestrator/artifacts/diagnostic-timeout.mjs'; $timeoutPath=Join-Path $worktree ($timeoutRelative -replace '/','\'); Set-Content -LiteralPath $timeoutPath -Value @'
 import fs from 'node:fs';
-fs.writeFileSync(process.env.DIAGNOSTIC_CHILD_PID, String(process.pid));
-fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'barrier-reached');
-while (!fs.existsSync(process.env.DIAGNOSTIC_RELEASE)) await new Promise((resolve) => setTimeout(resolve, 25));
+import { spawn } from 'node:child_process';
+fs.writeFileSync(process.env.DIAGNOSTIC_ROOT_PID, String(process.pid));
+const blockedChild = `
+  const fs = require('node:fs');
+  fs.writeFileSync(process.env.DIAGNOSTIC_CHILD_PID, String(process.pid));
+  fs.writeFileSync(process.env.DIAGNOSTIC_BARRIER, 'barrier-reached');
+  const hold = setInterval(() => { if (fs.existsSync(process.env.DIAGNOSTIC_RELEASE)) clearInterval(hold); }, 25);
+`;
+if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
+  const child = spawn(process.execPath, ['-e', blockedChild], { detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env } });
+  child.unref();
+  while (!fs.existsSync(process.env.DIAGNOSTIC_ROOT_RELEASE)) await new Promise((resolve) => setTimeout(resolve, 25));
+  process.exit(0);
+} else {
+  fs.writeFileSync(process.env.DIAGNOSTIC_CHILD_PID, String(process.pid));
+  fs.writeFileSync(process.env.DIAGNOSTIC_BARRIER, 'barrier-reached');
+  while (!fs.existsSync(process.env.DIAGNOSTIC_RELEASE)) await new Promise((resolve) => setTimeout(resolve, 25));
+}
 '@
   $scriptRelative=$timeoutRelative; $scriptPath=$timeoutPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 900
-  $timeoutRun=New-BarrierDiagnostic $testGuard 'timeout'; $timeoutStarted=$timeoutRun.Started
-  try {
-    $timeoutPidPath=Join-Path $root 'timeout.pid'
-    $childReady=$false; $readyDeadline=[Diagnostics.Stopwatch]::StartNew()
-    while ($readyDeadline.ElapsedMilliseconds -lt 60000 -and -not $childReady) {
-      $childReady=Test-Path -LiteralPath $timeoutPidPath
-      if (-not $childReady -and $timeoutStarted.Process.HasExited) { break }
-      Start-Sleep -Milliseconds 25
-    }
-    Assert-True $childReady 'named timeout barrier assertion observes the real native child before clock advance'
-    $timeoutPid=[int](Get-Content -LiteralPath $timeoutPidPath -Raw)
-    Assert-True ([bool](Get-Process -Id $timeoutPid -ErrorAction SilentlyContinue)) "named timeout barrier assertion observes a live native child (pid=$timeoutPid)"
-    Set-DiagnosticClock ($timeoutRun.Clock) ([DateTimeOffset]::UtcNow.AddSeconds(901))
-    $completed=$timeoutStarted.Process.WaitForExit(15000)
-    $timeoutResult=if ($completed) { Complete-TestChild $timeoutStarted } else { $null }
-    Assert-True ($completed -and $timeoutResult.Code -eq 124) "real diagnostic route enforces 900-second budget (completed=$completed exit=$(if($timeoutResult){$timeoutResult.Code}else{'running'}) stderr=$(if($timeoutResult){$timeoutResult.Stderr}else{'<running>'}))"
-    $timeoutReceipt=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | Sort-Object LastWriteTimeUtc | Select-Object -Last 1)
-    Assert-True ($timeoutReceipt.Count -eq 1) 'named timeout assertion finds one durable staged-import receipt'
-    $timeoutRecord=Get-Content -LiteralPath $timeoutReceipt[0].FullName -Raw | ConvertFrom-Json -DateKind String
-    Assert-True ($timeoutRecord.diagnostic.name -ceq 'staged-import-chromium-control' -and $timeoutRecord.timedOut -eq $true -and $timeoutRecord.exit -eq 124) "named timeout receipt assertion records timedOut and exit (name=$($timeoutRecord.diagnostic.name) timedOut=$($timeoutRecord.timedOut) exit=$($timeoutRecord.exit) nativeExit=$($timeoutRecord.nativeExit))"
-    Assert-True (-not (Get-Process -Id $timeoutPid -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $lockRoot)) "named timeout cleanup assertion leaves no child process or admission lock (pid=$timeoutPid lock=$([bool](Test-Path -LiteralPath $lockRoot)))"
-    New-Item -ItemType File -Path $timeoutRun.Release -Force | Out-Null
-    Assert-True (-not (Get-Process -Id $timeoutPid -ErrorAction SilentlyContinue)) "named timeout barrier-release assertion leaves no surviving child process (pid=$timeoutPid)"
-    Write-Output 'PASS diagnostic timeout real-route=1 staged-name=1 budget=900 timedOut=1 receipt=1 exit=124 nativeExit=0 child-dead=1 lock-released=1 barrier-released-after=1'
-  } finally {
-    New-Item -ItemType File -Path $timeoutRun.Release -Force | Out-Null
-    if (-not $timeoutStarted.Process.HasExited) { try { $timeoutStarted.Process.Kill($true); $timeoutStarted.Process.WaitForExit(5000) | Out-Null } catch {} }
+  foreach ($lingering in @($false, $true)) {
+    $caseName=if ($lingering) { 'timeout-lingering-descendant' } else { 'timeout-root' }
+    $timeoutRun=New-BarrierDiagnostic $testGuard $caseName -LingeringDescendant:$lingering
+    try {
+      Wait-BarrierDiagnostic $timeoutRun
+      if ($lingering) {
+        $nativeRoot=Get-Process -Id ([int]([IO.File]::ReadAllText($timeoutRun.RootPidPath))) -ErrorAction Stop
+        [void]$nativeRoot.Handle; $timeoutRun.Processes.Add($nativeRoot)
+        New-Item -ItemType File -Path $timeoutRun.RootRelease -Force | Out-Null
+        $rootExited=$nativeRoot.WaitForExit(15000)
+        Assert-True ($rootExited -and $nativeRoot.ExitCode -eq 0 -and -not $timeoutRun.Processes[0].HasExited) "lingering-descendant-ready: native root exits 0 while its barrier-blocked descendant remains alive (rootExited=$rootExited nativeExit=$($nativeRoot.ExitCode) descendantExited=$($timeoutRun.Processes[0].HasExited))"
+        Write-Output 'PASS lingering-descendant-ready root-exit=0 descendant-live=1 barrier-held=1'
+      }
+      Set-DiagnosticClock $timeoutRun.Clock ([DateTimeOffset]::UtcNow.AddSeconds(901))
+      $outcome=Wait-DiagnosticBudgetOutcome $timeoutRun
+      Assert-DiagnosticTimeoutExit $outcome "$caseName-must-exit-124"
+      $timeoutReceipt=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | Where-Object { $_.FullName -notin $timeoutRun.ReceiptsBefore })
+      Assert-True ($timeoutReceipt.Count -eq 1) 'named timeout assertion finds exactly one new durable staged-import receipt'
+      $timeoutRecord=Get-Content -LiteralPath $timeoutReceipt[0].FullName -Raw | ConvertFrom-Json -DateKind String
+      Assert-True ($timeoutRecord.diagnostic.name -ceq 'staged-import-chromium-control' -and $timeoutRecord.diagnostic.budgetSeconds -eq 900 -and $timeoutRecord.timedOut -eq $true -and $timeoutRecord.exit -eq 124) "named timeout receipt assertion records timedOut and exit (name=$($timeoutRecord.diagnostic.name) timedOut=$($timeoutRecord.timedOut) exit=$($timeoutRecord.exit) nativeExit=$($timeoutRecord.nativeExit))"
+      if ($lingering) { Assert-True ($timeoutRecord.nativeExit -eq 0) "lingering-descendant-native-exit: receipt preserves nativeExit=0 (actual=$($timeoutRecord.nativeExit))" }
+      foreach ($process in $timeoutRun.Processes) { Assert-True $process.HasExited "named timeout cleanup assertion leaves no surviving process (pid=$($process.Id))" }
+      Assert-True (-not (Test-Path -LiteralPath $lockRoot)) 'named timeout cleanup assertion releases admission lock'
+      New-Item -ItemType File -Path $timeoutRun.Release -Force | Out-Null
+      foreach ($process in $timeoutRun.Processes) { Assert-True $process.HasExited "named timeout barrier-release assertion leaves no surviving process (pid=$($process.Id))" }
+      Write-Output "PASS diagnostic $caseName real-route=1 staged-name=1 budget=900 timedOut=1 receipt=1 exit=124 nativeExit=$($timeoutRecord.nativeExit) child-dead=1 lock-released=1 barrier-released-after=1"
+    } finally { Close-BarrierDiagnostic $timeoutRun }
   }
 
-  $mutantDirectory=Join-Path $root 'timeout-mutant'; New-Item -ItemType Directory -Path $mutantDirectory -Force | Out-Null
-  $mutantGuard=Join-Path $mutantDirectory 'invoke-heavy-verifier.ps1'; $mutantText=[IO.File]::ReadAllText($testGuard); $timeoutBranch='if ($remaining -le 0) {'; $timeoutBranchCount=([regex]::Matches($mutantText,[regex]::Escape($timeoutBranch))).Count
-  Assert-True ($timeoutBranchCount -eq 1) "named timeout mutant target matched exactly once (count=$timeoutBranchCount)"
-  $mutantText=$mutantText.Replace($timeoutBranch,'if ($false) {'); [IO.File]::WriteAllText($mutantGuard,$mutantText,[Text.UTF8Encoding]::new($false))
-  $mutantRun=New-BarrierDiagnostic $mutantGuard 'timeout-mutant'; $mutantStarted=$mutantRun.Started
+  $mutantGuard=New-TestOnlyDiagnosticGuard 'timeout-mutant' -DisableTimeout
+  Write-Output "PASS mutant fixture verifier clock substitution-count=$script:diagnosticClockSubstitutionCount"
+  $mutantRun=New-BarrierDiagnostic $mutantGuard 'timeout-mutant'
   try {
-    Start-Sleep -Milliseconds 500
-    Set-DiagnosticClock ($mutantRun.Clock) ([DateTimeOffset]::UtcNow.AddSeconds(901))
-    $mutantCompleted=$mutantStarted.Process.WaitForExit(3000)
+    Wait-BarrierDiagnostic $mutantRun
+    Set-DiagnosticClock $mutantRun.Clock ([DateTimeOffset]::UtcNow.AddSeconds(901))
+    $outcome=Wait-DiagnosticBudgetOutcome $mutantRun
+    Assert-True ($outcome.SurvivedBudget -and -not $outcome.Completed -and -not $mutantRun.Processes[0].HasExited -and -not (Test-Path -LiteralPath $mutantRun.Release)) 'mutant-past-budget: launched native child must remain alive behind the barrier across two expired-clock reads; setup errors cannot kill this mutant'
     $mutantFailedAssertion=$false
-    try { Assert-True ($mutantCompleted -and $mutantStarted.Process.ExitCode -eq 124) 'named assertion: mutant timeout enforcement must exit 124 after the fake clock advances' } catch { $mutantFailedAssertion=$true; Write-Output 'KILLED mutant diagnostic-timeout-enforcement at assertion=mutant-timeout-must-exit-124' }
+    try { Assert-DiagnosticTimeoutExit $outcome 'mutant-timeout-must-exit-124' } catch {
+      if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: mutant-timeout-must-exit-124:')) { throw }
+      $mutantFailedAssertion=$true
+      Write-Output $_.Exception.Message
+    }
     Assert-True $mutantFailedAssertion 'named timeout-enforcement mutant must fail the named exit-124 assertion'
-  } finally {
     New-Item -ItemType File -Path $mutantRun.Release -Force | Out-Null
-    if (-not $mutantStarted.Process.HasExited) { try { $mutantStarted.Process.Kill($true); $mutantStarted.Process.WaitForExit(5000) | Out-Null } catch {} }
-  }
+    Assert-True ($mutantRun.Started.Process.WaitForExit(15000)) 'mutant released barrier must let the real verifier finish normally'
+    $mutantResult=Complete-TestChild $mutantRun.Started
+    Assert-True ($mutantResult.Code -eq 0 -and $mutantRun.Processes[0].HasExited -and -not (Test-Path -LiteralPath $lockRoot)) "mutant setup and normal completion must succeed (exit=$($mutantResult.Code) stderr=$($mutantResult.Stderr))"
+    Write-Output 'KILLED mutant diagnostic-timeout-enforcement at assertion=mutant-timeout-must-exit-124 launched=1 child-live-past-budget=1 expired-clock-reads=2 released-exit=0'
+  } finally { Close-BarrierDiagnostic $mutantRun }
 
   $outside=Invoke-Diagnostic @{ '-ContainerRoot'=(Get-Location).Path } 'outside-container'
   Assert-Refused $outside 'arbitrary commands are fixture-only; use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest'
