@@ -32,8 +32,9 @@ admission do not inherit from the dispatcher and remain Normal. WMI and
 `launch-retry.ps1` ancestors are not reprioritized. No existing process tree is
 retuned when the file changes; the setting applies only on the next launch.
 
-Durable launch specs (`watchdog-lane-<label>.json`) contain
+Atomic, durable launch records (`dispatch-priority-<launchId>.json`, schema
+`lane-priority-launch/v1`) contain the exact launch id, label, child PID,
 `priorityClass` and `prioritySource`. Sources are `parameter`, `file`, `default`,
 or `fallback:<reason>` (`schemaVersion`, `priorityClass`, or
-`unreadable-or-invalid-json`). The durable spec preserves the evidence after
+`unreadable-or-invalid-json`). The durable record preserves the evidence after
 ownership cleanup. The file is never installed or committed with a release.

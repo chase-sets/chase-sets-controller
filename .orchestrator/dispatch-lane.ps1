@@ -1211,7 +1211,6 @@ function Write-WatchdogSpec([string]$State, $ChildPid = $null, $ChildStart = $nu
     branch=$admissionBranch;head=$admissionHead;launchId=$launchId;ownershipRecordPath=[IO.Path]::GetFullPath($ownershipRecordPath)
     launcherPid=$PID;launcherStartIdentity=Get-DispatchProcessStartIdentity $PID
     childPid=$ChildPid;childStartIdentity=$ChildStart;state=$State;exitCode=$ExitCode
-    priorityClass=$lanePriority.priorityClass;prioritySource=$lanePriority.prioritySource
     updatedAt=[DateTime]::UtcNow.ToString('o')
     policyGeneration=[long]$dispatchRouting.policyGeneration
     registryAuthorityDigest=[string]$dispatchRouting.registryAuthorityDigest
@@ -1442,6 +1441,14 @@ try {
   # Both agent and long-gate supervisor trees inherit this class on Windows.
   [Diagnostics.Process]::GetCurrentProcess().PriorityClass = $lanePriority.priorityClass
   $process = Start-Process @startParameters
+  $priorityRecordPath = Join-Path $runtimeRoot "dispatch-priority-$launchId.json"
+  $priorityRecord = [ordered]@{
+    schemaVersion='lane-priority-launch/v1';launchId=$launchId;label=$Label
+    priorityClass=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass
+    prioritySource=$lanePriority.prioritySource;childPid=$process.Id
+  }
+  [IO.File]::WriteAllText("$priorityRecordPath.tmp", ($priorityRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+  [IO.File]::Move("$priorityRecordPath.tmp", $priorityRecordPath)
   $startedRecord = [ordered]@{}
   foreach ($property in $ownershipRecord.GetEnumerator()) {
     $startedRecord[$property.Key] = $property.Value

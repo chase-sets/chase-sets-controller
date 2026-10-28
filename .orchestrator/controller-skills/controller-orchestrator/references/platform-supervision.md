@@ -21,7 +21,7 @@ This thread also owns the git-ignored, machine-local
 "priorityClass":"BelowNormal"}`. Allowed classes are `Normal`, `BelowNormal`,
 and `Idle`; absent defaults to `BelowNormal`, invalid/unreadable falls back to
 `Normal`. `dispatch-lane.ps1 -PriorityClass Normal` overrides one launch.
-Applied class/source persist in its watchdog spec. Host processes stay Normal;
+Applied class/source persist in `dispatch-priority-<launchId>.json`. Host processes stay Normal;
 only the launched agent/supervisor tree inherits. See `contracts/lane-priority.md`.
 
 ## Runs

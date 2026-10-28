@@ -30,7 +30,11 @@ $runtime=Split-Path -Parent $PSCommandPath
 $self=[Diagnostics.Process]::GetCurrentProcess()
 $grandchild=Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-NonInteractive','-Command','[Console]::Write([Diagnostics.Process]::GetCurrentProcess().PriorityClass)') -RedirectStandardOutput (Join-Path $runtime 'grandchild.txt') -WindowStyle Hidden -PassThru
 $grandchild.WaitForExit()
-$record=Get-Content (Join-Path $runtime "watchdog-lane-$Label.json") -Raw | ConvertFrom-Json -DateKind String
+$stream=[IO.File]::Open((Join-Path $runtime "watchdog-lane-$Label.json"),[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+try{$reader=[IO.StreamReader]::new($stream);try{$spec=$reader.ReadToEnd() | ConvertFrom-Json -DateKind String}finally{$reader.Dispose()}}finally{$stream.Dispose()}
+$recordPath=Join-Path $runtime "dispatch-priority-$($spec.launchId).json"
+while(-not [IO.File]::Exists($recordPath)){Start-Sleep -Milliseconds 25}
+$record=Get-Content $recordPath -Raw | ConvertFrom-Json -DateKind String
 [IO.File]::WriteAllText((Join-Path $runtime 'observed.json'),(@{child=[string]$self.PriorityClass;grandchild=[IO.File]::ReadAllText((Join-Path $runtime 'grandchild.txt'));record=$record}|ConvertTo-Json -Depth 8))
 exit 0
 '@
@@ -113,7 +117,8 @@ exit $LASTEXITCODE
       Assert-True ($data.child -ceq $case.expected -and $data.grandchild -ceq $case.expected) "child and descendant inherit configured class (case=$($case.name))"
       Assert-True ($data.record.priorityClass -ceq $case.expected -and $data.record.prioritySource -ceq $case.source) "launch record exposes applied class and source (case=$($case.name))"
       $spec=Get-Content (Join-Path $runtime "watchdog-lane-$label.json") -Raw | ConvertFrom-Json
-      Assert-True ($spec.priorityClass -ceq $case.expected -and $spec.prioritySource -ceq $case.source) 'durable launch spec retains priority after release'
+      $durable=Get-Content (Join-Path $runtime "dispatch-priority-$($spec.launchId).json") -Raw | ConvertFrom-Json
+      Assert-True ($durable.priorityClass -ceq $case.expected -and $durable.prioritySource -ceq $case.source -and $durable.childPid -eq $spec.childPid -and $durable.label -ceq $label) 'durable launch record retains exact priority after release'
       Assert-True (@(Get-ChildItem -LiteralPath $runtime -Filter 'dispatch-launch-*.json').Count -eq 0) 'real dispatch releases exact launch ownership'
       Write-Output "PASS priority $($case.name) child=$($data.child) descendant=$($data.grandchild) source=$($data.record.prioritySource) census=Normal"
     } finally {if($lock){$lock.Dispose()};if($process){if(-not $process.HasExited){$process.Kill();$process.WaitForExit()};$process.Dispose()}}
