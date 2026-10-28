@@ -245,7 +245,7 @@ function Start-FixtureDispatch($Fixture) {
 }
 function Read-FixtureAck($Dispatch) {
   $Dispatch.ack = Wait-ProcessPath $Dispatch.ackPath $Dispatch.process 'queue dispatch acknowledgement was not published'
-  $Dispatch.supervisor = Get-Process -Id ([int]$Dispatch.ack.childPid) -ErrorAction Stop
+  $Dispatch.supervisor = Get-Process -Id ([int]$Dispatch.ack.childPid) -ErrorAction SilentlyContinue
 }
 function Wait-QueuePoll($Fixture, $Dispatch, [int]$Number) {
   $path = Join-Path $Fixture.runtime "fixture-queue-poll-$Number.json"
