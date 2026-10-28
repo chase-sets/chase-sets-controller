@@ -143,10 +143,10 @@ function Get-LanePriority([string]$Path, [string]$Override) {
       return @{ priorityClass='BelowNormal'; prioritySource='default' }
     }
     $configuration = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -NoEnumerate -ErrorAction Stop
-    if ($configuration -isnot [System.Management.Automation.PSCustomObject] -or $configuration.schemaVersion -cne 'lane-priority/v1') {
+    if ($configuration -isnot [System.Management.Automation.PSCustomObject] -or $configuration.schemaVersion -isnot [string] -or $configuration.schemaVersion -cne 'lane-priority/v1') {
       return @{ priorityClass='Normal'; prioritySource='fallback:schemaVersion' }
     }
-    if ($configuration.priorityClass -cnotin @('Normal','BelowNormal','Idle')) {
+    if ($configuration.priorityClass -isnot [string] -or $configuration.priorityClass -cnotin @('Normal','BelowNormal','Idle')) {
       return @{ priorityClass='Normal'; prioritySource='fallback:priorityClass' }
     }
     return @{ priorityClass=[string]$configuration.priorityClass; prioritySource='file' }
