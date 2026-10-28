@@ -59,8 +59,8 @@ exit 0
     'ignore-file' {
       $source=Replace-Once $source "return @{ priorityClass=[string]`$configuration.priorityClass; prioritySource='file' }" "return @{ priorityClass='BelowNormal'; prioritySource='file' }"
     }
-    'bad-schema' { $source=Replace-Once $source "if (`$configuration -isnot [pscustomobject] -or `$configuration.schemaVersion -cne 'lane-priority/v1')" 'if ($false)' }
-    'array-shape' { $source=Replace-Once $source '$configuration -isnot [pscustomobject] -or ' '' }
+    'bad-schema' { $source=Replace-Once $source "if (`$configuration -isnot [System.Management.Automation.PSCustomObject] -or `$configuration.schemaVersion -cne 'lane-priority/v1')" 'if ($false)' }
+    'array-shape' { $source=Replace-Once $source '$configuration -isnot [System.Management.Automation.PSCustomObject] -or ' '' }
     'bad-class' {
       $source=Replace-Once $source "return @{ priorityClass='Normal'; prioritySource='fallback:priorityClass' }" "return @{ priorityClass='Idle'; prioritySource='fallback:priorityClass' }"
     }
