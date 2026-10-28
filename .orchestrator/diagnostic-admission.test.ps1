@@ -206,6 +206,112 @@ function Assert-ClosureMutantKilled($Case, [string]$Name, [scriptblock]$Assertio
   Assert-True $failed "$Name mutant must fail its named policy assertion"
   Write-Output "KILLED mutant $Name at assertion=$AssertionName launched=1 payload-exit=0 body-side-effect=1"
 }
+function Assert-RepeatImportRefused($Case, [string]$ExpectedMessage) {
+  Assert-True ($Case.Result.Code -eq 73 -and $Case.Result.Stderr.Contains($ExpectedMessage) -and
+    -not (Test-Path -LiteralPath $Case.Marker)) "repeat-import-must-recheck-loaded-bytes: second load refuses before changed body (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+}
+function Test-RepeatDiagnosticImports {
+  $worktree=Join-Path $container 'repeat-import-lane'
+  $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'
+  $packageRoot=Join-Path $worktree '.tmp/repeat'
+  New-Item -ItemType Directory -Path $worktree, $artifactRoot, $packageRoot, (Join-Path $worktree 'node_modules/repeat') -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value @('/.tmp/', '/node_modules/', '/.orchestrator/artifacts/')
+  Set-Content -LiteralPath (Join-Path $packageRoot 'package.json') -Value '{"type":"commonjs"}'
+  $trackedPath=Join-Path $worktree 'tracked.mjs'
+  $esmOriginal='export const value = 1;'
+  [IO.File]::WriteAllText($trackedPath, $esmOriginal)
+  Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null
+  Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null
+  Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
+  Invoke-FixtureGit @('add','--','.gitignore','tracked.mjs') | Out-Null
+  Invoke-FixtureGit @('commit','-m','repeat import fixture') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  $scriptRelative='.tmp/repeat/control.mjs'; $scriptPath=Join-Path $worktree $scriptRelative
+  $entrySource=@'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+const target = new URL(process.env.REPEAT_TARGET, import.meta.url);
+const mode = process.env.REPEAT_MODE;
+const require = createRequire(import.meta.url);
+async function load(suffix) {
+  if (mode.startsWith('commonjs')) {
+    const filename = require.resolve(fileURLToPath(target));
+    delete require.cache[filename];
+    return require(filename);
+  }
+  return import(target.href + suffix, mode === 'json' ? { with: { type: 'json' } } : undefined);
+}
+for (const suffix of ['', '?unchanged=1#unchanged']) {
+  const first = await load(suffix);
+  assert.equal((mode === 'json' ? first.default : first).value, 1, 'repeat-import-first-load');
+}
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER + '.first', 'original-loaded');
+fs.writeFileSync(target, process.env.REPEAT_CHANGED);
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER + '.second', 'second-import-reached');
+await load(process.env.REPEAT_SUFFIX);
+// JSON has no executable body; this marker proves changed JSON reached the caller.
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'changed-bytes-returned');
+'@
+  $esmChanged="import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'changed-body'); export const value = 2;"
+  $cases=@(
+    @{ name='declared-query'; relative='.tmp/repeat/dep.mjs'; target='./dep.mjs'; mode='esm'; suffix='?second=1#changed'; declared=$true },
+    @{ name='declared-fragment'; relative='.tmp/repeat/dep.mjs'; target='./dep.mjs'; mode='esm'; suffix='#changed'; declared=$true },
+    @{ name='tracked-query'; relative='tracked.mjs'; target='../../tracked.mjs'; mode='esm'; suffix='?second=1' },
+    @{ name='node-modules-fragment'; relative='node_modules/repeat/index.mjs'; target='../../node_modules/repeat/index.mjs'; mode='esm'; suffix='#changed' },
+    @{ name='json-query'; relative='.tmp/repeat/dep.json'; target='./dep.json'; mode='json'; suffix='?second=1'; declared=$true },
+    @{ name='json-fragment'; relative='.tmp/repeat/dep.json'; target='./dep.json'; mode='json'; suffix='#changed'; declared=$true },
+    @{ name='commonjs'; relative='.tmp/repeat/dep.js'; target='./dep.js'; mode='commonjs'; suffix=''; declared=$true },
+    @{ name='commonjs-json'; relative='.tmp/repeat/dep.json'; target='./dep.json'; mode='commonjs-json'; suffix=''; declared=$true },
+    @{ name='node-modules-json'; relative='node_modules/repeat/index.json'; target='../../node_modules/repeat/index.json'; mode='json'; suffix='?second=1#changed' },
+    @{ name='node-modules-commonjs'; relative='node_modules/repeat/index.cjs'; target='../../node_modules/repeat/index.cjs'; mode='commonjs'; suffix='' }
+  )
+  foreach ($fixture in $cases) {
+    [IO.File]::WriteAllText($scriptPath, $entrySource)
+    $targetPath=Join-Path $worktree $fixture.relative
+    $original=if ($fixture.mode -like '*json') { '{"value":1}' } elseif ($fixture.mode -eq 'commonjs') { 'module.exports = { value: 1 };' } else { $esmOriginal }
+    $changed=if ($fixture.mode -like '*json') { '{"value":2}' } elseif ($fixture.mode -eq 'commonjs') { "require('node:fs').writeFileSync(process.env.DIAGNOSTIC_MARKER, 'changed-body'); module.exports = { value: 2 };" } else { $esmChanged }
+    [IO.File]::WriteAllText($targetPath, $original)
+    $originalHash=Get-Sha256 $targetPath
+    $scriptHash=Get-Sha256 $scriptPath
+    $dependencies=if ($fixture.declared) { @(@{path=$fixture.relative;sha256=$originalHash}) } else { $null }
+    Write-Declaration $scriptRelative $scriptHash -Dependencies $dependencies
+    Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'repeat-import-setup: clean exact-head fixture'
+    $environment=@{ REPEAT_TARGET=$fixture.target; REPEAT_MODE=$fixture.mode; REPEAT_SUFFIX=$fixture.suffix; REPEAT_CHANGED=$changed }
+    $before=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object FullName)
+    $case=Invoke-Diagnostic @{} "repeat-$($fixture.name)" $environment 'staged-import-chromium-control'
+    Assert-True ((Test-Path -LiteralPath "$($case.Marker).first") -and (Test-Path -LiteralPath "$($case.Marker).second")) "repeat-import-launched: $($fixture.name) first load and second import reached (exit=$($case.Result.Code) stderr=$($case.Result.Stderr))"
+    $expected=if ($fixture.declared) { 'declared diagnostic dependency changed before evaluation:' } else { 'diagnostic module changed since its recorded evaluation:' }
+    Assert-RepeatImportRefused $case $expected
+    $receipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | Where-Object FullName -NotIn $before)
+    # A changed tracked file fails the host's final clean-tree check, so no receipt is allowed there.
+    Assert-True ($receipts.Count -eq $(if($fixture.name -eq 'tracked-query'){0}else{1})) 'repeat-import-receipt: no successful stale certification'
+    foreach ($receipt in $receipts) {
+      $record=Get-Content -LiteralPath $receipt.FullName -Raw | ConvertFrom-Json
+      $loaded=@($record.modules | Where-Object { $_.path -ieq $targetPath })
+      Assert-True ($record.exit -eq 73 -and $record.nativeExit -eq 73 -and $loaded.Count -eq 1 -and $loaded[0].sha256 -ceq $originalHash -and
+        -not (Test-Path -LiteralPath $case.Marker)) 'repeat-import-receipt: one digest binds only evaluated original bytes; changed bytes were refused'
+    }
+    [IO.File]::WriteAllText($targetPath, $original)
+    Write-Output "PASS repeat-import-must-recheck-loaded-bytes case=$($fixture.name) second-import=1 exit=73 changed-body=0 stale-receipt=0"
+    if ($fixture.name -eq 'declared-query') {
+      $mutantGuard=New-TestOnlyDiagnosticGuard 'repeat-import-cache-shortcut-mutant'
+      $mutantPreload=Join-Path (Split-Path -Parent $mutantGuard) 'heavy-admission-preload.cjs'
+      $text=[IO.File]::ReadAllText($mutantPreload); $anchor='if (!actual) return;'
+      Assert-True (([regex]::Matches($text,[regex]::Escape($anchor))).Count -eq 1) 'repeat-import-mutant-setup: exactly one shortcut insertion target'
+      [IO.File]::WriteAllText($mutantPreload, $text.Replace($anchor, 'if (!actual || modules.has(path.resolve(actual).toLowerCase())) return;'))
+      $mutant=Invoke-Diagnostic @{} 'repeat-import-cache-shortcut-mutant' $environment 'staged-import-chromium-control' $mutantGuard
+      Assert-True ((Test-Path -LiteralPath "$($mutant.Marker).first") -and (Test-Path -LiteralPath "$($mutant.Marker).second")) 'repeat-import-mutant-launched: first evaluation and second import reached'
+      Assert-ClosureMutantKilled $mutant 'repeat-import-cache-shortcut' { param($result) Assert-RepeatImportRefused $result 'declared diagnostic dependency changed before evaluation:' } 'repeat-import-must-recheck-loaded-bytes'
+      $mutantReceipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.exit -eq 0 })
+      Assert-True ($mutantReceipts.Count -eq 1 -and @($mutantReceipts[0].modules | Where-Object { $_.path -ieq $targetPath -and $_.sha256 -ceq $originalHash }).Count -eq 1 -and
+        (Get-Sha256 $targetPath) -cne $originalHash) 'repeat-import-mutant-stale-receipt: successful second evaluation retained obsolete digest'
+      [IO.File]::WriteAllText($targetPath, $original)
+    }
+  }
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'repeat-import-completed: tracked bytes restored and fixture clean'
+}
 function Test-IgnoredChromiumPackage {
   $worktree=Join-Path $container 'ignored-package-lane'
   $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'
@@ -391,6 +497,7 @@ try {
   Assert-MutantDiagnosticClockSeamIsRejected
   $testGuard=New-TestOnlyDiagnosticGuard
   Write-Output "PASS fixture verifier clock substitution-count=$script:diagnosticClockSubstitutionCount"
+  Test-RepeatDiagnosticImports
   Test-IgnoredChromiumPackage
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value '.orchestrator/'; Set-Content -LiteralPath (Join-Path $worktree 'seed.txt') -Value 'seed'
   Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null; Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null; Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null

@@ -48,9 +48,14 @@ package's `package.json` is tracked at the bound head. The preload refuses
 other files before evaluation. It hashes the bytes returned by Node's
 `nextLoad` hook (falling back to file bytes only for CommonJS, whose hook
 source is null) and records each loaded file's path and SHA-256 in a
-per-process manifest. The verifier merges the manifests without allowing a
-child to overwrite its parent's records and requires the declared entry to
-be present.
+per-process manifest. Query and fragment variants resolve to the same realpath
+for policy checks. Every load, including supported JSON and CommonJS reloads,
+rechecks the entry/dependency pins before receipt deduplication. A later load
+whose bytes differ from that realpath's recorded digest is refused before
+evaluation, including tracked and admitted `node_modules` files. Only unchanged
+manifest entries are deduplicated; authorization is never cached. The verifier
+merges the manifests without allowing a child to overwrite its parent's records
+and requires the declared entry to be present.
 
 After admission succeeds, the diagnostic launcher unconditionally sets
 `CHASE_SETS_HEAVY_ADMITTED=1` in the child environment, overwriting any caller

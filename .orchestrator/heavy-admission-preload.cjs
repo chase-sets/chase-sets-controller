@@ -337,7 +337,10 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     let requested;
     let actual;
     try {
-      requested = fileURLToPath(url);
+      const fileUrl = new URL(url);
+      fileUrl.search = "";
+      fileUrl.hash = "";
+      requested = fileURLToPath(fileUrl);
       actual = fs.realpathSync.native(requested);
     } catch {
       refuse(`diagnostic module could not be resolved: ${url}`);
@@ -350,7 +353,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   };
   const record = (url, source) => {
     const actual = authorize(url);
-    if (!actual || modules.has(actual)) return;
+    if (!actual) return;
     const sha256 = digestBytes(loadedSourceBytes(source, actual));
     if (samePath(actual, entry) && sha256 !== entrySha256) {
       refuse("declared diagnostic entry changed before evaluation");
@@ -359,7 +362,14 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     if (dependency && sha256 !== dependency.sha256) {
       refuse(`declared diagnostic dependency changed before evaluation: ${actual}`);
     }
-    modules.set(actual, { module: actual, path: actual, sha256 });
+    const key = path.resolve(actual).toLowerCase();
+    const recorded = modules.get(key);
+    if (recorded && sha256 !== recorded.sha256) {
+      refuse(`diagnostic module changed since its recorded evaluation: ${actual}`);
+    }
+    // Deduplicate the receipt only after checking this load's bytes.
+    if (recorded) return;
+    modules.set(key, { module: actual, path: actual, sha256 });
     writeManifest();
   };
   moduleApi.registerHooks({
