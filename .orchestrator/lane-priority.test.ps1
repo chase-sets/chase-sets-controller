@@ -30,8 +30,12 @@ $runtime=Split-Path -Parent $PSCommandPath
 $self=[Diagnostics.Process]::GetCurrentProcess()
 $grandchild=Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList @('-NoProfile','-NonInteractive','-Command','[Console]::Write([Diagnostics.Process]::GetCurrentProcess().PriorityClass)') -RedirectStandardOutput (Join-Path $runtime 'grandchild.txt') -WindowStyle Hidden -PassThru
 $grandchild.WaitForExit()
-$stream=[IO.File]::Open((Join-Path $runtime "watchdog-lane-$Label.json"),[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-try{$reader=[IO.StreamReader]::new($stream);try{$spec=$reader.ReadToEnd() | ConvertFrom-Json -DateKind String}finally{$reader.Dispose()}}finally{$stream.Dispose()}
+while($true){
+  $stream=[IO.File]::Open((Join-Path $runtime "watchdog-lane-$Label.json"),[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+  try{$reader=[IO.StreamReader]::new($stream);try{$spec=$reader.ReadToEnd() | ConvertFrom-Json -DateKind String}finally{$reader.Dispose()}}finally{$stream.Dispose()}
+  if($spec.state -ceq 'running' -and $spec.childPid -eq $PID){break}
+  Start-Sleep -Milliseconds 25
+}
 $recordPath=Join-Path $runtime "dispatch-priority-$($spec.launchId).json"
 while(-not [IO.File]::Exists($recordPath)){Start-Sleep -Milliseconds 25}
 $record=Get-Content $recordPath -Raw | ConvertFrom-Json -DateKind String
