@@ -447,7 +447,7 @@ function Invoke-ReaderInventory {
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(422,742,1307,1354,1366,1415,1419,1430,1455,1537,1551,1759,2154,2234,2244,2258,2553,2558,2577,2583,2810,2817,2829,2832,2842,2853,2875,2880,2892,2897,2914,2928)
-    'long-product-gate.test.ps1'=@(154,161,177,638)
+    'long-product-gate.test.ps1'=@(154,161,177,762)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
     'interrupted-integration-test-support.ps1'=@(987)
