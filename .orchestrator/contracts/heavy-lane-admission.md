@@ -180,8 +180,17 @@ arguments every 30 seconds. The launch id and recorded supervisor PID/start
 identity remain the claimant key; the verifier refreshes that ticket's
 `presentedUtc` within its existing 600-second retention. Every presentation's
 stderr is appended to the same launch log. The pending result stays unchanged.
-An unparseable ticket refuses; a changed ticket finalizes incomplete with
-`long-product-gate: queue ticket changed`. Total queued waiting is capped at
+An unparseable queued ticket refuses; a changed ticket on a still-queued
+presentation finalizes incomplete with `long-product-gate: queue ticket changed`.
+The verifier remains the admission authority: a replacement ticket admitted
+after expiry is a valid admitted run. On any non-queued outcome after waiting,
+the supervisor compares an exposed ticket with the last queued ticket, or logs
+`long-product-gate: admission ticket comparison unavailable (previous=<n>)`.
+A detected replacement, or an unavailable comparison after more than 600 seconds
+since the previous presentation by the supervisor's monotonic clock, logs
+`long-product-gate: queue ticket replaced before admission (previous=<n>)`.
+This diagnostic does not change the verifier's outcome or undo admission.
+Total queued waiting is capped at
 3600 seconds from the first queued refusal, using a monotonic clock. Expiry
 finalizes incomplete with exit 73 and a named cap diagnostic. Every other
 exit/refusal finalizes immediately. Interruption leaves pending/non-PASS and

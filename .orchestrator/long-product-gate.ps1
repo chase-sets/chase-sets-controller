@@ -101,8 +101,10 @@ $process = $null
 $exitCode = 74
 $queuePollSeconds = 30
 $queueWaitCapSeconds = 3600
+$queueRetentionSeconds = 600
 $queueWatch = $null
 $queueTicket = $null
+$previousPresentationSeconds = 0
 try {
   while ($true) {
     if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds) {
@@ -112,16 +114,38 @@ try {
       $exitCode = 73
       break
     }
+    $presentationSeconds = if ($queueWatch) { $queueWatch.Elapsed.TotalSeconds } else { 0 }
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
+    $presentationOutput = $stdout.GetAwaiter().GetResult()
     $presentationError = $stderr.GetAwaiter().GetResult()
-    [IO.File]::AppendAllText($stdoutPath, $stdout.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($stdoutPath, $presentationOutput, [Text.UTF8Encoding]::new($false))
     [IO.File]::AppendAllText($stderrPath, $presentationError, [Text.UTF8Encoding]::new($false))
     $exitCode = [int]$process.ExitCode
     $process.Dispose(); $process = $null
-    if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) { break }
+    if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) {
+      if ($queueTicket) {
+        $admissionTicketMatch = [regex]::Match("$presentationOutput`n$presentationError", '(?m)^heavy-verifier: [^\r\n]*\bticket=([0-9]+)(?:[ ;)]|$)')
+        if ($admissionTicketMatch.Success) {
+          $admissionTicket = $admissionTicketMatch.Groups[1].Value
+          $message = "long-product-gate: admission ticket comparison (previous=$queueTicket current=$admissionTicket)"
+          $replacementPossible = $admissionTicket -cne $queueTicket
+        } else {
+          $message = "long-product-gate: admission ticket comparison unavailable (previous=$queueTicket)"
+          $replacementPossible = ($presentationSeconds - $previousPresentationSeconds) -gt $queueRetentionSeconds
+        }
+        [Console]::Error.WriteLine($message)
+        [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        if ($replacementPossible) {
+          $message = "long-product-gate: queue ticket replaced before admission (previous=$queueTicket)"
+          [Console]::Error.WriteLine($message)
+          [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        }
+      }
+      break
+    }
     $ticketMatch = [regex]::Match($presentationError, '\Aheavy-verifier: queued; ticket=([0-9]+) ')
     if (-not $ticketMatch.Success) { break }
     $presentedTicket = $ticketMatch.Groups[1].Value
@@ -135,6 +159,7 @@ try {
       $queueWatch = [Diagnostics.Stopwatch]::StartNew()
       $queueTicket = $presentedTicket
     }
+    $previousPresentationSeconds = $presentationSeconds
     $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
     [Threading.Thread]::Sleep($queueSleepMilliseconds)
   }

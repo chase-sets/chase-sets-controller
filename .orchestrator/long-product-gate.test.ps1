@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [ValidateSet('supervisor','queue','mutants')][string]$Part = '',
-  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready')][string]$Mutant = ''
+  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')][string]$Mutant = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -311,6 +311,9 @@ while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds
     if ($Mutation -ceq 'no-cap') {
       $copy = Replace-FixtureOnce $copy 'if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds)' 'if ($false)'
     }
+    if ($Mutation -ceq 'replacement-line') {
+      $copy = Replace-FixtureOnce $copy 'queue ticket replaced before admission' 'queue ticket continuity unknown'
+    }
     if ($Mutation -ceq 'fresh-ticket') {
       $discardReservation = @'
 while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
@@ -337,7 +340,26 @@ if ($fixturePoll -eq 1) {
     $queue = $queueBefore | ConvertFrom-Json -DateKind String
     $ticketBefore = @($queue.tickets | Where-Object number -EQ ([long]$first.ticket))[0]
     Assert-True ($ticketBefore.pid -eq $clientDispatch.supervisor.Id -and $ticketBefore.claimantKey -like "launch:$($clientDispatch.ack.launchId)*") 'real queue ticket belongs to the recorded supervisor claimant'
-    if ($Mode -ceq 'interrupt') {
+    if ($Mode -ceq 'expire-admit') {
+      $ticketBefore.presentedUtc = [DateTime]::UtcNow.AddSeconds(-601).ToString('o')
+      Write-Text $queuePath ($queue | ConvertTo-Json -Depth 10 -Compress)
+      Write-Text $clockPath '601'
+      Write-Text $holder.release 'release'; $holderDispatch.process.WaitForExit()
+      Write-Text $leader.release 'release'; Write-Text $leaderRelease 'release'; $leaderDispatch.process.WaitForExit()
+      Assert-True ($holderDispatch.process.ExitCode -eq 0 -and $leaderDispatch.process.ExitCode -eq 0) 'expiry predecessors release through real admission'
+      $afterPrune = Read-SharedText $queuePath | ConvertFrom-Json -DateKind String
+      Assert-True (@($afterPrune.tickets | Where-Object number -EQ ([long]$first.ticket)).Count -eq 0) 'real verifier prunes the expired client reservation'
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-1.json.continue') 'continue'
+      Wait-ProcessPath $client.ready $clientDispatch.process 'expired client replacement did not execute through real admission' | Out-Null
+      Write-Text $client.release 'release'; $clientDispatch.process.WaitForExit()
+      $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
+      $afterAdmission = Read-SharedText $queuePath | ConvertFrom-Json -DateKind String
+      Assert-True ($afterAdmission.nextTicket -eq $afterPrune.nextTicket + 1 -and $clientDispatch.process.ExitCode -eq 0 -and $result.status -ceq 'passed' -and $result.nativeExit -eq 0 -and $result.dispatchReleased -eq $true -and -not (Test-Path -LiteralPath (Join-Path $client.runtime 'verify-lock.d'))) 'expired ticket replacement is a valid admitted run and releases slot and dispatch'
+      $history = Read-SharedText $stderrPath
+      Assert-True ($history.Contains("long-product-gate: queue ticket replaced before admission (previous=$($first.ticket))")) 'expired admission records the queue ticket replacement warning'
+      Assert-True ($history.Contains("long-product-gate: admission ticket comparison unavailable (previous=$($first.ticket))") -and [regex]::Matches($history, '(?m)^heavy-verifier: queued;').Count -eq 1 -and $history -like '*heavy-verifier: nested-owner pipe=*') 'expired admission records unavailable comparison and preserves queue and admission history'
+      Write-Output "PASS expired queued ticket=$($first.ticket) pruned, replacement admitted and released; named replacement warning recorded"
+    } elseif ($Mode -ceq 'interrupt') {
       $ownerPath = Join-Path $client.runtime 'verify-lock.d/owner.json'; $ownerBytes = Read-SharedText $ownerPath
       $ledgerPath = Join-Path $client.runtime 'dispatch-log.jsonl'; $ledgerBytes = Read-SharedText $ledgerPath
       $clientDispatch.supervisor.Kill(); $clientDispatch.supervisor.WaitForExit(); $clientDispatch.process.WaitForExit()
@@ -349,37 +371,39 @@ if ($fixturePoll -eq 1) {
       Assert-True ($watchdog.relaunch -eq $false -and (Read-SharedText $ledgerPath) -ceq $ledgerBytes -and -not (Test-Path -LiteralPath $client.ready)) 'queued interruption neither relaunches nor consumes an attempt or executes the gate'
       Write-Output 'PASS queued supervisor interruption preserves pending result, reservation and live holder; no reclaim/relaunch/attempt'
       return
-    }
-    if ($Mode -ceq 'cap') { Write-Text $clockPath '3601' }
-    Write-Text (Join-Path $client.runtime 'fixture-queue-poll-1.json.continue') 'continue'
-    $second = Wait-QueuePoll $client $clientDispatch 2
-    if ($Mode -ceq 'cap') {
-      Assert-True ($null -eq $second) 'queue wait cap finalizes without a second verifier presentation'
-      $clientDispatch.process.WaitForExit()
+    } else {
+      if ($Mode -ceq 'cap') { Write-Text $clockPath '3601' }
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-1.json.continue') 'continue'
+      $second = Wait-QueuePoll $client $clientDispatch 2
+      if ($Mode -ceq 'cap') {
+        Assert-True ($null -eq $second) 'queue wait cap finalizes without a second verifier presentation'
+        $clientDispatch.process.WaitForExit()
+        $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and (Read-SharedText $stderrPath) -like '*long-product-gate: queued wait cap 3600 seconds reached*' -and -not (Test-Path -LiteralPath $client.ready)) 'queue wait cap names 3600 seconds and refuses without execution'
+        Write-Output 'PASS queued wait cap 3600 seconds: fake clock, incomplete exit 73, no execution'
+        return
+      }
+      $history = Read-SharedText $stderrPath
+      $tickets = @([regex]::Matches($history, '(?m)^heavy-verifier: queued; ticket=([0-9]+) ') | ForEach-Object { $_.Groups[1].Value })
+      Assert-True ($null -ne $second -and $tickets.Count -eq 2 -and @($tickets | Select-Object -Unique).Count -eq 1) 'queued presentations preserve the same reserved ticket number'
+      Assert-True (($first.arguments -join "`n") -ceq ($second.arguments -join "`n") -and $first.pid -eq $second.pid) 'queued presentations keep identical verifier arguments and supervisor identity'
+      $ticketAfter = @((Read-SharedText $queuePath | ConvertFrom-Json -DateKind String).tickets | Where-Object number -EQ ([long]$first.ticket))[0]
+      Assert-True ($ticketAfter.presentedUtc -cne $ticketBefore.presentedUtc -and (Read-SharedText $pendingPath) -ceq $pendingBytes) 'queued presentation refreshes presentedUtc without changing pending result bytes'
+      Write-Text $holder.release 'release'; $holderDispatch.process.WaitForExit()
+      $holderDispatch.supervisor.Dispose(); $holderDispatch.supervisor = $null; $holderDispatch.process.Dispose(); $holderDispatch.process = $null
+      Write-Text $leader.release 'release'; Write-Text $leaderRelease 'release'; $leaderDispatch.process.WaitForExit()
+      Assert-True ($leaderDispatch.process.ExitCode -eq 0) 'reserved leader consumes its ticket through real admission before the client'
+      $leaderDispatch.supervisor.Dispose(); $leaderDispatch.supervisor = $null; $leaderDispatch.process.Dispose(); $leaderDispatch.process = $null
+      Write-Text (Join-Path $client.runtime 'fixture-queue-poll-2.json.continue') 'continue'
+      Wait-ProcessPath $client.ready $clientDispatch.process 'queued real gate did not execute after slot release' | Out-Null
+      Write-Text $client.release 'release'; $clientDispatch.process.WaitForExit()
       $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
-      Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and (Read-SharedText $stderrPath) -like '*long-product-gate: queued wait cap 3600 seconds reached*' -and -not (Test-Path -LiteralPath $client.ready)) 'queue wait cap names 3600 seconds and refuses without execution'
-      Write-Output 'PASS queued wait cap 3600 seconds: fake clock, incomplete exit 73, no execution'
-      return
+      Assert-True ($clientDispatch.process.ExitCode -eq 0 -and $result.status -ceq 'passed' -and $result.nativeExit -eq 0 -and $result.dispatchReleased -eq $true -and -not (Test-Path -LiteralPath (Join-Path $client.runtime 'verify-lock.d'))) 're-presented queued gate succeeds and releases its real slot and dispatch'
+      $finalHistory = Read-SharedText $stderrPath
+      Assert-True ([regex]::Matches($finalHistory, '(?m)^heavy-verifier: queued;').Count -eq 2 -and $finalHistory -like '*heavy-verifier: nested-owner pipe=*') 'terminal stderr retains every queued presentation and admitted execution'
+      Assert-True ($finalHistory.Contains("long-product-gate: admission ticket comparison unavailable (previous=$($first.ticket))") -and -not $finalHistory.Contains('long-product-gate: queue ticket replaced before admission')) 'unexpired admission records unavailable comparison without a replacement warning'
+      Write-Output "PASS real queued gate reused ticket=$($first.ticket) twice, refreshed presentation, executed and released"
     }
-    $history = Read-SharedText $stderrPath
-    $tickets = @([regex]::Matches($history, '(?m)^heavy-verifier: queued; ticket=([0-9]+) ') | ForEach-Object { $_.Groups[1].Value })
-    Assert-True ($null -ne $second -and $tickets.Count -eq 2 -and @($tickets | Select-Object -Unique).Count -eq 1) 'queued presentations preserve the same reserved ticket number'
-    Assert-True (($first.arguments -join "`n") -ceq ($second.arguments -join "`n") -and $first.pid -eq $second.pid) 'queued presentations keep identical verifier arguments and supervisor identity'
-    $ticketAfter = @((Read-SharedText $queuePath | ConvertFrom-Json -DateKind String).tickets | Where-Object number -EQ ([long]$first.ticket))[0]
-    Assert-True ($ticketAfter.presentedUtc -cne $ticketBefore.presentedUtc -and (Read-SharedText $pendingPath) -ceq $pendingBytes) 'queued presentation refreshes presentedUtc without changing pending result bytes'
-    Write-Text $holder.release 'release'; $holderDispatch.process.WaitForExit()
-    $holderDispatch.supervisor.Dispose(); $holderDispatch.supervisor = $null; $holderDispatch.process.Dispose(); $holderDispatch.process = $null
-    Write-Text $leader.release 'release'; Write-Text $leaderRelease 'release'; $leaderDispatch.process.WaitForExit()
-    Assert-True ($leaderDispatch.process.ExitCode -eq 0) 'reserved leader consumes its ticket through real admission before the client'
-    $leaderDispatch.supervisor.Dispose(); $leaderDispatch.supervisor = $null; $leaderDispatch.process.Dispose(); $leaderDispatch.process = $null
-    Write-Text (Join-Path $client.runtime 'fixture-queue-poll-2.json.continue') 'continue'
-    Wait-ProcessPath $client.ready $clientDispatch.process 'queued real gate did not execute after slot release' | Out-Null
-    Write-Text $client.release 'release'; $clientDispatch.process.WaitForExit()
-    $result = Read-SharedText $pendingPath | ConvertFrom-Json -DateKind String
-    Assert-True ($clientDispatch.process.ExitCode -eq 0 -and $result.status -ceq 'passed' -and $result.nativeExit -eq 0 -and $result.dispatchReleased -eq $true -and -not (Test-Path -LiteralPath (Join-Path $client.runtime 'verify-lock.d'))) 're-presented queued gate succeeds and releases its real slot and dispatch'
-    $finalHistory = Read-SharedText $stderrPath
-    Assert-True ([regex]::Matches($finalHistory, '(?m)^heavy-verifier: queued;').Count -eq 2 -and $finalHistory -like '*heavy-verifier: nested-owner pipe=*') 'terminal stderr retains every queued presentation and admitted execution'
-    Write-Output "PASS real queued gate reused ticket=$($first.ticket) twice, refreshed presentation, executed and released"
   } catch { $failure = $_.Exception.Message } finally {
     if ($clientDispatch -and $clientDispatch.supervisor) { Stop-ExactStartedProcess $clientDispatch.supervisor }
     Write-Text $leaderRelease 'release'
@@ -393,6 +417,7 @@ if ($fixturePoll -eq 1) {
       'single-shot' { 'queued gate re-presents instead of finalizing its first queued refusal' }
       'fresh-ticket' { 'queued presentations preserve the same reserved ticket number' }
       'no-cap' { 'queue wait cap finalizes without a second verifier presentation' }
+      'replacement-line' { 'expired admission records the queue ticket replacement warning' }
     }
     Assert-True ($failure -ceq "ASSERTION FAILED: $expected") "MUTANT $Mutation reaches its named queue assertion (actual=$failure)"
     if ($Mutation -ceq 'fresh-ticket') { Assert-True ((Read-SharedText $stderrPath) -like '*long-product-gate: queue ticket changed*') 'changed ticket diagnostic explains the lost reservation' }
@@ -437,6 +462,46 @@ function Get-TestDefinition([string]$Path, [string]$Name) {
   $definitions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name }, $true))
   Assert-True ($definitions.Count -eq 1) "test extraction finds exactly one $Name"
   return $definitions[0].Extent.Text
+}
+function Assert-AdmissionTicketDiagnostics([string]$Source, [string]$LogPath) {
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errors)
+  $blocks = @($ast.FindAll({ param($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$queueTicket'
+  }, $true))
+  Assert-True ($errors.Count -eq 0 -and $blocks.Count -eq 1) 'admission ticket diagnostic block extracts exactly once'
+  $diagnostics = [scriptblock]::Create($blocks[0].Extent.Text)
+  foreach ($case in @(
+    @{output='heavy-verifier: admitted; ticket=3'; previous=1000; now=1601; comparison='comparison (previous=3 current=3)'; warning=$false; name='exposed unchanged ticket is comparable even after retention'},
+    @{output='heavy-verifier: admitted; ticket=4'; previous=1000; now=1001; comparison='comparison (previous=3 current=4)'; warning=$true; name='exposed replacement warns without an expiry gap'},
+    @{output='heavy-verifier: nested-owner pipe=fixture'; previous=1000; now=1600; comparison='comparison unavailable (previous=3)'; warning=$false; name='unavailable ticket at exactly 600 seconds has no replacement warning'},
+    @{output='heavy-verifier: nested-owner pipe=fixture'; previous=1000; now=1601; comparison='comparison unavailable (previous=3)'; warning=$true; name='unavailable ticket after 600 seconds warns using the previous presentation'}
+  )) {
+    $queueTicket = '3'; $queueRetentionSeconds = 600
+    $presentationSeconds = $case.now; $previousPresentationSeconds = $case.previous
+    $presentationOutput = $case.output; $presentationError = ''; $stderrPath = $LogPath
+    Write-Text $stderrPath ''
+    . $diagnostics
+    $history = Read-SharedText $stderrPath
+    Assert-True ($history.Contains("long-product-gate: admission ticket $($case.comparison)") -and $history.Contains('long-product-gate: queue ticket replaced before admission (previous=3)') -eq $case.warning) $case.name
+  }
+}
+function Test-AdmissionTicketDiagnostics($Fixture, [string]$Source) {
+  $log = Join-Path $Fixture.runtime 'fixture-admission-diagnostics.log'
+  Assert-AdmissionTicketDiagnostics $Source $log
+  Write-Output 'PASS admission ticket diagnostics compare exposed tickets and the strict 600-second previous-presentation boundary'
+  foreach ($mutation in @(
+    @('if ($admissionTicketMatch.Success)', 'if ($false)', 'exposed unchanged ticket is comparable even after retention'),
+    @('$admissionTicket -cne $queueTicket', '$admissionTicket -ceq $queueTicket', 'exposed unchanged ticket is comparable even after retention'),
+    @('-gt $queueRetentionSeconds', '-ge $queueRetentionSeconds', 'unavailable ticket at exactly 600 seconds has no replacement warning'),
+    @('$presentationSeconds - $previousPresentationSeconds', '$presentationSeconds', 'unavailable ticket at exactly 600 seconds has no replacement warning')
+  )) {
+    $mutated = Replace-FixtureOnce $Source $mutation[0] $mutation[1]
+    $failure = $null
+    try { Assert-AdmissionTicketDiagnostics $mutated $log } catch { $failure = $_.Exception.Message }
+    Assert-True ($failure -ceq "ASSERTION FAILED: $($mutation[2])") "MUTANT admission diagnostics reaches $($mutation[2])"
+    Write-Output "PASS MUTANT admission diagnostics killed at $($mutation[2])"
+  }
 }
 function Assert-SharedCensusClockContract([string]$Path) {
   $tokens = $null; $errors = $null
@@ -506,14 +571,16 @@ try {
   $runSupervisor = -not $Part -or $Part -ceq 'supervisor'
   $runQueue = -not $Part -or $Part -ceq 'queue'
   $runMutants = -not $Part -or $Part -ceq 'mutants'
-  if ($Mutant -cin @('single-shot','fresh-ticket','no-cap','non-atomic-ready')) {
+  if ($Mutant -cin @('single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')) {
     if ($Mutant -ceq 'non-atomic-ready') { Test-ReadyHandoff $fixture -NonAtomic }
-    else { Invoke-QueueCase $(if ($Mutant -ceq 'no-cap') { 'cap' } else { 'admit' }) $Mutant }
+    else { Invoke-QueueCase $(if ($Mutant -ceq 'no-cap') { 'cap' } elseif ($Mutant -ceq 'replacement-line') { 'expire-admit' } else { 'admit' }) $Mutant }
     return
   }
   if ($runQueue) {
+    Test-AdmissionTicketDiagnostics $fixture $source
     Test-ReadyHandoff $fixture
     Invoke-QueueCase 'admit'
+    Invoke-QueueCase 'expire-admit'
     Invoke-QueueCase 'cap'
     Invoke-QueueCase 'interrupt'
   }
@@ -587,6 +654,7 @@ try {
       Invoke-QueueCase 'admit' 'single-shot'
       Invoke-QueueCase 'admit' 'fresh-ticket'
       Invoke-QueueCase 'cap' 'no-cap'
+      Invoke-QueueCase 'expire-admit' 'replacement-line'
       Test-VerifierOverrideGuardMutant $fixture
       Test-ClockContractMutant $fixture
       Invoke-InterruptionCase $fixture -Mutant
