@@ -290,6 +290,13 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   }
 
   const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+  const dependencies = diagnostic.dependencies ?? [];
+  if (!Array.isArray(dependencies) || dependencies.length > 64 || dependencies.some((dependency) =>
+    !dependency || typeof dependency.path !== "string" || !path.isAbsolute(dependency.path) ||
+    !/^[a-f0-9]{64}$/.test(dependency.sha256))) {
+    refuse("diagnostic dependency policy configuration was invalid");
+  }
+  const declaredDependency = (actual) => dependencies.find((dependency) => samePath(actual, dependency.path));
   const inside = (root, candidate) => {
     const relative = path.relative(root, candidate);
     return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -330,12 +337,15 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     let requested;
     let actual;
     try {
-      requested = fileURLToPath(url);
+      const fileUrl = new URL(url);
+      fileUrl.search = "";
+      fileUrl.hash = "";
+      requested = fileURLToPath(fileUrl);
       actual = fs.realpathSync.native(requested);
     } catch {
       refuse(`diagnostic module could not be resolved: ${url}`);
     }
-    if (!samePath(actual, entry) &&
+    if (!samePath(actual, entry) && !declaredDependency(actual) &&
         (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/"))))) {
       refuse(`diagnostic module was not tracked at the bound head or under an admitted node_modules directory: ${actual}`);
     }
@@ -343,12 +353,23 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   };
   const record = (url, source) => {
     const actual = authorize(url);
-    if (!actual || modules.has(actual)) return;
+    if (!actual) return;
     const sha256 = digestBytes(loadedSourceBytes(source, actual));
     if (samePath(actual, entry) && sha256 !== entrySha256) {
       refuse("declared diagnostic entry changed before evaluation");
     }
-    modules.set(actual, { module: actual, path: actual, sha256 });
+    const dependency = declaredDependency(actual);
+    if (dependency && sha256 !== dependency.sha256) {
+      refuse(`declared diagnostic dependency changed before evaluation: ${actual}`);
+    }
+    const key = path.resolve(actual).toLowerCase();
+    const recorded = modules.get(key);
+    if (recorded && sha256 !== recorded.sha256) {
+      refuse(`diagnostic module changed since its recorded evaluation: ${actual}`);
+    }
+    // Deduplicate the receipt only after checking this load's bytes.
+    if (recorded) return;
+    modules.set(key, { module: actual, path: actual, sha256 });
     writeManifest();
   };
   moduleApi.registerHooks({

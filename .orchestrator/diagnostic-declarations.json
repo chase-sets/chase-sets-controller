@@ -11,8 +11,15 @@
     "staged-import-chromium-control": {
       "enabled": true,
       "kind": "standalone-node",
-      "path": ".orchestrator/operator-7334-staged-import/chromium-control.mjs",
+      "path": ".tmp/operator-7334-staged-import/chromium-control.mjs",
       "sha256": "1ba41595d8045fb377ca97a3b059e5679257ef5d0b60470e4be610aece91aa7d",
+      "dependencies": [
+        { "path": ".tmp/operator-7334-staged-import/runtime.mjs", "sha256": "0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60" },
+        { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-classification.js", "sha256": "b9222c43896c74d65d167aef45337552678196a9a7badcf24c6e208c302960f9" },
+        { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-envelope.js", "sha256": "db23964f76c7cbff8ccdf95298b96e3b5cb294dd8087abdb3b653967339afa20" },
+        { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-readback-verdict.js", "sha256": "456c5bff8d25dc3f7a8ad31ac1a4d8f6da34895dc069c04ae96525381eee8a1d" },
+        { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-release-gate.js", "sha256": "93ed41b9a06146270b384a7e9c107d1ba76e69c80b3ba45aa0ff2b19e9cb5144" }
+      ],
       "maxBudgetSeconds": 900
     }
   }
