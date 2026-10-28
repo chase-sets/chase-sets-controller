@@ -40,7 +40,8 @@ exit 0
 '@
   $dispatcher=Join-Path $runtime 'dispatch-lane.ps1'
   $source=[IO.File]::ReadAllText($dispatcher)
-  $old='@("exec", "-m", $Model, "-c", "model_provider=account_pool", "-c", "model_reasoning_effort=$Effort", "-c", "features.apps=false", "--json",' + "`r`n" + '      "--dangerously-bypass-approvals-and-sandbox", "-C", $worktreeResolved, "-")'
+  $lineEnding=if($source.Contains("`r`n")){"`r`n"}else{"`n"}
+  $old='@("exec", "-m", $Model, "-c", "model_provider=account_pool", "-c", "model_reasoning_effort=$Effort", "-c", "features.apps=false", "--json",' + $lineEnding + '      "--dangerously-bypass-approvals-and-sandbox", "-C", $worktreeResolved, "-")'
   $source=Replace-Once $source $old '@("-NoProfile", "-NonInteractive", "-File", (Join-Path $PSScriptRoot "priority-child.ps1"), $Label)'
   $setter='[Diagnostics.Process]::GetCurrentProcess().PriorityClass = $lanePriority.priorityClass'
   switch($Mutant){
