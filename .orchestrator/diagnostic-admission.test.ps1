@@ -37,8 +37,9 @@ function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }
 function Get-Sha256([string]$Path) { return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($Path))).ToLowerInvariant() }
-function Write-Declaration([string]$RelativePath, [string]$Hash, [double]$Maximum = 4, [bool]$Enabled = $true) {
+function Write-Declaration([string]$RelativePath, [string]$Hash, [double]$Maximum = 4, [bool]$Enabled = $true, [object[]]$Dependencies = $null) {
   $definition=@{ enabled=$Enabled; kind='standalone-node'; path=$RelativePath; sha256=$Hash; maxBudgetSeconds=$Maximum }
+  if ($null -ne $Dependencies) { $definition.dependencies = @($Dependencies) }
   [IO.File]::WriteAllText($declarationPath, (@{ schema='host-heavy-diagnostic-declarations/v1'; diagnostics=@{ 'worst13-no-fit'=$definition; 'staged-import-chromium-control'=$definition } } | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
 }
 function New-DiagnosticClockFixture {
@@ -186,6 +187,25 @@ function Assert-Refused([object]$Case, [string]$ExpectedText) {
 function Assert-TmpPackageRuns($Case) {
   Assert-True ($Case.Result.Code -eq 0 -and (Test-Path -LiteralPath $Case.Marker)) "tmp-package-clean-exact-head-must-admit: packaged diagnostic runs (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
 }
+function Assert-UndeclaredSiblingRefused($Case) {
+  Assert-True ($Case.Result.Code -eq 73 -and $Case.Result.Stderr.Contains('diagnostic module was not tracked at the bound head or under an admitted node_modules directory:') -and
+    -not (Test-Path -LiteralPath $Case.Marker)) "undeclared-sibling-must-refuse: exit=73 named module refusal and no body side effect (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+}
+function Assert-DependencySwapRefused($Case) {
+  Assert-True ($Case.Result.Code -eq 73 -and $Case.Result.Stderr.Contains('declared diagnostic dependency changed before evaluation:') -and
+    -not (Test-Path -LiteralPath $Case.Marker)) "dependency-swap-must-refuse: loaded bytes must match declaration before body (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+}
+function Assert-ClosureMutantKilled($Case, [string]$Name, [scriptblock]$Assertion, [string]$AssertionName) {
+  # A mutant must reach the real payload successfully, not fail due to bad setup.
+  Assert-True ($Case.Result.Code -eq 0 -and (Test-Path -LiteralPath $Case.Marker)) "$Name-mutant-launched: real verifier and payload completed (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+  $failed=$false
+  try { & $Assertion $Case } catch {
+    if (-not $_.Exception.Message.StartsWith("ASSERTION FAILED: $AssertionName`:")) { throw }
+    $failed=$true
+  }
+  Assert-True $failed "$Name mutant must fail its named policy assertion"
+  Write-Output "KILLED mutant $Name at assertion=$AssertionName launched=1 payload-exit=0 body-side-effect=1"
+}
 function Test-IgnoredChromiumPackage {
   $worktree=Join-Path $container 'ignored-package-lane'
   $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'
@@ -219,6 +239,98 @@ function Test-IgnoredChromiumPackage {
   Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'tmp-package-completed: receipt leaves exact-head fixture clean'
   Write-Output 'PASS diagnostic tmp-package clean-exact-head=1 untracked-ignored=1 real-route=1 receipt=1 exit=0'
 
+  $packageRoot=Split-Path -Parent $scriptPath
+  $compiled=Join-Path $packageRoot 'compiled'
+  New-Item -ItemType Directory -Path $compiled -Force | Out-Null
+  [IO.File]::WriteAllText((Join-Path $packageRoot 'package.json'), '{"type":"module"}')
+  Set-Content -LiteralPath (Join-Path $packageRoot 'runtime.mjs') -Value "export { value } from './compiled/a.js';"
+  Set-Content -LiteralPath (Join-Path $compiled 'a.js') -Value "export { value } from './b.js';"
+  $bPath=Join-Path $compiled 'b.js'
+  $bSource="import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'dependency-body'); export const value = 1;"
+  Set-Content -LiteralPath $bPath -Value $bSource
+  $closureSource="import { value } from './runtime.mjs'; if (value !== 1) throw new Error('bad-closure');"
+  Set-Content -LiteralPath $scriptPath -Value $closureSource
+  $scriptHash=Get-Sha256 $scriptPath
+  $dependencies=@('runtime.mjs','compiled/a.js','compiled/b.js') | ForEach-Object {
+    @{ path=".tmp/operator-7334-staged-import/$_"; sha256=(Get-Sha256 (Join-Path $packageRoot $_)) }
+  }
+  Write-Declaration $scriptRelative $scriptHash -Dependencies $dependencies
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'dependency-closure-setup: ignored siblings and package metadata leave exact-head fixture clean'
+  $closure=Invoke-Diagnostic @{} 'dependency-closure' @{} 'staged-import-chromium-control'
+  Assert-TmpPackageRuns $closure
+  $closureReceipt=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.diagnostic.sha256 -ceq $scriptHash })
+  Assert-True ($closureReceipt.Count -eq 1 -and $closureReceipt[0].diagnostic.dependencies.Count -eq 3 -and $closureReceipt[0].modules.Count -eq 4) 'dependency-closure-receipt: entry and all three loaded modules bind; package.json does not pass through module hooks'
+  foreach ($dependency in $dependencies) {
+    $declared=@($closureReceipt[0].diagnostic.dependencies | Where-Object path -CEQ $dependency.path)
+    $loaded=@($closureReceipt[0].modules | Where-Object { $_.path -ieq (Join-Path $worktree $dependency.path) })
+    Assert-True ($declared.Count -eq 1 -and $declared[0].sha256 -ceq $dependency.sha256 -and $loaded.Count -eq 1 -and $loaded[0].sha256 -ceq $dependency.sha256) 'dependency-closure-receipt: declared and loaded dependency hashes bind'
+  }
+  Write-Output 'PASS dependency-closure clean-exact-head=1 runtime.mjs->a.js->b.js=1 receipt-hashes=3 exit=0 package.json-hook=0'
+
+  $invalidDependencies=@(
+    @{ name='not-array'; value=@{ path=$dependencies[0].path; sha256=$dependencies[0].sha256 }; message='diagnostic dependencies must be an array of at most 64 entries' },
+    @{ name='null'; value=$null; message='diagnostic dependencies must be an array of at most 64 entries' },
+    @{ name='too-many'; value=@(1..65 | ForEach-Object { $dependencies[0] }); message='diagnostic dependencies must be an array of at most 64 entries' },
+    @{ name='duplicate'; value=@($dependencies[0],$dependencies[0]); message='diagnostic dependency duplicates another dependency or the entry' },
+    @{ name='duplicate-case'; value=@($dependencies[0],@{path=$dependencies[0].path.ToUpperInvariant().Replace('.MJS','.mjs');sha256=$dependencies[0].sha256}); message='diagnostic dependency duplicates another dependency or the entry' },
+    @{ name='entry'; value=@(@{path=$scriptRelative;sha256=$scriptHash}); message='diagnostic dependency duplicates another dependency or the entry' },
+    @{ name='parent'; value=@(@{path='.tmp/../runtime.mjs';sha256=$dependencies[0].sha256}); message='diagnostic dependency must be a repository-relative .mjs, .js or .json path' },
+    @{ name='absolute'; value=@(@{path=(Join-Path $packageRoot 'runtime.mjs');sha256=$dependencies[0].sha256}); message='diagnostic dependency must be a repository-relative .mjs, .js or .json path' },
+    @{ name='extension'; value=@(@{path='.tmp/runtime.txt';sha256=$dependencies[0].sha256}); message='diagnostic dependency must be a repository-relative .mjs, .js or .json path' },
+    @{ name='hash'; value=@(@{path=$dependencies[0].path;sha256='not-a-hash'}); message='diagnostic dependency has an invalid SHA-256' },
+    @{ name='missing'; value=@(@{path='.tmp/missing.json';sha256=$dependencies[0].sha256}); message='declared diagnostic dependency was not found' }
+  )
+  foreach ($invalid in $invalidDependencies) {
+    Write-Declaration $scriptRelative $scriptHash
+    $declaration=Get-Content -LiteralPath $declarationPath -Raw | ConvertFrom-Json
+    $declaration.diagnostics.'staged-import-chromium-control' | Add-Member -NotePropertyName dependencies -NotePropertyValue $invalid.value
+    [IO.File]::WriteAllText($declarationPath, ($declaration | ConvertTo-Json -Depth 8))
+    Assert-Refused (Invoke-Diagnostic @{} "dependency-invalid-$($invalid.name)" @{} 'staged-import-chromium-control') $invalid.message
+  }
+  Write-Output "PASS dependency-validation negative-cases=$($invalidDependencies.Count) exit=73 no-body=1"
+
+  Write-Declaration $scriptRelative $scriptHash -Dependencies $dependencies[0..1]
+  $undeclared=Invoke-Diagnostic @{} 'undeclared-sibling' @{} 'staged-import-chromium-control'
+  Assert-UndeclaredSiblingRefused $undeclared
+  Write-Output 'PASS undeclared-sibling-must-refuse exit=73 named-message=1 body-side-effect=0'
+  $siblingGuard=New-TestOnlyDiagnosticGuard 'ignored-sibling-mutant'
+  $siblingPreload=Join-Path (Split-Path -Parent $siblingGuard) 'heavy-admission-preload.cjs'
+  $preloadText=[IO.File]::ReadAllText($siblingPreload)
+  $anchor='!samePath(actual, entry) && !declaredDependency(actual) &&'
+  Assert-True (([regex]::Matches($preloadText,[regex]::Escape($anchor))).Count -eq 1) 'ignored-sibling-mutant-setup: exactly one authorization target'
+  [IO.File]::WriteAllText($siblingPreload, $preloadText.Replace($anchor, '!samePath(actual, entry) && !inside(path.dirname(entry), actual) && !declaredDependency(actual) &&'))
+  $mutant=Invoke-Diagnostic @{} 'ignored-sibling-mutant' @{} 'staged-import-chromium-control' $siblingGuard
+  Assert-ClosureMutantKilled $mutant 'allow-ignored-sibling' ${function:Assert-UndeclaredSiblingRefused} 'undeclared-sibling-must-refuse'
+
+  Write-Declaration $scriptRelative $scriptHash -Dependencies $dependencies
+  Set-Content -LiteralPath $bPath -Value ($bSource + '// changed before launch')
+  $changed=Invoke-Diagnostic @{} 'dependency-before-launch' @{} 'staged-import-chromium-control'
+  Assert-Refused $changed 'declared diagnostic dependency SHA-256 does not match:'
+  Write-Output 'PASS dependency-before-launch-must-refuse exit=73 body-side-effect=0'
+  Set-Content -LiteralPath $bPath -Value $bSource
+
+  # The entry swaps b.js only after launch, immediately before dynamic import.
+  $swapSource="import fs from 'node:fs'; fs.writeFileSync(new URL('./compiled/b.js', import.meta.url), " + (ConvertTo-Json ($bSource + '// swapped after launch') -Compress) + "); await import('./runtime.mjs');"
+  Set-Content -LiteralPath $scriptPath -Value $swapSource
+  $scriptHash=Get-Sha256 $scriptPath
+  Write-Declaration $scriptRelative $scriptHash -Dependencies $dependencies
+  $swapped=Invoke-Diagnostic @{} 'dependency-after-launch' @{} 'staged-import-chromium-control'
+  Assert-DependencySwapRefused $swapped
+  Write-Output 'PASS dependency-swap-must-refuse exit=73 named-message=1 body-side-effect=0'
+  Set-Content -LiteralPath $bPath -Value $bSource
+  $hashGuard=New-TestOnlyDiagnosticGuard 'dependency-hash-mutant'
+  $hashPreload=Join-Path (Split-Path -Parent $hashGuard) 'heavy-admission-preload.cjs'
+  $preloadText=[IO.File]::ReadAllText($hashPreload)
+  $anchor='if (dependency && sha256 !== dependency.sha256) {'
+  Assert-True (([regex]::Matches($preloadText,[regex]::Escape($anchor))).Count -eq 1) 'dependency-hash-mutant-setup: exactly one loaded-byte hash target'
+  [IO.File]::WriteAllText($hashPreload, $preloadText.Replace($anchor, 'if (false) {'))
+  $mutant=Invoke-Diagnostic @{} 'dependency-hash-mutant' @{} 'staged-import-chromium-control' $hashGuard
+  Assert-ClosureMutantKilled $mutant 'skip-dependency-hash' ${function:Assert-DependencySwapRefused} 'dependency-swap-must-refuse'
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'dependency-closure-completed: fixture remains clean'
+
+  # Preserve the built-in-only clean-seat path mutant with its original bytes.
+  $scriptHash=Get-Sha256 $source
+  $receiptCount=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File).Count
   $scriptRelative='.orchestrator/operator-7334-staged-import/chromium-control.mjs'
   $mutantPath=Join-Path $worktree $scriptRelative
   New-Item -ItemType Directory -Path (Split-Path -Parent $mutantPath) -Force | Out-Null
@@ -228,7 +340,7 @@ function Test-IgnoredChromiumPackage {
   Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq "?? $scriptRelative") 'nonignored-package-mutant-setup: only the old package path dirties the fixture'
   $mutant=Invoke-Diagnostic @{} 'nonignored-package-mutant' @{} 'staged-import-chromium-control'
   Assert-Refused $mutant 'host verifier requires a clean exact-head worktree'
-  Assert-True (@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File).Count -eq 1) 'nonignored-package-mutant-launched: clean-tree refusal writes no new receipt'
+  Assert-True (@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File).Count -eq $receiptCount) 'nonignored-package-mutant-launched: clean-tree refusal writes no new receipt'
   $failed=$false
   try { Assert-TmpPackageRuns $mutant } catch {
     if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: tmp-package-clean-exact-head-must-admit:')) { throw }

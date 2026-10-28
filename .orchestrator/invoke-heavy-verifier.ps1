@@ -401,6 +401,7 @@ function Test-SafeFile([string]$Path) {
 }
 $diagnosticScriptFull = $null
 $diagnosticDefinition = $null
+$diagnosticDependencies = @()
 function Assert-DiagnosticPathNoReparse([string]$Path, [string]$Description) {
   $current = [IO.Path]::GetFullPath($Path)
   while ($current -and (Test-Path -LiteralPath $current)) {
@@ -491,6 +492,47 @@ function Assert-DiagnosticDeclaration {
     sha256 = $declaredHash.ToLowerInvariant(); budgetSeconds = $DiagnosticBudgetSeconds; maxBudgetSeconds = $maximumBudget
   }
   $script:diagnosticScriptFull = $candidate
+  if ($definition.PSObject.Properties.Name -ccontains 'dependencies') {
+    if ($definition.dependencies -isnot [array] -or $definition.dependencies.Count -gt 64) {
+      throw 'heavy-verifier: diagnostic dependencies must be an array of at most 64 entries'
+    }
+    $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    [void]$paths.Add($candidate)
+    $resolved = @()
+    $declared = @()
+    foreach ($dependency in $definition.dependencies) {
+      $dependencyPath = [string]$dependency.path
+      $dependencyHash = [string]$dependency.sha256
+      $normalized = $dependencyPath.Replace('\', '/')
+      if ([string]::IsNullOrWhiteSpace($dependencyPath) -or [IO.Path]::IsPathFullyQualified($dependencyPath) -or
+          $normalized -cnotmatch '^[A-Za-z0-9._/-]+\.(mjs|js|json)$' -or
+          @($normalized.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+        throw 'heavy-verifier: diagnostic dependency must be a repository-relative .mjs, .js or .json path'
+      }
+      if ($dependencyHash -cnotmatch '^[a-fA-F0-9]{64}$') {
+        throw 'heavy-verifier: diagnostic dependency has an invalid SHA-256'
+      }
+      $full = [IO.Path]::GetFullPath((Join-Path $worktreeFull $normalized)).TrimEnd('\', '/')
+      if (-not $full.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'heavy-verifier: diagnostic dependency escaped the supplied worktree'
+      }
+      if (-not $paths.Add($full)) {
+        throw 'heavy-verifier: diagnostic dependency duplicates another dependency or the entry'
+      }
+      Assert-DiagnosticPathNoReparse $full 'diagnostic dependency path'
+      if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+        throw 'heavy-verifier: declared diagnostic dependency was not found'
+      }
+      $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($full))).ToLowerInvariant()
+      if ($actual -cne $dependencyHash.ToLowerInvariant()) {
+        throw "heavy-verifier: declared diagnostic dependency SHA-256 does not match: $normalized"
+      }
+      $resolved += [ordered]@{ path = $full; sha256 = $dependencyHash.ToLowerInvariant() }
+      $declared += [ordered]@{ path = $normalized; sha256 = $dependencyHash.ToLowerInvariant() }
+    }
+    $script:diagnosticDependencies = $resolved
+    $script:diagnosticDefinition.dependencies = $declared
+  }
 }
 Assert-DiagnosticDeclaration
 
@@ -3118,12 +3160,13 @@ try {
           kind = $diagnosticDefinition.kind; entry = $diagnosticScriptFull
           entrySha256 = $diagnosticDefinition.sha256; worktree = $worktreeFull
           boundHead = $acquiredGitIdentity.Head; moduleManifestPath = $diagnosticModuleManifestPath
+          dependencies = @($diagnosticDependencies)
         }
       }
       if ($identityMode -ceq "branch") { $configuration.branch = $acquiredGitIdentity.Branch; $configuration.head = $acquiredGitIdentity.Head }
       else { $configuration.immutableHead = $acquiredGitIdentity.Head }
       $start.Environment["NODE_OPTIONS"] = $nodeOptions
-      $start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress)))
+      $start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress -Depth 6)))
       $start.Environment["npm_config_script_shell"] = $hostNode
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
     }

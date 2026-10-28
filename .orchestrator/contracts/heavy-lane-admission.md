@@ -33,8 +33,16 @@ entry. Its repository-relative path and SHA-256 remain pinned by
 `diagnostic-declarations.json`; the declaration kind must be
 `standalone-node`, and `-DiagnosticBudgetSeconds` is required and must be in
 the closed interval `(0, 86400]` (and no greater than the declaration's
-maximum). Diagnostic module imports are admitted only when the resolved file
-is tracked at the bound clean Git head, is under the worktree root
+maximum). An optional `dependencies` array declares an exact-byte closure of
+at most 64 repository-relative `.mjs`, `.js` or `.json` files, each with a
+SHA-256. Paths must be normalized, inside the worktree, free of reparse points,
+unique (case-insensitively), and different from the entry. Every declared file
+must exist and match its hash before launch. The receipt retains these paths
+and hashes. The preload admits only their exact realpaths and checks loaded
+bytes against their hashes before evaluation, refusing a post-check swap.
+Omitting the array preserves the existing policy; ignored siblings receive
+no implicit authority. Diagnostic module imports otherwise are admitted only
+when the resolved file is tracked at the bound clean Git head, is under the worktree root
 `node_modules`, or is under a nested package's `node_modules` only when that
 package's `package.json` is tracked at the bound head. The preload refuses
 other files before evaluation. It hashes the bytes returned by Node's

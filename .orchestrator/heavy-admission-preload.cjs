@@ -290,6 +290,13 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   }
 
   const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+  const dependencies = diagnostic.dependencies ?? [];
+  if (!Array.isArray(dependencies) || dependencies.length > 64 || dependencies.some((dependency) =>
+    !dependency || typeof dependency.path !== "string" || !path.isAbsolute(dependency.path) ||
+    !/^[a-f0-9]{64}$/.test(dependency.sha256))) {
+    refuse("diagnostic dependency policy configuration was invalid");
+  }
+  const declaredDependency = (actual) => dependencies.find((dependency) => samePath(actual, dependency.path));
   const inside = (root, candidate) => {
     const relative = path.relative(root, candidate);
     return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -335,7 +342,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     } catch {
       refuse(`diagnostic module could not be resolved: ${url}`);
     }
-    if (!samePath(actual, entry) &&
+    if (!samePath(actual, entry) && !declaredDependency(actual) &&
         (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/"))))) {
       refuse(`diagnostic module was not tracked at the bound head or under an admitted node_modules directory: ${actual}`);
     }
@@ -347,6 +354,10 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     const sha256 = digestBytes(loadedSourceBytes(source, actual));
     if (samePath(actual, entry) && sha256 !== entrySha256) {
       refuse("declared diagnostic entry changed before evaluation");
+    }
+    const dependency = declaredDependency(actual);
+    if (dependency && sha256 !== dependency.sha256) {
+      refuse(`declared diagnostic dependency changed before evaluation: ${actual}`);
     }
     modules.set(actual, { module: actual, path: actual, sha256 });
     writeManifest();
