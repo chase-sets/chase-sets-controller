@@ -155,3 +155,25 @@ ASSERTION FAILED: preload foreign-head exit code is 73 (actual 0; stderr=; stdou
 The baseline refusal retains the literal existing diagnostic, including its
 existing repeated suffix; the candidate tests assert complete refusal text,
 not just a substring. No launch claim is re-encoded with a replacement head.
+## Long Product Gate Admission (#230)
+
+CONTRACT_VERSION: heavy-lane-admission/v1
+
+The `-LongProductGate` dispatch route is a closed implementation-lane route
+for one gate: `test:scripts`. `dispatch-lane.ps1` publishes the ordinary
+schema-4 launch owner and starts `long-product-gate.ps1` as its tracked child.
+The supervisor accepts only the exact launch id, lane, worktree, branch and
+head supplied by that dispatch. It invokes only
+`invoke-heavy-verifier.ps1 -Gate test:scripts`; it accepts no command, script,
+or payload from the host.
+
+The supervisor first publishes a `long-product-gate/v1` pending result at the
+launch-id-derived runtime path. Its terminal verifier result is atomic and is
+not a pass: the outer dispatch may mark it `passed` only after exact launch
+owner cleanup succeeds. Missing, torn, foreign, late, interrupted, or
+nonzero results are incomplete. A host watch expiry never kills the product
+child and never turns an incomplete result into a pass.
+
+Only the existing verifier owns admission, census, slot, Git identity, clean
+tree, receipt and child cleanup authority. The supervisor adds no timeout,
+census clock, retry, slot, reclaim, scheduler, or product command behavior.

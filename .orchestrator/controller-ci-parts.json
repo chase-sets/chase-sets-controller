@@ -541,6 +541,17 @@
           "legacy"
         ]
       }
+    },
+    {
+      "identity": "test:long-product-gate.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "supervisor", "weight": 1 },
+        { "name": "mutants", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["supervisor", "mutants"]
+      }
     }
   ],
   "baselineHead": "e671d823b96d45a3b71d7b81cf05a24d173df73a",

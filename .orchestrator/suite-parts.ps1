@@ -47,6 +47,13 @@ function Get-DispatchLanePartMap {
   }
 }
 
+function Get-LongProductGatePartMap {
+  [ordered]@{
+    'supervisor' = 'supervisor'
+    'mutants' = 'mutants'
+  }
+}
+
 function Get-RebaseIntegrationPartMap {
   [ordered]@{
     'rebase-foundation'='rebase-foundation'
@@ -211,6 +218,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'rebase-integration.test.ps1'){return @((Get-RebaseIntegrationPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'lane-stall-watchdog.test.ps1'){return @((Get-LaneWatchdogPartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'long-product-gate.test.ps1'){return @((Get-LongProductGatePartMap).Keys)}
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
   if($errors.Count){throw 'SUITE_PART: source parse failed'}
