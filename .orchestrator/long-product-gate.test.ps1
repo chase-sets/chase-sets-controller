@@ -312,7 +312,7 @@ while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds
       $copy = Replace-FixtureOnce $copy 'if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds)' 'if ($false)'
     }
     if ($Mutation -ceq 'replacement-line') {
-      $copy = Replace-FixtureOnce $copy 'queue ticket replaced before admission' 'queue ticket continuity unknown'
+      $copy = Replace-FixtureOnce $copy 'if ($replacementPossible)' 'if ($false)'
     }
     if ($Mutation -ceq 'fresh-ticket') {
       $discardReservation = @'
