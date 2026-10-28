@@ -86,6 +86,10 @@ skipped and logged; no PID-only or recursively inferred tree kill is allowed.
 Windows Job Object termination remains bound to kernel job membership, not
 reusable parent PIDs.
 
+The native-DB Windows helper captures its start ticks from the same pinned
+launch object used for owner publication. Error cleanup uses that identity;
+capture failure refuses launch and may stop only a freshly matching identity.
+
 In diagnostic mode, `new Worker`, `process.execve`, and
 `process.binding('spawn_sync' | 'process_wrap')` are refused. Node child-process
 launches are refused unless the child environment carries exactly the host-set,

@@ -2823,9 +2823,20 @@ function Invoke-NativeLaunch {
   $evidenceStream = [IO.File]::Open($nativeEvidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
   try {
     $script:child = [Diagnostics.Process]::Start((New-NativeStart 'launch' $owner.native.root))
+    try {
+      [void]$child.Handle
+      $nativeChildStart = $child.StartTime.ToUniversalTime()
+      $script:childStartTicks = $nativeChildStart.Ticks
+    } catch {
+      # Refuse launch on capture failure. Only the pinned launch object can
+      # supply a fallback identity, which the stop helper independently checks.
+      try { Stop-ExactVerifierProcess $child.Id $child.StartTime.ToUniversalTime().Ticks }
+      catch { [Console]::Error.WriteLine("native-db: helper identity unavailable; termination refused pid=$($child.Id)") }
+      throw
+    }
     $script:nativeErrors = $child.StandardError.ReadToEndAsync()
     $owner.state = 'started'; $owner.childPid = $child.Id
-    $owner.childProcessStartUtc = $child.StartTime.ToUniversalTime().ToString('o')
+    $owner.childProcessStartUtc = $nativeChildStart.ToString('o')
     if (-not (Test-ThisOwner)) { throw 'native-db: owner changed before Windows child publication' }
     $script:ownedRaw = Write-OwnerRecord $owner
     $envelope = @{ request = $nativeRequestRaw; digest = $owner.native.request.digest } | ConvertTo-Json -Compress -Depth 4
@@ -3553,8 +3564,8 @@ try {
     try { Stop-DiagnosticTree $child.Id $childStartTicks @($diagnosticObservedDescendants); [void]$child.WaitForExit(2000) } catch {}
   }
   if ($isNativeDb -and $child -and -not $child.HasExited) {
-    $child.StandardInput.Close()
-    Stop-ExactVerifierProcess $child.Id $childStartTicks; [void]$child.WaitForExit(30000)
+    try { $child.StandardInput.Close() }
+    finally { Stop-ExactVerifierProcess $child.Id $childStartTicks; [void]$child.WaitForExit(30000) }
   }
   if (($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) -and $null -ne $child -and
       ($owner.state -cne 'started' -or
