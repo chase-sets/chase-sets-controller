@@ -189,6 +189,9 @@ the supervisor compares an exposed ticket with the last queued ticket, or logs
 A detected replacement, or an unavailable comparison after more than 600 seconds
 since the previous presentation by the supervisor's monotonic clock, logs
 `long-product-gate: queue ticket replaced before admission (previous=<n>)`.
+The presentation clock starts before the first call, so a pause while receiving
+that first refusal counts toward the gap. The queue-cap clock still starts at
+the first queued refusal, not at supervisor startup.
 This diagnostic does not change the verifier's outcome or undo admission.
 Total queued waiting is capped at
 3600 seconds from the first queued refusal, using a monotonic clock. Expiry

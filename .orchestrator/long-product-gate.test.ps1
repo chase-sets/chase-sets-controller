@@ -293,7 +293,8 @@ exit $exitCode
     $clockPath = Join-Path $client.runtime 'fixture-queue-clock.txt'; Write-Text $clockPath '0'
     $clock = @'
 $queueWatch = [pscustomobject]@{}
-$queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [TimeSpan]::FromSeconds([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-queue-clock.txt'))) }
+$queueWatch | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-queue-clock.txt')))
+$queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [TimeSpan]::FromSeconds([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-queue-clock.txt')) - $this.StartedAt) }
 '@
     $poll = @'
 $fixturePoll = 1 + $fixturePoll
@@ -304,7 +305,18 @@ $pollValue = @{ticket=$presentedTicket;pid=$PID;arguments=@($start.ArgumentList)
 while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
 '@
     $copy = Replace-FixtureOnce $original '$queueWatch = [Diagnostics.Stopwatch]::StartNew()' $clock
+    $copy = Replace-FixtureOnce $copy '$presentationWatch = [Diagnostics.Stopwatch]::StartNew()' ($clock.Replace('$queueWatch', '$presentationWatch'))
     $copy = Replace-FixtureOnce $copy '[Threading.Thread]::Sleep($queueSleepMilliseconds)' $poll
+    if ($Mode -ceq 'expire-admit') {
+      $firstRefusal = @'
+$process.WaitForExit()
+if (-not $queueTicket) {
+  [IO.File]::WriteAllText((Join-Path $runtimeFull 'fixture-first-refusal.txt'), 'refused')
+  while (-not [IO.File]::Exists((Join-Path $runtimeFull 'fixture-first-refusal.continue'))) { Start-Sleep -Milliseconds 25 }
+}
+'@
+      $copy = Replace-FixtureOnce $copy '$process.WaitForExit()' $firstRefusal
+    }
     if ($Mutation -ceq 'single-shot') {
       $copy = Replace-FixtureOnce $copy 'if ($exitCode -ne 73 -or -not $presentationError.StartsWith' 'if ($true -or $exitCode -ne 73 -or -not $presentationError.StartsWith'
     }
@@ -328,6 +340,11 @@ if ($fixturePoll -eq 1) {
     }
     Write-Text $supervisorPath $copy
     $clientDispatch = Start-FixtureDispatch $client; Read-FixtureAck $clientDispatch
+    if ($Mode -ceq 'expire-admit') {
+      Wait-ForPathOrExit (Join-Path $client.runtime 'fixture-first-refusal.txt') $clientDispatch.process 'real verifier did not reach the first queued refusal barrier'
+      Write-Text $clockPath '601'
+      Write-Text (Join-Path $client.runtime 'fixture-first-refusal.continue') 'continue'
+    }
     $first = Wait-QueuePoll $client $clientDispatch 1
     Assert-True ($null -ne $first) 'queued gate re-presents instead of finalizing its first queued refusal'
     $pendingPath = $clientDispatch.ack.longProductGate.resultPath
@@ -466,6 +483,14 @@ function Get-TestDefinition([string]$Path, [string]$Name) {
 function Assert-AdmissionTicketDiagnostics([string]$Source, [string]$LogPath) {
   $tokens = $null; $errors = $null
   $ast = [Management.Automation.Language.Parser]::ParseInput($Source, [ref]$tokens, [ref]$errors)
+  $samples = @($ast.FindAll({ param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$presentationSeconds'
+  }, $true))
+  Assert-True ($errors.Count -eq 0 -and $samples.Count -eq 1) 'presentation clock sample extracts exactly once'
+  $presentationWatch = [pscustomobject]@{Elapsed=[TimeSpan]::FromSeconds(601)}
+  $queueWatch = [pscustomobject]@{Elapsed=[TimeSpan]::Zero}
+  . ([scriptblock]::Create($samples[0].Extent.Text))
+  Assert-True ($presentationSeconds -eq 601) 'presentation clock includes time before the first queued refusal is observed'
   $blocks = @($ast.FindAll({ param($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$queueTicket'
   }, $true))
@@ -491,6 +516,7 @@ function Test-AdmissionTicketDiagnostics($Fixture, [string]$Source) {
   Assert-AdmissionTicketDiagnostics $Source $log
   Write-Output 'PASS admission ticket diagnostics compare exposed tickets and the strict 600-second previous-presentation boundary'
   foreach ($mutation in @(
+    @('$presentationSeconds = $presentationWatch.Elapsed.TotalSeconds', '$presentationSeconds = $queueWatch.Elapsed.TotalSeconds', 'presentation clock includes time before the first queued refusal is observed'),
     @('if ($admissionTicketMatch.Success)', 'if ($false)', 'exposed unchanged ticket is comparable even after retention'),
     @('$admissionTicket -cne $queueTicket', '$admissionTicket -ceq $queueTicket', 'exposed unchanged ticket is comparable even after retention'),
     @('-gt $queueRetentionSeconds', '-ge $queueRetentionSeconds', 'unavailable ticket at exactly 600 seconds has no replacement warning'),

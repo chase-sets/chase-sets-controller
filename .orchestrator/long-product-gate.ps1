@@ -105,6 +105,7 @@ $queueRetentionSeconds = 600
 $queueWatch = $null
 $queueTicket = $null
 $previousPresentationSeconds = 0
+$presentationWatch = [Diagnostics.Stopwatch]::StartNew()
 try {
   while ($true) {
     if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds) {
@@ -114,7 +115,7 @@ try {
       $exitCode = 73
       break
     }
-    $presentationSeconds = if ($queueWatch) { $queueWatch.Elapsed.TotalSeconds } else { 0 }
+    $presentationSeconds = $presentationWatch.Elapsed.TotalSeconds
     $process = [Diagnostics.Process]::Start($start)
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
