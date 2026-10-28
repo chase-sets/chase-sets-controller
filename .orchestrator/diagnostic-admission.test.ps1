@@ -29,7 +29,7 @@ $releaseDeclarations = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'diagno
 $chromiumDeclaration = $releaseDeclarations.diagnostics.'staged-import-chromium-control'
 Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declarations/v1' -and
   $chromiumDeclaration.enabled -eq $true -and $chromiumDeclaration.kind -ceq 'standalone-node' -and
-  $chromiumDeclaration.path -ceq '.orchestrator/operator-7334-staged-import/chromium-control.mjs' -and
+  $chromiumDeclaration.path -ceq '.tmp/operator-7334-staged-import/chromium-control.mjs' -and
   $chromiumDeclaration.sha256 -ceq '1ba41595d8045fb377ca97a3b059e5679257ef5d0b60470e4be610aece91aa7d' -and
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
@@ -183,12 +183,68 @@ function Assert-Refused([object]$Case, [string]$ExpectedText) {
   Assert-True (-not (Test-Path -LiteralPath $Case.Marker)) 'fresh marker proves the diagnostic did not run'
   Assert-True (-not (Test-Path -LiteralPath $lockRoot)) 'refusal released no-acquisition lock'
 }
+function Assert-TmpPackageRuns($Case) {
+  Assert-True ($Case.Result.Code -eq 0 -and (Test-Path -LiteralPath $Case.Marker)) "tmp-package-clean-exact-head-must-admit: packaged diagnostic runs (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+}
+function Test-IgnoredChromiumPackage {
+  $worktree=Join-Path $container 'ignored-package-lane'
+  $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'
+  New-Item -ItemType Directory -Path $worktree, $artifactRoot -Force | Out-Null
+  # Receipts are ignored narrowly; the old operator package path must remain unignored.
+  Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value @('/.tmp/', '/.orchestrator/artifacts/')
+  Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null
+  Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null
+  Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
+  Invoke-FixtureGit @('add','--','.gitignore') | Out-Null
+  Invoke-FixtureGit @('commit','-m','ignored package fixture') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  $source=Join-Path $root 'fixture-chromium-control.mjs'
+  Set-Content -LiteralPath $source -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'ignored-package-ran');"
+  $scriptRelative=[string]$chromiumDeclaration.path
+  $scriptPath=Join-Path $worktree $scriptRelative
+  New-Item -ItemType Directory -Path (Split-Path -Parent $scriptPath) -Force | Out-Null
+  Copy-Item -LiteralPath $source -Destination $scriptPath
+  $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  Assert-True ((Invoke-FixtureGit @('ls-files','--',$scriptRelative)) -ceq '') 'tmp-package-setup: copied script is not tracked'
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'tmp-package-setup: copied ignored package leaves exact-head fixture clean'
+  $case=Invoke-Diagnostic @{} 'tmp-package' @{} 'staged-import-chromium-control'
+  Assert-TmpPackageRuns $case
+  $receipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File)
+  Assert-True ($receipts.Count -eq 1) 'tmp-package-receipt: admitted script writes one durable receipt'
+  $record=Get-Content -LiteralPath $receipts[0].FullName -Raw | ConvertFrom-Json -DateKind String
+  Assert-True ($record.head -ceq $head -and $record.diagnostic.name -ceq 'staged-import-chromium-control' -and
+    $record.diagnostic.scriptPath -ceq $scriptRelative -and $record.diagnostic.sha256 -ceq $scriptHash -and
+    $record.exit -eq 0 -and $record.nativeExit -eq 0 -and $record.timedOut -eq $false -and
+    -not (Test-Path -LiteralPath $lockRoot)) 'tmp-package-receipt: exact head, pinned path, fixture hash and native exit bind'
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'tmp-package-completed: receipt leaves exact-head fixture clean'
+  Write-Output 'PASS diagnostic tmp-package clean-exact-head=1 untracked-ignored=1 real-route=1 receipt=1 exit=0'
+
+  $scriptRelative='.orchestrator/operator-7334-staged-import/chromium-control.mjs'
+  $mutantPath=Join-Path $worktree $scriptRelative
+  New-Item -ItemType Directory -Path (Split-Path -Parent $mutantPath) -Force | Out-Null
+  Copy-Item -LiteralPath $source -Destination $mutantPath
+  Write-Declaration $scriptRelative $scriptHash
+  Assert-True ((Get-Sha256 $mutantPath) -ceq $scriptHash -and (Invoke-FixtureGit @('rev-parse','HEAD')) -ceq $head) 'nonignored-package-mutant-setup: same script bytes and committed head'
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq "?? $scriptRelative") 'nonignored-package-mutant-setup: only the old package path dirties the fixture'
+  $mutant=Invoke-Diagnostic @{} 'nonignored-package-mutant' @{} 'staged-import-chromium-control'
+  Assert-Refused $mutant 'host verifier requires a clean exact-head worktree'
+  Assert-True (@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File).Count -eq 1) 'nonignored-package-mutant-launched: clean-tree refusal writes no new receipt'
+  $failed=$false
+  try { Assert-TmpPackageRuns $mutant } catch {
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: tmp-package-clean-exact-head-must-admit:')) { throw }
+    $failed=$true
+    Write-Output $_.Exception.Message
+  }
+  Assert-True $failed 'nonignored-package-path mutant must fail the named admission assertion after real clean-tree refusal'
+  Write-Output 'KILLED mutant nonignored-package-path at assertion=tmp-package-clean-exact-head-must-admit launched=1 clean-exact-head-refusal=1 exit=73'
+}
 
 try {
   Assert-NoProductionDiagnosticClockSeam
   Assert-MutantDiagnosticClockSeamIsRejected
   $testGuard=New-TestOnlyDiagnosticGuard
   Write-Output "PASS fixture verifier clock substitution-count=$script:diagnosticClockSubstitutionCount"
+  Test-IgnoredChromiumPackage
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value '.orchestrator/'; Set-Content -LiteralPath (Join-Path $worktree 'seed.txt') -Value 'seed'
   Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null; Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null; Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
   Invoke-FixtureGit @('add','--','.') | Out-Null; Invoke-FixtureGit @('commit','-m','fixture') | Out-Null; $head=Invoke-FixtureGit @('rev-parse','HEAD')
