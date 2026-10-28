@@ -68,8 +68,8 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     }
   }
   Assert-Ci ($seen.Count-eq$pins.Count) 'missing conservation source'
-  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq8-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq9-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }

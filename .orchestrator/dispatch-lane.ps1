@@ -104,6 +104,10 @@ param(
   # Isolated test seams. Production ownership and provider-temp roots are fixed.
   [Parameter(DontShow)][string]$TestRuntimeRoot,
   [Parameter(DontShow)][string]$TestTempRoot,
+  # Closed product route: the tracked child is the fixed test:scripts
+  # supervisor, never a caller-supplied command or payload.
+  [Parameter(DontShow)][switch]$LongProductGate,
+  [Parameter(DontShow)][string]$LongProductGateTestVerifierPath,
   [Parameter(DontShow)][string]$ResumeAdmissionObservedPath,
   [Parameter(DontShow)][string]$ResumeAdmissionContinuePath,
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$SemanticAttemptId,
@@ -133,6 +137,15 @@ $ErrorActionPreference = "Stop"
 
 if ([bool]$StartRequestIdentity -ne [bool]$StartAcknowledgementPath) {
   throw 'dispatch-lane: start acknowledgement path and request identity must be supplied together'
+}
+if ($LongProductGate -and $LaneRole -cne 'implementation') {
+  throw 'dispatch-lane: long product gate requires the implementation lane role'
+}
+if ($LongProductGate -and $TestArgumentList) {
+  throw 'dispatch-lane: long product gate accepts no test command or payload'
+}
+if ($LongProductGateTestVerifierPath -and (-not $LongProductGate -or -not $TestRuntimeRoot -or -not $ExecutablePath)) {
+  throw 'dispatch-lane: long product gate test verifier requires the isolated test route'
 }
 if (($ResumeAdmissionObservedPath -or $ResumeAdmissionContinuePath) -and
     (-not $ExecutablePath -or -not $ResumeAdmissionObservedPath -or -not $ResumeAdmissionContinuePath)) { throw 'dispatch-lane: resume admission barrier requires paired isolated test paths and executable override' }
@@ -958,7 +971,7 @@ function Resolve-HarnessExecutable([string]$Name) {
   if ($candidates.Count -gt 0) { return $candidates[0].Source }
   throw "dispatch-lane: no native $Name.exe on PATH — the .ps1/.cmd shim must never be launched (stall-gotcha windows-start-process-codex-shim); install or add the native executable to PATH"
 }
-$exe = if ($ExecutablePath) { $ExecutablePath } else { Resolve-HarnessExecutable $Harness }
+$exe = if ($LongProductGate) { $admissionPowerShell } elseif ($ExecutablePath) { $ExecutablePath } else { Resolve-HarnessExecutable $Harness }
 if ($integrationTarget -and -not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'INTEGRATION_AUTHOR_UNAVAILABLE: eligible native executable is missing' }
 if ($exe -notlike "*.exe") {
   throw "dispatch-lane: resolved executable is not a native .exe: $exe (stall-gotcha windows-start-process-codex-shim)"
@@ -1246,6 +1259,8 @@ try {
   $launchPromptFile = Join-Path $runtimeRoot "dispatch-heavy-verifier-$launchId.prompt.txt"
   $ownershipRecordPath = Join-Path $runtimeRoot "dispatch-launch-$launchId.json"
   $watchdogSpecPath = Join-Path $runtimeRoot "watchdog-lane-$Label.json"
+  $longProductGateResultPath = Join-Path $runtimeRoot "long-product-gate-$launchId.json"
+  $longProductGateHostWatchSeconds = 900
   $ownershipRecord = [ordered]@{
     schemaVersion = 4
     launchId = $launchId
@@ -1293,6 +1308,22 @@ try {
     }
   }
   [IO.File]::WriteAllText($launchPromptFile, $composedPrompt, [Text.UTF8Encoding]::new($false))
+  if ($LongProductGate) {
+    $supervisor = Join-Path $PSScriptRoot 'long-product-gate.ps1'
+    if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
+      throw 'dispatch-lane: long product gate supervisor is missing'
+    }
+    $launchArguments = @(
+      '-NoProfile', '-NonInteractive', '-File', $supervisor,
+      '-RuntimeRoot', $runtimeRoot, '-LaunchId', $launchId,
+      '-Worktree', $worktreeResolved, '-Lane', $admissionLane,
+      '-Branch', $admissionBranch, '-ClaimedHead', $admissionHead,
+      '-ResultPath', $longProductGateResultPath
+    )
+    if ($LongProductGateTestVerifierPath) {
+      $launchArguments += @('-TestMode', '-TestVerifierPath', [IO.Path]::GetFullPath($LongProductGateTestVerifierPath))
+    }
+  }
   $startParameters = @{
     FilePath = $exe
     ArgumentList = @($launchArguments)
@@ -1415,6 +1446,14 @@ try {
           policyGeneration=[long]$dispatchRouting.policyGeneration;registryAuthorityDigest=[string]$dispatchRouting.registryAuthorityDigest
           family=[string]$dispatchRouting.family;slot=[string]$dispatchRouting.slot;usedLastKnownGood=[bool]$dispatchRouting.usedLastKnownGood
         }
+        if ($LongProductGate) {
+          $acknowledgement.longProductGate = [ordered]@{
+            schema = 'long-product-gate/v1'; gate = 'test:scripts'
+            resultPath = [IO.Path]::GetFullPath($longProductGateResultPath)
+            hostWatchSeconds = $longProductGateHostWatchSeconds
+            supervisorPid = [long]$process.Id; supervisorStartIdentity = $startedRecord.childStartIdentity
+          }
+        }
         if ($integrationResume) {
           $acknowledgement.schemaVersion = 'dispatch-start-ack/v2'
           $acknowledgement.interruptedIntegration = $ownershipRecord.interruptedIntegration
@@ -1499,8 +1538,36 @@ try {
     }
   }
   if ($ownershipRecordPath -and $ownershipRecord) {
-    if (-not (Remove-DispatchLaunchResources $ownershipRecordPath $ownershipRecord $runtimeRoot $tempRoot)) {
+    $dispatchCleanupProven = Remove-DispatchLaunchResources $ownershipRecordPath $ownershipRecord $runtimeRoot $tempRoot
+    if (-not $dispatchCleanupProven) {
       Write-Warning "dispatch-lane: exact launch cleanup was not proven; the validated ownership record was preserved for a later dispatch"
+    }
+    if ($LongProductGate -and $dispatchCleanupProven -and (Test-Path -LiteralPath $longProductGateResultPath -PathType Leaf)) {
+      try {
+        $result = [IO.File]::ReadAllText($longProductGateResultPath) | ConvertFrom-Json -DateKind String -ErrorAction Stop
+        $same = $result.schema -ceq 'long-product-gate/v1' -and
+          $result.launchId -ceq $launchId -and $result.gate -ceq 'test:scripts' -and
+          $result.lane -ceq $admissionLane -and $result.worktree -ceq ([IO.Path]::GetFullPath($worktreeResolved).TrimEnd('\','/')) -and
+          $result.branch -ceq $admissionBranch -and $result.head -ceq $admissionHead -and
+          $result.status -cin @('verifier-passed','incomplete')
+        if ($same) {
+          $finalResult = [ordered]@{}
+          foreach ($property in $result.PSObject.Properties) { $finalResult[$property.Name] = $property.Value }
+          $finalResult.dispatchReleased = $true
+          $finalResult.dispatchReleasedUtc = [DateTime]::UtcNow.ToString('o')
+          $finalResult.dispatchExit = [int]$childExitCode
+          $finalResult.status = if ($childExitCode -eq 0 -and $result.status -ceq 'verifier-passed') { 'passed' } else { 'incomplete' }
+          $temporaryResult = "$longProductGateResultPath.$([guid]::NewGuid().ToString('N')).tmp"
+          try {
+            [IO.File]::WriteAllText($temporaryResult, ($finalResult | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+            [IO.File]::Move($temporaryResult, $longProductGateResultPath, $true)
+          } finally {
+            Remove-Item -LiteralPath $temporaryResult -Force -ErrorAction SilentlyContinue
+          }
+        }
+      } catch {
+        [Console]::Error.WriteLine("dispatch-lane: long product gate result finalization refused: $($_.Exception.Message)")
+      }
     }
   }
   if ($integrationResume -and $process -and $startedRecord.childStartIdentity) { Write-WatchdogSpec 'exited' $startedRecord.childPid $startedRecord.childStartIdentity $childExitCode }
