@@ -71,12 +71,18 @@ exit 0
 param($Runtime,$Worktree,$Label,$Override)
 $ErrorActionPreference='Stop'
 $global:priorityProbeRuntime=$Runtime
+$global:priorityProbeCensus=($Label -ceq 'priority-default')
 # A debugger probe observes the real admission and ownership scan without
 # changing either production implementation. Its census uses the real reader.
 Set-PSBreakpoint -Command Assert-DispatchAdmissionClean,Invoke-DispatchOwnershipScavenge -Action {
   $priority=[string][Diagnostics.Process]::GetCurrentProcess().PriorityClass
-  $census=Get-LiveDispatchOwnership -RuntimeRoot $global:priorityProbeRuntime -TempRoot (Split-Path -Parent $global:priorityProbeRuntime) -ContainerRoot (Split-Path -Parent $global:priorityProbeRuntime)
-  [IO.File]::AppendAllText((Join-Path $global:priorityProbeRuntime 'prelaunch.jsonl'),((@{priority=$priority;health=$census.health.status}|ConvertTo-Json -Compress)+[Environment]::NewLine))
+  $health='not-probed'
+  if($global:priorityProbeCensus){
+    $census=Get-LiveDispatchOwnership -RuntimeRoot $global:priorityProbeRuntime -TempRoot (Split-Path -Parent $global:priorityProbeRuntime) -ContainerRoot (Split-Path -Parent $global:priorityProbeRuntime)
+    $health=$census.health.status
+    $global:priorityProbeCensus=$false
+  }
+  [IO.File]::AppendAllText((Join-Path $global:priorityProbeRuntime 'prelaunch.jsonl'),((@{priority=$priority;health=$health}|ConvertTo-Json -Compress)+[Environment]::NewLine))
 } | Out-Null
 $parameters=@{Harness='codex';Model='gpt-6.1-sol';Effort='high';LaneRole='implementation';Row=4;Placement='provisional';Issue=90232;PromptFile=(Join-Path $Runtime 'prompt.txt');Worktree=$Worktree;Label=$Label;ExecutablePath=(Join-Path $PSHOME 'pwsh.exe')}
 if($Override){$parameters.PriorityClass=$Override}
