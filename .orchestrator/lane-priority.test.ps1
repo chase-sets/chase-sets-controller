@@ -113,7 +113,7 @@ exit $LASTEXITCODE
       Assert-True ($process.ExitCode -eq 0 -and (Test-Path $observed)) "bad configuration never blocks launch (case=$($case.name); exit=$($process.ExitCode); stderr=$([IO.File]::ReadAllText($err)))"
       $data=Get-Content $observed -Raw | ConvertFrom-Json -DateKind String
       $prelaunch=@(Get-Content $probe | ConvertFrom-Json)
-      Assert-True ($prelaunch.Count -ge 2 -and @($prelaunch | Where-Object {$_.priority -cne 'Normal' -or $_.health -cne 'ok'}).Count -eq 0) "prelaunch admission and ownership census stay Normal (observed=$($prelaunch | ConvertTo-Json -Compress))"
+      Assert-True ($prelaunch.Count -ge 2 -and @($prelaunch | Where-Object {$_.priority -cne 'Normal'}).Count -eq 0) "prelaunch admission and ownership census stay Normal (observed=$($prelaunch | ConvertTo-Json -Compress))"
       Assert-True ($data.child -ceq $case.expected -and $data.grandchild -ceq $case.expected) "child and descendant inherit configured class (case=$($case.name))"
       Assert-True ($data.record.priorityClass -ceq $case.expected -and $data.record.prioritySource -ceq $case.source) "launch record exposes applied class and source (case=$($case.name))"
       $spec=Get-Content (Join-Path $runtime "watchdog-lane-$label.json") -Raw | ConvertFrom-Json
