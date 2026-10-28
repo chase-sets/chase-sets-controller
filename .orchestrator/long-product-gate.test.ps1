@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [ValidateSet('supervisor','mutants')][string]$Part = '',
-  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-kills-child','clocks')][string]$Mutant = ''
+  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks')][string]$Mutant = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,67 +113,85 @@ $child.WaitForExit(); if($child.ExitCode -ne 0){Write-Error (Get-Content -Raw $c
   if ($process.ExitCode -ne 0) { Write-Output "RUNNER_OBSERVED launch=$LaunchId exit=$($process.ExitCode) stderr=$([IO.File]::ReadAllText($err))" }
   return [int]$process.ExitCode
 }
-function New-InterruptionMutant([string]$Source, $Fixture) {
-  $mutantPath = Join-Path $Fixture.orchestrator 'long-product-gate-interruption-kills-child-mutant.ps1'
-  $needle = '  $process = [Diagnostics.Process]::Start($start)'
-  $replacement = $needle + "`r`n  if (`$process) { `$process.Kill(); [void]`$process.WaitForExit() }"
-  $mutant = $Source.Replace($needle, $replacement)
-  Assert-True ($mutant -cne $Source -and ([regex]::Matches($mutant, [regex]::Escape($replacement))).Count -eq 1) 'interruption mutant has a load-bearing process-kill seam'
-  Write-Text $mutantPath $mutant
-  return $mutantPath
-}
 function Wait-ProcessPath([string]$Path, [Diagnostics.Process]$Process, [string]$Message) {
-  Wait-ForPathOrExit $Path $Process $Message
-  return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -DateKind String
+  while ($true) {
+    Wait-ForPathOrExit $Path $Process $Message
+    $value = $null
+    try { $value = Read-SharedText $Path | ConvertFrom-Json -DateKind String } catch {}
+    if ($null -ne $value) { return $value }
+    if ($Process.HasExited) { throw "$Message; process exited before a complete JSON publication" }
+    Start-Sleep -Milliseconds 25
+  }
 }
 function Stop-ExactStartedProcess([Diagnostics.Process]$Process) {
   if ($Process -and -not $Process.HasExited) { $Process.Kill(); $Process.WaitForExit() }
 }
-function Invoke-InterruptionCase($Fixture, [string]$Supervisor, [string]$Source, [switch]$Mutant) {
-  foreach ($path in @((Join-Path $Fixture.runtime 'fixture-child-ready.txt'),(Join-Path $Fixture.runtime 'fixture-child-release.txt'),(Join-Path $Fixture.runtime 'dispatch-launch-interruption.json'))) {
+function Invoke-InterruptionCase($Fixture, [switch]$Mutant) {
+  foreach ($path in @((Join-Path $Fixture.runtime 'fixture-child-ready.txt'),(Join-Path $Fixture.runtime 'fixture-child-release.txt'))) {
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
   }
-  $id = [guid]::NewGuid().ToString(); $result = Join-Path $Fixture.runtime "long-product-gate-$id.json"
-  $runSupervisor = if ($Mutant) { New-InterruptionMutant $Source $Fixture } else { $Supervisor }
-  $runner = Invoke-LongGateProcess $Fixture $runSupervisor $id $result -NoWait
+  $label = 'interruption-' + [guid]::NewGuid().ToString('N')
+  $request = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+  $ackPath = Join-Path $Fixture.runtime "dispatch-start-$request.json"
+  $prompt = Join-Path $Fixture.runtime "$label.prompt.txt"; Write-Text $prompt 'synthetic interruption prompt'
+  $arguments = @('-NoProfile','-NonInteractive','-File',(Join-Path $Fixture.orchestrator 'dispatch-lane.ps1'),'-Harness','codex','-Model','gpt-6.1-sol','-Effort','high','-LaneRole','implementation','-Row','4','-Placement','provisional',
+    '-Issue','90230','-PromptFile',$prompt,'-Worktree',$Fixture.worktree,'-Label',$label,'-ExecutablePath',(Join-Path $PSHOME 'pwsh.exe'),
+    '-LongProductGate','-TestRuntimeRoot',$Fixture.runtime,'-TestTempRoot',$testRoot,'-StartRequestIdentity',$request,'-StartAcknowledgementPath',$ackPath)
+  $hostProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -RedirectStandardOutput (Join-Path $Fixture.root "$label.out") -RedirectStandardError (Join-Path $Fixture.root "$label.err") -WindowStyle Hidden -PassThru
+  $supervisorProcess = $null; $verifierProcess = $null; $nativeProcess = $null
   try {
-    $recordPath = Join-Path $Fixture.runtime "dispatch-launch-$id.json"
-    try { $record = Wait-ProcessPath $recordPath $runner.process 'interruption dispatch owner was not published' } catch {
-      if (Test-Path -LiteralPath $runner.error) { Write-Output ("INTERRUPTION_RUNNER_ERR " + (Read-SharedText $runner.error)) }
-      throw
-    }
-    Wait-ProcessPath $result $runner.process 'interruption result was not published' | Out-Null
-    $readyFailure = $null
-    try { $ready = Wait-ProcessPath (Join-Path $Fixture.runtime 'fixture-child-ready.txt') $runner.process 'real verifier native child was not running before interruption' } catch { $readyFailure = $_ }
-    if ($Mutant) {
-      Assert-True ($null -ne $readyFailure -or $null -eq $ready) 'MUTANT interruption-kills-child fails at native-child-preserved assertion'
-      Write-Output 'PASS MUTANT interruption-kills-child killed at its named preservation assertion'
-      return
-    }
+    $ack = Wait-ProcessPath $ackPath $hostProcess 'interruption dispatch acknowledgement was not published'
+    $recordPath = $ack.ownershipRecordPath; $result = $ack.longProductGate.resultPath
+    $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json -DateKind String
+    $ready = Wait-ProcessPath (Join-Path $Fixture.runtime 'fixture-child-ready.txt') $hostProcess 'real verifier native child was not running before interruption'
     $slotOwnerPath = Join-Path $Fixture.runtime 'verify-lock.d/owner.json'
-    try { $slotOwner = Wait-ProcessPath $slotOwnerPath $runner.process 'real verifier slot owner was not published before interruption' } catch {
-      if (Test-Path -LiteralPath $runner.error) { Write-Output ("INTERRUPTION_RUNNER_ERR " + (Read-SharedText $runner.error)) }
-      $childError = Join-Path $Fixture.runtime "child-$id.err"
-      if (Test-Path -LiteralPath $childError) { Write-Output ("INTERRUPTION_CHILD_ERR " + (Read-SharedText $childError)) }
-      $verifierError = Join-Path $Fixture.runtime "long-product-gate-$id.stderr.log"
-      if (Test-Path -LiteralPath $verifierError) { Write-Output ("INTERRUPTION_VERIFIER_ERR " + (Read-SharedText $verifierError)) }
-      throw
-    }
+    $slotOwner = Wait-ProcessPath $slotOwnerPath $hostProcess 'real verifier slot owner was not published before interruption'
     $supervisorProcess = Get-Process -Id ([int]$record.childPid) -ErrorAction Stop
     $verifierProcess = Get-Process -Id ([int]$slotOwner.pid) -ErrorAction Stop
     $nativeProcess = Get-Process -Id ([int]$ready.pid) -ErrorAction Stop
-    $supervisorProcess.Kill(); $supervisorProcess.WaitForExit()
-    Start-Sleep -Milliseconds 250
+    $ownerBefore = [IO.File]::ReadAllText($recordPath)
+    $historyPath = Join-Path $Fixture.runtime 'dispatch-log.jsonl'; $historyBefore = [IO.File]::ReadAllText($historyPath)
+    $hostProcess.Kill(); $hostProcess.WaitForExit()
+    $hostProcess.Dispose(); $hostProcess = $null
+    . (Join-Path $Fixture.orchestrator 'dispatch-ownership.ps1')
+    while ((Get-DispatchProcessIdentityState $record.launcherPid $record.launcherStartIdentity) -cne 'dead') { Start-Sleep -Milliseconds 25 }
+    if ($Mutant) {
+      $definition = Get-TestDefinition (Join-Path $Fixture.orchestrator 'dispatch-ownership.ps1') 'Invoke-DispatchOwnershipScavenge'
+      $needle = 'if ($childState -notin @("live", "dead", "ambiguous") -or $childState -ne "dead") {'
+      Assert-True (($definition.Split(@($needle),[StringSplitOptions]::None)).Count -eq 2) 'interruption reclaim mutant changes exactly one live-child guard'
+      $replacement = $needle + "`r`n" + '        Remove-Item -LiteralPath $candidate.FullName -Force'
+      . ([scriptblock]::Create($definition.Replace($needle, $replacement)))
+    }
+    $scavenge = Invoke-DispatchOwnershipScavenge $Fixture.runtime $testRoot
+    Write-Output "INTERRUPTION_SCAVENGE mutant=$Mutant removed=$($scavenge.removed) preserved=$($scavenge.preserved) rejected=$($scavenge.rejected)"
+    $failure = $null
+    try { Assert-True ($scavenge.removed -eq 0 -and $scavenge.preserved -eq 1 -and (Test-Path -LiteralPath $recordPath) -and [IO.File]::ReadAllText($recordPath) -ceq $ownerBefore) 'interruption preserves exact dispatch ownership for recovery' } catch { $failure = $_.Exception.Message }
+    if ($Mutant) {
+      Assert-True ($failure -like '*ASSERTION FAILED: interruption preserves exact dispatch ownership for recovery*') 'MUTANT interruption-reclaims-owner reaches its named preservation assertion'
+      Write-Output 'PASS MUTANT interruption-reclaims-owner killed at interruption preserves exact dispatch ownership for recovery'
+      return
+    }
+    if ($failure) { throw $failure }
+    $observation = & (Join-Path $Fixture.orchestrator 'lane-stall-watchdog.ps1') -Label $label -RuntimeRoot $Fixture.runtime -HistoryPath $historyPath | ConvertFrom-Json -DateKind String
+    Assert-True ($observation.status -ceq 'LIVE_SLOW' -and $observation.relaunch -eq $false) 'interruption watchdog neither kills nor relaunches a live supervised gate'
     $pending = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json -DateKind String
     Assert-True ($pending.status -ceq 'pending' -and $pending.dispatchReleased -eq $false) 'interruption remains incomplete and never publishes PASS'
     Assert-True ((Get-Process -Id ([int]$slotOwner.pid) -ErrorAction SilentlyContinue) -and (Get-Process -Id ([int]$ready.pid) -ErrorAction SilentlyContinue)) 'interruption kills neither verifier nor native child'
-    Assert-True ((Test-Path -LiteralPath $recordPath) -and ((Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).state -ceq 'started')) 'interruption preserves dispatch ownership for recovery'
-    Assert-True (@(Get-ChildItem -LiteralPath $Fixture.runtime -Filter 'dispatch-launch-*.json' -File).Count -eq 1 -and -not (Get-ChildItem -LiteralPath $Fixture.runtime -Filter '*relaunch*' -File -ErrorAction SilentlyContinue)) 'interruption neither reclaims nor relaunches and consumes no attempt'
+    Assert-True ([IO.File]::ReadAllText($historyPath) -ceq $historyBefore) 'interruption consumes no attempt and appends no relaunch row'
+    Write-Text (Join-Path $Fixture.runtime 'fixture-child-release.txt') 'release'
+    $supervisorProcess.WaitForExit(); $supervisorProcess.Dispose(); $supervisorProcess = $null
+    $verifierProcess.WaitForExit(); $nativeProcess.WaitForExit()
+    $completed = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json -DateKind String
+    Assert-True ($completed.status -ceq 'verifier-passed' -and $completed.dispatchReleased -eq $false) 'interrupted host never promotes a late verifier return to PASS'
+    $recovery = Invoke-DispatchOwnershipScavenge $Fixture.runtime $testRoot
+    Assert-True ($recovery.removed -eq 1 -and -not (Test-Path -LiteralPath $recordPath) -and -not (Test-Path -LiteralPath (Join-Path $Fixture.runtime 'verify-lock.d'))) 'proven-dead recovery releases exact ownership and slot without PASS'
+    Assert-True ([IO.File]::ReadAllText($historyPath) -ceq $historyBefore) 'proven-dead recovery consumes no attempt'
     Write-Output 'PASS AC4 interruption preserves pending result, verifier/native child, ownership and attempt'
   } finally {
     $release = Join-Path $Fixture.runtime 'fixture-child-release.txt'; Write-Text $release 'release'
-    if ($runner.process) { $runner.process.WaitForExit(30000) | Out-Null }
-    foreach ($processId in @($record.childPid,$slotOwner.pid,$ready.pid)) { if ($processId) { $p=Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue; if ($p) { try { $p.Kill(); $p.WaitForExit() } catch {} } } }
+    if ($supervisorProcess) { $supervisorProcess.WaitForExit() }
+    foreach ($process in @($hostProcess,$supervisorProcess,$verifierProcess,$nativeProcess)) { Stop-ExactStartedProcess $process }
+    if ($recordPath -and (Test-Path -LiteralPath $recordPath)) { Remove-Item -LiteralPath $recordPath -Force }
   }
 }
 function New-Mutant([string]$Source, [string]$Name, $Fixture) {
@@ -207,31 +225,59 @@ function Test-VerifierOverrideGuardMutant($Fixture) {
   Assert-True ($failure -like '*production long-gate scripts expose a verifier override*') 'MUTANT verifier-override reaches named guard assertion'
   Write-Output 'PASS MUTANT verifier-override killed at its named guard assertion'
 }
-function Assert-SharedCensusClockContract([string]$Path) {
+function Get-TestDefinition([string]$Path, [string]$Name) {
   $tokens = $null; $errors = $null
   $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
   Assert-True ($errors.Count -eq 0) 'shared census clock source parses without errors'
-  $assignments = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
-  $budget = @($assignments | Where-Object { $_.Left.ToString() -ceq '$script:heavyAdmissionBudget' })[0]
-  $evaluation = @($assignments | Where-Object { $_.Left.ToString() -ceq '$evaluation' -and $_.Right.ToString() -like '*deadline=90000*' })[0]
-  Assert-True ($budget -and @($budget.Right.Expression.KeyValuePairs | Where-Object { $_ -and $_.Item1 -and $_.Item2 -and $_.Item1.ToString() -ceq 'deadline' -and $_.Item2.ToString() -ceq '210000' }).Count -eq 1) 'shared admission census clock remains 210 seconds'
-  Assert-True ($evaluation -and @($evaluation.Right.Expression.KeyValuePairs | Where-Object { $_ -and $_.Item1 -and $_.Item2 -and $_.Item1.ToString() -ceq 'deadline' -and $_.Item2.ToString() -ceq '90000' }).Count -eq 1) 'shared evaluation census clock remains 90 seconds'
-  $boundedAttempts = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ForStatementAst] -and $node.Condition -and $node.Condition.ToString() -like '*$attempt -lt 3*' }, $true))
-  Assert-True ($boundedAttempts.Count -eq 1) 'shared census re-observation remains bounded to three attempts'
-  $boundedObservations = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -gt 0 -and $node.Clauses[0].Item1 -and $node.Clauses[0].Item1.ToString() -like '*observations -ge 6*' }, $true))
-  Assert-True ($boundedObservations.Count -eq 1) 'shared census observation cap remains six with reserved fences'
+  $definitions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $Name }, $true))
+  Assert-True ($definitions.Count -eq 1) "test extraction finds exactly one $Name"
+  return $definitions[0].Extent.Text
+}
+function Assert-SharedCensusClockContract([string]$Path) {
+  $tokens = $null; $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+  $budget = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.ToString() -ceq '$script:heavyAdmissionBudget' }, $true))
+  Assert-True ($errors.Count -eq 0 -and $budget.Count -eq 1) 'shared admission budget initializer extracts exactly once'
+  function New-FrozenCensusClock { return [pscustomobject]@{ ElapsedMilliseconds = 0 } }
+  $clockCall = '[Diagnostics.Stopwatch]::StartNew()'
+  . ([scriptblock]::Create($budget[0].Extent.Text.Replace($clockCall, '(New-FrozenCensusClock)')))
+  Assert-True ($script:heavyAdmissionBudget.deadline -eq 210000) 'shared admission census clock remains 210 seconds'
+  $definition = Get-TestDefinition $Path 'Get-HeavyCallerBinding'
+  . ([scriptblock]::Create($definition.Replace($clockCall, '(New-FrozenCensusClock)')))
+  $observed = [Collections.Generic.List[object]]::new()
+  function Get-HeavyCallerObservation($Evaluation, $Remaining) {
+    $observed.Add([pscustomobject]@{deadline=$Evaluation.deadline;remaining=$Remaining})
+    return [pscustomobject]@{Reason='dispatch census changed';Retryable=$true;Record=$null}
+  }
+  $script:heavyAdmissionBudget.fences = 3
+  $binding = Get-HeavyCallerBinding
+  Assert-True ($observed.Count -gt 0 -and $observed[0].deadline -eq 90000 -and $observed[0].remaining -eq 90000) 'shared evaluation census clock remains 90 seconds'
+  Assert-True ($observed.Count -eq 3 -and $binding.Reason -ceq 'dispatch census changed') 'shared census re-observation remains bounded to three attempts'
+  $script:heavyAdmissionBudget.observations = 5; $observed.Clear()
+  $binding = Get-HeavyCallerBinding
+  Assert-True ($observed.Count -eq 1 -and $script:heavyAdmissionBudget.observations -eq 6 -and $binding.Reason -ceq 'dispatch census evaluation exhausted') 'shared census observation cap remains six'
+  $script:heavyAdmissionBudget.observations = 4; $script:heavyAdmissionBudget.fences = 1; $observed.Clear()
+  $binding = Get-HeavyCallerBinding
+  Assert-True ($observed.Count -eq 0 -and $binding.Reason -ceq 'dispatch census evaluation exhausted') 'shared census preserves remaining admission fences'
 }
 function Test-ClockContractMutant($Fixture) {
   $sourcePath = Join-Path $Fixture.orchestrator 'invoke-heavy-verifier.ps1'
   $source = [IO.File]::ReadAllText($sourcePath)
-  $needle = 'deadline=90000'
-  Assert-True (([regex]::Matches($source, [regex]::Escape($needle))).Count -eq 1) 'clock mutant has one evaluation deadline seam'
   $mutantPath = Join-Path $Fixture.orchestrator 'invoke-heavy-verifier-clocks-mutant.ps1'
-  Write-Text $mutantPath ($source.Replace($needle, 'deadline=90001'))
-  $failure = $null
-  try { Assert-SharedCensusClockContract $mutantPath } catch { $failure = $_.Exception.Message }
-  Assert-True ($failure -like '*shared evaluation census clock remains 90 seconds*') 'MUTANT clocks reaches its named clock assertion'
-  Write-Output 'PASS MUTANT clocks killed at its named clock assertion'
+  foreach ($mutation in @(
+    @('deadline=210000; observations=0', 'deadline=210001; observations=0', 'shared admission census clock remains 210 seconds'),
+    @('deadline=90000', 'deadline=90001', 'shared evaluation census clock remains 90 seconds'),
+    @('$attempt -lt 3', '$attempt -lt 4', 'shared census re-observation remains bounded to three attempts'),
+    @('$admission.observations -ge 6', '$admission.observations -ge 7', 'shared census observation cap remains six'),
+    @('3 - $admission.fences', '2 - $admission.fences', 'shared census preserves remaining admission fences')
+  )) {
+    Assert-True (([regex]::Matches($source, [regex]::Escape($mutation[0]))).Count -eq 1) 'clock mutant has exactly one load-bearing seam'
+    Write-Text $mutantPath ($source.Replace($mutation[0], $mutation[1]))
+    $failure = $null
+    try { Assert-SharedCensusClockContract $mutantPath } catch { $failure = $_.Exception.Message }
+    Assert-True ($failure -ceq "ASSERTION FAILED: $($mutation[2])") "MUTANT clocks reaches $($mutation[2])"
+    Write-Output "PASS MUTANT clocks killed at $($mutation[2])"
+  }
 }
 
 $controllerRoot = Split-Path -Parent $PSScriptRoot
@@ -241,7 +287,6 @@ New-Item -ItemType Directory -Path $testRoot, $fixtureRoot | Out-Null
 $fixtureOrchestrator = New-ControllerScriptFixture $fixtureRoot
 $productionDispatch = Join-Path $fixtureOrchestrator 'dispatch-lane.ps1'
 $productionSupervisor = Join-Path $fixtureOrchestrator 'long-product-gate.ps1'
-$sourceSupervisor = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'long-product-gate.ps1'))
 Assert-NoVerifierOverride @((Join-Path $PSScriptRoot 'dispatch-lane.ps1'), (Join-Path $PSScriptRoot 'long-product-gate.ps1'))
 $guardOutput = & git -C $controllerRoot grep -n -E 'LongProductGateTestVerifierPath|TestVerifierPath|TestMode' -- .orchestrator/dispatch-lane.ps1 .orchestrator/long-product-gate.ps1 2>&1
 Assert-True ($LASTEXITCODE -eq 1 -and -not $guardOutput) 'git grep found a production verifier override'
@@ -269,7 +314,7 @@ try {
     $dispatch = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $dispatchArguments -RedirectStandardOutput $dispatchOut -RedirectStandardError $dispatchErr -WindowStyle Hidden -PassThru
     try { Wait-ForPathOrExit $ackPath $dispatch 'normal dispatch acknowledgement was not published' } catch { Write-Output ("DISPATCH_STDERR " + (Read-SharedText $dispatchErr)); Write-Output ("DISPATCH_STDOUT " + (Read-SharedText $dispatchOut)); throw }
     Assert-True (-not $dispatch.HasExited) 'normal dispatch remained alive for the supervisor handoff'
-    $ack = Get-Content -LiteralPath $ackPath -Raw | ConvertFrom-Json -DateKind String
+    $ack = Wait-ProcessPath $ackPath $dispatch 'normal dispatch acknowledgement was not complete'
     Assert-True ($ack.longProductGate.schema -ceq 'long-product-gate/v1' -and $ack.longProductGate.gate -ceq 'test:scripts' -and $ack.longProductGate.hostWatchSeconds -eq 900 -and $ack.longProductGate.resultPath -like '*long-product-gate-*.json') 'acknowledgement binds the fixed gate, 900-second host watch, and exact launch result'
     $readyPath = Join-Path $fixture.runtime 'fixture-child-ready.txt'; $releasePath = Join-Path $fixture.runtime 'fixture-child-release.txt'
     try { Wait-ForPathOrExit $readyPath $dispatch 'real verifier native child did not publish its barrier' } catch {
@@ -279,7 +324,12 @@ try {
     }
     $lockOwnerPath = Join-Path $fixture.runtime 'verify-lock.d/owner.json'
     Wait-ForPathOrExit $lockOwnerPath $dispatch 'real verifier did not publish its product-slot owner'
-    $slotOwner = Get-Content -LiteralPath $lockOwnerPath -Raw | ConvertFrom-Json -DateKind String
+    do {
+      $slotOwner = Get-Content -LiteralPath $lockOwnerPath -Raw | ConvertFrom-Json -DateKind String
+      if ($slotOwner.state -ceq 'started') { break }
+      if ($dispatch.HasExited) { throw 'real verifier did not publish its started product-slot owner' }
+      Start-Sleep -Milliseconds 25
+    } while ($true)
     $readyRecord = Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json -DateKind String
     Write-Output "REAL_SLOT gate=$($slotOwner.gate) pid=$($slotOwner.pid) childPid=$($slotOwner.childPid) nativePid=$($readyRecord.pid)"
     Assert-True ($slotOwner.gate -ceq 'test:scripts' -and $slotOwner.childPid -eq $readyRecord.pid) 'real verifier owns the fixture product slot and native child'
@@ -299,7 +349,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $fixture.runtime 'verify-lock.d'))) 'real verifier releases the fixture product slot'
     Assert-True (@(Get-ChildItem -LiteralPath $fixture.runtime -Filter 'dispatch-launch-*.json' -File).Count -eq 0) 'normal dispatch leaves no retained owner after result pass'
     Write-Output 'PASS AC1 normal dispatch supervisor ancestry handoff and AC3 atomic passed result'
-    Invoke-InterruptionCase $fixture $supervisor $source
+    Invoke-InterruptionCase $fixture
 
     $id = [guid]::NewGuid().ToString(); $result = Join-Path $fixture.runtime "long-product-gate-$id.json"
     $directArgs = @('-NoProfile','-NonInteractive','-File',$supervisor,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-23','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
@@ -315,6 +365,11 @@ try {
     Write-Output 'PASS AC3 stale result rejected and foreign bytes preserved'
   }
   if ($runMutants) {
+    if (-not $Mutant) {
+      Test-VerifierOverrideGuardMutant $fixture
+      Test-ClockContractMutant $fixture
+      Invoke-InterruptionCase $fixture -Mutant
+    }
     if ($Mutant -ceq 'verifier-override') {
       Test-VerifierOverrideGuardMutant $fixture
       return
@@ -323,8 +378,8 @@ try {
       Test-ClockContractMutant $fixture
       return
     }
-    if ($Mutant -ceq 'interruption-kills-child') {
-      Invoke-InterruptionCase $fixture $supervisor $source -Mutant
+    if ($Mutant -ceq 'interruption-reclaims-owner') {
+      Invoke-InterruptionCase $fixture -Mutant
       return
     }
     $mutantNames = if ($Mutant) { @($Mutant) } else { @('direct-host','stale-result') }
@@ -332,16 +387,17 @@ try {
       $mutantPath = New-Mutant $source $mutantName $fixture
       $id = [guid]::NewGuid().ToString(); $result = Join-Path $fixture.runtime "long-product-gate-$id.json"
       if ($mutantName -ceq 'direct-host') {
-        $mutantArgs = @('-NoProfile','-NonInteractive','-File',$mutantPath,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-230','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
+        Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
+        $mutantArgs = @('-NoProfile','-NonInteractive','-File',$mutantPath,'-RuntimeRoot',$fixture.runtime,'-LaunchId',$id,'-Worktree',$fixture.worktree,'-Lane','lane-23','-Branch',$fixture.branch,'-ClaimedHead',$fixture.head,'-ResultPath',$result)
         $mutantOut = Join-Path $fixture.root 'mutant.out'; $mutantErr = Join-Path $fixture.root 'mutant.err'
         $mutantProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $mutantArgs -RedirectStandardOutput $mutantOut -RedirectStandardError $mutantErr -WindowStyle Hidden -PassThru
         $mutantProcess.WaitForExit()
         Write-Output "MUTANT_OBSERVED direct-host exit=$($mutantProcess.ExitCode) stderr=$([IO.File]::ReadAllText($mutantErr))"
         $failure = $null
-        $mutantResult = if (Test-Path -LiteralPath $result -PathType Leaf) { Get-Content -LiteralPath $result -Raw | ConvertFrom-Json -DateKind String } else { $null }
-        if ($mutantResult) { Write-Output "MUTANT_RESULT direct-host status=$($mutantResult.status) exit=$($mutantResult.exit)" }
-        Assert-True ($mutantProcess.ExitCode -ne 0 -and $mutantResult -and $mutantResult.status -ceq 'incomplete' -and $mutantResult.dispatchReleased -eq $false) 'MUTANT direct-host fails at admission after exact-owner bypass'
+        try { Assert-True ($mutantProcess.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $result)) 'direct host supervisor refuses without the exact dispatch owner' } catch { $failure = $_.Exception.Message }
+        Assert-True ($failure -ceq 'ASSERTION FAILED: direct host supervisor refuses without the exact dispatch owner') 'MUTANT direct-host reaches its named assertion'
       } else {
+        Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
         $before = '{"schema":"foreign-result/v1","status":"passed"}'
         $exit = Invoke-LongGateProcess $fixture $mutantPath $id $result -Preseed
         Write-Output "MUTANT_OBSERVED stale-result exit=$exit bytes=$([IO.File]::ReadAllText($result))"
@@ -353,6 +409,10 @@ try {
     }
   }
 } finally {
+  if ($dispatch -and -not $dispatch.HasExited) {
+    Write-Text (Join-Path $fixture.runtime 'fixture-child-release.txt') 'release'
+    $dispatch.WaitForExit()
+  }
   $fixturePath = [IO.Path]::GetFullPath($fixtureRoot)
   $tempPath = [IO.Path]::GetFullPath($testRoot)
   if ($fixturePath.StartsWith(([IO.Path]::GetFullPath($controllerRoot) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $fixturePath -Recurse -Force -ErrorAction SilentlyContinue }
