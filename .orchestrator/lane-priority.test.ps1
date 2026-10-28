@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('','no-priority','priority-at-top','throw-on-bad-config','missing-file-normal','ignore-override','ignore-file','bad-schema','bad-class','array-shape','schema-type','class-type')][string]$Mutant='')
+param([ValidateSet('','no-priority','priority-at-top','throw-on-bad-config','missing-file-normal','ignore-override','ignore-file','bad-schema','bad-class','array-shape','schema-type','class-type','object-type')][string]$Mutant='')
 $ErrorActionPreference='Stop'
 function Assert-True([bool]$Value,[string]$Name) { if(-not $Value){throw "ASSERTION FAILED: $Name"} }
 function Write-Text([string]$Path,[string]$Value) { [IO.File]::WriteAllText($Path,$Value,[Text.UTF8Encoding]::new($false)) }
@@ -59,8 +59,9 @@ exit 0
     'ignore-file' {
       $source=Replace-Once $source "return @{ priorityClass=[string]`$configuration.priorityClass; prioritySource='file' }" "return @{ priorityClass='BelowNormal'; prioritySource='file' }"
     }
-    'bad-schema' { $source=Replace-Once $source "if (`$configuration.schemaVersion -isnot [string] -or `$configuration.schemaVersion -cne 'lane-priority/v1')" 'if ($false)' }
+    'bad-schema' { $source=Replace-Once $source "if (`$configuration -isnot [System.Management.Automation.PSCustomObject] -or `$configuration.schemaVersion -isnot [string] -or `$configuration.schemaVersion -cne 'lane-priority/v1')" 'if ($false)' }
     'array-shape' { $source=Replace-Once $source '-NoEnumerate ' '' }
+    'object-type' { $source=Replace-Once $source '$configuration -isnot [System.Management.Automation.PSCustomObject] -or ' '' }
     'schema-type' { $source=Replace-Once $source '$configuration.schemaVersion -isnot [string] -or ' '' }
     'class-type' { $source=Replace-Once $source '$configuration.priorityClass -isnot [string] -or ' '' }
     'bad-class' {
@@ -105,7 +106,7 @@ exit $LASTEXITCODE
     @{name='json';config='{';expected='Normal';source='fallback:unreadable-or-invalid-json'},
     @{name='unreadable';config='{"schemaVersion":"lane-priority/v1","priorityClass":"Idle"}';locked=$true;expected='Normal';source='fallback:unreadable-or-invalid-json'}
   )
-  $mutantCase=@{'no-priority'='default';'priority-at-top'='default';'throw-on-bad-config'='unreadable';'missing-file-normal'='default';'ignore-override'='override';'ignore-file'='idle';'bad-schema'='schema';'bad-class'='high';'array-shape'='array';'schema-type'='schema-array';'class-type'='class-array'}
+  $mutantCase=@{'no-priority'='default';'priority-at-top'='default';'throw-on-bad-config'='unreadable';'missing-file-normal'='default';'ignore-override'='override';'ignore-file'='idle';'bad-schema'='schema';'bad-class'='high';'array-shape'='array';'schema-type'='schema-array';'class-type'='class-array';'object-type'='array'}
   if($Mutant){$cases=@($cases | Where-Object name -EQ $mutantCase[$Mutant])}
   foreach($case in $cases){
     $config=Join-Path $runtime 'lane-priority.json';$observed=Join-Path $runtime 'observed.json';$probe=Join-Path $runtime 'prelaunch.jsonl'
