@@ -22,8 +22,12 @@ publication work retain the launcher's Normal priority. Windows children
 inherit BelowNormal or Idle unless they explicitly choose another class.
 The agent, its tool shells, Node processes and heavy-verifier children inherit
 the selection. The `-LongProductGate` supervisor uses the same launch point;
-its verifier and heavy work children also inherit it. Admission inside that
-descendant verifier inherits too; no census deadline or admission rule changes.
+its verifier and heavy work children also inherit it. A heavy verifier launched
+inside a lane temporarily raises only its caller-eligibility admission census
+(live dispatch ownership and ancestry) to `Normal`, then restores the inherited
+lane class before its gate or verifier child starts. If that raise fails, it
+keeps the inherited class, writes one stderr diagnostic, and does not refuse
+admission for that reason. No census deadline or admission rule changes.
 The verifier job object sets KillOnClose, not scheduling priority.
 
 The independent orchestrator cycle, reclaimer, stall watchdog, landing

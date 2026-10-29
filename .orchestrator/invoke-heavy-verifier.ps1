@@ -116,6 +116,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:heavyAdmissionBudget = @{ watch=[Diagnostics.Stopwatch]::StartNew(); deadline=210000; observations=0; fences=0 }
+$script:heavyAdmissionPriorityRaised = $false
+$script:heavyAdmissionPriorityClass = $null
+$script:heavyAdmissionPriorityFailureReported = $false
 $isAttachedAdmission = $PSCmdlet.ParameterSetName -ceq "Attach"
 $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
@@ -169,6 +172,50 @@ $admissionRoot = $null
 $attachedDeadTreeProven = $false
 $admissionCleanupDiagnostic = 'not-attempted'
 $script:quarantineCompleted = $false
+
+function Enter-HeavyAdmissionPriority {
+  if (-not $IsWindows) { return }
+  $process = $null
+  try {
+    $process = [Diagnostics.Process]::GetCurrentProcess()
+    $script:heavyAdmissionPriorityClass = $process.PriorityClass
+    if ($process.PriorityClass -notin @([Diagnostics.ProcessPriorityClass]::BelowNormal, [Diagnostics.ProcessPriorityClass]::Idle)) { return }
+    try {
+      $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
+      $script:heavyAdmissionPriorityRaised = $true
+    } catch {
+      if (-not $script:heavyAdmissionPriorityFailureReported) {
+        [Console]::Error.WriteLine("heavy-verifier: admission priority raise failed; continuing at inherited class: $($_.Exception.Message)")
+        $script:heavyAdmissionPriorityFailureReported = $true
+      }
+    }
+  } catch {
+    if (-not $script:heavyAdmissionPriorityFailureReported) {
+      [Console]::Error.WriteLine("heavy-verifier: admission priority raise failed; continuing at inherited class: $($_.Exception.Message)")
+      $script:heavyAdmissionPriorityFailureReported = $true
+    }
+  } finally {
+    if ($process) { $process.Dispose() }
+  }
+}
+
+function Exit-HeavyAdmissionPriority {
+  if (-not $script:heavyAdmissionPriorityRaised) { return }
+  $process = $null
+  try {
+    $process = [Diagnostics.Process]::GetCurrentProcess()
+    $process.PriorityClass = $script:heavyAdmissionPriorityClass
+  } finally {
+    if ($process) { $process.Dispose() }
+    $script:heavyAdmissionPriorityRaised = $false
+  }
+}
+
+function Invoke-HeavyAdmissionCensus([scriptblock]$Action) {
+  Enter-HeavyAdmissionPriority
+  try { & $Action }
+  finally { Exit-HeavyAdmissionPriority }
+}
 
 function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $null) {
   if (-not $isAttachedAdmission -or -not $admissionResultFull) { return }
@@ -1196,7 +1243,7 @@ function Assert-HeavyAdmissionAfterLock([bool]$LockCreated) {
 }
 try { . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') }
 catch { throw "heavy-verifier: caller eligibility: ownership reader unavailable: $($_.Exception.Message)" }
-$callerBinding = Assert-HeavyCallerEligibility
+$callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility }
 Assert-HostVerifierGitState
 if (($Gate -ceq 'test:e2e:suite') -ne $PSBoundParameters.ContainsKey('E2eSuite')) {
   throw 'heavy-verifier: test:e2e:suite requires one E2eSuite; other gates do not accept E2eSuite'
@@ -2818,7 +2865,7 @@ function Complete-NativeReconciliation($Record) {
   }
 }
 function Invoke-NativeLaunch {
-  $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+  $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
   if (Test-Path -LiteralPath $nativeEvidencePath) { throw 'native-db: correlation already consumed' }
   $evidenceStream = [IO.File]::Open($nativeEvidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
   try {
@@ -3140,7 +3187,7 @@ try {
     Invoke-NativeLaunch
   } elseif ($isAttachedAdmission) {
     if ($nestedOwnerEligible) {
-      $nestedBinding = Assert-HeavyCallerEligibility $callerBinding
+      $nestedBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
       Start-NestedOwner $ownedRaw $GuardedPid $GuardedProcessStartUtc "attached" $nestedBinding
       $script:nestedTransport = New-NestedTransportDescriptor
     }
@@ -3270,7 +3317,7 @@ try {
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
-    $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+    $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
     if ($isTimedRoute -and $isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
       if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }
