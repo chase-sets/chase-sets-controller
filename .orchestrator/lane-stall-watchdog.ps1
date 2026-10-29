@@ -311,7 +311,9 @@ function Test-WatchdogEnvelopeFields($Value,[string[]]$Keys,[string]$ExpectedLab
 # Rows 9 (host) and 11/12 (review), integration lanes and off-slot routes keep
 # NO_QUALIFIED_FALLBACK. Policy slots on rows 7/14/15 are ordinary current
 # author slots; their reserve placement is mapped to override-Todd at runtime.
-function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext,$PoolStatus){
+# A bound launch (Get-WatchdogBoundLaunch) selects only the slot it was bound to,
+# under every guard here except pool exhaustion, which it never re-reads.
+function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext,$PoolStatus,$Bound=$null){
   if(-not$Implementation-or$null-ne$IntegrationContext-or$null-eq$Identity-or-not$Identity.current){return $null}
   $row=[int]$Spec.row
   if($row-lt1-or$row-gt15-or$row-in@(9,11,12)){return $null}
@@ -333,6 +335,7 @@ function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Impleme
     if(-not(Test-WatchdogCapacitySubstitution ([string]$Spec.harness) ([string]$Identity.family) ([string]$Spec.effort) $other ([string]$slot[0].Value.family) ([string]$slot[0].Value.effort))){continue}
     if(Test-PoolModelExhausted $PoolStatus $other $model){continue}
     $placement=if([string]$slot[0].Value.placement-ceq'reserve'){'override-Todd'}else{[string]$slot[0].Value.placement}
+    if($null-ne$Bound-and($Bound.harness-cne$other-or$Bound.model-cne$model-or$Bound.effort-cne[string]$slot[0].Value.effort-or$Bound.placement-cne$placement)){continue}
     return @($other,[string]$slot[0].Value.family,[string]$slot[0].Value.effort,$placement)
   }
   return $null
@@ -361,6 +364,23 @@ function Write-WatchdogPolicyMove([string]$Path,[System.Collections.Specialized.
   }
   try{$stored=Read-WatchdogPolicyMove $Path}catch{return $false}
   return @($Record.Keys|Where-Object{$stored.$_-cne[string]$Record[$_]}).Count-eq0
+}
+# A quota/session relaunch request that already started (its start acknowledgement
+# exists) or reserved a policy move for this exact source and start request is
+# bound to that configuration. Its next observation recovers it there and never
+# re-reads the pool: a later pool status is not a new routing decision (#237).
+# The bound values only select the route; the exact acknowledgement and
+# reservation checks below still validate it. An unreadable or foreign
+# reservation binds nothing and is refused by those checks as before.
+function Get-WatchdogBoundLaunch([string]$AckPath,[string]$MovePath,$Spec,[string]$SourceLabel,[string]$StartRequest){
+  if(Test-Path -LiteralPath $AckPath -PathType Leaf){
+    $ack=Get-Content -LiteralPath $AckPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    return [pscustomobject]@{source='acknowledgement';harness=[string]$ack.harness;model=[string]$ack.model;effort=[string]$ack.effort;placement=[string]$ack.placement}
+  }
+  if(-not(Test-Path -LiteralPath $MovePath -PathType Leaf)){return $null}
+  try{$move=Read-WatchdogPolicyMove $MovePath}catch{return $null}
+  if($move.attemptId-cne[string]$Spec.attemptId-or$move.sourceLaunchId-cne[string]$Spec.launchId-or$move.sourceLabel-cne$SourceLabel-or$move.startRequest-cne$StartRequest){return $null}
+  return [pscustomobject]@{source='reservation';harness=$move.harness;model=$move.model;effort=$move.effort;placement=$move.placement}
 }
 # A lineage predecessor must pass the closed envelope reader the current spec
 # passes, on its own fields, with timezone-bearing instants. Historical PIDs need
@@ -733,8 +753,19 @@ $policySelected=$false
 # routable; only then is it a capacity substitution under the closed table or the
 # row policy, never to a higher effort or model tier (#237).
 $relaunchKind='same-config'
-$poolStatus=if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){Read-PoolStatus $PoolStatusFixturePath}else{$null}
-if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')-and-not(Test-WatchdogSourceRoutable $routingAuthority $spec $poolStatus)){
+$startRequest = if ($freshResume) { Get-RebaseRecordIdentity $freshResume } else { $observationIdentity }
+$startHead = if ($freshResume) { $freshResume.state.stoppedHead } else { [string]$spec.head }
+$ackPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$startRequest.json"
+$policyMovePath=Join-Path $runtimeFull "watchdog-policy-move-$($spec.launchId).json"
+# Recover a launch this observation already started or reserved before any new
+# availability decision. A substitution always changes provider, so a bound
+# launch on the source provider is the same-configuration retry; one on the
+# other provider re-selects only its own entry or slot, with no pool read.
+$quotaDeath=$signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')
+$boundLaunch=if($quotaDeath){Get-WatchdogBoundLaunch $ackPath $policyMovePath $spec $Label $startRequest}else{$null}
+$poolStatus=if($quotaDeath-and$null-eq$boundLaunch){Read-PoolStatus $PoolStatusFixturePath}else{$null}
+$substitute=if(-not$quotaDeath){$false}elseif($null-ne$boundLaunch){$boundLaunch.harness-cne[string]$spec.harness}else{-not(Test-WatchdogSourceRoutable $routingAuthority $spec $poolStatus)}
+if($substitute){
   $relaunchKind='capacity-substitution'
   # Every entry moves to the other provider at the same effort and an equal or
   # lower tier. Same-provider moves and raises (luna->sol, sol medium->high,
@@ -753,7 +784,7 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')-and-not(Test-WatchdogSourceR
   # any relaunch count so retained lanes can cross to today's slot once.
   $policyFallback=$null
   if(-not$fallback.ContainsKey($routeKey)){
-    $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null}) $poolStatus
+    $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null}) $poolStatus $boundLaunch
     if($null-ne$policyFallback){$fallback[$routeKey]=$policyFallback;$policySelected=$true}
   }
   $policyMoveConsumed=$false
@@ -794,12 +825,8 @@ if(-not $freshResume){
     $nextRouting=$null
   }
 }
-$startRequest = if ($freshResume) { Get-RebaseRecordIdentity $freshResume } else { $observationIdentity }
-$startHead = if ($freshResume) { $freshResume.state.stoppedHead } else { [string]$spec.head }
-$ackPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$startRequest.json"
 # A policy move's reservation is reusable only by the exact source, request and
 # target configuration; a conflicting or unreadable reservation refuses.
-$policyMovePath=Join-Path $runtimeFull "watchdog-policy-move-$($spec.launchId).json"
 $priorMove=$null
 if($policySelected-and(Test-Path -LiteralPath $policyMovePath)){
   try{$priorMove=Read-WatchdogPolicyMove $policyMovePath}catch{& $refuseNoFallback;return}

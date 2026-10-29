@@ -965,6 +965,50 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   # WATCHDOG_CAPACITY_SUBSTITUTION row), taking a retained table entry exactly, or
   # closes NO_QUALIFIED_FALLBACK with no launch. The tiers here are the test's own.
   function Test-QuotaNoEscalation {
+    # #237 replay: a relaunch that started (its start acknowledgement exists) but
+    # whose relaunch row was never appended, because the watchdog stopped between
+    # the two, is recovered on the configuration it started, whatever the pool
+    # status reads at the next observation of the same source. It is never a new
+    # routing decision, so no second launch and no NO_QUALIFIED_FALLBACK.
+    foreach($replay in @(
+      @{name='row4-ready-then-exhausted';row=4;first='ready';second='source-exhausted';target='gpt-6.1-sol';kind='same-config';outcome='WATCHDOG_RELAUNCH'},
+      @{name='row4-exhausted-then-ready';row=4;first='source-exhausted';second='ready';target='claude-opus-5-5';kind='capacity-substitution';outcome='WATCHDOG_CAPACITY_SUBSTITUTION'},
+      @{name='row7-ready-then-exhausted';row=7;first='ready';second='source-exhausted';target='gpt-6.1-sol';kind='same-config';outcome='WATCHDOG_RELAUNCH'})){
+      $item=New-Spec "ne-replay-$($replay.name)" 'gpt-6.1-sol' high 0 $replay.row provisional;Set-Content $item.error 'provider quota exceeded'
+      $script:poolScenario=$replay.first
+      try{$before=Get-CallCount;$first=Invoke-Watchdog $item "$($item.spec.label)-first"}finally{$script:poolScenario='source-exhausted'}
+      Assert-True ($first.status-ceq'RELAUNCHED'-and$first.model-ceq$replay.target-and$first.relaunchKind-ceq$replay.kind-and(Get-CallCount)-eq($before+1)) "#237 replay $($replay.name) first observation did not launch $($replay.target)"
+      # Drop only this launch's relaunch row; its start acknowledgement stays.
+      $lines=[Collections.Generic.List[string]]::new([string[]][IO.File]::ReadAllLines($history))
+      $last=$lines[$lines.Count-1]|ConvertFrom-Json -DateKind String
+      Assert-True ($last.kind-ceq'dispatch'-and$last.lane-ceq$first.label-and$last.outcome-ceq$replay.outcome) "#237 replay $($replay.name) relaunch row not found"
+      $lines.RemoveAt($lines.Count-1);[IO.File]::WriteAllText($history,($lines-join"`n")+"`n",[Text.UTF8Encoding]::new($false))
+      $script:poolScenario=$replay.second
+      try{$before=Get-CallCount;$second=Invoke-Watchdog $item "$($item.spec.label)-replay"}catch{$second=[pscustomobject]@{status="THROW $($_.Exception.Message)"}}finally{$script:poolScenario='source-exhausted'}
+      $row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+      Assert-True ($second.status-ceq'RELAUNCHED'-and$second.label-ceq$first.label-and$second.launchId-ceq$first.launchId-and$second.harness-ceq$first.harness-and$second.model-ceq$first.model-and$second.effort-ceq$first.effort-and$second.placement-ceq$first.placement-and$second.relaunchCount-eq$first.relaunchCount-and$second.relaunchKind-ceq$replay.kind-and(Get-CallCount)-eq$before) "#237 replay $($replay.name) did not recover the acknowledged launch: $($second.status)"
+      Assert-True ($row.kind-ceq'dispatch'-and$row.lane-ceq$first.label-and$row.model-ceq$first.model-and$row.effort-ceq$first.effort-and$row.relaunchCount-eq$first.relaunchCount-and$row.outcome-ceq$replay.outcome) "#237 replay $($replay.name) relaunch row lost the bound launch"
+    }
+    # A policy move reserves its target before dispatch. When that dispatch has not
+    # acknowledged, the next observation dispatches the reserved target under the
+    # reserved label, whether the source now reads routable or the target exhausted.
+    foreach($pending in @(
+      @{name='source-ready';routes=@(,@('claude','claude-opus-5-5','ready'))},
+      @{name='target-exhausted';routes=@(@('claude','claude-opus-5-5','blocked'),@('codex','gpt-6.1-sol','blocked'))})){
+      $item=New-Spec "ne-pending-$($pending.name)" 'claude-opus-5-5' high 0 8 provisional;Set-Content $item.error 'session limit reached'
+      $env:SYNTHETIC_WATCHDOG_FAIL_LABEL=$item.spec.label
+      try{$before=Get-CallCount;$first=Invoke-Watchdog $item "$($item.spec.label)-first"}finally{Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL -ErrorAction SilentlyContinue}
+      $reservationPath=Join-Path $runtime "watchdog-policy-move-$($item.spec.launchId).json"
+      Assert-True ($first.status-ceq'LAUNCH_FAILED'-and(Get-CallCount)-eq($before+1)-and(Test-Path -LiteralPath $reservationPath -PathType Leaf)) "#237 pending $($pending.name) first observation did not reserve a policy move: $($first.status)"
+      $reservation=Get-Content -LiteralPath $reservationPath -Raw|ConvertFrom-Json -DateKind String
+      Assert-True ($reservation.harness-ceq'codex'-and$reservation.model-ceq'gpt-6.1-sol'-and$reservation.effort-ceq'high'-and$reservation.placement-ceq'provisional') "#237 pending $($pending.name) reserved the wrong target"
+      $script:poolStatusPath=New-PoolStatus "ne-pending-$($pending.name)" $pending.routes
+      try{$before=Get-CallCount;$second=Invoke-Watchdog $item "$($item.spec.label)-replay"}catch{$second=[pscustomobject]@{status="THROW $($_.Exception.Message)"}}finally{$script:poolStatusPath=$null}
+      $row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+      Assert-True ($second.status-ceq'RELAUNCHED'-and$second.label-ceq$reservation.targetLabel-and$second.harness-ceq'codex'-and$second.model-ceq'gpt-6.1-sol'-and$second.effort-ceq'high'-and$second.relaunchKind-ceq'capacity-substitution'-and(Get-CallCount)-eq($before+1)-and(Get-Content $calls -Tail 1)-clike"$($reservation.targetLabel)|codex|gpt-6.1-sol|high|8|provisional|*") "#237 pending $($pending.name) did not dispatch its reserved target: $($second.status)"
+      Assert-True ($row.kind-ceq'dispatch'-and$row.lane-ceq$reservation.targetLabel-and$row.outcome-ceq'WATCHDOG_CAPACITY_SUBSTITUTION') "#237 pending $($pending.name) relaunch row lost the reserved target"
+    }
+    Write-Output 'PASS #237 replay: acknowledged launches recovered across pool ready/exhausted in both directions and past an early refusal; pending policy-move reservations dispatched as reserved'
     $tier=@{luna=1;haiku=1;sonnet=2;sol=3;opus=3;astra=4;fable=4};$rank=@{low=1;medium=2;high=3;xhigh=4;max=5}
     $registry=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json') -Raw|ConvertFrom-Json -DateKind String
     $policy=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json') -Raw|ConvertFrom-Json -DateKind String

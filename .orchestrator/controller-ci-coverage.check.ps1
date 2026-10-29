@@ -511,15 +511,16 @@ function Assert-CarrierOwnerMap([object[]]$Entries,$Expected,[string[]]$Parts){
 # Keep the older six-suite conservation base above unchanged.
 # The watchdog baseline includes the reviewed AC5 host-hold cases from facc7e7.
 # #237 moves it to the no-escalation baseline: quota/session raises removed and
-# the watchdog-no-escalation part added.
+# the watchdog-no-escalation part added. Its repair adds the bound-launch
+# replay regressions (acknowledged and reserved relaunches across pool changes).
 $carrierBaselineBlobs=@{
   'rebase-integration.test.ps1'='0a3350f8a51a32c1b9ee16447c1e6829f10a41c1'
-  'lane-stall-watchdog.test.ps1'='103667e23a4931aa44ef387feca501a8fe15e0c8'
+  'lane-stall-watchdog.test.ps1'='fd0d28b18f1d5af3d17d6ee34442744696cb59e3'
   'interrupted-integration-test-support.ps1'='371e2aa2dcbdeb34b5568878c96811eea4ba99b1'
 }
 $carrierOwnerCounts=@{
   rebase=@{'rebase-foundation'=23;'rebase-historical'=1;'rebase-ordinary-live'=1;'rebase-ordinary-retry'=1;'rebase-successor'=1;'rebase-publication'=1;'rebase-amend'=1}
-  watchdog=@{'watchdog-foundation'=166;'watchdog-capacity'=5;'watchdog-historical'=1;'watchdog-ordinary'=1;'watchdog-successor'=1;'watchdog-no-escalation'=17
+  watchdog=@{'watchdog-foundation'=166;'watchdog-capacity'=5;'watchdog-historical'=1;'watchdog-ordinary'=1;'watchdog-successor'=1;'watchdog-no-escalation'=25
     'watchdog-host-hold-cases'=52;'watchdog-host-hold-mutants'=12
     'watchdog-policy-ac'=12;'watchdog-policy-protected'=1;'watchdog-policy-consumed'=2;'watchdog-policy-unlinked'=6
     'watchdog-policy-authentication'=32;'watchdog-policy-scalars'=13;'watchdog-policy-joins'=7;'watchdog-policy-legacy'=1

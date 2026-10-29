@@ -41,9 +41,14 @@ ownership, watchdog, acknowledgement, and strict-review evidence. Historical
 IDs remain readable for evidence but cannot be selected for new work; a current
 swap therefore creates a new exact `<model>/<effort>` matrix configuration with
 no predecessor measurements.
-Sonnet means `claude-sonnet-5-5`: it takes every existing Sonnet row placement,
-host arm, watchdog route (including row-10 high fallback), and restriction,
-without expanding into new rows. Existing placements log `override-Todd`;
+Sonnet means `claude-sonnet-5-5`: it takes every existing Sonnet row placement
+(including the row-10 high fallback placement), host arm, and restriction,
+without expanding into new rows. A Sonnet lane's quota/session watchdog
+recovery is the same-configuration retry only: the former row-10 Sonnet high
+-> Sol high continuation raised the model tier and was removed (Todd,
+2026-10-29), so a Sonnet lane whose provider has no routable account refuses
+with `NO_QUALIFIED_FALLBACK` unless the row policy has a qualifying slot.
+Existing placements log `override-Todd`;
 the September 28 high challenger quota below logs `provisional`. No trial
 or shadow precedes eligibility. Rows 3/13 medium retain the named-constraint
 rule below. Public benchmarks are policy priors, not M or automatically B
@@ -503,8 +508,20 @@ lane-budget policy applies. The same model may work on several tasks at once
 ordinary lane capacity, heavy-verifier admission and single-writer-per-branch.
 
 A quota/session death retries the same configuration while its provider has a
-routable account; only without one does it use the row's policy fallback, not
-a closed vendor-specific policy, and never at a higher effort or model tier. Legacy keys remain readable only as historical
+routable account. Only when the source is not routable does the watchdog
+substitute: first the closed fallback table's entry for the route, which
+always takes precedence, then, where the table has none, the row's qualifying
+policy slot (Policy-slot quota fallback above). Either move goes only to the
+other provider, at the same or a lower effort and the same or a lower watchdog
+model tier; otherwise the lane refuses with `NO_QUALIFIED_FALLBACK`. The
+watchdog model tier pairs the providers' row-equivalent families: Luna and
+Haiku 1, Sonnet 2, Sol and Opus 3, Astra and Fable 4. Efforts rank minimal <
+low < medium < high < xhigh < max. An unranked family or effort never
+qualifies. This ordering is local to the watchdog substitution guard: it is not
+a price band and not the per-configuration `tier3` flag under Escalation. A
+relaunch that already started or reserved its target is recovered on that
+target at the next observation, never re-decided from a later pool status.
+Legacy keys remain readable only as historical
 sources. Author dispatches keep their slot's placement, mapping a
 policy reserve to runtime override-Todd; strict controller-review tuples use
 override-todd for an override.
