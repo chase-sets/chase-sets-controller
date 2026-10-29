@@ -43,9 +43,6 @@ function Write-AtomicResult($Value) {
   }
 }
 
-function Wait-QueuePoll([int]$Milliseconds) { Start-Sleep -Milliseconds $Milliseconds }
-function New-QueueWatch { return [Diagnostics.Stopwatch]::StartNew() }
-
 $runtimeFull = [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\','/')
 $expectedResult = Join-Path $runtimeFull "long-product-gate-$LaunchId.json"
 if (-not (Test-SamePath $ResultPath $expectedResult)) { throw 'long-product-gate: result path is not bound to the launch id' }
@@ -106,6 +103,8 @@ $queuePollSeconds = 30
 $queueWaitCapSeconds = 3600
 $queueRetentionSeconds = 600
 $transientCallerEligibilityRefusal = 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted'
+# Three consecutive full census expiries allow two bounded re-presentations
+# without making a long gate spin forever; any queued presentation resets it.
 $transientRefusalCap = 3
 $consecutiveTransientRefusals = 0
 $queueWatch = $null
@@ -135,7 +134,7 @@ try {
     $isTransientCallerEligibilityRefusal = $exitCode -eq 73 -and
       @($presentationError -split "`r?`n" | Where-Object { $_ -ceq $transientCallerEligibilityRefusal }).Count -gt 0
     if ($isTransientCallerEligibilityRefusal) {
-      if (-not $queueWatch) { $queueWatch = New-QueueWatch }
+      if (-not $queueWatch) { $queueWatch = [Diagnostics.Stopwatch]::StartNew() }
       $consecutiveTransientRefusals++
       $ticketLabel = if ($null -ne $queueTicket) { $queueTicket } else { '<none>' }
       $message = "long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=$ticketLabel count=$consecutiveTransientRefusals)"
@@ -148,7 +147,7 @@ try {
         break
       }
       $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
-      Wait-QueuePoll $queueSleepMilliseconds
+      [Threading.Thread]::Sleep($queueSleepMilliseconds)
       continue
     }
     if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) {
@@ -183,6 +182,8 @@ try {
     }
     if (-not $queueWatch) {
       $queueWatch = [Diagnostics.Stopwatch]::StartNew()
+    }
+    if ($null -eq $queueTicket) {
       $queueTicket = $presentedTicket
     }
     $consecutiveTransientRefusals = 0

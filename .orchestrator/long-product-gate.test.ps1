@@ -304,9 +304,13 @@ $pollValue = @{ticket=$presentedTicket;pid=$PID;arguments=@($start.ArgumentList)
 [IO.File]::Move("$pollPath.tmp", $pollPath)
 while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
 '@
-    $copy = Replace-FixtureOnce $original '$queueWatch = [Diagnostics.Stopwatch]::StartNew()' $clock
+    $queueWatchBlock = "    if (-not `$queueWatch) {`r`n      `$queueWatch = [Diagnostics.Stopwatch]::StartNew()`r`n    }`r`n    if (`$null -eq `$queueTicket) {`r`n      `$queueTicket = `$presentedTicket`r`n    }"
+    $clockBody = $clock.Trim("`r", "`n")
+    $clockBlock = "    if (-not `$queueWatch) {`r`n" + $clockBody + "`r`n    }`r`n    if (`$null -eq `$queueTicket) {`r`n      `$queueTicket = `$presentedTicket`r`n    }"
+    $copy = Replace-FixtureOnce $original $queueWatchBlock $clockBlock
     $copy = Replace-FixtureOnce $copy '$presentationWatch = [Diagnostics.Stopwatch]::StartNew()' ($clock.Replace('$queueWatch', '$presentationWatch'))
-    $copy = Replace-FixtureOnce $copy '[Threading.Thread]::Sleep($queueSleepMilliseconds)' $poll
+    $copy = Replace-FixtureOnce $copy "      [Threading.Thread]::Sleep(`$queueSleepMilliseconds)`r`n      continue" ('      $null = $queueSleepMilliseconds' + "`r`n      continue")
+    $copy = Replace-FixtureOnce $copy "    [Threading.Thread]::Sleep(`$queueSleepMilliseconds)" ($poll.TrimEnd("`r", "`n"))
     if ($Mode -ceq 'expire-admit') {
       $firstRefusal = @'
 $process.WaitForExit()
@@ -471,12 +475,17 @@ function Invoke-TransientCensusCase([string]$Mode, [string]$Mutation = '') {
   $supervisorPath = Join-Path $fixture.orchestrator 'long-product-gate.ps1'
   $source = [IO.File]::ReadAllText($supervisorPath)
   $queued = @{type='queued';text='heavy-verifier: queued; ticket=171 position=4 reserved=True; retry within 600 seconds';exit=73}
+  $changedQueued = @{type='queued';text='heavy-verifier: queued; ticket=172 position=4 reserved=True; retry within 600 seconds';exit=73}
   $transient = @{type='transient';text='heavy-verifier: caller eligibility: dispatch census evaluation exhausted';exit=73}
   $admitted = @{type='admitted';text='heavy-verifier: admitted; ticket=171';exit=0}
+  $replacementAdmitted = @{type='admitted';text='heavy-verifier: admitted; ticket=172; native=fixture';exit=0}
   $responses = switch ($Mode) {
     'held' { @($queued,$queued,$transient,$queued,$admitted) }
     'before' { @($transient,$queued,$admitted) }
     'cap' { @($transient,$transient,$transient) }
+    'wait-cap' { @($transient,$transient) }
+    'changed' { @($queued,$transient,$changedQueued) }
+    'replacement' { @($queued,$transient,$replacementAdmitted) }
     'other' { @(@{type='other';text='heavy-verifier: caller eligibility: dispatch census changed authority';exit=73}) }
     default { throw "unknown transient census case $Mode" }
   }
@@ -490,8 +499,18 @@ $pollPath = Join-Path $runtimeFull "fixture-transient-poll-$fixturePoll.json"
 [IO.File]::WriteAllText($pollPath, [string]$fixturePoll)
 while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 10 }
 '@
-  $source = Replace-FixtureOnce $source 'Wait-QueuePoll $queueSleepMilliseconds' $poll
-  $source = Replace-FixtureOnce $source '[Threading.Thread]::Sleep($queueSleepMilliseconds)' $poll
+  $source = Replace-FixtureOnce $source "      [Threading.Thread]::Sleep(`$queueSleepMilliseconds)`r`n      continue" (($poll.TrimEnd("`r", "`n")) + "`r`n      continue")
+  $source = Replace-FixtureOnce $source "    [Threading.Thread]::Sleep(`$queueSleepMilliseconds)" ($poll.TrimEnd("`r", "`n"))
+  if ($Mode -ceq 'wait-cap') {
+    $clockPath = Join-Path $fixture.runtime 'fixture-transient-clock.txt'
+    Write-Text $clockPath '0'
+    $clock = @'
+$queueWatch = [pscustomobject]@{}
+$queueWatch | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-transient-clock.txt')))
+$queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [TimeSpan]::FromSeconds([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-transient-clock.txt')) - $this.StartedAt) }
+'@
+    $source = Replace-FixtureOnce $source 'if (-not $queueWatch) { $queueWatch = [Diagnostics.Stopwatch]::StartNew() }' $clock
+  }
   if ($Mutation -ceq 'census-immediate') { $source = Replace-FixtureOnce $source 'if ($isTransientCallerEligibilityRefusal)' 'if ($false)' }
   Write-Text $supervisorPath $source
   $launchId = [guid]::NewGuid().ToString()
@@ -499,7 +518,7 @@ while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds
   $runner = Invoke-LongGateProcess $fixture $supervisorPath $launchId $resultPath -NoWait
   $failure = $null; $result = $null
   try {
-    $pollCount = switch ($Mode) { 'held' { 4 }; 'before' { 2 }; 'cap' { 2 }; 'other' { 0 } }
+    $pollCount = switch ($Mode) { 'held' { 4 }; 'before' { 2 }; 'cap' { 2 }; 'wait-cap' { 1 }; 'changed' { 2 }; 'replacement' { 2 }; 'other' { 0 } }
     if ($Mutation -ceq 'census-immediate') {
       $firstPoll = Join-Path $fixture.runtime 'fixture-transient-poll-1.json'
       $deadline = [DateTime]::UtcNow.AddSeconds(10)
@@ -510,6 +529,7 @@ while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds
       $pollPath = Join-Path $fixture.runtime "fixture-transient-poll-$pollNumber.json"
       Wait-ForPathOrExit $pollPath $runner.process "transient census poll $pollNumber was not reached"
       Write-Output "TRANSIENT_POLL mode=$Mode number=$pollNumber"
+      if ($Mode -ceq 'wait-cap' -and $pollNumber -eq 1) { Write-Text (Join-Path $fixture.runtime 'fixture-transient-clock.txt') '3601' }
       Write-Text "$pollPath.continue" 'continue'
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -541,6 +561,18 @@ while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds
       'cap' {
         Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and ([regex]::Matches($history, '(?m)^long-product-gate: transient caller-eligibility refusal;').Count -eq 3) -and $history.Contains('long-product-gate: transient caller-eligibility refusal cap 3 reached') -and -not $history.Contains('heavy-verifier: admitted;')) 'consecutive transient census refusal cap finalizes incomplete before admission'
         Write-Output 'PASS consecutive transient census refusal cap=3 finalizes incomplete'
+      }
+      'wait-cap' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('long-product-gate: queued wait cap 3600 seconds reached') -and $history.Contains('heavy-verifier: caller eligibility: dispatch census evaluation exhausted')) 'transient wait counts toward the 3600-second queued cap'
+        Write-Output 'PASS transient wait counts toward queued wait cap 3600 seconds'
+      }
+      'changed' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('long-product-gate: queue ticket changed') -and -not $history.Contains('heavy-verifier: admitted;')) 'ticket change after a transient refusal finalizes immediately'
+        Write-Output 'PASS ticket change after transient refusal finalizes immediately'
+      }
+      'replacement' {
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: admission ticket comparison (previous=171 current=172)') -and $history.Contains('long-product-gate: queue ticket replaced before admission (previous=171)')) 'admitted replacement ticket after a transient refusal retains v2.165 diagnostics'
+        Write-Output 'PASS admitted replacement ticket after transient refusal retains v2.165 diagnostics'
       }
       'other' {
         Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('heavy-verifier: caller eligibility: dispatch census changed authority') -and -not $history.Contains('transient caller-eligibility refusal;')) 'different caller-eligibility refusal finalizes immediately'
@@ -731,6 +763,9 @@ try {
     Invoke-TransientCensusCase 'held'
     Invoke-TransientCensusCase 'before'
     Invoke-TransientCensusCase 'cap'
+    Invoke-TransientCensusCase 'wait-cap'
+    Invoke-TransientCensusCase 'changed'
+    Invoke-TransientCensusCase 'replacement'
     Invoke-TransientCensusCase 'other'
     if ($Part -ceq 'transient') { return }
   }
