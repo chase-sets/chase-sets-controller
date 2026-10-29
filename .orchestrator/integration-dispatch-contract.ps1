@@ -51,8 +51,9 @@ function Assert-IntegrationAuthor($Harness, $Model, $Effort, $Row, $Placement, [
   }
 }
 
-function Get-IntegrationPoolPreference([string]$CodexModel,[string]$PoolStatusFixturePath) {
-  $codex='codex';$claude='claude'
+# AgentPools /api/status, read once per decision. A missing, unreachable or
+# malformed status is $null (unknown); it never proves a provider exhausted.
+function Read-PoolStatus([string]$PoolStatusFixturePath) {
   try {
     $body = if ($PoolStatusFixturePath) {
       Get-Content -LiteralPath $PoolStatusFixturePath -Raw
@@ -61,24 +62,40 @@ function Get-IntegrationPoolPreference([string]$CodexModel,[string]$PoolStatusFi
       (Invoke-WebRequest -Uri $url -TimeoutSec 3 -NoProxy -ErrorAction Stop).Content
     }
     $status = $body | ConvertFrom-Json -DateKind String -ErrorAction Stop
-    if ($null -eq $status -or $status.error -or $status.accounts -isnot [array]) { return $codex }
+    if ($null -eq $status -or $status.error -or $status.accounts -isnot [array]) { return $null }
     foreach ($account in $status.accounts) {
-      if ($account.provider -isnot [string] -or $account.disabled -isnot [bool]) { return $codex }
+      if ($account.provider -isnot [string] -or $account.disabled -isnot [bool]) { return $null }
     }
-    $accounts = @($status.accounts | Where-Object { $_.provider -ceq 'codex' -and $_.disabled -ceq $false })
-    if ($accounts.Count -eq 0) { return $codex }
+    return $status
+  } catch { return $null }
+}
+
+# True only when a readable status lists at least one enabled account of the
+# provider and every one of them blocks the model until a future reset. The pool
+# routes among those accounts, so any other answer means a routable account may
+# exist (or that availability is unknown).
+function Test-PoolModelExhausted($Status,[string]$Provider,[string]$Model) {
+  if ($null -eq $Status) { return $false }
+  try {
+    $accounts = @($Status.accounts | Where-Object { $_.provider -ceq $Provider -and $_.disabled -ceq $false })
+    if ($accounts.Count -eq 0) { return $false }
     $now = [datetimeoffset]::UtcNow
     foreach ($account in $accounts) {
-      $routeProperty = $account.routingModels.PSObject.Properties[$CodexModel]
+      $routeProperty = $account.routingModels.PSObject.Properties[$Model]
       $route = if ($routeProperty) { $routeProperty.Value } else { $null }
       $retry = [datetimeoffset]::MinValue
       if ($null -eq $route -or $route.status -cne 'blocked' -or
           $route.next_retry_after -isnot [string] -or
           $route.next_retry_after -cnotmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$' -or
-          -not [datetimeoffset]::TryParse($route.next_retry_after, [ref]$retry) -or $retry -le $now) { return $codex }
+          -not [datetimeoffset]::TryParse($route.next_retry_after, [ref]$retry) -or $retry -le $now) { return $false }
     }
-    return $claude
-  } catch { return $codex }
+    return $true
+  } catch { return $false }
+}
+
+function Get-IntegrationPoolPreference([string]$CodexModel,[string]$PoolStatusFixturePath) {
+  if (Test-PoolModelExhausted (Read-PoolStatus $PoolStatusFixturePath) 'codex' $CodexModel) { return 'claude' }
+  return 'codex'
 }
 
 function Get-LandedIntegrationAuthor([string]$PoolStatusFixturePath = '', [switch]$DefaultCodex) {

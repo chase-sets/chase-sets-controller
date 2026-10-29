@@ -539,7 +539,11 @@ exit 0
     $c2=New-Case 'watchdog-unavailable';$req2=Request $c2;$runner=Launcher-Runner $c2 $req2 (Join-Path $PSScriptRoot 'dispatch-lane.ps1')
     [IO.File]::WriteAllText((Join-Path $c2.root 'body.ps1'),'param($Marker);Write-Output ''{"type":"item.completed"}'';[Console]::Error.WriteLine(''provider quota exhausted'');exit 17')
     $r=Run-Native $runner @() (Join-Path $c2.root 'native-quota');Check ($r.exit-eq17) 'native quota fixture'
-    $r=Run-Native (Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1') @('-Label',$req2.label,'-RuntimeRoot',$c2.runtime,'-HistoryPath',$c2.history) (Join-Path $c2.root 'watchdog')
+    # #237: a quota death retries the same configuration while the provider is routable,
+    # so this no-fallback control names a pool status with the author's model exhausted.
+    $exhaustedPool=Join-Path $c2.root 'pool-status-exhausted.json';$retryAfter=[datetimeoffset]::UtcNow.AddDays(1).ToString('o')
+    J $exhaustedPool @{error=$null;accounts=@(@{provider='codex';disabled=$false;routingModels=@{'gpt-6.1-sol'=@{status='blocked';next_retry_after=$retryAfter}}})}
+    $r=Run-Native (Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1') @('-Label',$req2.label,'-RuntimeRoot',$c2.runtime,'-HistoryPath',$c2.history,'-PoolStatusFixturePath',$exhaustedPool) (Join-Path $c2.root 'watchdog')
     Check ($r.exit-eq0-and$r.stdout.Contains('NO_QUALIFIED_FALLBACK')-and@(Get-ChildItem $c2.runtime -Filter 'watchdog-lane-*.json').Count-eq1) 'unavailable integration author fell back'
   }
   Control 'live-owner-publication-candidate-and-bypass' {

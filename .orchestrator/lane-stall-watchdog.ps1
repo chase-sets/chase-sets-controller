@@ -12,6 +12,8 @@ param(
   # Test-only barrier between observation and the pre-dispatch hold recheck.
   [Parameter(DontShow)][string]$HostHoldBarrierFixture,
   [Parameter(DontShow)][string]$IntegrationAuthorityFixturePath,
+  # Test-only AgentPools /api/status body; production reads the live pool status.
+  [Parameter(DontShow)][string]$PoolStatusFixturePath,
   [Parameter(DontShow)][string]$DispatchScript=(Join-Path $PSScriptRoot 'dispatch-lane.ps1'),
   [Parameter(DontShow)][string]$LogScript=(Join-Path $PSScriptRoot 'log-event.ps1'),
   [Parameter(DontShow)][switch]$SynchronousDispatch
@@ -40,6 +42,29 @@ function Get-WatchdogCurrentModel([object]$Data,[string]$Family){
   $entry=$Data.registry.families.PSObject.Properties[$Family]
   if($null -eq $entry -or $entry.Value.current -isnot [string]){return $null}
   return [string]$entry.Value.current
+}
+# Todd 2026-10-29 (#237): a failure not caused by model selection never raises the
+# model or effort. A quota/session death retries the same configuration while the
+# source is routable. Only when it is not may the lane move, and then only to the
+# other provider, at the same or a lower effort and model tier. Tiers pair the
+# providers' row-equivalent families; an unlisted family or effort never qualifies.
+$script:WatchdogFamilyTier=[Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+foreach($pair in @(@('luna',1),@('haiku',1),@('sonnet',2),@('sol',3),@('opus',3),@('astra',4),@('fable',4))){$script:WatchdogFamilyTier[$pair[0]]=$pair[1]}
+$script:WatchdogEffortRank=[Collections.Generic.Dictionary[string,int]]::new([StringComparer]::Ordinal)
+foreach($pair in @(@('minimal',0),@('low',1),@('medium',2),@('high',3),@('xhigh',4),@('max',5))){$script:WatchdogEffortRank[$pair[0]]=$pair[1]}
+function Test-WatchdogCapacitySubstitution([string]$SourceHarness,[string]$SourceFamily,[string]$SourceEffort,[string]$TargetHarness,[string]$TargetFamily,[string]$TargetEffort){
+  if($TargetHarness-ceq$SourceHarness){return $false}
+  if(-not$script:WatchdogFamilyTier.ContainsKey($SourceFamily)-or-not$script:WatchdogFamilyTier.ContainsKey($TargetFamily)){return $false}
+  if(-not$script:WatchdogEffortRank.ContainsKey($SourceEffort)-or-not$script:WatchdogEffortRank.ContainsKey($TargetEffort)){return $false}
+  return $script:WatchdogFamilyTier[$TargetFamily]-le$script:WatchdogFamilyTier[$SourceFamily]-and$script:WatchdogEffortRank[$TargetEffort]-le$script:WatchdogEffortRank[$SourceEffort]
+}
+# The source is routable when the registry admits its exact model and effort with a
+# usable account (dispatch-lane refuses it otherwise) and the live pool status does
+# not show every enabled account of its provider blocked for that model. Unknown
+# status is not exhaustion, so it keeps the same configuration.
+function Test-WatchdogSourceRoutable([object]$Data,$Spec,$PoolStatus){
+  if(Get-RoutingAdmissionReason $Data.registry ([string]$Spec.model) ([string]$Spec.effort)){return $false}
+  return -not(Test-PoolModelExhausted $PoolStatus ([string]$Spec.harness) ([string]$Spec.model))
 }
 function Test-Instant($Value){$parsed=[datetimeoffset]::MinValue;return $Value-is[string]-and[datetimeoffset]::TryParse([string]$Value,[ref]$parsed)}
 function Get-IdentityState($PidValue,[string]$Start){
@@ -277,14 +302,18 @@ function Test-WatchdogEnvelopeFields($Value,[string[]]$Keys,[string]$ExpectedLab
   return $true
 }
 # Policy-derived quota/session fallback (model-routing v4.24). Used only where the
-# closed table has no entry: an implementation lane at relaunch 0 that runs its
-# row's own policy slot (same harness, family and effort) moves once to the same
-# row's other-harness slot, primary before fallback, at that slot's effort and
-# placement, if the registry admits that effort with usable accounts. Rows 9
-# (host) and 11/12 (review), integration lanes and off-slot routes keep
+# closed table has no entry and the source is not routable: an implementation lane
+# at relaunch 0 that runs its row's own policy slot (same harness, family and
+# effort) moves once to the same row's other-harness slot, primary before
+# fallback, at that slot's effort and placement, if the registry admits that
+# effort with usable accounts, the pool status does not show that provider
+# exhausted for it, and the slot raises neither effort nor model tier (#237).
+# Rows 9 (host) and 11/12 (review), integration lanes and off-slot routes keep
 # NO_QUALIFIED_FALLBACK. Policy slots on rows 7/14/15 are ordinary current
 # author slots; their reserve placement is mapped to override-Todd at runtime.
-function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext){
+# A bound launch (Get-WatchdogBoundLaunch) selects only the slot it was bound to,
+# under every guard here except pool exhaustion, which it never re-reads.
+function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Implementation,$IntegrationContext,$PoolStatus,$Bound=$null){
   if(-not$Implementation-or$null-ne$IntegrationContext-or$null-eq$Identity-or-not$Identity.current){return $null}
   $row=[int]$Spec.row
   if($row-lt1-or$row-gt15-or$row-in@(9,11,12)){return $null}
@@ -303,7 +332,10 @@ function Get-WatchdogPolicyFallback([object]$Data,$Spec,$Identity,[bool]$Impleme
     if($slot.Count-ne1){continue}
     $model=Get-WatchdogCurrentModel $Data ([string]$slot[0].Value.family)
     if($null-eq$model-or(Get-RoutingAdmissionReason $Data.registry $model ([string]$slot[0].Value.effort))){continue}
+    if(-not(Test-WatchdogCapacitySubstitution ([string]$Spec.harness) ([string]$Identity.family) ([string]$Spec.effort) $other ([string]$slot[0].Value.family) ([string]$slot[0].Value.effort))){continue}
+    if(Test-PoolModelExhausted $PoolStatus $other $model){continue}
     $placement=if([string]$slot[0].Value.placement-ceq'reserve'){'override-Todd'}else{[string]$slot[0].Value.placement}
+    if($null-ne$Bound-and($Bound.harness-cne$other-or$Bound.model-cne$model-or$Bound.effort-cne[string]$slot[0].Value.effort-or$Bound.placement-cne$placement)){continue}
     return @($other,[string]$slot[0].Value.family,[string]$slot[0].Value.effort,$placement)
   }
   return $null
@@ -332,6 +364,23 @@ function Write-WatchdogPolicyMove([string]$Path,[System.Collections.Specialized.
   }
   try{$stored=Read-WatchdogPolicyMove $Path}catch{return $false}
   return @($Record.Keys|Where-Object{$stored.$_-cne[string]$Record[$_]}).Count-eq0
+}
+# A quota/session relaunch request that already started (its start acknowledgement
+# exists) or reserved a policy move for this exact source and start request is
+# bound to that configuration. Its next observation recovers it there and never
+# re-reads the pool: a later pool status is not a new routing decision (#237).
+# The bound values only select the route; the exact acknowledgement and
+# reservation checks below still validate it. An unreadable or foreign
+# reservation binds nothing and is refused by those checks as before.
+function Get-WatchdogBoundLaunch([string]$AckPath,[string]$MovePath,$Spec,[string]$SourceLabel,[string]$StartRequest){
+  if(Test-Path -LiteralPath $AckPath -PathType Leaf){
+    $ack=Get-Content -LiteralPath $AckPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    return [pscustomobject]@{source='acknowledgement';harness=[string]$ack.harness;model=[string]$ack.model;effort=[string]$ack.effort;placement=[string]$ack.placement}
+  }
+  if(-not(Test-Path -LiteralPath $MovePath -PathType Leaf)){return $null}
+  try{$move=Read-WatchdogPolicyMove $MovePath}catch{return $null}
+  if($move.attemptId-cne[string]$Spec.attemptId-or$move.sourceLaunchId-cne[string]$Spec.launchId-or$move.sourceLabel-cne$SourceLabel-or$move.startRequest-cne$StartRequest){return $null}
+  return [pscustomobject]@{source='reservation';harness=$move.harness;model=$move.model;effort=$move.effort;placement=$move.placement}
 }
 # A lineage predecessor must pass the closed envelope reader the current spec
 # passes, on its own fields, with timezone-bearing instants. Historical PIDs need
@@ -397,8 +446,9 @@ function Test-WatchdogContinuationBinding([string]$Root,$Continuation,$Predecess
   if(-not(Test-ExactKeys $row $expected)){return $false}
   if(-not(Test-WatchdogRoutingProvenance $row)){return $false}
   if(@($script:RelaunchRowKeys|Where-Object{$_-cne'relaunchCount'-and$row.$_-isnot[string]}).Count-gt0-or$row.relaunchCount-isnot[long]){return $false}
-  if(-not(Test-WatchdogZonedInstant $row.ts)-or-not(Test-WatchdogZonedInstant $row.observedAt)-or$row.kind-cne'dispatch'-or$row.laneRole-cne'implementation'-or$row.outcome-cne'WATCHDOG_RELAUNCH'-or
+  if(-not(Test-WatchdogZonedInstant $row.ts)-or-not(Test-WatchdogZonedInstant $row.observedAt)-or$row.kind-cne'dispatch'-or$row.laneRole-cne'implementation'-or$row.outcome-cnotin@('WATCHDOG_RELAUNCH','WATCHDOG_CAPACITY_SUBSTITUTION')-or
     $row.deathSignature-cnotin@('OWNER_DEAD','STREAM_DISCONNECTED','CODE_MODE_HOST_CLOSED','PROVIDER_QUOTA','SESSION_LIMIT')-or$row.observationIdentity-cnotmatch'^[a-f0-9]{64}$'-or
+    ($row.outcome-ceq'WATCHDOG_CAPACITY_SUBSTITUTION'-and$row.deathSignature-cnotin@('PROVIDER_QUOTA','SESSION_LIMIT'))-or
     $row.attemptId-cne[string]$Continuation.attemptId-or$row.launchId-cne$link-or$row.lane-cne$label-or$row.relaunchCount-ne[long]$Continuation.relaunchCount-or
     $row.harness-cne[string]$Continuation.harness-or$row.model-cne[string]$Continuation.model-or$row.effort-cne[string]$Continuation.effort-or$row.row-cne[string]$Continuation.row-or$row.placement-cne[string]$Continuation.placement){return $false}
   if(-not(Test-DispatchSamePath $row.resumedPartial ([string]$Predecessor.partialReportPath))){return $false}
@@ -699,19 +749,34 @@ if($nextCount-gt3){
 }
 $nextHarness=[string]$spec.harness;$nextModel=[string]$spec.model;$nextEffort=[string]$spec.effort;$nextPlacement=[string]$spec.placement
 $policySelected=$false
-if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
+# A quota/session relaunch is a same-configuration retry unless the source is not
+# routable; only then is it a capacity substitution under the closed table or the
+# row policy, never to a higher effort or model tier (#237).
+$relaunchKind='same-config'
+$startRequest = if ($freshResume) { Get-RebaseRecordIdentity $freshResume } else { $observationIdentity }
+$startHead = if ($freshResume) { $freshResume.state.stoppedHead } else { [string]$spec.head }
+$ackPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$startRequest.json"
+$policyMovePath=Join-Path $runtimeFull "watchdog-policy-move-$($spec.launchId).json"
+# Recover a launch this observation already started or reserved before any new
+# availability decision. A substitution always changes provider, so a bound
+# launch on the source provider is the same-configuration retry; one on the
+# other provider re-selects only its own entry or slot, with no pool read.
+$quotaDeath=$signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')
+$boundLaunch=if($quotaDeath){Get-WatchdogBoundLaunch $ackPath $policyMovePath $spec $Label $startRequest}else{$null}
+$poolStatus=if($quotaDeath-and$null-eq$boundLaunch){Read-PoolStatus $PoolStatusFixturePath}else{$null}
+$substitute=if(-not$quotaDeath){$false}elseif($null-ne$boundLaunch){$boundLaunch.harness-cne[string]$spec.harness}else{-not(Test-WatchdogSourceRoutable $routingAuthority $spec $poolStatus)}
+if($substitute){
+  $relaunchKind='capacity-substitution'
+  # Every entry moves to the other provider at the same effort and an equal or
+  # lower tier. Same-provider moves and raises (luna->sol, sol medium->high,
+  # opus low/medium->sol medium/high, sonnet->sol, astra/xhigh->sol) were removed
+  # by #237; those routes refuse unless the row policy has a qualifying slot.
   $fallback=@{
-    '2|luna/medium'=@('codex','sol','medium')
-    '4|astra/high'=@('codex','sol','high');'4|sol/medium'=@('codex','sol','high')
-    '5|astra/high'=@('codex','sol','high');'5|sol/xhigh'=@('codex','sol','high')
-    '6|opus/high'=@('codex','sol','high');'6|astra/high'=@('codex','sol','high')
-    '10|astra/high'=@('codex','sol','high');'10|sonnet/high'=@('codex','sol','high')
+    '6|opus/high'=@('codex','sol','high')
     '4|sol/high'=@('claude','opus','high','override-Todd');'5|sol/high'=@('claude','opus','high','override-Todd');'6|sol/high'=@('claude','opus','high','override-Todd')
     '10|sol/high'=@('claude','opus','high','override-Todd')
     '3|sol/medium'=@('claude','opus','medium','override-Todd');'13|sol/medium'=@('claude','opus','medium','override-Todd')
     '3|opus/medium'=@('codex','sol','medium','override-Todd');'13|opus/medium'=@('codex','sol','medium','override-Todd')
-    '13|opus/low'=@('codex','sol','medium','override-Todd')
-    '10|opus/medium'=@('codex','sol','high','override-Todd');'4|opus/medium'=@('codex','sol','high','override-Todd')
     '5|opus/high'=@('codex','sol','high','override-Todd')
   }
   # The closed table keeps precedence; the policy fills its gaps. Legacy
@@ -719,7 +784,7 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
   # any relaunch count so retained lanes can cross to today's slot once.
   $policyFallback=$null
   if(-not$fallback.ContainsKey($routeKey)){
-    $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null})
+    $policyFallback=Get-WatchdogPolicyFallback $routingAuthority $spec $routeIdentity $implementation $(if($null-ne$integrationTarget){$integrationTarget}elseif($interrupted){'interrupted'}else{$null}) $poolStatus $boundLaunch
     if($null-ne$policyFallback){$fallback[$routeKey]=$policyFallback;$policySelected=$true}
   }
   $policyMoveConsumed=$false
@@ -732,6 +797,7 @@ if($signature-in@('PROVIDER_QUOTA','SESSION_LIMIT')){
     $nextHarness,$nextFamily,$nextEffort,$ruledPlacement=$fallback[$routeKey]
     $nextModel=Get-WatchdogCurrentModel $routingAuthority $nextFamily
     if($null -eq $nextModel){$qualified=$false}
+    elseif($null-eq$routeIdentity-or-not(Test-WatchdogCapacitySubstitution ([string]$spec.harness) ([string]$routeIdentity.family) ([string]$spec.effort) $nextHarness $nextFamily $nextEffort)-or(Test-PoolModelExhausted $poolStatus $nextHarness $nextModel)){$qualified=$false}
     # Successor targets have no inherited measured placement. A Todd-ruled
     # four-element entry retains its policy placement, not capability evidence.
     $nextPlacement=if($null-ne$ruledPlacement){[string]$ruledPlacement}elseif($nextFamily-in@('sol','luna','opus')){'provisional'}else{'measured'}
@@ -759,12 +825,8 @@ if(-not $freshResume){
     $nextRouting=$null
   }
 }
-$startRequest = if ($freshResume) { Get-RebaseRecordIdentity $freshResume } else { $observationIdentity }
-$startHead = if ($freshResume) { $freshResume.state.stoppedHead } else { [string]$spec.head }
-$ackPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "dispatch-start-$startRequest.json"
 # A policy move's reservation is reusable only by the exact source, request and
 # target configuration; a conflicting or unreadable reservation refuses.
-$policyMovePath=Join-Path $runtimeFull "watchdog-policy-move-$($spec.launchId).json"
 $priorMove=$null
 if($policySelected-and(Test-Path -LiteralPath $policyMovePath)){
   try{$priorMove=Read-WatchdogPolicyMove $policyMovePath}catch{& $refuseNoFallback;return}
@@ -812,8 +874,11 @@ if(-not$ack){
 }
 if(-not$ack){[pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status=$(if($pending){'LAUNCH_PENDING'}else{'LAUNCH_FAILED'});relaunch=$false;relaunchCount=[int]$spec.relaunchCount;implementationAttemptIncrement=0;exitCode=$dispatchExit}|ConvertTo-Json -Compress;return}
 $logParams=@{Log='dispatch';Kind='dispatch';WatchdogSchema='watchdog-relaunch/v1';WatchdogAttemptId=[string]$spec.attemptId;WatchdogLaunchId=[string]$spec.launchId;DeathSignature=$signature;ObservationIdentity=$observationIdentity;RelaunchCount=$nextCount;ResumedPartial=$partial;WatchdogObservedAt=$observed.ToString('o');Lane=[string]$ack.label;Harness=$nextHarness;Model=$nextModel;Effort=$nextEffort;Row=[string]$spec.row;Placement=$nextPlacement;OutFile=$HistoryPath;NoBoard=$true}
+# The closed row's outcome names the relaunch kind: WATCHDOG_RELAUNCH is a
+# same-configuration retry, WATCHDOG_CAPACITY_SUBSTITUTION a quota/session move.
+if($relaunchKind-ceq'capacity-substitution'){$logParams.Outcome='WATCHDOG_CAPACITY_SUBSTITUTION'}
 if($nextRouting){$logParams.PolicyGeneration=[long]$nextRouting.policyGeneration;$logParams.RegistryAuthorityDigest=[string]$nextRouting.registryAuthorityDigest;$logParams.RoutingFamily=[string]$nextRouting.family;$logParams.RoutingSlot=[string]$nextRouting.slot;$logParams.UsedLastKnownGood=[bool]$nextRouting.usedLastKnownGood}
 try{& $LogScript @logParams|Out-Null}catch{if($_.Exception.Message-match'WATCHDOG_OBSERVATION_DUPLICATE'){[pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='DUPLICATE_SKIPPED';relaunch=$false}|ConvertTo-Json -Compress;return};throw}
-$result=[ordered]@{schemaVersion='watchdog-observation-result/v1';status='RELAUNCHED';relaunch=$true;relaunchCount=$nextCount;harness=$nextHarness;model=$nextModel;effort=$nextEffort;row=[int]$spec.row;placement=$nextPlacement;elapsedSeconds=$elapsed;implementationAttemptIncrement=0;label=[string]$ack.label;launchId=[string]$ack.launchId}
+$result=[ordered]@{schemaVersion='watchdog-observation-result/v1';status='RELAUNCHED';relaunch=$true;relaunchCount=$nextCount;relaunchKind=$relaunchKind;harness=$nextHarness;model=$nextModel;effort=$nextEffort;row=[int]$spec.row;placement=$nextPlacement;elapsedSeconds=$elapsed;implementationAttemptIncrement=0;label=[string]$ack.label;launchId=[string]$ack.launchId}
 if($nextRouting){$result.policyGeneration=[long]$nextRouting.policyGeneration;$result.registryAuthorityDigest=[string]$nextRouting.registryAuthorityDigest;$result.family=[string]$nextRouting.family;$result.slot=[string]$nextRouting.slot;$result.usedLastKnownGood=[bool]$nextRouting.usedLastKnownGood}
 $result|ConvertTo-Json -Compress

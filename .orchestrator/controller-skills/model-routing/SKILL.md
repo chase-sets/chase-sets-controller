@@ -41,9 +41,14 @@ ownership, watchdog, acknowledgement, and strict-review evidence. Historical
 IDs remain readable for evidence but cannot be selected for new work; a current
 swap therefore creates a new exact `<model>/<effort>` matrix configuration with
 no predecessor measurements.
-Sonnet means `claude-sonnet-5-5`: it takes every existing Sonnet row placement,
-host arm, watchdog route (including row-10 high fallback), and restriction,
-without expanding into new rows. Existing placements log `override-Todd`;
+Sonnet means `claude-sonnet-5-5`: it takes every existing Sonnet row placement
+(including the row-10 high fallback placement), host arm, and restriction,
+without expanding into new rows. A Sonnet lane's quota/session watchdog
+recovery is the same-configuration retry only: the former row-10 Sonnet high
+-> Sol high continuation raised the model tier and was removed (Todd,
+2026-10-29), so a Sonnet lane whose provider has no routable account refuses
+with `NO_QUALIFIED_FALLBACK` unless the row policy has a qualifying slot.
+Existing placements log `override-Todd`;
 the September 28 high challenger quota below logs `provisional`. No trial
 or shadow precedes eligibility. Rows 3/13 medium retain the named-constraint
 rule below. Public benchmarks are policy priors, not M or automatically B
@@ -254,13 +259,20 @@ authorship policy; host ownership stays intact.
 ### Policy-slot quota fallback
 
 When a watchdog-supervised implementation lane dies on `PROVIDER_QUOTA` or
-`SESSION_LIMIT` and the closed fallback table has no entry for its route,
-`lane-stall-watchdog.ps1` reads the current routing-policy generation. If the
+`SESSION_LIMIT`, it relaunches on the same configuration while its provider
+has a routable account: the registry admits the exact model and effort with
+usable accounts and the AgentPools status the dispatch contract already reads
+does not show every enabled account of that provider blocked for the model.
+Unknown status counts as routable. Only when the source is not routable and
+the closed fallback table has no entry for its route does
+`lane-stall-watchdog.ps1` read the current routing-policy generation. If the
 lane is at relaunch 0 and running its row's own policy slot (same harness,
 family and effort), it relaunches the same semantic attempt on that row's
 other-harness slot, `primary` before `fallback`, at that slot's effort and
-placement, provided the registry admits that effort with usable accounts. The
-closed table always takes precedence. Rows 9, 11 and 12,
+placement, provided the registry admits that effort with usable accounts, the
+pool status does not show that provider exhausted for it, and the slot raises
+neither the effort nor the model tier. The closed table always takes
+precedence, under the same constraints. Rows 9, 11 and 12,
 integration lanes, non-implementation lanes, lanes that have already relaunched
 (except retained legacy Astra/Fable sources), and routes that are not their
 row's policy slot keep NO_QUALIFIED_FALLBACK for host diagnosis. Retained
@@ -350,10 +362,18 @@ voided or refused hash, but creates no launch resources. Re-prepare with a fresh
 `-Label` and `-ReviewerAttempt`; the same seat is allowed. Preparation and other
 refusals void nothing; a prelog void supplies no review authority.
 
-The watchdog stays closed-table and never reads the forecast. Additional
-quota/session fallbacks, for flipped and unflipped authors alike, are row 13
-Opus low -> Sol medium; rows 10/4 Opus medium -> Sol high; row 5 Opus high ->
-Sol high, all `override-Todd`. Existing Sol-to-Opus entries are unchanged.
+The watchdog stays closed-table and never reads the forecast. A quota/session
+death keeps its configuration while its provider has a routable account. With
+none, the closed table moves it to the other provider at the same effort and an
+equal or lower model tier only: Sol high -> Opus high (rows 4/5/6/10), Sol
+medium <-> Opus medium (rows 3/13), Opus high -> Sol high (rows 5/6), all
+`override-Todd` except row 6 Opus high. The routes that raised effort or tier
+(row 13 Opus low -> Sol medium, rows 10/4 Opus medium -> Sol high, row 4 Sol
+medium -> Sol high, row 2 Luna -> Sol, row 10 Sonnet -> Sol) and the
+same-provider Astra/Sol xhigh routes were removed (Todd, 2026-10-29); those
+lanes refuse unless the row policy has a qualifying slot. Each relaunch row
+records its kind: `WATCHDOG_RELAUNCH` for a same-configuration retry,
+`WATCHDOG_CAPACITY_SUBSTITUTION` for a capacity substitution.
 
 ### September 23 benchmark rebalance
 
@@ -396,13 +416,14 @@ not an inferred cross-model continuation. See the recalibration reference for li
 An Opus low/medium placement requires admission for that exact effort on its
 actual harness. If unavailable, use the row's admitted Sol alternative or
 existing Opus high placement, without treating catalog presence as a smoke.
-The new watchdog routes permit same-configuration mechanical recovery. On
-rows 3/13 only, Sol 6.1 medium and Opus 5.5 medium have compiled quota/session
-continuation in both directions as `override-Todd`; the four capacity routes
-above also have closed quota fallbacks. Other routes retain
-`NO_QUALIFIED_FALLBACK`, returning to the host for a
-fresh attributed dispatch to an admitted row alternative after proven vacancy,
-not an unrecorded watchdog substitution.
+The new watchdog routes permit same-configuration mechanical recovery, and a
+quota/session death on a routable provider is the same retry. On rows 3/13
+only, Sol 6.1 medium and Opus 5.5 medium have compiled quota/session
+continuation in both directions as `override-Todd` when the source provider
+is not routable; of the capacity routes above only row 5 Opus high -> Sol high
+remains. Other unroutable routes retain `NO_QUALIFIED_FALLBACK`, returning to
+the host for a fresh attributed dispatch to an admitted row alternative after
+proven vacancy, not an unrecorded watchdog substitution.
 Reviews and decision lanes use their row's policy slot regardless of the
 artifact's author or repair models. Capacity balancing between Claude and
 Codex breaks ties. Inspect the complete history and disclose participation in
@@ -486,8 +507,21 @@ lane-budget policy applies. The same model may work on several tasks at once
 (v4.15, Todd 2026-09-19, 4388/5743836385); concurrent lanes remain bounded by
 ordinary lane capacity, heavy-verifier admission and single-writer-per-branch.
 
-Quota/session fallbacks use the row's policy fallback, not a closed
-vendor-specific policy. Legacy keys remain readable only as historical
+A quota/session death retries the same configuration while its provider has a
+routable account. Only when the source is not routable does the watchdog
+substitute: first the closed fallback table's entry for the route, which
+always takes precedence, then, where the table has none, the row's qualifying
+policy slot (Policy-slot quota fallback above). Either move goes only to the
+other provider, at the same or a lower effort and the same or a lower watchdog
+model tier; otherwise the lane refuses with `NO_QUALIFIED_FALLBACK`. The
+watchdog model tier pairs the providers' row-equivalent families: Luna and
+Haiku 1, Sonnet 2, Sol and Opus 3, Astra and Fable 4. Efforts rank minimal <
+low < medium < high < xhigh < max. An unranked family or effort never
+qualifies. This ordering is local to the watchdog substitution guard: it is not
+a price band and not the per-configuration `tier3` flag under Escalation. A
+relaunch that already started or reserved its target is recovered on that
+target at the next observation, never re-decided from a later pool status.
+Legacy keys remain readable only as historical
 sources. Author dispatches keep their slot's placement, mapping a
 policy reserve to runtime override-Todd; strict controller-review tuples use
 override-todd for an override.
@@ -586,11 +620,23 @@ labels across vendors. Retired ladders remain for history only.
 ## Escalation
 
 Escalation is one configuration change chosen by the failure mode, never a
-fixed ladder that buys effort first.
+fixed ladder that buys effort first. A failure that is not directly due to
+model selection never triggers a model or effort escalation (Todd,
+2026-10-29). Escalate model or effort only when the failure is attributable to
+the model's own reasoning, knowledge or quality (steps 3 and 4).
 
 1. Run and validate externally.
-2. Mechanical failure (harness fault, prompt block, reproduces on clean main):
-   retry the same configuration once with the error.
+2. Non-model failure: retry on the same configuration with the error. These
+   are host load, flaky tests, harness or infrastructure faults (including a
+   prompt block or a failure that reproduces on clean main), quota or session
+   problems, and environment-tooling failures. A quota or session death keeps
+   its configuration while the provider has a routable account; with none, the
+   watchdog may substitute the other provider at an equivalent placement and
+   the same or a lower effort and model tier, or it refuses with
+   `NO_QUALIFIED_FALLBACK`. A non-model failure is not a configuration change
+   and never counts toward the limit below; a recurring one goes to
+   milestone-orchestrator's recovery ladder as an environment or tooling
+   blocker.
 3. Reasoning failure a verifier can name (wrong step, incomplete chain, missed
    invariant): raise effort one rung on the same model's ladder.
 4. Knowledge or taste failure (wrong API, hallucinated fact, wrong pattern,

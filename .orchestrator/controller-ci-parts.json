@@ -71,10 +71,11 @@
         { "name": "watchdog-host-hold-mutants", "weight": 1 },
         { "name": "watchdog-historical", "weight": 1 },
         { "name": "watchdog-ordinary", "weight": 1 },
-        { "name": "watchdog-successor", "weight": 1 }
+        { "name": "watchdog-successor", "weight": 1 },
+        { "name": "watchdog-no-escalation", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["watchdog-foundation", "watchdog-capacity", "watchdog-policy-ac", "watchdog-policy-protected", "watchdog-policy-consumed", "watchdog-policy-unlinked", "watchdog-policy-authentication", "watchdog-policy-scalars", "watchdog-policy-joins", "watchdog-policy-legacy", "watchdog-policy-pos", "watchdog-policy-mutants-admission", "watchdog-policy-mutants-lineage", "watchdog-policy-mutants-envelope", "watchdog-policy-mutants-history", "watchdog-policy-mutants-binding", "watchdog-policy-mutants-joins", "watchdog-host-hold-cases", "watchdog-host-hold-mutants", "watchdog-historical", "watchdog-ordinary", "watchdog-successor"]
+        "parts": ["watchdog-foundation", "watchdog-capacity", "watchdog-policy-ac", "watchdog-policy-protected", "watchdog-policy-consumed", "watchdog-policy-unlinked", "watchdog-policy-authentication", "watchdog-policy-scalars", "watchdog-policy-joins", "watchdog-policy-legacy", "watchdog-policy-pos", "watchdog-policy-mutants-admission", "watchdog-policy-mutants-lineage", "watchdog-policy-mutants-envelope", "watchdog-policy-mutants-history", "watchdog-policy-mutants-binding", "watchdog-policy-mutants-joins", "watchdog-host-hold-cases", "watchdog-host-hold-mutants", "watchdog-historical", "watchdog-ordinary", "watchdog-successor", "watchdog-no-escalation"]
       }
     },
     {

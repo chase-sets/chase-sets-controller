@@ -490,6 +490,9 @@ if($WatchdogSchema){
     -not$PSBoundParameters.ContainsKey('RelaunchCount')-or-not$ResumedPartial-or-not$WatchdogObservedAt-or-not$Lane-or-not$Harness-or-not$Model-or-not$Effort-or-not$Row-or-not$Placement){throw 'watchdog-relaunch/v1 requires closed attempt, death, partial, configuration, routing, and observation identity'}
   $watchInstant=ConvertTo-ReviewInstant $WatchdogObservedAt;if($null-eq$watchInstant){throw 'watchdog observation instant is invalid'}
   if($Kind-ceq'lane-blocked'-and$Outcome-cnotin@('HARNESS_CEILING','NO_QUALIFIED_FALLBACK')){throw 'watchdog lane-blocked requires a closed terminal outcome'}
+  # A relaunch row's outcome names its kind: absent is a same-configuration retry
+  # (WATCHDOG_RELAUNCH); WATCHDOG_CAPACITY_SUBSTITUTION is a quota/session move only.
+  if($Kind-ceq'dispatch'-and$Outcome-and($Outcome-cne'WATCHDOG_CAPACITY_SUBSTITUTION'-or$DeathSignature-cnotin@('PROVIDER_QUOTA','SESSION_LIMIT'))){throw 'watchdog relaunch outcome is WATCHDOG_CAPACITY_SUBSTITUTION on a quota/session death or absent'}
   if($watchdogRoutingFieldsPresent -and (($PolicyGeneration -isnot [long] -and $PolicyGeneration -isnot [int]) -or $PolicyGeneration -lt 1 -or
       $RegistryAuthorityDigest -cnotmatch '^[a-zA-Z0-9._:-]{1,128}$' -or $RoutingFamily -cnotmatch '^[a-z0-9][a-z0-9._-]{0,63}$' -or
       $RoutingSlot -cnotmatch '^(explicit|(codex|claude)\.(primary|fallback))$' -or $UsedLastKnownGood -isnot [bool])) {
@@ -963,7 +966,7 @@ if ($toddAction) {
   $entry=[ordered]@{ts=$eventTs;kind=$Kind;watchdogSchema='watchdog-relaunch/v1';attemptId=$WatchdogAttemptId
     launchId=$WatchdogLaunchId;observationIdentity=$ObservationIdentity;observedAt=$WatchdogObservedAt
     deathSignature=$DeathSignature;resumedPartial=[IO.Path]::GetFullPath($ResumedPartial);relaunchCount=$RelaunchCount
-    lane=$Lane;laneRole='implementation';harness=$Harness;model=$Model;effort=$Effort;row=$Row;placement=$Placement;outcome=$(if($Kind-ceq'lane-blocked'){$Outcome}else{'WATCHDOG_RELAUNCH'})}
+    lane=$Lane;laneRole='implementation';harness=$Harness;model=$Model;effort=$Effort;row=$Row;placement=$Placement;outcome=$(if($Kind-ceq'lane-blocked'-or$Outcome){$Outcome}else{'WATCHDOG_RELAUNCH'})}
   if($watchdogRoutingFieldsPresent){$entry.policyGeneration=[long]$PolicyGeneration;$entry.registryAuthorityDigest=$RegistryAuthorityDigest
     $entry.family=$RoutingFamily;$entry.slot=$RoutingSlot;$entry.usedLastKnownGood=[bool]$UsedLastKnownGood}
 } else {
