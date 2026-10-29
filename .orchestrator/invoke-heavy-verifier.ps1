@@ -116,6 +116,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:heavyAdmissionBudget = @{ watch=[Diagnostics.Stopwatch]::StartNew(); deadline=210000; observations=0; fences=0 }
+$script:heavyAdmissionPriorityRaised = $false
+$script:heavyAdmissionPriorityClass = $null
+$script:heavyAdmissionPriorityDepth = 0
+$script:heavyAdmissionPriorityFailureReported = $false
+$script:heavyAdmissionPriorityRestoreFailureReported = $false
+$script:heavyAdmissionQuitAfterQuarantine = $false
 $isAttachedAdmission = $PSCmdlet.ParameterSetName -ceq "Attach"
 $isControllerBattery = $PSCmdlet.ParameterSetName -ceq "ControllerBattery"
 $isControllerPrecursor = $PSCmdlet.ParameterSetName -ceq "ControllerPrecursor"
@@ -169,6 +175,83 @@ $admissionRoot = $null
 $attachedDeadTreeProven = $false
 $admissionCleanupDiagnostic = 'not-attempted'
 $script:quarantineCompleted = $false
+
+function Enter-HeavyAdmissionPriority {
+  $script:heavyAdmissionPriorityDepth++
+  if (-not $IsWindows -or $script:heavyAdmissionPriorityDepth -gt 1) { return }
+  $process = $null
+  try {
+    $process = [Diagnostics.Process]::GetCurrentProcess()
+    $script:heavyAdmissionPriorityClass = $process.PriorityClass
+    if ($process.PriorityClass -notin @([Diagnostics.ProcessPriorityClass]::BelowNormal, [Diagnostics.ProcessPriorityClass]::Idle)) { return }
+    try {
+      $process.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
+      $script:heavyAdmissionPriorityRaised = $true
+    } catch {
+      if (-not $script:heavyAdmissionPriorityFailureReported) {
+        [Console]::Error.WriteLine("heavy-verifier: admission priority raise failed; continuing at inherited class: $($_.Exception.Message)")
+        $script:heavyAdmissionPriorityFailureReported = $true
+      }
+    }
+  } catch {
+    if (-not $script:heavyAdmissionPriorityFailureReported) {
+      [Console]::Error.WriteLine("heavy-verifier: admission priority raise failed; continuing at inherited class: $($_.Exception.Message)")
+      $script:heavyAdmissionPriorityFailureReported = $true
+    }
+  } finally {
+    if ($process) { $process.Dispose() }
+  }
+}
+
+function Exit-HeavyAdmissionPriority {
+  if ($script:heavyAdmissionPriorityDepth -gt 0) { $script:heavyAdmissionPriorityDepth-- }
+  if ($script:heavyAdmissionPriorityDepth -gt 0 -or -not $script:heavyAdmissionPriorityRaised) { return $true }
+  $process = $null
+  $restoreError = $null
+  $restored = $false
+  try {
+    $process = [Diagnostics.Process]::GetCurrentProcess()
+    try {
+      $process.PriorityClass = $script:heavyAdmissionPriorityClass
+      $restored = $process.PriorityClass -eq $script:heavyAdmissionPriorityClass
+      if (-not $restored) { throw "priority class remained $($process.PriorityClass)" }
+    } catch {
+      $restoreError = $_
+    }
+  } catch {
+    $restoreError = $_
+  } finally {
+    if ($process) { $process.Dispose() }
+    $script:heavyAdmissionPriorityRaised = $false
+  }
+  if ($restoreError) {
+    if (-not $script:heavyAdmissionPriorityRestoreFailureReported) {
+      [Console]::Error.WriteLine("heavy-verifier: admission priority restore failed; child launch is refused: $($restoreError.Exception.Message)")
+      $script:heavyAdmissionPriorityRestoreFailureReported = $true
+    }
+    return $false
+  }
+  return $restored
+}
+
+function Invoke-HeavyAdmissionCensus([scriptblock]$Action) {
+  Enter-HeavyAdmissionPriority
+  $actionError = $null
+  $actionOutput = @()
+  $restoreComplete = $false
+  try {
+    # Dot-source so admission state assigned by the action remains in the
+    # verifier's scope while the priority scope covers the whole action.
+    $actionOutput = @(. $Action)
+  } catch {
+    $actionError = $_
+  } finally {
+    $restoreComplete = Exit-HeavyAdmissionPriority
+  }
+  if ($actionError) { throw $actionError }
+  if (-not $restoreComplete) { throw 'heavy-verifier: admission priority restoration could not be proven' }
+  return $actionOutput
+}
 
 function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $null) {
   if (-not $isAttachedAdmission -or -not $admissionResultFull) { return }
@@ -1196,7 +1279,7 @@ function Assert-HeavyAdmissionAfterLock([bool]$LockCreated) {
 }
 try { . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') }
 catch { throw "heavy-verifier: caller eligibility: ownership reader unavailable: $($_.Exception.Message)" }
-$callerBinding = Assert-HeavyCallerEligibility
+$callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility }
 Assert-HostVerifierGitState
 if (($Gate -ceq 'test:e2e:suite') -ne $PSBoundParameters.ContainsKey('E2eSuite')) {
   throw 'heavy-verifier: test:e2e:suite requires one E2eSuite; other gates do not accept E2eSuite'
@@ -2818,7 +2901,7 @@ function Complete-NativeReconciliation($Record) {
   }
 }
 function Invoke-NativeLaunch {
-  $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+  $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
   if (Test-Path -LiteralPath $nativeEvidencePath) { throw 'native-db: correlation already consumed' }
   $evidenceStream = [IO.File]::Open($nativeEvidencePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
   try {
@@ -2847,7 +2930,7 @@ function Invoke-NativeLaunch {
     $owner.native.linux = $publication.linux
     $script:ownedRaw = Write-OwnerRecord $owner
     if (-not (Test-ThisOwner)) { throw 'native-db: published tuple no longer owned' }
-    $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+    $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
     $child.StandardInput.WriteLine(($publication | ConvertTo-Json -Compress -Depth 8))
     $child.StandardInput.Close()
     # The fixed runner owns its ordinary execution duration. Only control
@@ -3044,61 +3127,64 @@ $mutexHash = [Convert]::ToHexString(
 if (-not $isAttachedAdmission) { Initialize-OwnerRename }
 $coordinationMutex = [Threading.Mutex]::new($false, "Global\chase-sets-heavy-verifier-$mutexHash")
 $mutexHeld = $false
-try {
+Invoke-HeavyAdmissionCensus {
   try {
+    try {
     $remaining = $script:heavyAdmissionBudget.deadline - $script:heavyAdmissionBudget.watch.ElapsedMilliseconds
     Assert-HeavyAdmissionTime
     $mutexHeld = $coordinationMutex.WaitOne([int][Math]::Max(0, $remaining))
     if (-not $mutexHeld) { throw 'heavy-verifier: caller eligibility: admission deadline' }
-  } catch [Threading.AbandonedMutexException] {
-    $mutexHeld = $true
-  }
-  $callerBinding = Assert-HeavyCallerEligibility $callerBinding
-  if ($isProductSlot -and ($env:CHASE_SETS_HEAVY_SLOT_ID -or $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT)) {
-    throw 'heavy-verifier: caller eligibility: inherited heavy token must use nested continuation'
-  }
-  if ($QuarantineQueue) {
-    Invoke-QueueQuarantine
-  }
-  if ($script:quarantineCompleted) { return }
-  $queueContext = $null
-  if ($isQueueSlot) { # admission queue gate
-    $queueContext = Get-QueueTicketContext
-    if (-not $queueContext.IsHead) {
-      $reserved = -not (Test-Path -LiteralPath $lockPath)
-      throw "heavy-verifier: queued; ticket=$($queueContext.Ticket.number) position=$($queueContext.Position) reserved=$($reserved); retry within $queueRetentionSeconds seconds"
+    } catch [Threading.AbandonedMutexException] {
+      $mutexHeld = $true
     }
-  }
-  $queueLockCreated = $false
-  Assert-HeavyAdmissionTime
-  try {
-    New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
-    $queueLockCreated = $true
-  } catch {
-    Assert-HeavyAdmissionTime
-    if (-not (Invoke-StaleLockReclamation)) { Describe-ExistingLock }
+    $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
+    if ($isProductSlot -and ($env:CHASE_SETS_HEAVY_SLOT_ID -or $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT)) {
+      throw 'heavy-verifier: caller eligibility: inherited heavy token must use nested continuation'
+    }
+    if ($QuarantineQueue) {
+      Invoke-QueueQuarantine
+    }
+    if ($script:quarantineCompleted) { $script:heavyAdmissionQuitAfterQuarantine = $true; return }
+    $queueContext = $null
+    if ($isQueueSlot) { # admission queue gate
+      $queueContext = Get-QueueTicketContext
+      if (-not $queueContext.IsHead) {
+        $reserved = -not (Test-Path -LiteralPath $lockPath)
+        throw "heavy-verifier: queued; ticket=$($queueContext.Ticket.number) position=$($queueContext.Position) reserved=$($reserved); retry within $queueRetentionSeconds seconds"
+      }
+    }
+    $queueLockCreated = $false
     Assert-HeavyAdmissionTime
     try {
       New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
       $queueLockCreated = $true
     } catch {
-      Describe-ExistingLock
-    }
-  }
-  Assert-HeavyAdmissionAfterLock $queueLockCreated
-  if ($queueContext) {
-    try { Remove-QueueTicket $queueContext }
-    catch {
-      if ($queueLockCreated -and (Test-SafeDirectory $lockPath) -and -not (Test-Path -LiteralPath $ownerPath)) {
-        Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+      Assert-HeavyAdmissionTime
+      if (-not (Invoke-StaleLockReclamation)) { Describe-ExistingLock }
+      Assert-HeavyAdmissionTime
+      try {
+        New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop | Out-Null
+        $queueLockCreated = $true
+      } catch {
+        Describe-ExistingLock
       }
-      throw "heavy-verifier: unable to persist queue admission; owner was released: $($_.Exception.Message)"
     }
+    Assert-HeavyAdmissionAfterLock $queueLockCreated
+    if ($queueContext) {
+      try { Remove-QueueTicket $queueContext }
+      catch {
+        if ($queueLockCreated -and (Test-SafeDirectory $lockPath) -and -not (Test-Path -LiteralPath $ownerPath)) {
+          Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+        }
+        throw "heavy-verifier: unable to persist queue admission; owner was released: $($_.Exception.Message)"
+      }
+    }
+  } finally {
+    if ($mutexHeld) { $coordinationMutex.ReleaseMutex() }
+    $coordinationMutex.Dispose()
   }
-} finally {
-  if ($mutexHeld) { $coordinationMutex.ReleaseMutex() }
-  $coordinationMutex.Dispose()
 }
+if ($script:heavyAdmissionQuitAfterQuarantine) { return }
 
 $exitCode = 1
 $releaseMismatch = $false
@@ -3140,7 +3226,7 @@ try {
     Invoke-NativeLaunch
   } elseif ($isAttachedAdmission) {
     if ($nestedOwnerEligible) {
-      $nestedBinding = Assert-HeavyCallerEligibility $callerBinding
+      $nestedBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
       Start-NestedOwner $ownedRaw $GuardedPid $GuardedProcessStartUtc "attached" $nestedBinding
       $script:nestedTransport = New-NestedTransportDescriptor
     }
@@ -3270,7 +3356,7 @@ try {
       $start.Environment["CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL"] = "node-check-proxy"
     }
     foreach ($argument in $arguments) { [void]$start.ArgumentList.Add($argument) }
-    $callerBinding = Assert-HeavyCallerEligibility $callerBinding
+    $callerBinding = Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
     if ($isTimedRoute -and $isHostVerifier -and (-not $callerBinding.Record -or $isWorkspaceDbTest)) {
       $receiptRoot = Join-Path $worktreeFull ".orchestrator\artifacts"
       if (-not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) { throw "heavy-verifier: receipt directory is unsafe" }

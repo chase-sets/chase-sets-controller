@@ -666,6 +666,7 @@ $batteryCodePattern = '\.(ps1|psm1|cjs|js|mjs|cs|py|sh|vbs)$'
 $batterySmokeTests = @(
   ".orchestrator/issue-6997-autonomy-policy.test.ps1",
   ".orchestrator/contract-enforcement.test.ps1",
+  ".orchestrator/heavy-verifier-priority.test.ps1",
   ".orchestrator/install-controller-skills.test.ps1",
   ".orchestrator/controller-release-battery.test.ps1",
   ".orchestrator/landing-preflight.test.ps1"

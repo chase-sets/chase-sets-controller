@@ -15,6 +15,9 @@ $pins=@{
   'landed-integration-dispatch.test.ps1'='d19467b682d79bb64a6ec58aef76f2da43c7cf59'
   'invoke-heavy-verifier.test.ps1'='4abac745923af272440e35f9c04fb05448681d08'
 }
+$newTestPins=@{
+  'heavy-verifier-priority.test.ps1'='11465f6804b615fe90c64a5eec1fd35b06132f77c909649eb7fa530544ff9d59'
+}
 function Assert-Conservation($Manifest,$Overrides=@{}) {
   $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   foreach($entry in $Manifest.sourceConservation){
@@ -68,8 +71,14 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     }
   }
   Assert-Ci ($seen.Count-eq$pins.Count) 'missing conservation source'
-  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq9-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  foreach($name in $newTestPins.Keys){
+    $identity='test:'+$name
+    $mapping=@($Manifest.items|Where-Object identity -CEQ $identity)
+    Assert-Ci ($mapping.Count-eq1-and$mapping[0].identity.Substring(5)-ceq$name) 'new proof test mapping missing/drifted'
+    Assert-Ci ((Get-CiSourceDigest (Join-Path $root ('.orchestrator/'+$name)))-ceq$newTestPins[$name]) 'new proof test source drifted'
+  }
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq10-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }

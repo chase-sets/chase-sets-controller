@@ -543,6 +543,17 @@
       }
     },
     {
+      "identity": "test:heavy-verifier-priority.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "structure", "weight": 1 },
+        { "name": "admission", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["structure", "admission"]
+      }
+    },
+    {
       "identity": "test:long-product-gate.test.ps1",
       "selector": "-Part",
       "parts": [
