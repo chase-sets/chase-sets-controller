@@ -410,8 +410,9 @@ Universal launcher rules remain in the shared launcher and tests:
   recorded child is reclaimable only when the complete descendant walk finds no
   possible owned child. Unreadable or multiple identity candidates retain the
   exact owner record and fail closed in both slots.
-- Treat mechanical launch/harness failures as same-config retries, not reasoning
-  failures.
+- Treat non-model failures (host load, flaky tests, launch, harness or
+  infrastructure faults, quota or session problems, environment tooling) as
+  same-config retries, never a model or effort escalation (Todd, 2026-10-29).
 - Resolve prescribed test paths against the exact dispatched head.
 - A landed integration uses `dispatch-lane.ps1` as the sole launcher and
   `rebase-integration.ps1` as the only no-conflict continuation producer.
@@ -491,9 +492,11 @@ A verified mechanical death is processed by `lane-stall-watchdog.ps1`, wired
 from `lane-stall-watchdog-batch.ps1`, within five minutes of observation. Harness
 death resumes the exact partial/worktree on the same configuration; quota or
 session death is classified only from the native provider terminal envelope
-and uses only the current routing row's closed qualified fallback table. The
-installed runtime uses the current row policy fallback for quota and session
-death; rows 9/11/12 remain closed for host diagnosis, while retained legacy
+and also resumes on the same configuration while its provider has a routable
+account. Only without one does it use the current routing row's closed
+qualified fallback table, then the current row policy fallback, each limited
+to the other provider at the same or a lower effort and model tier; rows
+9/11/12 remain closed for host diagnosis, while retained legacy
 Astra/Fable sources move once to the current other-harness policy slot.
 Policy reserve is logged as override-Todd. A
 `watchdog-lane/v3` integration lane uses row 7's current policy-slot author;
@@ -648,7 +651,8 @@ or the host names one failure class, and the class sets the next step:
   implementation attempt.
 - Environment or tooling (harness, launcher, quota, sandbox, hosted-runner
   infrastructure): link the tooling owner as a native blocker; the artifact
-  resumes when that blocker lands, with no attempt consumed.
+  resumes when that blocker lands on the same configuration, with no attempt
+  consumed and no model or effort change.
 - Implementation defect with a known remedy: resume the author with it.
 - Brief defect (missing context, impossible or contradictory acceptance):
   `ISSUE`-level replan.
@@ -1236,7 +1240,8 @@ schema-specific identity. Event schemas and reducers in runtime are canonical.
 `watchdog-dispatch-routing/v1`, and `watchdog-relaunch/v1` are closed lifecycle
 variants produced only there;
 duplicate landed-target and watchdog-observation identities are rejected.
-LAUNCHED/WATCHDOG_RELAUNCH rows are appended only after an exact closed
+LAUNCHED, WATCHDOG_RELAUNCH (same-configuration retry) and
+WATCHDOG_CAPACITY_SUBSTITUTION rows are appended only after an exact closed
 dispatch-start acknowledgement; launch failure appends no success identity and
 remains retryable without incrementing a relaunch count.
 `log-event.ps1` refuses an ordinary exact-head review receipt unless its PR is

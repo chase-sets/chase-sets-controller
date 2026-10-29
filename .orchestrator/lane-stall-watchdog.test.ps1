@@ -15,6 +15,17 @@ if($Part -like 'watchdog-policy-*' -and $Part -notlike 'watchdog-policy-mutants-
 if($Part -like 'watchdog-policy-mutants-*'){$PolicyFallbackMutantsOnly=$true}
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
+# #237: a quota/session relaunch reads AgentPools /api/status. No case reads the
+# live pool: Invoke-Watchdog passes each case its own status, and any other
+# invocation sees an unreachable status (unknown availability).
+$previousPoolStatusUrl=$env:CODEX_POOL_STATUS_URL;$env:CODEX_POOL_STATUS_URL='http://127.0.0.1:1/status'
+# Production generation-2 row 1 pairs Luna low with Haiku low; the matrix fixture has
+# no Haiku family, so add its current identity to the synthetic registry.
+$haikuRegistryPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json'
+$haikuRegistry=[IO.File]::ReadAllText($haikuRegistryPath)|ConvertFrom-Json -AsHashtable -DateKind String
+$haikuRegistry.families['haiku']=[ordered]@{provider='claude';current='claude-haiku-5-5';historical=[object[]]@()}
+$haikuRegistry.models['claude-haiku-5-5']=[ordered]@{admittedEfforts=@('low','medium','high','xhigh','max');usableAccountsByEffort=[ordered]@{low=@('synthetic-account');medium=@('synthetic-account');high=@('synthetic-account');xhigh=@('synthetic-account');max=@('synthetic-account')};accounts=@([ordered]@{account='synthetic-account';efforts=@('low','medium','high','xhigh','max');stale=$false;usable=$true;disabled=$false;routing='ready'})}
+[IO.File]::WriteAllText($haikuRegistryPath,($haikuRegistry|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
 try {
 $root=Join-Path ([IO.Path]::GetTempPath()) ('lane-watchdog-test-'+[guid]::NewGuid().ToString('N'))
 if($Part -in @('watchdog-historical','watchdog-ordinary','watchdog-successor')){
@@ -49,7 +60,26 @@ function New-Observation([string]$Name,[string]$Owner='dead',[string]$Descendant
   $now=[datetimeoffset]::UtcNow;$value=[ordered]@{ownerState=$Owner;descendantState=$Descendant;transcriptStopped=$true;observedAt=$now.AddSeconds(-$AgeSeconds).ToString('o');nowUtc=$now.ToString('o')}
   $path=Join-Path $runtime "$Name.observation.json";[IO.File]::WriteAllText($path,($value|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$path
 }
-function Invoke-Watchdog($Item,[string]$Name){& $watchdog -Label $Item.spec.label -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $Item.partial -ObservationFixture (New-Observation $Name) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String}
+# #237: each case names the pool status it runs under. 'source-exhausted' (the
+# default) blocks the dying lane's model on every enabled account of its provider,
+# the exhaustion a quota or session death reports, so these controls exercise the
+# capacity substitution path. 'ready' leaves the source routable; 'unknown' reads
+# no status. $script:poolStatusPath, when set, names an exact status file instead.
+$script:poolScenario='source-exhausted';$script:poolStatusPath=$null
+function New-PoolStatus([string]$Name,[object[]]$Routes){
+  $path=Join-Path $root "pool-status-$Name.json";$future=[datetimeoffset]::UtcNow.AddDays(1).ToString('o')
+  $accounts=foreach($route in $Routes){foreach($index in 1..2){[ordered]@{provider=[string]$route[0];disabled=$false;routingModels=[ordered]@{([string]$route[1])=[ordered]@{status=[string]$route[2];next_retry_after=$(if($route[2]-ceq'blocked'){$future}else{'0001-01-01T00:00:00Z'})}}}}}
+  [IO.File]::WriteAllText($path,([ordered]@{error=$null;accounts=@($accounts)}|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false));$path
+}
+function Get-PoolStatusFixture($Item,[string]$Name){
+  if($script:poolStatusPath){return $script:poolStatusPath}
+  switch($script:poolScenario){
+    'unknown'{return (Join-Path $root 'pool-status-absent.json')}
+    'ready'{return (New-PoolStatus $Name @(,@([string]$Item.spec.harness,[string]$Item.spec.model,'ready')))}
+    default{return (New-PoolStatus $Name @(,@([string]$Item.spec.harness,[string]$Item.spec.model,'blocked')))}
+  }
+}
+function Invoke-Watchdog($Item,[string]$Name){& $watchdog -Label $Item.spec.label -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $Item.partial -ObservationFixture (New-Observation $Name) -DispatchScript $stub -PoolStatusFixturePath (Get-PoolStatusFixture $Item $Name) -SynchronousDispatch|ConvertFrom-Json -DateKind String}
 function Save-Spec($Item){[IO.File]::WriteAllText((Join-Path $runtime "watchdog-lane-$($Item.spec.label).json"),($Item.spec|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))}
 function Get-CallCount {if(Test-Path $calls){@(Get-Content $calls).Count}else{0}}
 function Assert-Recovery($Item,$Result,[string]$Model,[string]$Effort,[string]$Placement,[int]$Before){
@@ -74,10 +104,12 @@ function Test-SonnetCutover {
     $before=Get-CallCount;$result=Invoke-Watchdog $sonnet $sonnet.spec.label
     Assert-Recovery $sonnet $result 'claude-sonnet-5-5' $route[1] override-Todd $before
   }
+  # #237: the former 10|sonnet/high -> Sol/high entry raised the model tier, so an
+  # exhausted row-10 Sonnet lane has no qualified substitute and closes for the host.
   $sonnetQuota=New-Spec 'sonnet55-row10-quota' 'claude-sonnet-5-5' high 0 10 override-Todd
   Set-Content $sonnetQuota.error 'provider quota exceeded'
   $before=Get-CallCount;$result=Invoke-Watchdog $sonnetQuota $sonnetQuota.spec.label
-  Assert-Recovery $sonnetQuota $result 'gpt-6.1-sol' high provisional $before
+  Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before) 'exhausted row-10 Sonnet high raised to Sol high instead of closing'
   $sonnetMeasured=New-Spec 'sonnet55-not-measured' 'claude-sonnet-5-5' medium 0 3 measured
   $before=Get-CallCount;$refused=$false
   try{Invoke-Watchdog $sonnetMeasured $sonnetMeasured.spec.label|Out-Null}catch{$refused=$_.Exception.Message-match'WATCHDOG_UNKNOWN_SPEC_INVALID'}
@@ -105,7 +137,7 @@ function Test-SonnetCutover {
       Assert-True ($refused-and(Get-CallCount)-eq$before) 'Sonnet conditional medium lost exact-case override-Todd gate'
     }
   }
-  Write-Output 'PASS Sonnet cutover/rebalance: historical workers preserved, rows 3/13 medium and high quota recover exactly, row-10 fallback retained, quota/session exhaustion closed, placement case enforced'
+  Write-Output 'PASS Sonnet cutover/rebalance: historical workers preserved, rows 3/13 medium and high quota recover exactly, row-10 tier raise removed, quota/session exhaustion closed, placement case enforced'
 }
 # #9092: a cross-harness move at relaunch 1-3 needs an authenticated lineage, so a
 # continuation is built from a real watchdog relaunch (canonical relaunch row and start
@@ -137,8 +169,8 @@ function Test-PolicyFallback {
   $policyPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json'
   $policyBytes=[IO.File]::ReadAllBytes($policyPath)
   $failures=[Collections.Generic.List[string]]::new();$passes=[Collections.Generic.List[string]]::new()
-  # Production generation-2 rows 1 and 2 (Opus stands in for the Haiku family the fixture lacks).
-  $gen2=@{'1|claude.fallback'=[ordered]@{family='opus';effort='low';placement='provisional'};'1|codex.fallback'=[ordered]@{family='luna';effort='medium';placement='provisional'};'2|claude.fallback'=[ordered]@{family='opus';effort='medium';placement='override-Todd'}}
+  # Production generation-2 rows 1 and 2 (row 1 pairs Luna low with Haiku low).
+  $gen2=@{'1|claude.fallback'=[ordered]@{family='haiku';effort='low';placement='provisional'};'1|codex.fallback'=[ordered]@{family='luna';effort='medium';placement='provisional'};'2|claude.fallback'=[ordered]@{family='opus';effort='medium';placement='override-Todd'}}
   # Row 3 Opus/high becomes a policy slot whose other-harness slot (Sol/medium) has a closed entry back to Opus.
   $chain=@{'3|claude.fallback'=[ordered]@{family='opus';effort='high';placement='override-Todd'}}
   # Protected rows given lower-tier policy slots that have no closed entry.
@@ -146,6 +178,9 @@ function Test-PolicyFallback {
   foreach($row in @(7,14,15)){$protected["$row|claude.primary"]=[ordered]@{family='opus';effort='medium';placement='provisional'};$protected["$row|codex.fallback"]=[ordered]@{family='sol';effort='medium';placement='provisional'}}
   # A generation-3-shaped row 7 (Astra/Fable reserve slots) gives a legacy lineage its pre-cutover cross.
   $gen3Row7=@{'7|codex.primary'=[ordered]@{family='astra';effort='high';placement='reserve'};'7|claude.primary'=[ordered]@{family='fable';effort='high';placement='reserve'}}
+  # #237: today's fixture row-7 Claude slot is Opus xhigh, an effort raise from a
+  # legacy Astra high source, so the legacy one-move controls use an Opus high slot.
+  $todayRow7=@{'7|claude.primary'=[ordered]@{family='opus';effort='high';placement='provisional'}}
   function Set-PolicySlots([hashtable]$Slots){
     [IO.File]::WriteAllBytes($policyPath,$policyBytes)
     if($Slots.Count-eq0){return}
@@ -229,8 +264,8 @@ function Test-PolicyFallback {
     # AC1-AC3: the first policy move, both directions, with its bound reservation.
     foreach($case in @(
       @('ac1-row2',2,'gpt-6.1-sol','medium','provisional','claude-opus-5-5','medium','override-Todd'),
-      @('ac2-row1-codex',1,'gpt-6-luna','low','provisional','claude-opus-5-5','low','provisional'),
-      @('ac2-row1-claude',1,'claude-opus-5-5','low','provisional','gpt-6-luna','low','provisional'),
+      @('ac2-row1-codex',1,'gpt-6-luna','low','provisional','claude-haiku-5-5','low','provisional'),
+      @('ac2-row1-claude',1,'claude-haiku-5-5','low','provisional','gpt-6-luna','low','provisional'),
       @('ac3-row8',8,'claude-opus-5-5','high','provisional','gpt-6.1-sol','high','provisional'))){
       Invoke-PolicyCase "$($case[0])/$tag" $gen2 {
         $item=New-Spec "pf-$($case[0])-$tag" $case[2] $case[3] 0 $case[1] $case[4];Set-Content $item.error $envelope
@@ -261,12 +296,15 @@ function Test-PolicyFallback {
       $offSlot=New-Spec "pf-ac7-$tag" 'claude-opus-5-5' high 0 3 'override-Todd';Set-Content $offSlot.error $envelope
       Assert-Blocked $offSlot 'route is not its row''s policy slot'
     }
-    Invoke-PolicyCase "ac8-unadmitted/$tag" @{'2|claude.fallback'=[ordered]@{family='opus';effort='max';placement='override-Todd'}} {
-      $registry=Set-ProductionShapedRoutingRegistry -Path (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json')
+    # #237: the target is the same effort and tier, so registry admission is the only refusal.
+    Invoke-PolicyCase "ac8-unadmitted/$tag" $gen2 {
+      $registryPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json';$registryBytes=[IO.File]::ReadAllBytes($registryPath)
       try{
+        $unadmittedRegistry=[IO.File]::ReadAllText($registryPath)|ConvertFrom-Json -AsHashtable -DateKind String;$unadmittedRegistry.models['claude-opus-5-5'].usableAccountsByEffort['medium']=@()
+        [IO.File]::WriteAllText($registryPath,($unadmittedRegistry|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
         $unadmitted=New-Spec "pf-ac8-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $unadmitted.error $envelope
         Assert-Blocked $unadmitted 'target effort is not admitted'
-      }finally{Restore-RoutingRegistryBytes $registry}
+      }finally{[IO.File]::WriteAllBytes($registryPath,$registryBytes)}
     }
     Invoke-PolicyCase "ac9-absent-slot/$tag" @{} {
       $absent=New-Spec "pf-ac9-$tag" 'gpt-6.1-sol' medium 0 2 provisional;Set-Content $absent.error $envelope
@@ -504,12 +542,12 @@ function Test-PolicyFallback {
       $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
       Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
       Remove-Item -LiteralPath (Join-Path $runtime "watchdog-policy-move-$($origin.spec.launchId).json")
-      Set-PolicySlots @{}
+      Set-PolicySlots $todayRow7
       $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
       $before=Get-CallCount;$second=Invoke-Watchdog $astra $astra.spec.label
-      Assert-Recovery $astra $second 'claude-opus-5-5' xhigh provisional $before
+      Assert-Recovery $astra $second 'claude-opus-5-5' high provisional $before
       Assert-True (Test-Path (Join-Path $runtime "watchdog-policy-move-$($astra.spec.launchId).json")) 'the legacy move to today''s slot reserved no policy move'
-      $opus=New-Continuation $astra $second 'claude-opus-5-5' xhigh provisional;Set-Content $opus.error $envelope
+      $opus=New-Continuation $astra $second 'claude-opus-5-5' high provisional;Set-Content $opus.error $envelope
       Assert-Blocked $opus 'a legacy lineage takes only one move to today''s slot'
     }
     # A legacy move at relaunch count 1 whose launch fails before receipt keeps its
@@ -519,7 +557,7 @@ function Test-PolicyFallback {
       $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
       Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
       Remove-Item -LiteralPath (Join-Path $runtime "watchdog-policy-move-$($origin.spec.launchId).json")
-      Set-PolicySlots @{}
+      Set-PolicySlots $todayRow7
       $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
       $recordPath=Join-Path $runtime "watchdog-policy-move-$($astra.spec.launchId).json"
       $env:SYNTHETIC_WATCHDOG_FAIL_LABEL=$astra.spec.label
@@ -527,7 +565,7 @@ function Test-PolicyFallback {
       Assert-True ($failed.status-ceq'LAUNCH_FAILED'-and-not$failed.relaunch-and(Get-CallCount)-eq$before+1-and(Test-Path $recordPath)) 'a failed legacy policy launch did not keep its reservation'
       $target=(Get-Content $recordPath -Raw|ConvertFrom-Json -DateKind String).targetLabel
       $before=Get-CallCount;$second=Invoke-Watchdog $astra $astra.spec.label
-      Assert-Recovery $astra $second 'claude-opus-5-5' xhigh provisional $before
+      Assert-Recovery $astra $second 'claude-opus-5-5' high provisional $before
       Assert-True ($second.label-ceq$target) 'the legacy retry did not reuse the exact reserved target'
     }
     # The same lineage whose earlier cross was itself a policy move has consumed it.
@@ -535,7 +573,7 @@ function Test-PolicyFallback {
       $origin=New-Spec "pf-legacy-consumed-$tag" 'claude-fable-5-1' high 0 7 'override-Todd';Set-Content $origin.error $envelope
       $before=Get-CallCount;$first=Invoke-Watchdog $origin $origin.spec.label
       Assert-Recovery $origin $first 'gpt-6-astra' high 'override-Todd' $before
-      Set-PolicySlots @{}
+      Set-PolicySlots $todayRow7
       $astra=New-Continuation $origin $first 'gpt-6-astra' high 'override-Todd';Set-Content $astra.error $envelope
       Assert-Blocked $astra 'a legacy lineage whose policy move is already consumed'
     }
@@ -901,7 +939,9 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     try {
       $cases=@(
         @{name='same-config-row4-sol';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error=$null;target='gpt-6.1-sol'},
-        @{name='row7-legacy-astra-to-policy';model='gpt-6-astra';effort='high';row=7;placement='override-Todd';error='provider quota exceeded';target='claude-opus-5-5'},
+        # #237: row 7's Opus xhigh slot raises a legacy Astra high source, so the legacy
+        # policy move is shown on row 14 (Fable high to the Astra high slot).
+        @{name='row14-legacy-fable-to-policy';model='claude-fable-5-1';effort='high';row=14;placement='override-Todd';error='provider quota exceeded';target='gpt-6-astra'},
         @{name='row4-sol-to-opus-quota';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error='provider quota exceeded';target='claude-opus-5-5'},
         @{name='row4-sol-to-opus-session';model='gpt-6.1-sol';effort='high';row=4;placement='provisional';error='session limit reached';target='claude-opus-5-5'}
       )
@@ -917,6 +957,103 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
       }
     } finally { Remove-Item Env:SYNTHETIC_WATCHDOG_EXPLICIT_ACK -ErrorAction SilentlyContinue }
   }
+  # #237 (Todd 2026-10-29): a quota or session death is not a model failure. For every
+  # closed-table key, every key #237 removed and every fixture policy slot, under both
+  # pool states and both envelopes: with the source routable the relaunch keeps the exact configuration
+  # (a WATCHDOG_RELAUNCH row); with it exhausted the lane either moves to the other
+  # provider at an equal or lower effort and model tier (a
+  # WATCHDOG_CAPACITY_SUBSTITUTION row), taking a retained table entry exactly, or
+  # closes NO_QUALIFIED_FALLBACK with no launch. The tiers here are the test's own.
+  function Test-QuotaNoEscalation {
+    $tier=@{luna=1;haiku=1;sonnet=2;sol=3;opus=3;astra=4;fable=4};$rank=@{low=1;medium=2;high=3;xhigh=4;max=5}
+    $registry=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json') -Raw|ConvertFrom-Json -DateKind String
+    $policy=Get-Content (Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'routing-policy.json') -Raw|ConvertFrom-Json -DateKind String
+    $familyOf=@{};foreach($family in $registry.families.PSObject.Properties){$familyOf[[string]$family.Value.current]=$family.Name}
+    # The closed table is read from the script under test, so a new entry is covered too.
+    $parsed=[Management.Automation.Language.Parser]::ParseFile($watchdog,[ref]$null,[ref]$null)
+    $tables=@($parsed.FindAll({param($n)$n-is[Management.Automation.Language.AssignmentStatementAst]-and$n.Left.Extent.Text-ceq'$fallback'},$true))
+    Assert-True ($tables.Count-eq1) '#237 closed quota/session fallback table not found exactly once'
+    $table=@{}
+    foreach($pair in $tables[0].Right.Find({param($n)$n-is[Management.Automation.Language.HashtableAst]},$true).KeyValuePairs){
+      $table[[string]$pair.Item1.Value]=@($pair.Item2.FindAll({param($n)$n-is[Management.Automation.Language.StringConstantExpressionAst]},$true)|ForEach-Object{[string]$_.Value})
+    }
+    $removed=@('2|luna/medium','4|astra/high','4|sol/medium','5|astra/high','5|sol/xhigh','6|astra/high','10|astra/high','10|sonnet/high','13|opus/low','10|opus/medium','4|opus/medium')
+    foreach($key in $removed){Assert-True (-not$table.ContainsKey($key)) "#237 removed fallback key $key is back in the closed table"}
+    foreach($key in $table.Keys){
+      $entry=$table[$key];$source=$key.Split('|')[1].Split('/')
+      $sourceHarness=[string]$registry.families.PSObject.Properties[$source[0]].Value.provider
+      Assert-True ($entry[0]-cne$sourceHarness-and$tier[$entry[1]]-le$tier[$source[0]]-and$rank[$entry[2]]-le$rank[$source[1]]) "#237 closed table entry $key -> $($entry-join'/') stays on its provider or raises effort or tier"
+    }
+    $keys=[ordered]@{};foreach($key in @($table.Keys|Sort-Object)+$removed){$keys[$key]=$true}
+    foreach($row in $policy.rows.PSObject.Properties){foreach($slot in $row.Value.slots.PSObject.Properties){$keys["$($row.Name)|$($slot.Value.family)/$($slot.Value.effort)"]=$true}}
+    $unplaced=[Collections.Generic.List[string]]::new();$sameConfig=0;$substituted=0;$closed=0;$index=0
+    $envelopes=@('provider quota exceeded','session limit reached')
+    foreach($key in $keys.Keys){
+      $row=[int]$key.Split('|')[0];$family=$key.Split('|')[1].Split('/')[0];$effort=$key.Split('/')[1]
+      $model=[string]$registry.families.PSObject.Properties[$family].Value.current;$harness=[string]$registry.families.PSObject.Properties[$family].Value.provider
+      # Each key runs both pool states, alternating the quota and session envelopes
+      # between them so every key sees both signatures. The routable run is also the
+      # placement probe: the first placement the watchdog admits for this route.
+      $readyEnvelope=$envelopes[$index%2];$exhaustedEnvelope=$envelopes[($index+1)%2];$index++
+      $placement=$null;$result=$null;$item=$null;$before=0
+      $script:poolScenario='ready'
+      try{
+        foreach($candidate in @('provisional','override-Todd','measured')){
+          $item=New-Spec "ne-ready-$row-$family-$effort-$candidate" $model $effort 0 $row $candidate;Set-Content $item.error $readyEnvelope;$before=Get-CallCount
+          try{$result=Invoke-Watchdog $item $item.spec.label;$placement=$candidate;break}catch{if($_.Exception.Message-cnotmatch'WATCHDOG_UNKNOWN_SPEC_INVALID'){throw $_}}
+        }
+      }finally{$script:poolScenario='source-exhausted'}
+      if($null-eq$placement){$unplaced.Add($key);continue}
+      $tag="$row-$family-$effort"
+      Assert-Recovery $item $result $model $effort $placement $before
+      $historyRow=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+      Assert-True ($result.relaunchKind-ceq'same-config'-and$result.harness-ceq$harness-and$historyRow.outcome-ceq'WATCHDOG_RELAUNCH'-and$historyRow.deathSignature-cin@('PROVIDER_QUOTA','SESSION_LIMIT')) "#237 routable $tag was not a same-configuration retry"
+      $sameConfig++
+      $item=New-Spec "ne-exhausted-$tag" $model $effort 0 $row $placement;Set-Content $item.error $exhaustedEnvelope
+      $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;$historyRow=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+      if($result.status-ceq'RELAUNCHED'){
+        $target=$familyOf[[string]$result.model]
+        Assert-True ($result.harness-cne$harness-and$null-ne$target-and$tier[$target]-le$tier[$family]-and$rank[[string]$result.effort]-le$rank[$effort]-and(Get-CallCount)-eq($before+1)) "#237 exhausted $tag escalated or stayed on its provider: $($result.harness)/$($result.model)/$($result.effort)"
+        Assert-True ($result.relaunchKind-ceq'capacity-substitution'-and$historyRow.kind-ceq'dispatch'-and$historyRow.outcome-ceq'WATCHDOG_CAPACITY_SUBSTITUTION'-and$historyRow.model-ceq$result.model-and$historyRow.effort-ceq$result.effort) "#237 exhausted $tag substitution was not recorded as one"
+        $substituted++
+      }else{
+        Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before-and$historyRow.kind-ceq'lane-blocked'-and$historyRow.outcome-ceq'NO_QUALIFIED_FALLBACK'-and$historyRow.model-ceq$model) "#237 exhausted $tag neither substituted nor closed: $($result.status)"
+        $closed++
+      }
+      if($table.ContainsKey($key)){
+        $entry=$table[$key];$entryModel=[string]$registry.families.PSObject.Properties[$entry[1]].Value.current
+        Assert-True ($result.status-ceq'RELAUNCHED'-and$result.harness-ceq$entry[0]-and$result.model-ceq$entryModel-and$result.effort-ceq$entry[2]) "#237 retained table entry $key did not substitute exactly"
+      }
+    }
+    Assert-True (@($unplaced|Where-Object{$table.ContainsKey($_)-or$_-cin$removed}).Count-eq0) "#237 table or removed keys the watchdog no longer admits: $($unplaced-join', ')"
+    # Unknown pool status is not exhaustion: the same configuration again.
+    $script:poolScenario='unknown'
+    try{$unknown=New-Spec 'ne-unknown-status' 'gpt-6.1-sol' high 0 4 provisional;Set-Content $unknown.error 'provider quota exceeded';$before=Get-CallCount;$result=Invoke-Watchdog $unknown $unknown.spec.label}
+    finally{$script:poolScenario='source-exhausted'}
+    Assert-Recovery $unknown $result 'gpt-6.1-sol' high provisional $before
+    Assert-True ($result.relaunchKind-ceq'same-config') '#237 unknown pool status was treated as exhaustion'
+    # A registry with no usable account for the source is not routable even when the pool reads ready.
+    $registryPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'model-registry.json';$registryBytes=[IO.File]::ReadAllBytes($registryPath)
+    try{
+      $denied=[IO.File]::ReadAllText($registryPath)|ConvertFrom-Json -AsHashtable -DateKind String;$denied.models['gpt-6.1-sol'].usableAccountsByEffort['high']=@()
+      [IO.File]::WriteAllText($registryPath,($denied|ConvertTo-Json -Depth 50),[Text.UTF8Encoding]::new($false))
+      $script:poolScenario='ready'
+      $unrouted=New-Spec 'ne-registry-denied' 'gpt-6.1-sol' high 0 4 provisional;Set-Content $unrouted.error 'session limit reached';$before=Get-CallCount;$result=Invoke-Watchdog $unrouted $unrouted.spec.label
+    }finally{$script:poolScenario='source-exhausted';[IO.File]::WriteAllBytes($registryPath,$registryBytes)}
+    Assert-Recovery $unrouted $result 'claude-opus-5-5' high 'override-Todd' $before
+    Assert-True ($result.relaunchKind-ceq'capacity-substitution') '#237 registry-unroutable source was not a capacity substitution'
+    # A substitute whose own provider is exhausted for it is not qualified.
+    $script:poolStatusPath=New-PoolStatus 'ne-both-exhausted' @(@('codex','gpt-6.1-sol','blocked'),@('claude','claude-opus-5-5','blocked'))
+    try{$both=New-Spec 'ne-both-exhausted' 'gpt-6.1-sol' high 0 4 provisional;Set-Content $both.error 'provider quota exceeded';$before=Get-CallCount;$result=Invoke-Watchdog $both $both.spec.label}
+    finally{$script:poolStatusPath=$null}
+    Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before) '#237 substituted onto an exhausted provider'
+    # The closed row admits WATCHDOG_CAPACITY_SUBSTITUTION only on a quota/session death.
+    $refusedOutcome=$false
+    try{& (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind dispatch -WatchdogSchema watchdog-relaunch/v1 -WatchdogAttemptId 'synthetic-semantic-attempt' -WatchdogLaunchId ([guid]::NewGuid().ToString()) -DeathSignature OWNER_DEAD -ObservationIdentity ('f'*64) -RelaunchCount 1 -ResumedPartial $unknown.partial -WatchdogObservedAt ([datetimeoffset]::UtcNow.ToString('o')) -Lane 'synthetic-outcome-lane' -Harness codex -Model 'gpt-6.1-sol' -Effort high -Row '4' -Placement provisional -Outcome WATCHDOG_CAPACITY_SUBSTITUTION -OutFile $history -NoBoard|Out-Null}catch{$refusedOutcome=$_.Exception.Message-match'WATCHDOG_CAPACITY_SUBSTITUTION'}
+    Assert-True $refusedOutcome '#237 a non-quota relaunch row was recorded as a capacity substitution'
+    Write-Output "PASS #237 quota/session never escalates: keys=$($keys.Count) unplaced=$($unplaced.Count) sameConfig=$sameConfig substituted=$substituted closed=$closed; unknown status retries, registry-unroutable substitutes, exhausted substitute closes, outcome bound to quota/session"
+  }
+  if($Part -ceq 'watchdog-no-escalation'){Test-QuotaNoEscalation;return}
   if(-not $Part){
   if(-not $CapacityOnly -and -not $BeforeFixControl -and -not $Row15MeasuredControl -and -not $Named8098Control -and -not $Named8186Control -and -not $PolicyFallbackOnly -and -not $PolicyFallbackMutantsOnly) {
     $beforeCapacity=Get-CallCount
@@ -929,11 +1066,14 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   }
   }
   if($CapacityOnly) {
-    foreach($entry in @(@(13,'low','medium'),@(10,'medium','high'),@(4,'medium','high'),@(5,'high','high'))) {
+    # #237: rows 13/10/4 Opus low/medium -> Sol medium/high raised effort and were
+    # removed; an exhausted lane on those routes closes. Row 5 Opus high keeps Sol high.
+    foreach($entry in @(@(13,'low',$null),@(10,'medium',$null),@(4,'medium',$null),@(5,'high','high'))) {
       foreach($envelope in @('provider quota exceeded','session limit reached')) {
         $item=New-Spec "capacity-$($entry[0])-$($envelope.Split(' ')[0])" 'claude-opus-5-5' $entry[1] 0 $entry[0] 'override-Todd'
         Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
-        Assert-Recovery $item $result 'gpt-6.1-sol' $entry[2] 'override-Todd' $before
+        if($null-ne$entry[2]){Assert-Recovery $item $result 'gpt-6.1-sol' $entry[2] 'override-Todd' $before}
+        else{Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before) "capacity route $($entry[0])|opus/$($entry[1]) raised effort instead of closing"}
       }
     }
     foreach($row in @(8,11,12)) {
@@ -964,7 +1104,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
         Assert-True ($result.status -ceq 'RELAUNCHED' -and $result.row -eq 4 -and (Get-CallCount) -eq $before+1) "retained $version reader issue=$issue"
       }
     }
-    Write-Output 'PASS capacity watchdog four own-slot quota routes, both envelopes, Fable exclusions'
+    Write-Output 'PASS capacity watchdog own-slot quota routes: row 5 substitutes, rows 13/10/4 effort raises closed, both envelopes, Fable exclusions'
     if($CapacityOnly){return}
   }
   if($ExplicitRoutingOnly){Test-ExplicitRoutingRelaunch;return}
@@ -1564,11 +1704,13 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   # A retained Fable lane crosses once to its row's current Codex policy slot:
   # row 7 codex.primary Sol/high/provisional, rows 14/15 codex.fallback
   # Astra/high/reserve, logged as override-Todd.
+  # #237: Fable medium -> Astra high on row 14 raised effort; that source now closes.
   foreach($entry in @(@(7,'high'),@(14,'medium'),@(14,'high'),@(15,'high'))){
-    $selected=if($entry[0]-eq7){@('gpt-6.1-sol','high','provisional')}else{@('gpt-6-astra','high','override-Todd')}
+    $selected=if($entry[0]-eq7){@('gpt-6.1-sol','high','provisional')}elseif($entry[1]-ceq'medium'){$null}else{@('gpt-6-astra','high','override-Todd')}
     foreach($envelope in @('provider quota exceeded','session limit reached')){
       $item=New-RelaunchedContinuation "synthetic-fable-$($entry[0])-$($entry[1])-$($envelope.Replace(' ','-'))" 'claude-fable-5-1' $entry[1] $entry[0] 'override-Todd'
       Set-Content $item.error $envelope;$before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+      if($null-eq$selected){Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before) "retained Fable $($entry[0])/$($entry[1]) raised effort instead of closing";continue}
       Assert-Recovery $item $result $selected[0] $selected[1] $selected[2] $before
       Write-Output "CONTROL 7955 FALLBACK row=$($entry[0]) from=claude-fable-5-1/$($entry[1]) envelope=$envelope selected=$($result.model)/$($result.effort) placement=$($result.placement) launches=1"
     }
@@ -1601,10 +1743,14 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
       Write-Output "CONTROL 8063 FALLBACK row=$route from=$primary/high/$primaryPlacement envelope=$envelope selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement) roundTrip=$($roundTrip.status) launches=2"
     }
   }
-  # 8063: the pre-existing entries keep their Codex fallback and row-derived placement.
+  # 8063: the pre-existing 6|opus/high entry keeps its Codex fallback and row-derived
+  # placement. #237 removed the same-provider moves 4|sol/medium -> Sol high (an effort
+  # raise), 5|sol/xhigh and 10|astra/high -> Sol high; those exhausted routes close.
   foreach($entry in @(@(4,'gpt-6.1-sol','medium'),@(5,'gpt-6.1-sol','xhigh'),@(6,'claude-opus-5-5','high'),@(10,'gpt-6-astra','high'))){
     $item=New-Spec "synthetic-retained-$($entry[0])-$($entry[1])-$($entry[2])" $entry[1] $entry[2] 0 $entry[0] 'measured';Set-Content $item.error 'provider quota exceeded'
-    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+    if($entry[0]-ne6){Assert-True ($result.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$result.relaunch-and(Get-CallCount)-eq$before) "removed same-provider entry $($entry-join'/') still moved";continue}
+    Assert-Recovery $item $result 'gpt-6.1-sol' 'high' 'provisional' $before
     Write-Output "CONTROL 8063 RETAINED row=$($entry[0]) from=$($entry[1])/$($entry[2]) selected=$($result.harness)/$($result.model)/$($result.effort) placement=$($result.placement)"
   }
   # 8063: the retained claude-opus-5-5/high targets are supported at rows
@@ -1634,7 +1780,10 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $integrationItem.spec['integrationRequest']=[ordered]@{schemaVersion='integration-dispatch-request/v1';requestIdentity=('c'*64);repository='synthetic/8063';pr=[long]908063;landedPr=[long]908062;landedHead=('a'*40);head=[string]$integrationItem.spec.head;newBase=('b'*40);branch=[string]$integrationItem.spec.branch;worktree=$worktree;label=$integrationLabel;sourceIdentity='ABSENT_REVIEW_REQUIRED';sourceHead='';runtimeRoot=$runtime;historyPath=$history}
   Save-Spec $integrationItem
   $before=Get-CallCount;$beforeSpecs=@(Get-ChildItem $runtime -Filter 'watchdog-lane-*.json').Count;$beforeRows=@(Get-Content $history).Count
-  $integrationOutput=@(& pwsh -NoProfile -NonInteractive -File $watchdog -Label $integrationLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $integrationItem.partial -ObservationFixture (New-Observation $integrationLabel) -DispatchScript $stub -SynchronousDispatch)-join"`n";$integrationExit=$LASTEXITCODE
+  # #237: with Sol routable the integration lane would retry its author unchanged; this
+  # control runs it exhausted, where an integration retry still never changes author.
+  $integrationPool=Get-PoolStatusFixture $integrationItem $integrationLabel
+  $integrationOutput=@(& pwsh -NoProfile -NonInteractive -File $watchdog -Label $integrationLabel -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $integrationItem.partial -ObservationFixture (New-Observation $integrationLabel) -DispatchScript $stub -PoolStatusFixturePath $integrationPool -SynchronousDispatch)-join"`n";$integrationExit=$LASTEXITCODE
   Assert-True ($integrationExit-eq0-and$integrationOutput.Contains('NO_QUALIFIED_FALLBACK')) "v3 integration Astra quota death did not close NO_QUALIFIED_FALLBACK with exit 0: exit=$integrationExit output=$integrationOutput"
   $integrationResult=$integrationOutput|ConvertFrom-Json -DateKind String;$integrationRow=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
   Assert-True ($integrationResult.schemaVersion-ceq'watchdog-observation-result/v1'-and$integrationResult.status-ceq'NO_QUALIFIED_FALLBACK'-and$integrationResult.relaunch-eq$false-and$integrationResult.relaunchCount-eq0-and$integrationResult.implementationAttemptIncrement-eq0-and$integrationResult.row-eq7-and$integrationResult.model-ceq'gpt-6.1-sol'-and$integrationResult.effort-ceq'high') 'v3 integration policy-slot block changed the NO_QUALIFIED_FALLBACK payload'
@@ -1642,9 +1791,10 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $retainedSpec=Get-Content -LiteralPath (Join-Path $runtime "watchdog-lane-$integrationLabel.json") -Raw|ConvertFrom-Json -DateKind String
   Assert-True (@(Get-ChildItem $runtime -Filter 'watchdog-lane-*.json').Count-eq$beforeSpecs-and@(Get-ChildItem $runtime -Filter "watchdog-lane-$integrationLabel*.json").Count-eq1-and$retainedSpec.schemaVersion-ceq'watchdog-lane/v3'-and$retainedSpec.integrationRequest.label-ceq$integrationLabel) 'v3 integration closed block wrote a second watchdog-lane spec or rewrote the retained native spec'
   $mirrorItem=New-Spec 'synthetic-8063-ordinary-current-policy-quota' 'gpt-6.1-sol' 'high' 0 7 'provisional';Set-Content $mirrorItem.error 'provider quota exhausted'
+  # #237: row 7's Claude slot is Opus xhigh, an effort raise from Sol high, so the
+  # exhausted ordinary lane closes instead of escalating.
   $before=Get-CallCount;$mirrorResult=Invoke-Watchdog $mirrorItem $mirrorItem.spec.label
-  Assert-Recovery $mirrorItem $mirrorResult 'claude-opus-5-5' 'xhigh' 'provisional' $before
-  Assert-True ($mirrorResult.harness-ceq'claude') 'ordinary Astra quota death did not select the claude harness'
+  Assert-True ($mirrorResult.status-ceq'NO_QUALIFIED_FALLBACK'-and-not$mirrorResult.relaunch-and(Get-CallCount)-eq$before) 'ordinary row-7 Sol high quota death escalated to Opus xhigh'
   Write-Output "CONTROL 8063 INTEGRATION_AUTHOR v3Integration=$($integrationResult.status) exit=$integrationExit specs=1 launches=0 ordinary=$($mirrorResult.status) selected=$($mirrorResult.harness)/$($mirrorResult.model)/$($mirrorResult.effort) placement=$($mirrorResult.placement) launches=1"
   $fableLabel='synthetic-8119-integration-opus-retry';$fableItem=New-Spec $fableLabel 'claude-opus-5-5' 'xhigh' 0 7 'provisional'
   $fableItem.spec.head=$nativeHead;$fableItem.spec.schemaVersion='watchdog-lane/v3'
@@ -1689,13 +1839,16 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $result=Invoke-Watchdog $ruledOld $ruledOld.spec.label
   Assert-True ($result.status-ceq'RETIRED_MODEL_REQUIRES_REDISPATCH'-and-not$result.relaunch) 'historical Todd placement lost predecessor refusal'
   if(-not $Part -or $Part -ceq 'watchdog-foundation') { Test-SonnetCutover; Test-ExplicitRoutingRelaunch }
+  if(-not $Part) { Test-QuotaNoEscalation }
   if(-not $Part) { Test-PolicyFallback; Test-PolicyFallbackMutants }
   $same=New-Spec 'same-config';$sameResult=Invoke-Watchdog $same 'same';Assert-True ($sameResult.status-ceq'RELAUNCHED'-and$sameResult.model-ceq'gpt-6.1-sol'-and$sameResult.effort-ceq'high') 'dead owner was not relaunched same-config'
   $beforeDuplicate=@(Get-Content -LiteralPath $calls).Count;$duplicate=Invoke-Watchdog $same 'same-duplicate';Assert-True ($duplicate.status-ceq'DUPLICATE_SKIPPED'-and@(Get-Content -LiteralPath $calls).Count-eq$beforeDuplicate) 'confirmed relaunch was not duplicate-suppressed'
   $prose=New-Spec 'prose-quota' 'gpt-6-astra' 'high';Set-Content -LiteralPath $prose.partial -Value 'unmistakably synthetic task prose discusses quota policy';$proseResult=Invoke-Watchdog $prose 'prose-quota';Assert-True ($proseResult.status-ceq'RELAUNCHED'-and$proseResult.model-ceq'gpt-6-astra') 'ordinary report prose authorized provider fallback'
-  $quota=New-Spec 'quota-fallback' 'gpt-6-astra' 'high';Set-Content -LiteralPath $quota.error -Value 'provider quota exceeded';$quotaResult=Invoke-Watchdog $quota 'quota';Assert-True ($quotaResult.status-ceq'RELAUNCHED'-and$quotaResult.model-ceq'gpt-6.1-sol') 'exact provider envelope did not use the row-qualified fallback'
+  # #237: 4|astra/high -> Sol high stayed on the provider and was removed; an exhausted
+  # Astra row-4 lane closes, while a routable one retries the same configuration.
+  $quota=New-Spec 'quota-fallback' 'gpt-6-astra' 'high';Set-Content -LiteralPath $quota.error -Value 'provider quota exceeded';$quotaResult=Invoke-Watchdog $quota 'quota';Assert-True ($quotaResult.status-ceq'NO_QUALIFIED_FALLBACK'-and$quotaResult.model-ceq'gpt-6-astra') 'exact provider envelope moved an exhausted Astra lane within its provider'
   $legacySame=New-LegacySpec 'legacy-v261-same';Add-LegacyRoutingRow $legacySame 4;$legacySameResult=Invoke-Watchdog $legacySame 'legacy-v261-same';Assert-True ($legacySameResult.status-ceq'RELAUNCHED'-and$legacySameResult.row-eq4-and$legacySameResult.model-ceq'gpt-6.1-sol') 'exact predecessor v1 spec did not recover a unique same-config canonical route'
-  $legacyQuota=New-LegacySpec 'legacy-v261-quota' 'gpt-6-astra' 'high';Set-Content -LiteralPath $legacyQuota.error -Value 'provider quota exceeded';Add-LegacyRoutingRow $legacyQuota 4;$legacyQuotaResult=Invoke-Watchdog $legacyQuota 'legacy-v261-quota';Assert-True ($legacyQuotaResult.status-ceq'RELAUNCHED'-and$legacyQuotaResult.row-eq4-and$legacyQuotaResult.model-ceq'gpt-6.1-sol') 'exact predecessor v1 spec did not preserve row-qualified quota routing'
+  $legacyQuota=New-LegacySpec 'legacy-v261-quota' 'gpt-6-astra' 'high';Set-Content -LiteralPath $legacyQuota.error -Value 'provider quota exceeded';Add-LegacyRoutingRow $legacyQuota 4;$legacyQuotaResult=Invoke-Watchdog $legacyQuota 'legacy-v261-quota';Assert-True ($legacyQuotaResult.status-ceq'NO_QUALIFIED_FALLBACK'-and$legacyQuotaResult.row-eq4-and$legacyQuotaResult.model-ceq'gpt-6-astra') 'exact predecessor v1 spec did not preserve row-qualified quota routing'
   foreach($legacyControl in @(
     [ordered]@{name='zero';rows=@()},
     [ordered]@{name='multiple';rows=@(@{},@{})},
@@ -1708,7 +1861,7 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
     $legacyResult=Invoke-Watchdog $legacyItem "legacy-v261-$($legacyControl.name)"
     Assert-True ($legacyResult.status-ceq'ROUTING_PROVENANCE_REFUSED'-and$legacyResult.relaunch-eq$false-and@(Get-Content -LiteralPath $calls).Count-eq$beforeLegacyCalls) "legacy $($legacyControl.name) routing evidence guessed a route or relaunched"
   }
-  Write-Output 'CONTROL F11 legacyV1 sameConfig=RELAUNCHED quota=row4-qualified refusals=zero,multiple,wrong-head,wrong-attempt,wrong-config refusal=ROUTING_PROVENANCE_REFUSED relaunches=0'
+  Write-Output 'CONTROL F11 legacyV1 sameConfig=RELAUNCHED quota=row4-closed refusals=zero,multiple,wrong-head,wrong-attempt,wrong-config refusal=ROUTING_PROVENANCE_REFUSED relaunches=0'
   # 8063 re-points the former sol-quota-blocked control: 4|gpt-6.1-sol/high now falls to claude-opus-5-5/high
   # under 4388/5743533387, so the unruled primary is 2|gpt-6.1-sol/medium.
   $noFallback=New-Spec 'terra-quota-blocked' 'gpt-6.1-sol' 'medium' 0 2;Set-Content -LiteralPath $noFallback.error -Value 'provider quota exceeded';$blocked=Invoke-Watchdog $noFallback 'terra-quota-blocked';Assert-True ($blocked.status-ceq'NO_QUALIFIED_FALLBACK'-and$blocked.relaunch-eq$false-and$blocked.relaunchCount-eq0-and$blocked.row-eq2-and$blocked.model-ceq'gpt-6.1-sol'-and$blocked.effort-ceq'medium') 'Terra/medium row-2 quota death did not close blocked'
@@ -1767,5 +1920,6 @@ if(-not $Part){
   Test-9334OrdinaryCarrier 'successor-watchdog'
 }
 } finally {
+  if($null-eq$previousPoolStatusUrl){Remove-Item Env:CODEX_POOL_STATUS_URL -ErrorAction SilentlyContinue}else{$env:CODEX_POOL_STATUS_URL=$previousPoolStatusUrl}
   Exit-RoutingDataTestScope $routingTestScope
 }

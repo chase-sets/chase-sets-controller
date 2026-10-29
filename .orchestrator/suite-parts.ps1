@@ -92,6 +92,7 @@ function Get-LaneWatchdogPartMap {
     'watchdog-historical'='watchdog-historical'
     'watchdog-ordinary'='watchdog-ordinary'
     'watchdog-successor'='watchdog-successor'
+    'watchdog-no-escalation'='watchdog-no-escalation'
   }
 }
 
@@ -127,6 +128,7 @@ function Get-HistoricalSuitePartOwners([ValidateSet('rebase','watchdog')][string
       if($Suite -ceq 'watchdog'){
         if($function -cin @('Invoke-HoldWatchdog','Write-HostHold','Get-HoldEffects','Assert-NoHoldEffects','Assert-HostHoldResult','Assert-HoldUnknown','Test-HostHold')){$part='watchdog-host-hold-cases'}
         if($function -ceq 'Test-HostHoldMutants'){$part='watchdog-host-hold-mutants'}
+        if($function -ceq 'Test-QuotaNoEscalation'){$part='watchdog-no-escalation'}
         $parent=$node.Parent
         while($parent){
           if($parent -is [Management.Automation.Language.IfStatementAst] -and $parent.Clauses[0].Item1.Extent.Text -ceq '$CapacityOnly'){$part='watchdog-capacity';break}
