@@ -23,10 +23,11 @@ inherit BelowNormal or Idle unless they explicitly choose another class.
 The agent, its tool shells, Node processes and heavy-verifier children inherit
 the selection. The `-LongProductGate` supervisor uses the same launch point;
 its verifier and heavy work children also inherit it. A heavy verifier launched
-inside a lane temporarily raises only its caller-eligibility admission census
-(live dispatch ownership and ancestry) to `Normal`, then restores the inherited
-lane class before its gate or verifier child starts. If that raise fails, it
-keeps the inherited class, writes one stderr diagnostic, and does not refuse
+inside a lane temporarily raises the complete admission lifecycle, including
+the caller-eligibility census, mutex wait, queue handling, lock creation or
+reclamation, and post-lock fence, to `Normal`. It restores the inherited lane
+class before any gate or verifier child launches. If that raise fails, it keeps
+the inherited class, writes one stderr diagnostic, and does not refuse
 admission for that reason. No census deadline or admission rule changes.
 The verifier job object sets KillOnClose, not scheduling priority.
 

@@ -16,7 +16,7 @@ $pins=@{
   'invoke-heavy-verifier.test.ps1'='4abac745923af272440e35f9c04fb05448681d08'
 }
 $newTestPins=@{
-  'heavy-verifier-priority.test.ps1'='7a5e46d32f77aa4ad6a2ce7f432e2c97d7d09b2a25843bdbab3f47d7e0c41579'
+  'heavy-verifier-priority.test.ps1'='11465f6804b615fe90c64a5eec1fd35b06132f77c909649eb7fa530544ff9d59'
 }
 function Assert-Conservation($Manifest,$Overrides=@{}) {
   $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)

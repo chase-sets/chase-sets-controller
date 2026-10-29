@@ -48,7 +48,6 @@ $process=Get-Process -Id $PID
 [IO.File]::WriteAllText($OutputPath,([ordered]@{
   priority=[string]$process.PriorityClass
   pid=$process.Id
-  parent=(Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
 }|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
 '@
     Write-Text $fixtureRunner @'
@@ -56,17 +55,27 @@ param([string]$Guard,[string]$Container,[string]$Worktree,[string]$Head,[string]
 $ErrorActionPreference='Stop'
 $process=[Diagnostics.Process]::GetCurrentProcess()
 $process.PriorityClass=[Diagnostics.ProcessPriorityClass]::$Mode
+$inheritedSlotId=$env:CHASE_SETS_HEAVY_SLOT_ID
+$inheritedSlotTransport=$env:CHASE_SETS_HEAVY_SLOT_TRANSPORT
+Remove-Item Env:CHASE_SETS_HEAVY_SLOT_ID -ErrorAction SilentlyContinue
+Remove-Item Env:CHASE_SETS_HEAVY_SLOT_TRANSPORT -ErrorAction SilentlyContinue
+if([string]::IsNullOrWhiteSpace($inheritedSlotId) -or [string]::IsNullOrWhiteSpace($inheritedSlotTransport) -or
+   $env:CHASE_SETS_HEAVY_SLOT_ID -or $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT){
+  throw 'ASSERTION FAILED: isolated admission fixture did not clear inherited heavy-slot environment'
+}
 $parameters=@{
   Gate='verify:static';Worktree=$Worktree;Lane='priority-fixture';Branch='fixture';ClaimedHead=$Head
   ContainerRoot=$Container;CommandPath=(Join-Path $PSHOME 'pwsh.exe')
   CommandArgumentList=@('-NoProfile','-NonInteractive','-File',$Child,$ChildOutput)
 }
 if($Cancel){$parameters.TestCancelAfterAcquisition=$true}
+Write-Output 'PASS heavy-verifier-priority battery-context=AdmissionOwned-cleared'
 & $Guard @parameters
 exit $LASTEXITCODE
 '@
     function Invoke-AdmissionFixture([string]$Guard,[string]$Mode,[switch]$Cancel){
       $childOutput=Join-Path $fixtureRoot ("child-$Mode-$(if($Cancel){'cancel'}else{'success'}).json")
+      $fixtureTimeoutMilliseconds=300000
       $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
       $start.UseShellExecute=$false;$start.CreateNoWindow=$true
       $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
@@ -75,8 +84,12 @@ exit $LASTEXITCODE
         [void]$start.ArgumentList.Add($argument)
       }
       if($Cancel){[void]$start.ArgumentList.Add('-Cancel')}
+      # Simulate the admitted ControllerBattery environment. The isolated
+      # runner must clear both descriptors before invoking a fresh verifier.
+      $start.Environment['CHASE_SETS_HEAVY_SLOT_ID']='0123456789abcdef0123456789abcdef'
+      $start.Environment['CHASE_SETS_HEAVY_SLOT_TRANSPORT']='fixture-inherited-transport'
       $process=[Diagnostics.Process]::Start($start)
-      if(-not $process.WaitForExit(120000)){
+      if(-not $process.WaitForExit($fixtureTimeoutMilliseconds)){
         try{$process.Kill($true)}catch{}
         [void]$process.WaitForExit(10000)
         throw "ASSERTION FAILED: real admission fixture timed out mode=$Mode cancel=$Cancel"
@@ -87,6 +100,7 @@ exit $LASTEXITCODE
     foreach($mode in $admissionModes){
       $result=Invoke-AdmissionFixture $guardPath $mode
       Assert-True ($result.exitCode -eq 0) "real admission fixture succeeds mode=$mode output=$($result.output)"
+      Assert-True ($result.output -match 'battery-context=AdmissionOwned-cleared') "real admission fixture clears battery context mode=$mode output=$($result.output)"
       Assert-True (Test-Path -LiteralPath $result.childOutput) "real admission fixture launched child mode=$mode"
       $childRecord=Get-Content -LiteralPath $result.childOutput -Raw | ConvertFrom-Json
       Assert-True ([string]$childRecord.priority -ceq $mode) "child inherits restored priority mode=$mode"
