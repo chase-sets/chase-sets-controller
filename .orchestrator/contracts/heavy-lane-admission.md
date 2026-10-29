@@ -33,16 +33,36 @@ entry. Its repository-relative path and SHA-256 remain pinned by
 `diagnostic-declarations.json`; the declaration kind must be
 `standalone-node`, and `-DiagnosticBudgetSeconds` is required and must be in
 the closed interval `(0, 86400]` (and no greater than the declaration's
-maximum). Diagnostic module imports are admitted only when the resolved file
-is tracked at the bound clean Git head, is under the worktree root
+maximum). An optional `dependencies` array declares an exact-byte closure of
+at most 64 repository-relative `.mjs`, `.js` or `.json` files, each with a
+SHA-256. Paths must be normalized, inside the worktree, free of reparse points,
+unique (case-insensitively), and different from the entry. Every declared file
+must exist and match its hash before launch. The receipt retains these paths
+and hashes. The preload admits only their exact realpaths and checks loaded
+bytes against their hashes before evaluation, refusing a post-check swap.
+Omitting the array preserves the existing policy; ignored siblings receive
+no implicit authority. Diagnostic module imports otherwise are admitted only
+when the resolved file is tracked at the bound clean Git head, is under the worktree root
 `node_modules`, or is under a nested package's `node_modules` only when that
 package's `package.json` is tracked at the bound head. The preload refuses
 other files before evaluation. It hashes the bytes returned by Node's
 `nextLoad` hook (falling back to file bytes only for CommonJS, whose hook
 source is null) and records each loaded file's path and SHA-256 in a
-per-process manifest. The verifier merges the manifests without allowing a
-child to overwrite its parent's records and requires the declared entry to
-be present.
+per-process manifest. Query and fragment variants resolve to the same realpath
+for policy checks. Every load, including supported JSON and CommonJS reloads,
+rechecks the entry/dependency pins before receipt deduplication. A later load
+whose bytes differ from that realpath's recorded digest is refused before
+evaluation, including tracked and admitted `node_modules` files. Only unchanged
+manifest entries are deduplicated; authorization is never cached. The verifier
+merges the manifests without allowing a child to overwrite its parent's records
+and requires the declared entry to be present.
+
+After admission succeeds, the diagnostic launcher unconditionally sets
+`CHASE_SETS_HEAVY_ADMITTED=1` in the child environment, overwriting any caller
+value. It does not set this flag for non-diagnostic gates. Refused admissions
+never launch the diagnostic payload. Other caller inputs, including `CHROME`
+and `OPENSSL`, are inherited unchanged; the existing admission-specific Node
+options, configuration, script-shell and slot-transport handling still applies.
 
 The diagnostic receipt schema is `host-heavy-diagnostic/v1`. A completed
 diagnostic reports its native exit code in `nativeExit`; a result file written
@@ -52,6 +72,23 @@ while preserving the native termination code. Windows Job Object peak memory,
 total user/kernel time, and total process count are sampled before the Job
 Object is closed. Unsafe or pre-existing receipt paths are refusal failures
 and never produce a success result.
+
+Diagnostic descendant observations accept CIM `DateTime` values directly and
+parse DMTF only for string values. Unknown or invalid creation times are
+excluded and logged, never treated as ownership. Each parent hop must be in
+creation-time order and reach the launched root's exact start identity;
+pre-root processes and reused-parent subtrees are excluded. Snapshot times
+are checked against exact live start identities before recording descendants
+(CIM's whole-microsecond truncation is accounted for). Timeout and fallback
+cleanup pin a process handle and recheck its recorded start identity immediately
+before each non-tree kill. Missing, unreadable, or mismatched identities are
+skipped and logged; no PID-only or recursively inferred tree kill is allowed.
+Windows Job Object termination remains bound to kernel job membership, not
+reusable parent PIDs.
+
+The native-DB Windows helper captures its start ticks from the same pinned
+launch object used for owner publication. Error cleanup uses that identity;
+capture failure refuses launch and may stop only a freshly matching identity.
 
 In diagnostic mode, `new Worker`, `process.execve`, and
 `process.binding('spawn_sync' | 'process_wrap')` are refused. Node child-process
@@ -155,7 +192,7 @@ ASSERTION FAILED: preload foreign-head exit code is 73 (actual 0; stderr=; stdou
 The baseline refusal retains the literal existing diagnostic, including its
 existing repeated suffix; the candidate tests assert complete refusal text,
 not just a substring. No launch claim is re-encoded with a replacement head.
-## Long Product Gate Admission (#230)
+## Long Product Gate Admission
 
 CONTRACT_VERSION: heavy-lane-admission/v1
 
@@ -174,6 +211,33 @@ owner cleanup succeeds. Missing, torn, foreign, late, interrupted, or
 nonzero results are incomplete. A host watch expiry never kills the product
 child and never turns an incomplete result into a pass.
 
+On exit 73 only, stderr starting exactly with `heavy-verifier: queued;`
+causes the same supervisor to re-present the fixed verifier with identical
+arguments every 30 seconds. The launch id and recorded supervisor PID/start
+identity remain the claimant key; the verifier refreshes that ticket's
+`presentedUtc` within its existing 600-second retention. Every presentation's
+stderr is appended to the same launch log. The pending result stays unchanged.
+An unparseable queued ticket refuses; a changed ticket on a still-queued
+presentation finalizes incomplete with `long-product-gate: queue ticket changed`.
+The verifier remains the admission authority: a replacement ticket admitted
+after expiry is a valid admitted run. On any non-queued outcome after waiting,
+the supervisor compares an exposed ticket with the last queued ticket, or logs
+`long-product-gate: admission ticket comparison unavailable (previous=<n>)`.
+A detected replacement, or an unavailable comparison after more than 600 seconds
+since the previous presentation by the supervisor's monotonic clock, logs
+`long-product-gate: queue ticket replaced before admission (previous=<n>)`.
+The presentation clock starts before the first call, so a pause while receiving
+that first refusal counts toward the gap. The queue-cap clock still starts at
+the first queued refusal, not at supervisor startup.
+This diagnostic does not change the verifier's outcome or undo admission.
+Total queued waiting is capped at
+3600 seconds from the first queued refusal, using a monotonic clock. Expiry
+finalizes incomplete with exit 73 and a named cap diagnostic. Every other
+exit/refusal finalizes immediately. Interruption leaves pending/non-PASS and
+uses the existing ownership recovery rules; it does not reclaim or relaunch.
+
 Only the existing verifier owns admission, census, slot, Git identity, clean
-tree, receipt and child cleanup authority. The supervisor adds no timeout,
-census clock, retry, slot, reclaim, scheduler, or product command behavior.
+tree, receipt and child cleanup authority. Queue re-presentation adds no
+product-child timeout, census clock, slot, reclaim, scheduler or arbitrary
+command behavior. The host's 900-second watch is unchanged; watch expiry is
+not a child kill or a queue-wait extension.

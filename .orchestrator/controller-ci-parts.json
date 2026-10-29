@@ -547,10 +547,12 @@
       "selector": "-Part",
       "parts": [
         { "name": "supervisor", "weight": 1 },
+        { "name": "queue", "weight": 1 },
+        { "name": "transient", "weight": 1 },
         { "name": "mutants", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["supervisor", "mutants"]
+        "parts": ["supervisor", "queue", "transient", "mutants"]
       }
     }
   ],
@@ -786,6 +788,128 @@
           ]
         },
         {
+          "offset": 113,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "function Test-NativeLaunchErrorCleanup {",
+            "  $fixture=Join-Path ([IO.Path]::GetTempPath()) ('native-error-cleanup-'+[guid]::NewGuid().ToString('N'))",
+            "  [void][IO.Directory]::CreateDirectory($fixture)",
+            "  function Set-NativeTestCopy([string]$Path,[string]$Anchor,[string]$Replacement) {",
+            "    $text=[IO.File]::ReadAllText($Path)",
+            "    Assert-True (([regex]::Matches($text,[regex]::Escape($Anchor))).Count -eq 1) 'native error copy substitution matches exactly once'",
+            "    [IO.File]::WriteAllText($Path,$text.Replace($Anchor,$Replacement))",
+            "  }",
+            "  try {",
+            "    [IO.File]::WriteAllText((Join-Path $fixture 'helper.ps1'), @'",
+            "param([string]$Ready,[string]$Release)",
+            "[IO.File]::WriteAllText($Ready,[string]$PID)",
+            "# Deliberately ignore stdin EOF: cleanup must terminate this owned helper.",
+            "while(-not(Test-Path -LiteralPath $Release)){Start-Sleep -Milliseconds 25}",
+            "'@)",
+            "    $driver=Join-Path $fixture 'driver.ps1'",
+            "    [IO.File]::WriteAllText($driver,@'",
+            "param([string]$Verifier,[string]$Root,[string]$Mode)",
+            "$ErrorActionPreference='Stop'",
+            "$tokens=$null;$errors=$null",
+            "$ast=[Management.Automation.Language.Parser]::ParseFile($Verifier,[ref]$tokens,[ref]$errors)",
+            "if($errors.Count){throw 'native error copied verifier must parse'}",
+            "foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess')},$false)){",
+            "  . ([scriptblock]::Create($definition.Extent.Text))",
+            "}",
+            "$cleanup=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$isNativeDb -and $child -and -not $child.HasExited'},$true))",
+            "if($cleanup.Count -ne 1){throw 'one actual native finally cleanup block required'}",
+            "$ready=Join-Path $Root \"$Mode.ready\";$release=Join-Path $Root \"$Mode.release\"",
+            "function New-TestNativeStart {",
+            "  $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))",
+            "  $start.UseShellExecute=$false;$start.CreateNoWindow=$true",
+            "  $start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true",
+            "  foreach($arg in @('-NoProfile','-File',(Join-Path $Root 'helper.ps1'),$ready,$release)){$start.ArgumentList.Add($arg)}",
+            "  return $start",
+            "}",
+            "function Wait-TestNativeReady {",
+            "  $watch=[Diagnostics.Stopwatch]::StartNew()",
+            "  while(-not(Test-Path -LiteralPath $ready) -and -not $child.HasExited -and $watch.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 25}",
+            "  if(-not(Test-Path -LiteralPath $ready) -or $child.HasExited -or [IO.File]::ReadAllText($ready) -cne [string]$child.Id){throw 'native fixture readiness failed'}",
+            "}",
+            "function Assert-HeavyCallerEligibility { return $null }",
+            "function Test-ThisOwner { Wait-TestNativeReady; $script:publicationReached=$true; return $false }",
+            "function Get-TestNativeCapture { Wait-TestNativeReady; throw 'injected native identity capture failure' }",
+            "$owner=@{state='launching';native=@{root='synthetic-no-wsl'}}",
+            "$nativeEvidencePath=Join-Path $Root \"$Mode.evidence\"",
+            "$child=$null;$childStartTicks=0;$isNativeDb=$true;$publicationReached=$false",
+            "try {",
+            "  $failure=$null",
+            "  try { Invoke-NativeLaunch } catch { $failure=$_.Exception.Message }",
+            "  finally { . ([scriptblock]::Create($cleanup[0].Extent.Text)) }",
+            "  $expected=if($Mode -eq 'capture-failure'){'injected native identity capture failure'}else{'native-db: owner changed before Windows child publication'}",
+            "  if($failure -cne $expected -or -not(Test-Path -LiteralPath $ready)){throw \"native-error-test-setup: wrong error or no running helper: $failure\"}",
+            "  if($Mode -ne 'capture-failure' -and (-not $publicationReached -or [DateTimeOffset]::Parse($owner.childProcessStartUtc).UtcTicks -ne $child.StartTime.ToUniversalTime().Ticks)){throw 'native-error-test-setup: publication did not bind the launched process'}",
+            "  Write-Output \"FIXTURE native-error-launched mode=$Mode pid=$($child.Id) ready=1 actual-finally=1 ticks=$childStartTicks\"",
+            "  if($Mode -eq 'stale-identity'){",
+            "    if($child.HasExited){throw 'ASSERTION FAILED: native-error-stale-identity-must-survive'}",
+            "    Write-Output 'PASS native-error-stale-identity-must-survive alive=1'",
+            "  } else {",
+            "    if(-not $child.HasExited){throw 'ASSERTION FAILED: native-error-cleanup-must-stop-helper'}",
+            "    if($Mode -eq 'capture-failure' -and $publicationReached){throw 'ASSERTION FAILED: native-capture-failure-must-refuse-publication'}",
+            "    Write-Output \"PASS native-error-cleanup-must-stop-helper mode=$Mode helper-dead=1\"",
+            "  }",
+            "} finally {",
+            "  [IO.File]::WriteAllText($release,'release')",
+            "  if($child){",
+            "    if(-not $child.WaitForExit(5000)){",
+            "      $live=Get-Process -Id $child.Id -ErrorAction Stop",
+            "      try { [void]$live.Handle; if($live.StartTime.ToUniversalTime().Ticks -ne $child.StartTime.ToUniversalTime().Ticks){throw 'fixture cleanup identity mismatch'}; $live.Kill(); [void]$live.WaitForExit(5000) }",
+            "      finally{$live.Dispose()}",
+            "    }",
+            "    $child.Dispose()",
+            "  }",
+            "}",
+            "'@)",
+            "    foreach($mode in @('publication-error','capture-failure','stale-identity','drop-native-start-ticks')) {",
+            "      $copy=Join-Path $fixture \"$mode.ps1\"",
+            "      Copy-Item -LiteralPath $guard -Destination $copy",
+            "      Set-NativeTestCopy $copy \"(New-NativeStart 'launch' `$owner.native.root)\" '(New-TestNativeStart)'",
+            "      if($mode -eq 'capture-failure'){",
+            "        Set-NativeTestCopy $copy '$nativeChildStart = $child.StartTime.ToUniversalTime()' '$nativeChildStart = Get-TestNativeCapture'",
+            "      } elseif($mode -eq 'stale-identity') {",
+            "        Set-NativeTestCopy $copy '$script:childStartTicks = $nativeChildStart.Ticks' '$script:childStartTicks = $nativeChildStart.AddSeconds(-1).Ticks'",
+            "      } elseif($mode -eq 'drop-native-start-ticks') {",
+            "        Set-NativeTestCopy $copy '$script:childStartTicks = $nativeChildStart.Ticks' '# mutant: drop native start tick capture'",
+            "      }",
+            "      $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))",
+            "      $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true",
+            "      foreach($arg in @('-NoProfile','-File',$driver,'-Verifier',$copy,'-Root',$fixture,'-Mode',$mode)){$start.ArgumentList.Add($arg)}",
+            "      $probe=[Diagnostics.Process]::Start($start)",
+            "      $stdout=$probe.StandardOutput.ReadToEndAsync();$stderr=$probe.StandardError.ReadToEndAsync()",
+            "      $probe.WaitForExit();$out=$stdout.GetAwaiter().GetResult();$err=$stderr.GetAwaiter().GetResult()",
+            "      Write-Output $out.Trim()",
+            "      if($mode -eq 'drop-native-start-ticks'){",
+            "        Assert-True ($probe.ExitCode -eq 1 -and $out.Contains('FIXTURE native-error-launched') -and $err.Contains('ASSERTION FAILED: native-error-cleanup-must-stop-helper')) \"native start-ticks mutant must reach named assertion, not setup (exit=$($probe.ExitCode) stderr=$err)\"",
+            "        Write-Output 'KILLED mutant drop-native-start-ticks at assertion=native-error-cleanup-must-stop-helper launched=1 actual-finally=1'",
+            "      } else {",
+            "        Assert-True ($probe.ExitCode -eq 0) \"native error cleanup $mode (exit=$($probe.ExitCode) stderr=$err)\"",
+            "        if($mode -eq 'stale-identity'){Assert-True ($err.Contains('reason=start-identity-mismatch')) 'native stale identity cleanup is skipped and logged'}",
+            "      }",
+            "      $probe.Dispose()",
+            "    }",
+            "  } finally {",
+            "    $resolved=[IO.Path]::GetFullPath($fixture)",
+            "    Assert-True ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -like 'native-error-cleanup-*') 'native error fixture cleanup remains in private temp'",
+            "    Remove-Item -LiteralPath $resolved -Recurse -Force",
+            "  }",
+            "}"
+          ]
+        },
+        {
+          "offset": 114,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Test-NativeLaunchErrorCleanup"
+          ]
+        },
+        {
           "offset": 349,
           "remove": 0,
           "original": [],
@@ -799,6 +923,195 @@
           "original": [],
           "replacement": [
             "  transport = $env:CHASE_SETS_HEAVY_SLOT_TRANSPORT"
+          ]
+        },
+        {
+          "offset": 649,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "function Release-DiscriminatorPublication($Starter, [string]$IdentityPath) {",
+            "  # Cold wrapper/admission/interpreter startup is not identity publication.",
+            "  # Bound that setup separately; retain the original 400 x 25 ms publication",
+            "  # assertion after the already-live fixture explicitly receives its barrier.",
+            "  $Ready=\"$IdentityPath.ready\"; $Publish=\"$IdentityPath.publish\"",
+            "  foreach($phase in @('wrapper-entry','admission','payload-ready')){",
+            "    $startup=[Diagnostics.Stopwatch]::StartNew()",
+            "    while($true){",
+            "      $record=Read-Owner",
+            "      $arrived=switch($phase){",
+            "        'wrapper-entry' { Test-Path -LiteralPath (Join-Path $root \"wrapper-$($Starter.Id).ready\") }",
+            "        'admission' { $record -and $record.state -cin @('started','attached') -and [int]$record.pid -eq $Starter.Id -and",
+            "          [DateTimeOffset]::Parse([string]$record.processStartUtc).UtcTicks -eq $Starter.StartTime.ToUniversalTime().Ticks }",
+            "        'payload-ready' { Test-Path -LiteralPath $Ready }",
+            "      }",
+            "      if($arrived){break}",
+            "      if($Starter.HasExited -or $startup.ElapsedMilliseconds -ge 30000){",
+            "        Assert-True $false \"discriminator cold-start-ready phase=${phase}: owned fixture must reach its publication barrier (wrapperExited=$($Starter.HasExited) owner=$($record|ConvertTo-Json -Compress))\"",
+            "      }",
+            "      Start-Sleep -Milliseconds 25",
+            "    }",
+            "  }",
+            "  $prepared=Read-ChildIdentity $Ready",
+            "  Assert-True ((Test-ExactProcess $prepared) -and -not(Test-Path -LiteralPath $IdentityPath)) 'discriminator publication barrier holds a live exact unpublished identity'",
+            "  [IO.File]::WriteAllText($Publish,'publish')",
+            "}",
+            "function Assert-DiscriminatorPublication([string]$IdentityPath, $published) {",
+            "  $prepared=Read-ChildIdentity \"$IdentityPath.ready\"",
+            "  Assert-True ($published.pid -eq $prepared.pid -and $published.processStartUtc -ceq $prepared.processStartUtc -and (Test-ExactProcess $published)) 'discriminator publication preserves the exact prepared identity'",
+            "  Write-Host 'PASS discriminator identity publication barrier=held-then-released bound=400x25ms exact-live-identity=1'",
+            "}"
+          ]
+        },
+        {
+          "offset": 817,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "# Instrument only disposable payload copies. Keep the original fixture bodies",
+            "# and the legacy publication assertions above/below intact for conservation.",
+            "foreach($fixtureScript in @($identityChildScript,$deepWorkerScript,$descendantChildScript,$descendantRelayScript)) {",
+            "  $source=[IO.File]::ReadAllText($fixtureScript)",
+            "  $publication='[IO.File]::WriteAllText($IdentityPath, ($identity | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))'",
+            "  $barrierPublication=@'",
+            "$barrier=Test-Path -LiteralPath (Join-Path $PSScriptRoot 'discriminator-barriers.enabled')",
+            "if($barrier){",
+            "  [IO.File]::WriteAllText(\"$IdentityPath.ready.pending\",($identity|ConvertTo-Json -Compress))",
+            "  [IO.File]::Move(\"$IdentityPath.ready.pending\",\"$IdentityPath.ready\")",
+            "  while(-not(Test-Path -LiteralPath \"$IdentityPath.publish\")){Start-Sleep -Milliseconds 25}",
+            "}",
+            "[IO.File]::WriteAllText(\"$IdentityPath.pending\",($identity|ConvertTo-Json -Compress))",
+            "[IO.File]::Move(\"$IdentityPath.pending\",$IdentityPath)",
+            "'@",
+            "  Assert-True (([regex]::Matches($source,[regex]::Escape($publication))).Count -eq 1) 'discriminator fixture publication substitution matches exactly once'",
+            "  $source=$source.Replace($publication,$barrierPublication)",
+            "  if($fixtureScript -ne $descendantRelayScript){",
+            "    $lifetime='Start-Sleep -Milliseconds $DelayMilliseconds'",
+            "    Assert-True (([regex]::Matches($source,[regex]::Escape($lifetime))).Count -eq 1) 'discriminator fixture lifetime substitution matches exactly once'",
+            "    $source=$source.Replace($lifetime,'if($barrier){while(Test-Path -LiteralPath \"$IdentityPath.publish\"){Start-Sleep -Milliseconds 25}}else{Start-Sleep -Milliseconds $DelayMilliseconds}')",
+            "  }",
+            "  [IO.File]::WriteAllText($fixtureScript,$source)",
+            "}"
+          ]
+        },
+        {
+          "offset": 841,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "$runnerSource=[IO.File]::ReadAllText($runner)",
+            "$guardCall='& $env:HV_GUARD @parameters'",
+            "Assert-True (([regex]::Matches($runnerSource,[regex]::Escape($guardCall))).Count -eq 1) 'discriminator wrapper entry substitution matches exactly once'",
+            "$entryMarker='[IO.File]::WriteAllText((Join-Path $PSScriptRoot \"wrapper-$PID.ready\"),\"entered\")'",
+            "[IO.File]::WriteAllText($runner,$runnerSource.Replace($guardCall,$entryMarker+[Environment]::NewLine+$guardCall))"
+          ]
+        },
+        {
+          "offset": 1007,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  # The earlier in-process refusal controls retain their parent's queue ticket.",
+            "  # Admit that same claimant normally before switching to a wrapper claimant;",
+            "  # do not delete queue state or bypass the production queue.",
+            "  $handoffMarker=Join-Path $root 'discriminator-queue-handoff.txt'",
+            "  Assert-True ((Invoke-Guard 'discriminator-queue-handoff' @('-NoProfile','-File',$markerScript,$handoffMarker,'0')) -eq 0 -and",
+            "    (Test-Path -LiteralPath $handoffMarker) -and -not(Test-Path -LiteralPath $lock)) 'discriminator preceding queue claimant completes normal admission before wrapper launch'",
+            "  $fixtureQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'verify-queue.json') -Raw | ConvertFrom-Json -DateKind String",
+            "  Assert-True (@($fixtureQueue.tickets).Count -eq 0) 'discriminator queue handoff retires the preceding claimant ticket'",
+            "  Write-Host 'PASS discriminator queue handoff: prior claimant admitted; tickets=0; no queue deletion or bypass'",
+            "  $barrierEnabled=Join-Path $root 'discriminator-barriers.enabled'",
+            "  [IO.File]::WriteAllText($barrierEnabled,'enabled')",
+            "  try {"
+          ]
+        },
+        {
+          "offset": 1009,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Release-DiscriminatorPublication $wrapper $childIdentityPath"
+          ]
+        },
+        {
+          "offset": 1016,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Assert-DiscriminatorPublication $childIdentityPath $childIdentity",
+            "  Assert-ExactParent $childIdentity $wrapperIdentity 'discriminator wrapper -> child topology is exact'"
+          ]
+        },
+        {
+          "offset": 1025,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  } finally {",
+            "    foreach($path in @($barrierEnabled,\"$childIdentityPath.publish\")){",
+            "      if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}",
+            "    }",
+            "  }"
+          ]
+        },
+        {
+          "offset": 1049,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  $barrierEnabled=Join-Path $root 'discriminator-barriers.enabled'",
+            "  [IO.File]::WriteAllText($barrierEnabled,'enabled')"
+          ]
+        },
+        {
+          "offset": 1059,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "    Release-DiscriminatorPublication $wrapper $childIdentityPath"
+          ]
+        },
+        {
+          "offset": 1060,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "    Release-DiscriminatorPublication $wrapper $relayIdentityPath"
+          ]
+        },
+        {
+          "offset": 1064,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "    Assert-DiscriminatorPublication $childIdentityPath $childIdentity",
+            "    Assert-DiscriminatorPublication $relayIdentityPath $relayIdentity"
+          ]
+        },
+        {
+          "offset": 1086,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Release-DiscriminatorPublication $wrapper $workerIdentityPath"
+          ]
+        },
+        {
+          "offset": 1088,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Assert-DiscriminatorPublication $workerIdentityPath $workerIdentity"
+          ]
+        },
+        {
+          "offset": 1132,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "    foreach($path in @($barrierEnabled,\"$childIdentityPath.publish\",\"$relayIdentityPath.publish\",\"$workerIdentityPath.publish\")){",
+            "      if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Force}",
+            "    }"
           ]
         },
         {

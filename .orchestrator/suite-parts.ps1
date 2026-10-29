@@ -50,6 +50,8 @@ function Get-DispatchLanePartMap {
 function Get-LongProductGatePartMap {
   [ordered]@{
     'supervisor' = 'supervisor'
+    'queue' = 'queue'
+    'transient' = 'transient'
     'mutants' = 'mutants'
   }
 }

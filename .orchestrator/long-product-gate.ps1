@@ -99,14 +99,98 @@ foreach ($argument in @('-NoProfile','-NonInteractive','-File',$verifier)) { [vo
 foreach ($argument in @('-Gate','test:scripts','-Worktree',$worktreeFull,'-Lane',$Lane,'-Branch',$Branch,'-ClaimedHead',$ClaimedHead,'-ContainerRoot',$containerRoot)) { [void]$start.ArgumentList.Add($argument) }
 $process = $null
 $exitCode = 74
+$queuePollSeconds = 30
+$queueWaitCapSeconds = 3600
+$queueRetentionSeconds = 600
+$transientCallerEligibilityRefusal = 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted'
+# Three consecutive full census expiries allow two bounded re-presentations
+# without making a long gate spin forever; any queued presentation resets it.
+$transientRefusalCap = 3
+$consecutiveTransientRefusals = 0
+$queueWatch = $null
+$queueTicket = $null
+$previousPresentationSeconds = 0
+$presentationWatch = [Diagnostics.Stopwatch]::StartNew()
 try {
-  $process = [Diagnostics.Process]::Start($start)
-  $stdout = $process.StandardOutput.ReadToEndAsync()
-  $stderr = $process.StandardError.ReadToEndAsync()
-  $process.WaitForExit()
-  [IO.File]::WriteAllText($stdoutPath, $stdout.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
-  [IO.File]::WriteAllText($stderrPath, $stderr.GetAwaiter().GetResult(), [Text.UTF8Encoding]::new($false))
-  $exitCode = [int]$process.ExitCode
+  while ($true) {
+    if ($queueWatch -and $queueWatch.Elapsed.TotalSeconds -ge $queueWaitCapSeconds) {
+      $message = "long-product-gate: queued wait cap $queueWaitCapSeconds seconds reached"
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      $exitCode = 73
+      break
+    }
+    $presentationSeconds = $presentationWatch.Elapsed.TotalSeconds
+    $process = [Diagnostics.Process]::Start($start)
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $stderr = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $presentationOutput = $stdout.GetAwaiter().GetResult()
+    $presentationError = $stderr.GetAwaiter().GetResult()
+    [IO.File]::AppendAllText($stdoutPath, $presentationOutput, [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($stderrPath, $presentationError, [Text.UTF8Encoding]::new($false))
+    $exitCode = [int]$process.ExitCode
+    $process.Dispose(); $process = $null
+    $isTransientCallerEligibilityRefusal = $exitCode -eq 73 -and
+      @($presentationError -split "`r?`n" | Where-Object { $_ -ceq $transientCallerEligibilityRefusal }).Count -gt 0
+    if ($isTransientCallerEligibilityRefusal) {
+      if (-not $queueWatch) { $queueWatch = [Diagnostics.Stopwatch]::StartNew() }
+      $consecutiveTransientRefusals++
+      $ticketLabel = if ($null -ne $queueTicket) { $queueTicket } else { '<none>' }
+      $message = "long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=$ticketLabel count=$consecutiveTransientRefusals)"
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      if ($consecutiveTransientRefusals -ge $transientRefusalCap) {
+        $message = "long-product-gate: transient caller-eligibility refusal cap $transientRefusalCap reached"
+        [Console]::Error.WriteLine($message)
+        [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        break
+      }
+      $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
+      [Threading.Thread]::Sleep($queueSleepMilliseconds)
+      continue
+    }
+    if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) {
+      if ($queueTicket) {
+        $admissionTicketMatch = [regex]::Match("$presentationOutput`n$presentationError", '(?m)^heavy-verifier: [^\r\n]*\bticket=([0-9]+)(?:[ ;)]|$)')
+        if ($admissionTicketMatch.Success) {
+          $admissionTicket = $admissionTicketMatch.Groups[1].Value
+          $message = "long-product-gate: admission ticket comparison (previous=$queueTicket current=$admissionTicket)"
+          $replacementPossible = $admissionTicket -cne $queueTicket
+        } else {
+          $message = "long-product-gate: admission ticket comparison unavailable (previous=$queueTicket)"
+          $replacementPossible = ($presentationSeconds - $previousPresentationSeconds) -gt $queueRetentionSeconds
+        }
+        [Console]::Error.WriteLine($message)
+        [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        if ($replacementPossible) {
+          $message = "long-product-gate: queue ticket replaced before admission (previous=$queueTicket)"
+          [Console]::Error.WriteLine($message)
+          [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        }
+      }
+      break
+    }
+    $ticketMatch = [regex]::Match($presentationError, '\Aheavy-verifier: queued; ticket=([0-9]+) ')
+    if (-not $ticketMatch.Success) { break }
+    $presentedTicket = $ticketMatch.Groups[1].Value
+    if ($queueTicket -and $presentedTicket -cne $queueTicket) {
+      $message = 'long-product-gate: queue ticket changed'
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      break
+    }
+    if (-not $queueWatch) {
+      $queueWatch = [Diagnostics.Stopwatch]::StartNew()
+    }
+    if ($null -eq $queueTicket) {
+      $queueTicket = $presentedTicket
+    }
+    $consecutiveTransientRefusals = 0
+    $previousPresentationSeconds = $presentationSeconds
+    $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
+    [Threading.Thread]::Sleep($queueSleepMilliseconds)
+  }
   $endedUtc = [DateTime]::UtcNow.ToString('o')
   $terminal = [ordered]@{}
   foreach ($entry in $pending.GetEnumerator()) { $terminal[$entry.Key] = $entry.Value }
