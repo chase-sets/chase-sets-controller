@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('supervisor','queue','mutants')][string]$Part = '',
-  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')][string]$Mutant = ''
+  [ValidateSet('supervisor','queue','transient','mutants')][string]$Part = '',
+  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line','census-immediate')][string]$Mutant = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -304,9 +304,13 @@ $pollValue = @{ticket=$presentedTicket;pid=$PID;arguments=@($start.ArgumentList)
 [IO.File]::Move("$pollPath.tmp", $pollPath)
 while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 25 }
 '@
-    $copy = Replace-FixtureOnce $original '$queueWatch = [Diagnostics.Stopwatch]::StartNew()' $clock
+    $queueWatchBlock = "    if (-not `$queueWatch) {`r`n      `$queueWatch = [Diagnostics.Stopwatch]::StartNew()`r`n    }`r`n    if (`$null -eq `$queueTicket) {`r`n      `$queueTicket = `$presentedTicket`r`n    }"
+    $clockBody = $clock.Trim("`r", "`n")
+    $clockBlock = "    if (-not `$queueWatch) {`r`n" + $clockBody + "`r`n    }`r`n    if (`$null -eq `$queueTicket) {`r`n      `$queueTicket = `$presentedTicket`r`n    }"
+    $copy = Replace-FixtureOnce $original $queueWatchBlock $clockBlock
     $copy = Replace-FixtureOnce $copy '$presentationWatch = [Diagnostics.Stopwatch]::StartNew()' ($clock.Replace('$queueWatch', '$presentationWatch'))
-    $copy = Replace-FixtureOnce $copy '[Threading.Thread]::Sleep($queueSleepMilliseconds)' $poll
+    $copy = Replace-FixtureOnce $copy "      [Threading.Thread]::Sleep(`$queueSleepMilliseconds)`r`n      continue" ('      $null = $queueSleepMilliseconds' + "`r`n      continue")
+    $copy = Replace-FixtureOnce $copy "    [Threading.Thread]::Sleep(`$queueSleepMilliseconds)" ($poll.TrimEnd("`r", "`n"))
     if ($Mode -ceq 'expire-admit') {
       $firstRefusal = @'
 $process.WaitForExit()
@@ -439,6 +443,149 @@ if ($fixturePoll -eq 1) {
     Assert-True ($failure -ceq "ASSERTION FAILED: $expected") "MUTANT $Mutation reaches its named queue assertion (actual=$failure)"
     if ($Mutation -ceq 'fresh-ticket') { Assert-True ((Read-SharedText $stderrPath) -like '*long-product-gate: queue ticket changed*') 'changed ticket diagnostic explains the lost reservation' }
     Write-Output "PASS MUTANT $Mutation killed at $expected"
+  } elseif ($failure) { throw $failure }
+}
+function New-TransientVerifier($Fixture, $Responses) {
+  $responsePath = Join-Path $Fixture.runtime 'fixture-transient-responses.json'
+  $statePath = Join-Path $Fixture.runtime 'fixture-transient-call.txt'
+  Write-Text $responsePath (@($Responses) | ConvertTo-Json -Depth 5)
+  $source = @'
+param([string]$Gate,[string]$Worktree,[string]$Lane,[string]$Branch,[string]$ClaimedHead,[string]$ContainerRoot)
+$responsePath = '__RESPONSE_PATH__'
+$statePath = '__STATE_PATH__'
+$call = if (Test-Path -LiteralPath $statePath) { [int](Get-Content -LiteralPath $statePath -Raw) } else { 0 }
+$call++
+[IO.File]::WriteAllText($statePath, [string]$call)
+$responses = @(Get-Content -LiteralPath $responsePath -Raw | ConvertFrom-Json -DateKind String)
+$response = $responses[$call - 1]
+if ($null -eq $response) { throw "fixture transient verifier response exhausted at call=$call" }
+if ($response.text) { [Console]::Error.WriteLine([string]$response.text) }
+exit [int]$response.exit
+'@
+  $source = $source.Replace('__RESPONSE_PATH__', $responsePath.Replace("'", "''")).Replace('__STATE_PATH__', $statePath.Replace("'", "''"))
+  $path = Join-Path $Fixture.orchestrator 'fixture-transient-verifier.ps1'
+  Write-Text $path $source
+  return [pscustomobject]@{ path = $path; state = $statePath }
+}
+function Invoke-TransientCensusCase([string]$Mode, [string]$Mutation = '') {
+  $root = Join-Path $fixtureRoot ('transient-' + $Mode + '-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $root | Out-Null
+  New-ControllerScriptFixture $root | Out-Null
+  $fixture = New-LongGateFixture $root 'lane-23'
+  $supervisorPath = Join-Path $fixture.orchestrator 'long-product-gate.ps1'
+  $source = [IO.File]::ReadAllText($supervisorPath)
+  $queued = @{type='queued';text='heavy-verifier: queued; ticket=171 position=4 reserved=True; retry within 600 seconds';exit=73}
+  $changedQueued = @{type='queued';text='heavy-verifier: queued; ticket=172 position=4 reserved=True; retry within 600 seconds';exit=73}
+  $transient = @{type='transient';text='heavy-verifier: caller eligibility: dispatch census evaluation exhausted';exit=73}
+  $admitted = @{type='admitted';text='heavy-verifier: admitted; ticket=171';exit=0}
+  $replacementAdmitted = @{type='admitted';text='heavy-verifier: admitted; ticket=172; native=fixture';exit=0}
+  $responses = switch ($Mode) {
+    'held' { @($queued,$queued,$transient,$queued,$admitted) }
+    'before' { @($transient,$queued,$admitted) }
+    'cap' { @($transient,$transient,$transient) }
+    'wait-cap' { @($transient,$transient) }
+    'changed' { @($queued,$transient,$changedQueued) }
+    'replacement' { @($queued,$transient,$replacementAdmitted) }
+    'other' { @(@{type='other';text='heavy-verifier: caller eligibility: dispatch census changed authority';exit=73}) }
+    default { throw "unknown transient census case $Mode" }
+  }
+  $verifier = New-TransientVerifier $fixture $responses
+  $verifierNeedle = '$verifier = Join-Path $PSScriptRoot ''invoke-heavy-verifier.ps1'''
+  $verifierReplacement = '$verifier = ''' + $verifier.path.Replace("'", "''") + ''''
+  $source = Replace-FixtureOnce $source $verifierNeedle $verifierReplacement
+  $poll = @'
+$fixturePoll = 1 + $fixturePoll
+$pollPath = Join-Path $runtimeFull "fixture-transient-poll-$fixturePoll.json"
+[IO.File]::WriteAllText($pollPath, [string]$fixturePoll)
+while (-not [IO.File]::Exists("$pollPath.continue")) { Start-Sleep -Milliseconds 10 }
+'@
+  $source = Replace-FixtureOnce $source "      [Threading.Thread]::Sleep(`$queueSleepMilliseconds)`r`n      continue" (($poll.TrimEnd("`r", "`n")) + "`r`n      continue")
+  $source = Replace-FixtureOnce $source "    [Threading.Thread]::Sleep(`$queueSleepMilliseconds)" ($poll.TrimEnd("`r", "`n"))
+  if ($Mode -ceq 'wait-cap') {
+    $clockPath = Join-Path $fixture.runtime 'fixture-transient-clock.txt'
+    Write-Text $clockPath '0'
+    $clock = @'
+$queueWatch = [pscustomobject]@{}
+$queueWatch | Add-Member -NotePropertyName StartedAt -NotePropertyValue ([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-transient-clock.txt')))
+$queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [TimeSpan]::FromSeconds([double][IO.File]::ReadAllText((Join-Path $runtimeFull 'fixture-transient-clock.txt')) - $this.StartedAt) }
+'@
+    $source = Replace-FixtureOnce $source 'if (-not $queueWatch) { $queueWatch = [Diagnostics.Stopwatch]::StartNew() }' $clock
+  }
+  if ($Mutation -ceq 'census-immediate') { $source = Replace-FixtureOnce $source 'if ($isTransientCallerEligibilityRefusal)' 'if ($false)' }
+  Write-Text $supervisorPath $source
+  $launchId = [guid]::NewGuid().ToString()
+  $resultPath = Join-Path $fixture.runtime "long-product-gate-$launchId.json"
+  $runner = Invoke-LongGateProcess $fixture $supervisorPath $launchId $resultPath -NoWait
+  $failure = $null; $result = $null
+  try {
+    $pollCount = switch ($Mode) { 'held' { 4 }; 'before' { 2 }; 'cap' { 2 }; 'wait-cap' { 1 }; 'changed' { 2 }; 'replacement' { 2 }; 'other' { 0 } }
+    if ($Mutation -ceq 'census-immediate') {
+      $firstPoll = Join-Path $fixture.runtime 'fixture-transient-poll-1.json'
+      $deadline = [DateTime]::UtcNow.AddSeconds(10)
+      while (-not (Test-Path -LiteralPath $firstPoll) -and -not $runner.process.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 25 }
+      Assert-True ((Test-Path -LiteralPath $firstPoll) -and -not $runner.process.HasExited) 'census refusal is transient and re-presented before a queued ticket'
+    }
+    for ($pollNumber = 1; $pollNumber -le $pollCount; $pollNumber++) {
+      $pollPath = Join-Path $fixture.runtime "fixture-transient-poll-$pollNumber.json"
+      Wait-ForPathOrExit $pollPath $runner.process "transient census poll $pollNumber was not reached"
+      Write-Output "TRANSIENT_POLL mode=$Mode number=$pollNumber"
+      if ($Mode -ceq 'wait-cap' -and $pollNumber -eq 1) { Write-Text (Join-Path $fixture.runtime 'fixture-transient-clock.txt') '3601' }
+      Write-Text "$pollPath.continue" 'continue'
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $deadline) {
+      if (Test-Path -LiteralPath $resultPath) {
+        try { $result = Read-SharedText $resultPath | ConvertFrom-Json -DateKind String } catch {}
+        if ($result -and $result.status -cne 'pending') { break }
+      }
+      if ($runner.process.HasExited) { break }
+      Start-Sleep -Milliseconds 25
+    }
+    if ($result -and -not $runner.process.HasExited) {
+      $runnerDeadline = [DateTime]::UtcNow.AddSeconds(15)
+      while (-not $runner.process.HasExited -and [DateTime]::UtcNow -lt $runnerDeadline) { Start-Sleep -Milliseconds 25 }
+    }
+    $historyPath = Join-Path $fixture.runtime "long-product-gate-$launchId.stderr.log"
+    $history = if (Test-Path -LiteralPath $historyPath) { Read-SharedText $historyPath } else { '' }
+    Assert-True ($result -and $runner.process.HasExited) "transient census case $Mode reached a terminal result (runnerExit=$($runner.process.ExitCode) result=$result history=$history)"
+    switch ($Mode) {
+      'held' {
+        $tickets = @([regex]::Matches($history, '(?m)^heavy-verifier: queued; ticket=([0-9]+) ') | ForEach-Object { $_.Groups[1].Value })
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $tickets.Count -eq 3 -and @($tickets | Select-Object -Unique).Count -eq 1 -and $tickets[0] -eq '171' -and $history.Contains('heavy-verifier: admitted; ticket=171') -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=171 count=1)')) 'transient census refusal re-presents a held ticket and admits with the same ticket'
+        Write-Output 'PASS transient census refusal while queued re-presents ticket=171 and admits with the same ticket'
+      }
+      'before' {
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=<none> count=1)') -and $history.Contains('heavy-verifier: queued; ticket=171') -and $history.Contains('heavy-verifier: admitted; ticket=171')) 'transient census refusal before a ticket starts the queue watch and re-presents before admission'
+        Write-Output 'PASS transient census refusal before a ticket starts the queue watch and admits'
+      }
+      'cap' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and ([regex]::Matches($history, '(?m)^long-product-gate: transient caller-eligibility refusal;').Count -eq 3) -and $history.Contains('long-product-gate: transient caller-eligibility refusal cap 3 reached') -and -not $history.Contains('heavy-verifier: admitted;')) 'consecutive transient census refusal cap finalizes incomplete before admission'
+        Write-Output 'PASS consecutive transient census refusal cap=3 finalizes incomplete'
+      }
+      'wait-cap' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('long-product-gate: queued wait cap 3600 seconds reached') -and $history.Contains('heavy-verifier: caller eligibility: dispatch census evaluation exhausted')) 'transient wait counts toward the 3600-second queued cap'
+        Write-Output 'PASS transient wait counts toward queued wait cap 3600 seconds'
+      }
+      'changed' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('long-product-gate: queue ticket changed') -and -not $history.Contains('heavy-verifier: admitted;')) 'ticket change after a transient refusal finalizes immediately'
+        Write-Output 'PASS ticket change after transient refusal finalizes immediately'
+      }
+      'replacement' {
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: admission ticket comparison (previous=171 current=172)') -and $history.Contains('long-product-gate: queue ticket replaced before admission (previous=171)')) 'admitted replacement ticket after a transient refusal retains v2.165 diagnostics'
+        Write-Output 'PASS admitted replacement ticket after transient refusal retains v2.165 diagnostics'
+      }
+      'other' {
+        Assert-True ($result.status -ceq 'incomplete' -and $result.exit -eq 73 -and $history.Contains('heavy-verifier: caller eligibility: dispatch census changed authority') -and -not $history.Contains('transient caller-eligibility refusal;')) 'different caller-eligibility refusal finalizes immediately'
+        Write-Output 'PASS different caller-eligibility refusal finalizes immediately'
+      }
+    }
+  } catch { $failure = $_.Exception.Message } finally {
+    if ($runner.process -and -not $runner.process.HasExited) { Stop-ExactStartedProcess $runner.process }
+    if ($runner.process) { $runner.process.Dispose() }
+  }
+  if ($Mutation) {
+    Assert-True ($failure -ceq 'ASSERTION FAILED: census refusal is transient and re-presented before a queued ticket') "MUTANT $Mutation reaches its named transient assertion (actual=$failure)"
+    Write-Output 'PASS MUTANT census-immediate killed at census refusal is transient and re-presented before a queued ticket'
   } elseif ($failure) { throw $failure }
 }
 function New-Mutant([string]$Source, [string]$Name, $Fixture) {
@@ -596,9 +743,11 @@ try {
   $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'long-product-gate.ps1'))
   $runSupervisor = -not $Part -or $Part -ceq 'supervisor'
   $runQueue = -not $Part -or $Part -ceq 'queue'
+  $runTransient = -not $Part -or $Part -ceq 'transient'
   $runMutants = -not $Part -or $Part -ceq 'mutants'
-  if ($Mutant -cin @('single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line')) {
+  if ($Mutant -cin @('single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line','census-immediate')) {
     if ($Mutant -ceq 'non-atomic-ready') { Test-ReadyHandoff $fixture -NonAtomic }
+    elseif ($Mutant -ceq 'census-immediate') { Invoke-TransientCensusCase 'before' $Mutant }
     else { Invoke-QueueCase $(if ($Mutant -ceq 'no-cap') { 'cap' } elseif ($Mutant -ceq 'replacement-line') { 'expire-admit' } else { 'admit' }) $Mutant }
     return
   }
@@ -609,6 +758,16 @@ try {
     Invoke-QueueCase 'expire-admit'
     Invoke-QueueCase 'cap'
     Invoke-QueueCase 'interrupt'
+  }
+  if ($runTransient) {
+    Invoke-TransientCensusCase 'held'
+    Invoke-TransientCensusCase 'before'
+    Invoke-TransientCensusCase 'cap'
+    Invoke-TransientCensusCase 'wait-cap'
+    Invoke-TransientCensusCase 'changed'
+    Invoke-TransientCensusCase 'replacement'
+    Invoke-TransientCensusCase 'other'
+    if ($Part -ceq 'transient') { return }
   }
   if ($runSupervisor) {
     Assert-SharedCensusClockContract (Join-Path $fixture.orchestrator 'invoke-heavy-verifier.ps1')
@@ -681,6 +840,7 @@ try {
       Invoke-QueueCase 'admit' 'fresh-ticket'
       Invoke-QueueCase 'cap' 'no-cap'
       Invoke-QueueCase 'expire-admit' 'replacement-line'
+      Invoke-TransientCensusCase 'before' 'census-immediate'
       Test-VerifierOverrideGuardMutant $fixture
       Test-ClockContractMutant $fixture
       Invoke-InterruptionCase $fixture -Mutant

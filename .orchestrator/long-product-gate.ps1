@@ -102,6 +102,11 @@ $exitCode = 74
 $queuePollSeconds = 30
 $queueWaitCapSeconds = 3600
 $queueRetentionSeconds = 600
+$transientCallerEligibilityRefusal = 'heavy-verifier: caller eligibility: dispatch census evaluation exhausted'
+# Three consecutive full census expiries allow two bounded re-presentations
+# without making a long gate spin forever; any queued presentation resets it.
+$transientRefusalCap = 3
+$consecutiveTransientRefusals = 0
 $queueWatch = $null
 $queueTicket = $null
 $previousPresentationSeconds = 0
@@ -126,6 +131,25 @@ try {
     [IO.File]::AppendAllText($stderrPath, $presentationError, [Text.UTF8Encoding]::new($false))
     $exitCode = [int]$process.ExitCode
     $process.Dispose(); $process = $null
+    $isTransientCallerEligibilityRefusal = $exitCode -eq 73 -and
+      @($presentationError -split "`r?`n" | Where-Object { $_ -ceq $transientCallerEligibilityRefusal }).Count -gt 0
+    if ($isTransientCallerEligibilityRefusal) {
+      if (-not $queueWatch) { $queueWatch = [Diagnostics.Stopwatch]::StartNew() }
+      $consecutiveTransientRefusals++
+      $ticketLabel = if ($null -ne $queueTicket) { $queueTicket } else { '<none>' }
+      $message = "long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=$ticketLabel count=$consecutiveTransientRefusals)"
+      [Console]::Error.WriteLine($message)
+      [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+      if ($consecutiveTransientRefusals -ge $transientRefusalCap) {
+        $message = "long-product-gate: transient caller-eligibility refusal cap $transientRefusalCap reached"
+        [Console]::Error.WriteLine($message)
+        [IO.File]::AppendAllText($stderrPath, "$message`n", [Text.UTF8Encoding]::new($false))
+        break
+      }
+      $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
+      [Threading.Thread]::Sleep($queueSleepMilliseconds)
+      continue
+    }
     if ($exitCode -ne 73 -or -not $presentationError.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal)) {
       if ($queueTicket) {
         $admissionTicketMatch = [regex]::Match("$presentationOutput`n$presentationError", '(?m)^heavy-verifier: [^\r\n]*\bticket=([0-9]+)(?:[ ;)]|$)')
@@ -158,8 +182,11 @@ try {
     }
     if (-not $queueWatch) {
       $queueWatch = [Diagnostics.Stopwatch]::StartNew()
+    }
+    if ($null -eq $queueTicket) {
       $queueTicket = $presentedTicket
     }
+    $consecutiveTransientRefusals = 0
     $previousPresentationSeconds = $presentationSeconds
     $queueSleepMilliseconds = [int](1000 * [Math]::Min($queuePollSeconds, [Math]::Max(0, $queueWaitCapSeconds - $queueWatch.Elapsed.TotalSeconds)))
     [Threading.Thread]::Sleep($queueSleepMilliseconds)

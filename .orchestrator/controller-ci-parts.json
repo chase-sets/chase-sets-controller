@@ -548,10 +548,11 @@
       "parts": [
         { "name": "supervisor", "weight": 1 },
         { "name": "queue", "weight": 1 },
+        { "name": "transient", "weight": 1 },
         { "name": "mutants", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["supervisor", "queue", "mutants"]
+        "parts": ["supervisor", "queue", "transient", "mutants"]
       }
     }
   ],
