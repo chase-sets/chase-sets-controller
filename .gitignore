@@ -12,6 +12,8 @@
 # The runtime directory receives arbitrary dispatch output. Track durable
 # tooling explicitly with git add -f; existing tracked files remain tracked.
 /.orchestrator/*
+# Controller-owned, machine-local lane scheduling policy. Never release it.
+/.orchestrator/lane-priority.json
 !/.orchestrator/contracts/
 !/.orchestrator/controller-skills/
 !/.orchestrator/fixtures/
