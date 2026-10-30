@@ -34,6 +34,14 @@ Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declaration
   $chromiumDeclaration.sha256 -ceq '1ba41595d8045fb377ca97a3b059e5679257ef5d0b60470e4be610aece91aa7d' -and
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
+$censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
+$censusReviewedSha256 = '439f2f34556d484312c20784fcbfda6c17bdcd052c08c1ac61eef19c32e6174a'
+Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run' -and
+  $censusDeclaration.enabled -eq $true -and $censusDeclaration.kind -ceq 'standalone-node' -and
+  $censusDeclaration.path -ceq '.tmp/10761-json-census/census-runner.mjs' -and
+  $censusDeclaration.sha256 -ceq $censusReviewedSha256 -and $censusDeclaration.maxBudgetSeconds -eq 600 -and
+  $censusDeclaration.PSObject.Properties.Name -cnotcontains 'dependencies') 'release declaration adds only json-census-five-run with its ignored path, reviewed bytes and 600-second cap'
+Write-Output 'PASS release declaration json-census-five-run names=3 path=1 sha256=1 maxBudget=600 dependencies=0'
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }
@@ -630,6 +638,86 @@ if (process.env.DIAGNOSTIC_EXPECT_INPUTS === '1') {
   Assert-True $failed 'nonignored-package-path mutant must fail the named admission assertion after real clean-tree refusal'
   Write-Output 'KILLED mutant nonignored-package-path at assertion=tmp-package-clean-exact-head-must-admit launched=1 clean-exact-head-refusal=1 exit=73'
 }
+function Write-JsonCensusDeclaration([string]$Hash, [switch]$Release, [switch]$WithoutCensus) {
+  # Every other field comes from the release declaration file unchanged.
+  $declaration=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'diagnostic-declarations.json') -Raw | ConvertFrom-Json
+  if ($WithoutCensus) { $declaration.diagnostics.PSObject.Properties.Remove('json-census-five-run') }
+  elseif (-not $Release) { $declaration.diagnostics.'json-census-five-run'.sha256=$Hash }
+  [IO.File]::WriteAllText($declarationPath, ($declaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+}
+function Test-JsonCensusDeclaration {
+  $worktree=Join-Path $container 'json-census-lane'
+  $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'
+  New-Item -ItemType Directory -Path $worktree, $artifactRoot -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value @('/.tmp/', '/.orchestrator/artifacts/')
+  Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null
+  Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null
+  Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
+  Invoke-FixtureGit @('add','--','.gitignore') | Out-Null
+  Invoke-FixtureGit @('commit','-m','json census fixture') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  $scriptRelative=[string]$censusDeclaration.path
+  $scriptPath=Join-Path $worktree $scriptRelative
+  $resultPath=Join-Path (Split-Path -Parent $scriptPath) 'census-runner.result.json'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $scriptPath) -Force | Out-Null
+  # Reads the admission identity with the reviewed runner's exact names and expressions.
+  Set-Content -LiteralPath $scriptPath -Value @'
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+const config = JSON.parse(Buffer.from(process.env.CHASE_SETS_HEAVY_ADMISSION_CONFIG ?? '', 'base64').toString('utf8'));
+const slot = process.env.CHASE_SETS_HEAVY_SLOT_ID;
+const head = config.diagnostic?.boundHead;
+const guessed = ['HEAVY_VERIFIER_ADMISSION_ID', 'HEAVY_ADMISSION_IDENTITY', 'CHASE_SETS_HEAVY_ADMISSION_ID'].filter((name) => Object.hasOwn(process.env, name));
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, JSON.stringify({ admitted: process.env.CHASE_SETS_HEAVY_ADMITTED ?? null, slot: slot ?? null, head: head ?? null, configHead: config.head ?? null, branch: config.branch ?? null, worktree: config.worktree ?? null, lane: config.lane ?? null, guessed }));
+fs.writeFileSync(fileURLToPath(import.meta.url).replace(/\.mjs$/, '.result.json'), `${JSON.stringify({ schema: 'json-census-five-run/v1', exactHead: head })}\n`, { flag: 'wx' });
+'@
+  $scriptHash=Get-Sha256 $scriptPath
+  Assert-True ($scriptHash -cne $censusReviewedSha256) 'json-census-setup: fixture bytes differ from the reviewed runner'
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'json-census-setup: ignored declared path leaves the exact-head fixture clean'
+
+  # The unmodified release declaration admits only the reviewed runner bytes.
+  Write-JsonCensusDeclaration -Release
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticSha256'=$censusReviewedSha256; '-DiagnosticBudgetSeconds'='600' } 'json-census-release-bytes' @{} 'json-census-five-run') 'declared diagnostic SHA-256 does not match the script'
+  Write-Output 'PASS json-census-must-refuse-unreviewed-bytes release-declaration=1 exit=73 body-side-effect=0'
+
+  Write-JsonCensusDeclaration $scriptHash
+  $case=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'json-census-resolves' @{} 'json-census-five-run'
+  Assert-True ($case.Result.Code -eq 0 -and (Test-Path -LiteralPath $case.Marker) -and (Test-Path -LiteralPath $resultPath)) "json-census-must-resolve: declared runner path admits and runs (exit=$($case.Result.Code) stderr=$($case.Result.Stderr))"
+  $identity=Get-Content -LiteralPath $case.Marker -Raw | ConvertFrom-Json
+  Assert-True ($identity.admitted -ceq '1' -and -not [string]::IsNullOrWhiteSpace([string]$identity.slot) -and $identity.head -ceq $head -and
+    $identity.configHead -ceq $head -and $identity.branch -ceq 'codex/test' -and $identity.lane -ceq 'lane-test' -and
+    [string]::Equals([string]$identity.worktree, [IO.Path]::GetFullPath($worktree).TrimEnd('\','/'), [StringComparison]::OrdinalIgnoreCase) -and
+    @($identity.guessed).Count -eq 0) "json-census-admission-identity: runner names are the ones the verifier sets (identity=$(Get-Content -LiteralPath $case.Marker -Raw))"
+  $receipts=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File)
+  Assert-True ($receipts.Count -eq 1) 'json-census-receipt: admitted runner writes one durable receipt'
+  $record=Get-Content -LiteralPath $receipts[0].FullName -Raw | ConvertFrom-Json -DateKind String
+  Assert-True ($record.head -ceq $head -and $record.diagnostic.name -ceq 'json-census-five-run' -and
+    $record.diagnostic.scriptPath -ceq $scriptRelative -and $record.diagnostic.sha256 -ceq $scriptHash -and
+    $record.diagnostic.budgetSeconds -eq 600 -and $record.diagnostic.maxBudgetSeconds -eq 600 -and
+    $record.exit -eq 0 -and $record.nativeExit -eq 0 -and $record.timedOut -eq $false -and
+    $record.resultSha256 -ceq (Get-Sha256 $resultPath) -and -not (Test-Path -LiteralPath $lockRoot)) 'json-census-receipt: name, declared path, hash, 600-second budget, result and release bind'
+  Remove-Item -LiteralPath $resultPath -Force
+  Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'json-census-completed: result and receipt leave the exact-head fixture clean'
+  Write-Output 'PASS json-census-must-resolve release-entry=1 identity=CHASE_SETS_HEAVY_ADMITTED,CHASE_SETS_HEAVY_SLOT_ID,diagnostic.boundHead guessed-names=0 receipt=1 budget=600 exit=0'
+
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='601' } 'json-census-over-cap' @{} 'json-census-five-run') 'diagnostic budget exceeds declared maximum'
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticSha256'=('0'*64); '-DiagnosticBudgetSeconds'='600' } 'json-census-caller-hash' @{} 'json-census-five-run') 'diagnostic SHA-256 does not match host declaration'
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticScriptPath'='.tmp/10761-impl-g4/census-runner.mjs'; '-DiagnosticBudgetSeconds'='600' } 'json-census-lane-path' @{} 'json-census-five-run') 'diagnostic script path does not match host declaration'
+  $original=[IO.File]::ReadAllText($scriptPath)
+  Add-Content -LiteralPath $scriptPath -Value '// changed after review'
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'json-census-changed-bytes' @{} 'json-census-five-run') 'declared diagnostic SHA-256 does not match the script'
+  [IO.File]::WriteAllText($scriptPath, $original)
+  Assert-True ((Get-Sha256 $scriptPath) -ceq $scriptHash) 'json-census-hash-mismatch: fixture bytes restored'
+  Write-Output 'PASS json-census-hash-mismatch-must-refuse caller-hash=73 changed-bytes=73 over-cap=73 lane-path=73 body-side-effect=0'
+
+  foreach ($name in @('JSON-census-five-run', 'json-census-five-run-g4')) {
+    Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } "json-census-undeclared-$name" @{} $name) 'diagnostic name is not declared'
+  }
+  Write-JsonCensusDeclaration -WithoutCensus
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'json-census-removed' @{} 'json-census-five-run') 'diagnostic name is not declared'
+  Assert-True (-not (Test-Path -LiteralPath $resultPath) -and @(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File).Count -eq 1) 'json-census-refusals: no refusal ran the body or wrote a receipt'
+  Write-Output 'PASS json-census-undeclared-must-refuse case-variant=73 suffixed=73 declaration-removed=73 body-side-effect=0'
+}
 
 try {
   Assert-NoProductionDiagnosticClockSeam
@@ -639,6 +727,7 @@ try {
   Test-DiagnosticDescendantSnapshot
   Test-RepeatDiagnosticImports
   Test-IgnoredChromiumPackage
+  Test-JsonCensusDeclaration
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') -Value '.orchestrator/'; Set-Content -LiteralPath (Join-Path $worktree 'seed.txt') -Value 'seed'
   Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null; Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null; Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
   Invoke-FixtureGit @('add','--','.') | Out-Null; Invoke-FixtureGit @('commit','-m','fixture') | Out-Null; $head=Invoke-FixtureGit @('rev-parse','HEAD')
