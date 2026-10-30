@@ -35,13 +35,18 @@ Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declaration
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
 $censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
-$censusReviewedSha256 = '439f2f34556d484312c20784fcbfda6c17bdcd052c08c1ac61eef19c32e6174a'
+$censusReviewedSha256 = '1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce'
 Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run' -and
   $censusDeclaration.enabled -eq $true -and $censusDeclaration.kind -ceq 'standalone-node' -and
   $censusDeclaration.path -ceq '.tmp/10761-json-census/census-runner.mjs' -and
   $censusDeclaration.sha256 -ceq $censusReviewedSha256 -and $censusDeclaration.maxBudgetSeconds -eq 600 -and
   $censusDeclaration.PSObject.Properties.Name -cnotcontains 'dependencies') 'release declaration adds only json-census-five-run with its ignored path, reviewed bytes and 600-second cap'
 Write-Output 'PASS release declaration json-census-five-run names=3 path=1 sha256=1 maxBudget=600 dependencies=0'
+# The controller publishes the reviewed runner; the lane copies it unchanged to the declared seat path.
+$censusRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-runner.mjs'
+Assert-True ((Test-Path -LiteralPath $censusRunnerSource -PathType Leaf) -and
+  [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($censusRunnerSource))).ToLowerInvariant() -ceq $censusDeclaration.sha256) 'committed diagnostics/10761-json-census-runner.mjs hashes to the declared json-census-five-run sha256'
+Write-Output 'PASS release declaration json-census-five-run committed-runner sha256=declared'
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }

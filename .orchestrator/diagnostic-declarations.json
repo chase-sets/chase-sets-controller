@@ -26,7 +26,7 @@
       "enabled": true,
       "kind": "standalone-node",
       "path": ".tmp/10761-json-census/census-runner.mjs",
-      "sha256": "439f2f34556d484312c20784fcbfda6c17bdcd052c08c1ac61eef19c32e6174a",
+      "sha256": "1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce",
       "maxBudgetSeconds": 600
     }
   }
