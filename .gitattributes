@@ -3,3 +3,4 @@
 .orchestrator/fixtures/brief-attribution-9258-report.txt text eol=lf
 .orchestrator/controller-skills/** -text
 *.sh text eol=lf
+.orchestrator/diagnostics/** -text

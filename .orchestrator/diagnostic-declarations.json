@@ -21,6 +21,13 @@
         { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-release-gate.js", "sha256": "93ed41b9a06146270b384a7e9c107d1ba76e69c80b3ba45aa0ff2b19e9cb5144" }
       ],
       "maxBudgetSeconds": 900
+    },
+    "json-census-five-run": {
+      "enabled": true,
+      "kind": "standalone-node",
+      "path": ".tmp/10761-json-census/census-runner.mjs",
+      "sha256": "1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce",
+      "maxBudgetSeconds": 600
     }
   }
 }
