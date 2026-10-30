@@ -3527,6 +3527,20 @@ try {
       } catch { throw "heavy-verifier: diagnostic module manifest is unreadable" }
       $diagnosticModules = @($moduleByPath.Values)
       $entryModule = @($diagnosticModules | Where-Object { Test-SamePath $_.path $diagnosticScriptFull })
+      if ($entryModule.Count -eq 0 -and $diagnosticVitestCommand) {
+        # Vitest evaluates the test file through Vite's module runner, which reads
+        # it with fs rather than Node's module hooks, so no manifest can record it.
+        # The launch handle (FileShare.Read, live until child exit) and the
+        # exact-head/clean-tree checks bind it instead: re-hash through that
+        # handle and record the entry at its launch digest.
+        $diagnosticSourceStream.Position = 0
+        $exitEntryHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)).ToLowerInvariant()
+        if ($exitEntryHash -cne $diagnosticDefinition.sha256) {
+          throw "heavy-verifier: vitest-command entry changed while its launch handle was held"
+        }
+        $entryModule = @([ordered]@{ module = $diagnosticScriptFull; path = $diagnosticScriptFull; sha256 = $exitEntryHash })
+        $diagnosticModules = @($diagnosticModules) + $entryModule
+      }
       if ($entryModule.Count -eq 0) {
         throw "heavy-verifier: diagnostic module manifest did not record the declared entry"
       }

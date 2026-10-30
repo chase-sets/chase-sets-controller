@@ -67,14 +67,23 @@ and admission environment. The verifier binds the entry bytes to the clean
 exact Git head at launch, records the user-facing command vector and actual
 launch vector in the receipt, and applies the same finite budget, module
 policy, Job Object and descendant identity cleanup as a standalone diagnostic.
-Vitest may present that tracked entry through its ordinary Vite transform, so
-the module receipt records the transformed evaluation bytes while the
-verifier's open launch handle and exact-head/clean-tree checks bind the source
-file itself; the standalone-node source-digest refusal remains unchanged.
+Vitest evaluates that tracked entry through Vite's module runner, which reads
+the file with `fs` rather than Node's module hooks, so no per-process manifest
+records it. For this kind only, when the merged manifests lack the entry the
+verifier re-hashes it through its open launch handle (FileShare.Read, held
+until child exit), refuses if the bytes differ from the launch digest, and
+records the entry in the receipt at that digest; the exact-head and clean-tree
+checks bind those bytes to the admitted head. If Node's hooks do load the
+entry (for example through Vite's transform), the preload admits the
+transformed evaluation bytes for this kind only. Test-file imports that Vite's
+runner evaluates are likewise outside the module hooks and are bound by the
+clean exact-head tree; externalized dependencies still load through Node and
+remain under the module policy. The standalone-node manifest-entry requirement
+and source-digest refusal remain unchanged.
 Because the normal Node-hosted pnpm entry is outside the product worktree, the
 verifier passes only its resolved installation root as a runtime-derived module
-root; no caller-supplied module root is accepted and Vitest/test imports remain
-under the ordinary worktree policy.
+root; no caller-supplied module root is accepted and Node-loaded Vitest/test
+imports remain under the ordinary worktree policy.
 The route accepts no script path or caller hash and no other command or
 argument.
 

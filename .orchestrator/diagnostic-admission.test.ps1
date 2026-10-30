@@ -1114,7 +1114,7 @@ const { pathToFileURL } = require('node:url');
   Write-Output 'PASS canonical-vitest synthetic-route=1 launch-path=1 receipt-command=1 native-exit=0'
 
   $unauthorizedPath=Join-Path $worktree '.orchestrator\canonical-unauthorized.mjs'
-  Set-Content -LiteralPath $unauthorizedPath -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_UNAUTHORIZED_MARKER, 'unauthorized-body-ran');"
+  Set-Content -LiteralPath $unauthorizedPath -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'unauthorized-body-ran');"
   Set-Content -LiteralPath $canonicalEntry -Value "export const canonicalEntry = true;"
   Set-Content -LiteralPath $fakePnpmScript -Value @'
 const { pathToFileURL } = require('node:url');
@@ -1132,7 +1132,12 @@ const { pathToFileURL } = require('node:url');
   } $canonicalGuard
   Assert-CanonicalPreloadRefused $policyControl 'diagnostic module was not tracked at the bound head or under an admitted node_modules directory:'
   Write-Output 'PASS canonical-vitest preload-root-control exit=73 unauthorized-body=0 lock-released=1'
+  # The mutant guard carries the same synthetic Node/pnpm substitution as its
+  # control, so the only difference between the two runs is the preload rule.
   $rootMutantGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-root-mutant'
+  $rootMutantGuardText=[IO.File]::ReadAllText($rootMutantGuard)
+  Assert-True (([regex]::Matches($rootMutantGuardText,[regex]::Escape($pnpmResolveAnchor))).Count -eq 1) 'canonical pnpm-root mutant replaces only host Node/pnpm resolution'
+  [IO.File]::WriteAllText($rootMutantGuard,$rootMutantGuardText.Replace($pnpmResolveAnchor,$pnpmResolveReplacement),[Text.UTF8Encoding]::new($false))
   $rootMutantPreload=Join-Path (Split-Path -Parent $rootMutantGuard) 'heavy-admission-preload.cjs'
   $rootMutantText=[IO.File]::ReadAllText($rootMutantPreload)
   $rootAnchor='const insideAllowedRoot = (candidate) => allowedRoots.some((root) => samePath(root, candidate) || inside(root, candidate));'
@@ -1141,56 +1146,70 @@ const { pathToFileURL } = require('node:url');
   $rootMutant=Invoke-CanonicalDiagnostic 'canonical-vitest-pnpm-root-mutant' @{} @{
     CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry; CANONICAL_UNAUTHORIZED=$unauthorizedPath
   } $rootMutantGuard
+  # The mutant must launch and run the unauthorized body, so it is killed only
+  # by the control's first assertion and never by an unrelated setup failure.
+  Assert-True ($rootMutant.Result.Code -eq 0 -and (Test-Path -LiteralPath $rootMutant.Marker)) "pnpm-root widening mutant launched and ran the unauthorized body (exit=$($rootMutant.Result.Code) stderr=$($rootMutant.Result.Stderr))"
   $rootMutantFailed=$false
   try { Assert-CanonicalPreloadRefused $rootMutant 'diagnostic module was not tracked at the bound head or under an admitted node_modules directory:' } catch {
-    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical preload refusal uses exit 73:')) { throw }
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical preload refusal uses exit 73')) { throw }
     $rootMutantFailed=$true
   }
   Assert-True $rootMutantFailed 'pnpm-root widening mutant must fail the unauthorized-module refusal assertion'
   Write-Output 'KILLED mutant allow-worktree-as-pnpm-root at assertion=canonical-preload-authorization launched=1 body-side-effect=1'
 
-  # The transformed-entry exception is Vitest-only. A standalone entry that
-  # reloads itself with changed bytes must still be refused before its marker.
-  $transformedRelative='.orchestrator/artifacts/canonical-transformed.mjs'
-  $transformedPath=Join-Path $worktree ($transformedRelative -replace '/','\')
-  $transformedEntrySource=@'
-import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
-const entryUrl = pathToFileURL(process.argv[1]).href;
-if (new URL(import.meta.url).search === '') {
-  // The direct Node entrypoint is loaded before registerHooks can record it.
-  // Load the unchanged entry once through the hook, then exercise the
-  // standalone transformed-entry refusal on the second load.
-  await import(`${entryUrl}?original`);
-  const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
-  fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
-  await import(`${entryUrl}?transformed`);
-} else if (new URL(import.meta.url).search === '?transformed') {
-  fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');
-}
+  # Vitest evaluates the test file through Vite's module runner, which reads it
+  # with fs rather than Node's module hooks. The verifier binds that entry by
+  # its FileShare.Read launch handle and records it at the launch digest.
+  Set-Content -LiteralPath $fakePnpmScript -Value @'
+const fs = require('node:fs');
+const source = fs.readFileSync(process.env.CANONICAL_ENTRY);
+let write = 'written';
+try { fs.writeFileSync(process.env.CANONICAL_ENTRY, 'export const replaced = true;'); } catch (error) { write = error.code; }
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, `runner-read-entry bytes=${source.length} write=${write}`);
 '@
-  Set-Content -LiteralPath $transformedPath -Value $transformedEntrySource
-  $scriptRelative=$transformedRelative; $scriptPath=$transformedPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 600
-  $transformedControl=Invoke-Diagnostic @{} 'canonical-vitest-transformed-entry-control'
-  Assert-CanonicalPreloadRefused $transformedControl 'declared diagnostic entry changed before evaluation'
-  Write-Output 'PASS canonical-vitest transformed-entry-control exit=73 transformed-body=0 lock-released=1'
-  Set-Content -LiteralPath $transformedPath -Value $transformedEntrySource
-  $transformedMutantGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-transformed-mutant'
-  $transformedMutantText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $transformedMutantGuard) 'heavy-admission-preload.cjs'))
-  $transformedAnchor='const allowTransformedEntry = diagnostic.kind === "vitest-command";'
-  Assert-True (([regex]::Matches($transformedMutantText,[regex]::Escape($transformedAnchor))).Count -eq 1) 'canonical transformed-entry mutant target occurs exactly once'
-  $transformedRecordAnchor='if (recorded && sha256 !== recorded.sha256) {'
-  Assert-True (([regex]::Matches($transformedMutantText,[regex]::Escape($transformedRecordAnchor))).Count -eq 1) 'canonical transformed-entry recorded-digest mutant target occurs exactly once'
-  $transformedMutantText=$transformedMutantText.Replace($transformedAnchor,'const allowTransformedEntry = true;').Replace($transformedRecordAnchor,'if (recorded && sha256 !== recorded.sha256 && !allowTransformedEntry) {')
-  [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $transformedMutantGuard) 'heavy-admission-preload.cjs'),$transformedMutantText,[Text.UTF8Encoding]::new($false))
-  $transformedMutant=Invoke-Diagnostic @{} 'canonical-vitest-transformed-entry-mutant' @{} 'worst13-no-fit' $transformedMutantGuard
-  $transformedMutantFailed=$false
-  try { Assert-CanonicalPreloadRefused $transformedMutant 'declared diagnostic entry changed before evaluation' } catch {
-    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical preload refusal uses exit 73:')) { throw }
-    $transformedMutantFailed=$true
+  $runnerEntrySha256=Get-Sha256 $canonicalEntry
+  $runnerRead=Invoke-CanonicalDiagnostic 'canonical-vitest-runner-read' @{} @{
+    CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry
+  } $canonicalGuard
+  $runnerReceipts=@(Get-DiagnosticReceiptPaths | Where-Object { $_ -notin $runnerRead.ReceiptsBefore })
+  Assert-True ($runnerRead.Result.Code -eq 0 -and @($runnerReceipts).Count -eq 1 -and (Test-Path -LiteralPath $runnerRead.Marker)) "canonical Vitest runner-read entry is admitted without a hooked entry load (exit=$($runnerRead.Result.Code) receipts=$(@($runnerReceipts).Count) stderr=$($runnerRead.Result.Stderr))"
+  $runnerMarker=[IO.File]::ReadAllText($runnerRead.Marker)
+  Assert-True ($runnerMarker -cmatch '^runner-read-entry bytes=[1-9][0-9]* write=EBUSY$') "launch handle refuses an entry rewrite while the child runs (marker=$runnerMarker)"
+  Assert-True ((Get-Sha256 $canonicalEntry) -ceq $runnerEntrySha256) 'canonical entry bytes are unchanged after the run'
+  $runnerRecord=Get-Content -LiteralPath $runnerReceipts[0] -Raw | ConvertFrom-Json
+  $runnerEntryModules=@($runnerRecord.modules | Where-Object { [string]::Equals([IO.Path]::GetFullPath([string]$_.path), [IO.Path]::GetFullPath($canonicalEntry), [StringComparison]::OrdinalIgnoreCase) })
+  Assert-True ($runnerEntryModules.Count -eq 1 -and [string]$runnerEntryModules[0].sha256 -ceq $runnerEntrySha256 -and [string]$runnerRecord.declarationSha256 -ceq $runnerEntrySha256 -and -not (Test-Path -LiteralPath $lockRoot)) "canonical Vitest receipt records the entry at its launch digest (modules=$(@($runnerRecord.modules).Count) entry=$($runnerEntryModules.Count))"
+  Write-Output 'PASS canonical-vitest runner-read-entry exit=0 entry-launch-digest=1 rewrite=EBUSY lock-released=1'
+
+  # The launch-handle entry binding is vitest-command only: a standalone
+  # diagnostic whose manifest lacks its entry must still be refused.
+  $entryFallbackRelative='.orchestrator/artifacts/entry-fallback-no-entry.mjs'; $entryFallbackPath=Join-Path $worktree ($entryFallbackRelative -replace '/','\')
+  Set-Content -LiteralPath $entryFallbackPath -Value @'
+import fs from 'node:fs';
+const configuration = JSON.parse(Buffer.from(process.env.CHASE_SETS_HEAVY_ADMISSION_CONFIG, 'base64').toString('utf8'));
+fs.writeFileSync(`${configuration.diagnostic.moduleManifestPath}-${process.pid}.json`, JSON.stringify({ schema: 'host-heavy-diagnostic-modules/v1', modules: [] }));
+'@
+  $scriptRelative=$entryFallbackRelative; $scriptPath=$entryFallbackPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash
+  $entryFallbackControl=Invoke-Diagnostic @{} 'standalone-entry-fallback-control'
+  Assert-Refused $entryFallbackControl 'diagnostic module manifest did not record the declared entry'
+  Write-Output 'PASS standalone-entry-fallback-control exit=73 manifest-entry-required=1'
+  $entryFallbackGuard=New-TestOnlyDiagnosticGuard 'vitest-entry-fallback-mutant'
+  $entryFallbackText=[IO.File]::ReadAllText($entryFallbackGuard)
+  $entryFallbackAnchor='if ($entryModule.Count -eq 0 -and $diagnosticVitestCommand) {'
+  Assert-True (([regex]::Matches($entryFallbackText,[regex]::Escape($entryFallbackAnchor))).Count -eq 1) 'vitest entry-fallback mutant target occurs exactly once'
+  [IO.File]::WriteAllText($entryFallbackGuard,$entryFallbackText.Replace($entryFallbackAnchor,'if ($entryModule.Count -eq 0) {'),[Text.UTF8Encoding]::new($false))
+  $entryFallbackMutant=Invoke-Diagnostic @{} 'standalone-entry-fallback-mutant' @{} 'worst13-no-fit' $entryFallbackGuard
+  Assert-True ($entryFallbackMutant.Result.Code -eq 0) "entry-fallback mutant launched and completed (exit=$($entryFallbackMutant.Result.Code) stderr=$($entryFallbackMutant.Result.Stderr))"
+  $entryFallbackFailed=$false
+  try { Assert-Refused $entryFallbackMutant 'diagnostic module manifest did not record the declared entry' } catch {
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: refused with documented code')) { throw }
+    $entryFallbackFailed=$true
   }
-  Assert-True $transformedMutantFailed 'transformed-entry widening mutant must fail the standalone entry refusal assertion'
-  Write-Output 'KILLED mutant allow-standalone-transformed-entry at assertion=canonical-preload-authorization launched=1 body-side-effect=1'
+  Assert-True $entryFallbackFailed 'standalone entry-fallback mutant must fail the manifest-entry refusal assertion'
+  Write-Output 'KILLED mutant standalone-entry-launch-handle-fallback at assertion=manifest-entry-required launched=1 exit=0'
+  # The standalone transformed-entry refusal and its widening mutant are direct
+  # preload tests (heavy-admission-preload.test.ps1 -DiagnosticPolicyOnly): the
+  # verifier's FileShare.Read launch handle forbids rewriting a held entry.
 
   $outside=Invoke-Diagnostic @{ '-ContainerRoot'=(Get-Location).Path } 'outside-container'
   Assert-Refused $outside 'arbitrary commands are fixture-only; use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest'

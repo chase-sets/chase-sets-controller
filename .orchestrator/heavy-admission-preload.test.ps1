@@ -1,4 +1,4 @@
-param([switch]$ClassifierOnly, [switch]$IdentityOnly, [switch]$DerivedOnly, [switch]$LaneEvolutionOnly, [switch]$E2eGateOnly, [switch]$AcceptAnyHeadMutant, [string]$GuardRevision = '', [switch]$NativeSpawnOnly, [switch]$PassUnknownSpawnShapeMutant)
+param([switch]$ClassifierOnly, [switch]$IdentityOnly, [switch]$DerivedOnly, [switch]$LaneEvolutionOnly, [switch]$E2eGateOnly, [switch]$AcceptAnyHeadMutant, [string]$GuardRevision = '', [switch]$NativeSpawnOnly, [switch]$PassUnknownSpawnShapeMutant, [switch]$DiagnosticPolicyOnly)
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
@@ -1309,6 +1309,136 @@ fs.writeFileSync(process.env.ADMISSION_MARKER, 'body-ran');
   Write-Output 'PASS recreated-branch gateExit=73 body=False ownerReleased=True'
 }
 
+# Direct diagnostic module-policy controls. The verifier holds the declared
+# entry open with FileShare.Read until child exit, so a verifier-level fixture
+# cannot present changed entry bytes; these cases drive the real preload with
+# no verifier, slot queue or host-load dependency. Each widening mutant must
+# launch, run its body and fail only its control's first assertion.
+function Test-DiagnosticModulePolicy {
+  $policyLane = Join-Path $root "diagnostic-policy-lane"
+  $policyRoot = Join-Path $policyLane "pnpm-root"
+  $policyEntry = Join-Path $policyLane "scripts\canonical-record.test.mjs"
+  $trackedLauncher = Join-Path $policyLane "scripts\launcher.cjs"
+  $rootLauncher = Join-Path $policyRoot "bin\launcher.cjs"
+  $unauthorized = Join-Path $policyLane "untracked\unauthorized.mjs"
+  New-Item -ItemType Directory -Path (Split-Path -Parent $policyEntry), (Split-Path -Parent $rootLauncher), (Split-Path -Parent $unauthorized) | Out-Null
+  $launcherSource = @"
+const { pathToFileURL } = require('node:url');
+(async () => {
+  await import(pathToFileURL(process.env.POLICY_ENTRY).href);
+  if (process.env.POLICY_UNAUTHORIZED) await import(pathToFileURL(process.env.POLICY_UNAUTHORIZED).href);
+})().catch((error) => { console.error(error); process.exitCode = 70; });
+"@
+  Set-Content -LiteralPath $trackedLauncher -Value $launcherSource
+  Set-Content -LiteralPath $rootLauncher -Value $launcherSource
+  Set-Content -LiteralPath $policyEntry -Value "import fs from 'node:fs'; if (process.env.POLICY_ENTRY_WRITES === '1') fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'entry-ran');"
+  Set-Content -LiteralPath $unauthorized -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'unauthorized-ran');"
+  Set-Content -LiteralPath (Join-Path $policyLane ".gitignore") -Value @("pnpm-root/", "untracked/")
+  Invoke-RepoGit $policyLane @("init", "--initial-branch=codex/diagnostic-policy") | Out-Null
+  Invoke-RepoGit $policyLane @("config", "user.name", "Heavy Admission Test") | Out-Null
+  Invoke-RepoGit $policyLane @("config", "user.email", "heavy-admission-test@example.invalid") | Out-Null
+  Invoke-RepoGit $policyLane @("add", "--", ".gitignore", "scripts") | Out-Null
+  Invoke-RepoGit $policyLane @("commit", "-m", "diagnostic policy fixture") | Out-Null
+  $policyHead = Invoke-RepoGit $policyLane @("rev-parse", "HEAD")
+  $entrySha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($policyEntry))).ToLowerInvariant()
+
+  $newPolicyPreload = {
+    param([string]$Name, [string]$Anchor, [string]$Replacement)
+    $directory = Join-Path $root "diagnostic-policy-$Name"
+    New-Item -ItemType Directory -Path $directory | Out-Null
+    Copy-Item -LiteralPath $clientSource -Destination (Join-Path $directory "heavy-slot.cjs")
+    $text = [IO.File]::ReadAllText($preloadSource)
+    if ($Anchor) {
+      $count = ([regex]::Matches($text, [regex]::Escape($Anchor))).Count
+      Assert-True ($count -eq 1) "diagnostic policy mutant $Name target occurs exactly once (count=$count)"
+      $text = $text.Replace($Anchor, $Replacement)
+    }
+    $path = Join-Path $directory "heavy-admission-preload.cjs"
+    [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+    return $path
+  }
+  $invokePolicy = {
+    param([string]$Name, [string]$Preload, [string]$Launcher, [string]$Kind, [hashtable]$Environment, [string[]]$AllowedRoots = @())
+    $marker = Join-Path $root "diagnostic-policy-$Name.marker"
+    $diagnostic = [ordered]@{
+      kind = $Kind; entry = $policyEntry; entrySha256 = $entrySha256; worktree = $policyLane
+      boundHead = $policyHead; moduleManifestPath = (Join-Path $root "diagnostic-policy-$Name-modules")
+      dependencies = @()
+    }
+    if ($AllowedRoots.Count -gt 0) { $diagnostic.allowedRoots = @($AllowedRoots) }
+    $configuration = [ordered]@{
+      schemaVersion = 1; guardPath = [IO.Path]::GetFullPath($guard); powershellPath = [IO.Path]::GetFullPath($pwsh)
+      containerRoot = [IO.Path]::GetFullPath($container); worktree = $policyLane; lane = "diagnostic-policy"
+      retainAdmission = $true; originalNodeOptionsPresent = $false; originalNodeOptions = ""
+      originalScriptShellPresent = $false; originalScriptShell = ""; diagnostic = $diagnostic; immutableHead = $policyHead
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $node; $start.WorkingDirectory = $policyLane
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+    Set-CleanAdmissionEnvironment $start
+    [void]$start.ArgumentList.Add($Launcher)
+    $start.Environment["NODE_OPTIONS"] = "--require=`"$($Preload.Replace('\', '/'))`""
+    $start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($configuration | ConvertTo-Json -Compress -Depth 6)))
+    $start.Environment["CHASE_SETS_HEAVY_ADMITTED"] = "1"
+    $start.Environment["DIAGNOSTIC_MARKER"] = $marker
+    $start.Environment["POLICY_ENTRY"] = $policyEntry
+    foreach ($entry in $Environment.GetEnumerator()) { $start.Environment[$entry.Key] = [string]$entry.Value }
+    $fixture = Register-Fixture ([Diagnostics.Process]::Start($start))
+    Assert-True (Wait-FixtureExit $fixture) "diagnostic policy $Name exits"
+    $output = Read-FixtureOutput $fixture
+    return [pscustomobject]@{ Code = $fixture.Process.ExitCode; Stderr = $output.stderr; Stdout = $output.stdout; Marker = $marker }
+  }
+  $assertRefused = {
+    param($Case, [string]$Label, [string]$ExpectedText, [string]$ExpectedPath)
+    Assert-True ($Case.Code -eq 73) "$Label refusal uses exit 73 (actual=$($Case.Code) stderr=$($Case.Stderr) stdout=$($Case.Stdout))"
+    Assert-True ($Case.Stderr.Contains("heavy-admission: $ExpectedText")) "$Label refusal names '$ExpectedText' (stderr=$($Case.Stderr))"
+    if ($ExpectedPath) { Assert-True ($Case.Stderr.Contains($ExpectedPath)) "$Label refusal names $ExpectedPath (stderr=$($Case.Stderr))" }
+    Assert-True (-not (Test-Path -LiteralPath $Case.Marker)) "$Label refusal leaves no body marker"
+  }
+  $assertKilled = {
+    param($Case, [string]$Mutant, [string]$Label, [scriptblock]$Control)
+    Assert-True ($Case.Code -eq 0 -and (Test-Path -LiteralPath $Case.Marker)) "$Mutant mutant launched and ran its body (exit=$($Case.Code) stderr=$($Case.Stderr) stdout=$($Case.Stdout))"
+    $failed = $false
+    try { & $Control $Case } catch {
+      if (-not $_.Exception.Message.StartsWith("ASSERTION FAILED: $Label refusal uses exit 73")) { throw }
+      $failed = $true
+    }
+    Assert-True $failed "$Mutant mutant must fail the $Label refusal assertion"
+    Write-Output "KILLED mutant $Mutant at assertion=$Label launched=1 exit=0 body-side-effect=1"
+  }
+  $realPreload = & $newPolicyPreload "real" "" ""
+  $notTracked = "diagnostic module was not tracked at the bound head or under an admitted node_modules directory: "
+
+  # pnpm-root control: the runtime-derived pnpm root admits the launcher only.
+  $rootEnvironment = @{ POLICY_UNAUTHORIZED = $unauthorized }
+  $rootControl = & $invokePolicy "root-control" $realPreload $rootLauncher "vitest-command" $rootEnvironment @($policyRoot)
+  $rootAssertion = { param($Case) & $assertRefused $Case "diagnostic-policy pnpm-root" $notTracked "unauthorized.mjs" }
+  & $rootAssertion $rootControl
+  $rootManifest = @(Get-ChildItem -LiteralPath $root -Filter "diagnostic-policy-root-control-modules-*.json" -File)
+  Assert-True ($rootManifest.Count -eq 1) "pnpm-root control records its launcher and entry before refusing (manifests=$($rootManifest.Count))"
+  $rootPaths = @((Get-Content -LiteralPath $rootManifest[0].FullName -Raw | ConvertFrom-Json).modules.path)
+  Assert-True (@($rootPaths | Where-Object { $_ -ieq $rootLauncher }).Count -eq 1 -and @($rootPaths | Where-Object { $_ -ieq $policyEntry }).Count -eq 1) "pnpm-root control admitted the launcher under the allowed root and the tracked entry (paths=$($rootPaths -join ';'))"
+  Write-Output "PASS diagnostic-policy pnpm-root-control exit=73 launcher-admitted=1 entry-admitted=1 unauthorized-body=0"
+  $rootMutantPreload = & $newPolicyPreload "root-mutant" "const insideAllowedRoot = (candidate) => allowedRoots.some((root) => samePath(root, candidate) || inside(root, candidate));" "const insideAllowedRoot = (candidate) => true;"
+  $rootMutant = & $invokePolicy "root-mutant" $rootMutantPreload $rootLauncher "vitest-command" $rootEnvironment @($policyRoot)
+  & $assertKilled $rootMutant "allow-worktree-as-pnpm-root" "diagnostic-policy pnpm-root" $rootAssertion
+
+  # Transformed-entry control: entry bytes that differ from the bound digest
+  # are refused for standalone-node; only vitest-command admits them.
+  Add-Content -LiteralPath $policyEntry -Value "// transformed after the bound digest"
+  $transformedEnvironment = @{ POLICY_ENTRY_WRITES = "1" }
+  $transformedControl = & $invokePolicy "transformed-control" $realPreload $trackedLauncher "standalone-node" $transformedEnvironment
+  $transformedAssertion = { param($Case) & $assertRefused $Case "diagnostic-policy standalone transformed-entry" "declared diagnostic entry changed before evaluation" "" }
+  & $transformedAssertion $transformedControl
+  Write-Output "PASS diagnostic-policy standalone-transformed-entry-control exit=73 entry-body=0"
+  $vitestTransformed = & $invokePolicy "transformed-vitest" $realPreload $trackedLauncher "vitest-command" $transformedEnvironment
+  Assert-True ($vitestTransformed.Code -eq 0 -and (Test-Path -LiteralPath $vitestTransformed.Marker)) "vitest-command admits transformed entry bytes (exit=$($vitestTransformed.Code) stderr=$($vitestTransformed.Stderr))"
+  Write-Output "PASS diagnostic-policy vitest-transformed-entry exit=0 entry-body=1"
+  $transformedMutantPreload = & $newPolicyPreload "transformed-mutant" 'const allowTransformedEntry = diagnostic.kind === "vitest-command";' "const allowTransformedEntry = true;"
+  $transformedMutant = & $invokePolicy "transformed-mutant" $transformedMutantPreload $trackedLauncher "standalone-node" $transformedEnvironment
+  & $assertKilled $transformedMutant "allow-standalone-transformed-entry" "diagnostic-policy standalone transformed-entry" $transformedAssertion
+}
 try {
   Assert-DisposableRoot; if ($NativeSpawnOnly) { return }
   Assert-FreshChildEnvironmentBoundary
@@ -1320,6 +1450,7 @@ try {
   }
   if ($LaneEvolutionOnly) { Test-LaneEvolution; return }
   if ($E2eGateOnly) { Test-E2eGate; return }
+  if ($DiagnosticPolicyOnly) { Test-DiagnosticModulePolicy; return }
   if (-not $ClassifierOnly) {
   if ($IdentityOnly) { Test-AdmissionGitIdentity; return }
   $derivedFailure = $null
@@ -1328,6 +1459,7 @@ try {
     if ($derivedFailure) { throw $derivedFailure }
     return
   }
+  Test-DiagnosticModulePolicy
 
   # Parent-failing probe control: every production-like invocation shape must
   # refuse behind a live different owner before marker or output creation.
