@@ -36,7 +36,7 @@ Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declaration
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
 $censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
 $censusReviewedSha256 = '1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce'
-Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run' -and
+Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run,canonical-vitest-residual-v1' -and
   $censusDeclaration.enabled -eq $true -and $censusDeclaration.kind -ceq 'standalone-node' -and
   $censusDeclaration.path -ceq '.tmp/10761-json-census/census-runner.mjs' -and
   $censusDeclaration.sha256 -ceq $censusReviewedSha256 -and $censusDeclaration.maxBudgetSeconds -eq 600 -and
@@ -47,6 +47,15 @@ $censusRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-run
 Assert-True ((Test-Path -LiteralPath $censusRunnerSource -PathType Leaf) -and
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($censusRunnerSource))).ToLowerInvariant() -ceq $censusDeclaration.sha256) 'committed diagnostics/10761-json-census-runner.mjs hashes to the declared json-census-five-run sha256'
 Write-Output 'PASS release declaration json-census-five-run committed-runner sha256=declared'
+$canonicalDeclaration = $releaseDeclarations.diagnostics.'canonical-vitest-residual-v1'
+$canonicalArguments = @('exec','vitest','run','--config','./vitest.scripts.config.mjs','scripts/canonical-record.test.mjs','--maxWorkers=1','--fileParallelism=false','--silent=false')
+Assert-True ($canonicalDeclaration.enabled -eq $true -and $canonicalDeclaration.kind -ceq 'vitest-command' -and
+  $canonicalDeclaration.path -ceq 'scripts/canonical-record.test.mjs' -and
+  $canonicalDeclaration.command.executable -ceq 'pnpm' -and
+  ((@($canonicalDeclaration.command.arguments) -join "`n") -ceq ($canonicalArguments -join "`n")) -and
+  $canonicalDeclaration.maxBudgetSeconds -eq 600 -and
+  $canonicalDeclaration.PSObject.Properties.Name -notcontains 'sha256') 'release declaration pins the exact canonical Vitest command, tracked entry and 600-second cap without a wrapper hash'
+Write-Output 'PASS release declaration canonical-vitest-residual-v1 kind=vitest-command exact-argv=1 path=1 maxBudget=600 wrapper=0'
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }
@@ -1010,6 +1019,22 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
     Assert-True ($mutantResult.Code -eq 0 -and $mutantRun.Processes[0].HasExited -and -not (Test-Path -LiteralPath $lockRoot)) "mutant setup and normal completion must succeed (exit=$($mutantResult.Code) stderr=$($mutantResult.Stderr))"
     Write-Output 'KILLED mutant diagnostic-timeout-enforcement at assertion=mutant-timeout-must-exit-124 launched=1 child-live-past-budget=1 expired-clock-reads=2 released-exit=0'
   } finally { Close-BarrierDiagnostic $mutantRun }
+
+  # The Vitest route is a closed declaration, not a free-form command seam.
+  # Keep this negative control after the real fixture has an exact tracked
+  # canonical entry so the refusal exercises declaration admission itself.
+  $canonicalEntry=Join-Path $worktree 'scripts/canonical-record.test.mjs'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalEntry) -Force | Out-Null
+  Set-Content -LiteralPath $canonicalEntry -Value "export const canonicalFixture = true;"
+  Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs') | Out-Null
+  Invoke-FixtureGit @('commit','-m','canonical vitest entry') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  $canonicalMutantDeclaration=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'diagnostic-declarations.json') -Raw | ConvertFrom-Json
+  $canonicalMutantDeclaration.diagnostics.'canonical-vitest-residual-v1'.command.arguments[5]='scripts/not-canonical-record.test.mjs'
+  [IO.File]::WriteAllText($declarationPath, ($canonicalMutantDeclaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+  $canonicalMutant=Invoke-Diagnostic @{ '-DiagnosticScriptPath'=$null; '-DiagnosticSha256'=$null; '-DiagnosticBudgetSeconds'='600' } 'canonical-vitest-command-mutant' @{} 'canonical-vitest-residual-v1'
+  Assert-Refused $canonicalMutant 'vitest-command declaration does not pin the canonical command'
+  Write-Output 'KILLED mutant canonical-vitest-command-argv-mutant at assertion=canonical-command-pinned launched=0 exit=73 body-side-effect=0'
 
   $outside=Invoke-Diagnostic @{ '-ContainerRoot'=(Get-Location).Path } 'outside-container'
   Assert-Refused $outside 'arbitrary commands are fixture-only; use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest'

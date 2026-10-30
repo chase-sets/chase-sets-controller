@@ -28,12 +28,11 @@ This does not fix or bypass #7956's nested-continuation refusal.
 
 ## Declared diagnostics
 
-The `-Diagnostic` route is a host-declared, case-sensitive standalone Node
-entry. Its repository-relative path and SHA-256 remain pinned by
-`diagnostic-declarations.json`; the declaration kind must be
-`standalone-node`, and `-DiagnosticBudgetSeconds` is required and must be in
-the closed interval `(0, 86400]` (and no greater than the declaration's
-maximum). An optional `dependencies` array declares an exact-byte closure of
+The `-Diagnostic` route is a host-declared, case-sensitive entry. A
+`standalone-node` entry retains its repository-relative path and SHA-256 pin;
+`-DiagnosticBudgetSeconds` is required and must be in the closed interval
+`(0, 86400]` (and no greater than the declaration's maximum). An optional
+`dependencies` array declares an exact-byte closure of
 at most 64 repository-relative `.mjs`, `.js` or `.json` files, each with a
 SHA-256. Paths must be normalized, inside the worktree, free of reparse points,
 unique (case-insensitively), and different from the entry. Every declared file
@@ -56,6 +55,28 @@ evaluation, including tracked and admitted `node_modules` files. Only unchanged
 manifest entries are deduplicated; authorization is never cached. The verifier
 merges the manifests without allowing a child to overwrite its parent's records
 and requires the declared entry to be present.
+
+The `vitest-command` kind is a separate closed route, not a wrapper or an
+arbitrary-command escape. Its declaration pins the complete command vector
+`pnpm exec vitest run --config ./vitest.scripts.config.mjs
+scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false
+--silent=false` and the tracked test entry path. The verifier launches the
+normal Node-hosted pnpm distribution with that vector, so pnpm, Vitest, its
+real worker process and every child retain the unchanged diagnostic preload
+and admission environment. The verifier binds the entry bytes to the clean
+exact Git head at launch, records the user-facing command vector and actual
+launch vector in the receipt, and applies the same finite budget, module
+policy, Job Object and descendant identity cleanup as a standalone diagnostic.
+Vitest may present that tracked entry through its ordinary Vite transform, so
+the module receipt records the transformed evaluation bytes while the
+verifier's open launch handle and exact-head/clean-tree checks bind the source
+file itself; the standalone-node source-digest refusal remains unchanged.
+Because the normal Node-hosted pnpm entry is outside the product worktree, the
+verifier passes only its resolved installation root as a runtime-derived module
+root; no caller-supplied module root is accepted and Vitest/test imports remain
+under the ordinary worktree policy.
+The route accepts no script path or caller hash and no other command or
+argument.
 
 After admission succeeds, the diagnostic launcher unconditionally sets
 `CHASE_SETS_HEAVY_ADMITTED=1` in the child environment, overwriting any caller

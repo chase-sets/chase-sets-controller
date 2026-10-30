@@ -28,12 +28,13 @@ param(
   [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][ValidateSet("@chase-sets/payments", IgnoreCase = $false)][string]$WorkspaceDbTest,
   [Parameter(ParameterSetName = "WorkspaceDbTest")][string]$WorkspaceDbTestFile,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][double]$WorkspaceDbBudgetSeconds,
-  # Host-declared standalone Node diagnostics are a closed, case-sensitive
-  # name set. The declaration file supplies the repository-relative script,
-  # source digest and maximum wall-clock budget.
+  # Host-declared diagnostics are a closed, case-sensitive name set. A
+  # standalone Node entry retains its pinned path and source digest. The
+  # Vitest command kind pins its complete argv and binds its tracked test
+  # entry to the admitted exact Git head.
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$Diagnostic,
-  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
-  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
+  [Parameter(ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
+  [Parameter(ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
   [Parameter(ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][ValidateSet("reconciliation-pg16/v1", IgnoreCase = $false)][string]$NativeDbProfile,
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][string]$NativeRequestPath,
@@ -485,6 +486,8 @@ function Test-SafeFile([string]$Path) {
 $diagnosticScriptFull = $null
 $diagnosticDefinition = $null
 $diagnosticDependencies = @()
+$diagnosticVitestCommand = $false
+$diagnosticCommandArguments = @()
 function Assert-DiagnosticPathNoReparse([string]$Path, [string]$Description) {
   $current = [IO.Path]::GetFullPath($Path)
   while ($current -and (Test-Path -LiteralPath $current)) {
@@ -517,12 +520,12 @@ function Assert-DiagnosticDeclaration {
     throw "heavy-verifier: diagnostic name is not declared"
   }
   $definition = $definition.Value
-  if ($definition.enabled -ne $true -or [string]::IsNullOrWhiteSpace([string]$definition.path) -or
-      [string]$definition.sha256 -match '(?i)fill[_-]?me|placeholder') {
+  if ($definition.enabled -ne $true -or [string]::IsNullOrWhiteSpace([string]$definition.path)) {
     throw "heavy-verifier: diagnostic declaration is not populated"
   }
-  if ([string]$definition.kind -cne 'standalone-node') {
-    throw "heavy-verifier: diagnostic declaration kind is not standalone-node"
+  $diagnosticKind = [string]$definition.kind
+  if ($diagnosticKind -cnotin @('standalone-node', 'vitest-command')) {
+    throw "heavy-verifier: diagnostic declaration kind is not supported"
   }
   if (-not $diagnosticBudgetSupplied) {
     throw "heavy-verifier: diagnostic budget is required"
@@ -531,23 +534,52 @@ function Assert-DiagnosticDeclaration {
       $DiagnosticBudgetSeconds -le 0 -or $DiagnosticBudgetSeconds -gt 86400) {
     throw "heavy-verifier: diagnostic budget must be finite and greater than zero"
   }
-  if ([string]::IsNullOrWhiteSpace($DiagnosticScriptPath) -or
-      [IO.Path]::IsPathFullyQualified($DiagnosticScriptPath) -or
-      $DiagnosticScriptPath.Replace('\', '/') -cnotmatch '^[A-Za-z0-9._/-]+\.mjs$' -or
-      @($DiagnosticScriptPath.Replace('\', '/').Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
-    throw "heavy-verifier: diagnostic script must be a repository-relative standalone .mjs path"
-  }
   $declaredPath = ([string]$definition.path).Replace('\', '/')
-  $callerPath = $DiagnosticScriptPath.Replace('\', '/')
-  if ($callerPath -cne $declaredPath) {
-    throw "heavy-verifier: diagnostic script path does not match host declaration"
+  if ([IO.Path]::IsPathFullyQualified($declaredPath) -or
+      $declaredPath -cnotmatch '^[A-Za-z0-9._/-]+\.mjs$' -or
+      @($declaredPath.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+    throw "heavy-verifier: diagnostic declaration path must be a normalized repository-relative .mjs path"
   }
-  $declaredHash = [string]$definition.sha256
-  if ($declaredHash -cnotmatch '^[a-f0-9]{64}$') {
-    throw "heavy-verifier: diagnostic declaration has an invalid SHA-256"
-  }
-  if ($DiagnosticSha256 -cne $declaredHash) {
-    throw "heavy-verifier: diagnostic SHA-256 does not match host declaration"
+  $callerPath = if ($DiagnosticScriptPath) { $DiagnosticScriptPath.Replace('\', '/') } else { $null }
+  $declaredHash = $null
+  if ($diagnosticKind -ceq 'standalone-node') {
+    if ([string]::IsNullOrWhiteSpace($callerPath)) {
+      throw "heavy-verifier: standalone-node diagnostics require a script path"
+    }
+    if ([IO.Path]::IsPathFullyQualified($callerPath) -or
+        $callerPath -cnotmatch '^[A-Za-z0-9._/-]+\.mjs$' -or
+        @($callerPath.Split('/') | Where-Object { $_ -in @('', '.', '..') }).Count -gt 0) {
+      throw "heavy-verifier: diagnostic script must be a repository-relative standalone .mjs path"
+    }
+    if ($callerPath -cne $declaredPath) {
+      throw "heavy-verifier: diagnostic script path does not match host declaration"
+    }
+    $declaredHash = [string]$definition.sha256
+    if ($declaredHash -cnotmatch '^[a-f0-9]{64}$') {
+      throw "heavy-verifier: diagnostic declaration has an invalid SHA-256"
+    }
+    if ($DiagnosticSha256 -cne $declaredHash) {
+      throw "heavy-verifier: diagnostic SHA-256 does not match host declaration"
+    }
+  } else {
+    if ($callerPath -or $DiagnosticSha256) {
+      throw "heavy-verifier: vitest-command diagnostics do not accept a standalone script hash"
+    }
+    if ($declaredPath -cne 'scripts/canonical-record.test.mjs') {
+      throw 'heavy-verifier: vitest-command entry path is not the canonical-record test'
+    }
+    $trackedEntry = @(& git -C $worktreeFull ls-tree -r --name-only $acquiredGitIdentity.Head -- $declaredPath 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $trackedEntry.Count -ne 1 -or $trackedEntry[0] -cne $declaredPath) {
+      throw 'heavy-verifier: vitest-command entry is not tracked at the admitted exact head'
+    }
+    $expectedArguments = @('exec', 'vitest', 'run', '--config', './vitest.scripts.config.mjs', 'scripts/canonical-record.test.mjs', '--maxWorkers=1', '--fileParallelism=false', '--silent=false')
+    if ($definition.PSObject.Properties.Name -notcontains 'command' -or
+        $definition.command.executable -cne 'pnpm' -or
+        ((@($definition.command.arguments) -join "`n") -cne ($expectedArguments -join "`n"))) {
+      throw 'heavy-verifier: vitest-command declaration does not pin the canonical command'
+    }
+    $script:diagnosticVitestCommand = $true
+    $script:diagnosticCommandArguments = $expectedArguments
   }
   $maximumBudget = 0.0
   if (-not [double]::TryParse([string]$definition.maxBudgetSeconds, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$maximumBudget) -or
@@ -557,7 +589,7 @@ function Assert-DiagnosticDeclaration {
   if ($DiagnosticBudgetSeconds -gt $maximumBudget) {
     throw "heavy-verifier: diagnostic budget exceeds declared maximum"
   }
-  $relative = $DiagnosticScriptPath.Replace('/', '\')
+  $relative = $declaredPath.Replace('/', '\')
   $candidate = [IO.Path]::GetFullPath((Join-Path $worktreeFull $relative)).TrimEnd('\', '/')
   if (-not $candidate.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "heavy-verifier: diagnostic script escaped the supplied worktree"
@@ -567,12 +599,16 @@ function Assert-DiagnosticDeclaration {
     throw "heavy-verifier: declared diagnostic script was not found"
   }
   $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($candidate))).ToLowerInvariant()
-  if ($actual -cne $declaredHash.ToLowerInvariant()) {
+  if ($diagnosticKind -ceq 'standalone-node' -and $actual -cne $declaredHash.ToLowerInvariant()) {
     throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
   }
   $script:diagnosticDefinition = [ordered]@{
-    name = $Diagnostic; kind = [string]$definition.kind; scriptPath = $declaredPath
-    sha256 = $declaredHash.ToLowerInvariant(); budgetSeconds = $DiagnosticBudgetSeconds; maxBudgetSeconds = $maximumBudget
+    name = $Diagnostic; kind = $diagnosticKind; scriptPath = $declaredPath
+    sha256 = if ($declaredHash) { $declaredHash.ToLowerInvariant() } else { $null }
+    budgetSeconds = $DiagnosticBudgetSeconds; maxBudgetSeconds = $maximumBudget
+  }
+  if ($diagnosticVitestCommand) {
+    $script:diagnosticDefinition.command = [ordered]@{ executable = 'pnpm'; arguments = @($diagnosticCommandArguments) }
   }
   $script:diagnosticScriptFull = $candidate
   if ($definition.PSObject.Properties.Name -ccontains 'dependencies') {
@@ -1834,7 +1870,8 @@ $arguments = if ($isAttachedAdmission) {
 } elseif ($CommandPath) {
   @($CommandArgumentList)
 } elseif ($isDiagnostic) {
-  @($diagnosticScriptFull)
+  if ($diagnosticVitestCommand) { @($pnpmScript) + @($diagnosticCommandArguments) }
+  else { @($diagnosticScriptFull) }
 } elseif ($isWorkspaceDbTest) {
   $workspaceDbRunnerPath = Join-Path $PSScriptRoot 'workspace-db-test.mjs'
   if (-not (Test-SafeFile $workspaceDbRunnerPath)) {
@@ -3269,7 +3306,9 @@ try {
       $diagnosticSourceStream = [IO.File]::Open($diagnosticScriptFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
       $launchHashBytes = [Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)
       $launchHash = [Convert]::ToHexString($launchHashBytes).ToLowerInvariant()
-      if ($launchHash -cne $diagnosticDefinition.sha256) {
+      if ($diagnosticVitestCommand) {
+        $diagnosticDefinition.sha256 = $launchHash
+      } elseif ($launchHash -cne $diagnosticDefinition.sha256) {
         throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
       }
       $diagnosticSourceStream.Position = 0
@@ -3346,6 +3385,14 @@ try {
           entrySha256 = $diagnosticDefinition.sha256; worktree = $worktreeFull
           boundHead = $acquiredGitIdentity.Head; moduleManifestPath = $diagnosticModuleManifestPath
           dependencies = @($diagnosticDependencies)
+        }
+        if ($diagnosticVitestCommand) {
+          # The Node-hosted pnpm entry is outside the product worktree. Its
+          # resolved installation root is the only additional module root;
+          # Vitest and the test remain governed by the worktree/node_modules
+          # and tracked-at-head rules.
+          $pnpmModuleRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmScript) '..')).TrimEnd('\', '/')
+          $configuration.diagnostic.allowedRoots = @($pnpmModuleRoot)
         }
       }
       if ($identityMode -ceq "branch") { $configuration.branch = $acquiredGitIdentity.Branch; $configuration.head = $acquiredGitIdentity.Head }
@@ -3550,7 +3597,11 @@ try {
           head = $acquiredGitIdentity.Head; lane = $Lane; identityMode = $identityMode; branch = $owner.branch
           holder = [ordered]@{ owner = $owner.owner; pid = $owner.pid; processStartUtc = $owner.processStartUtc }
           slot = [ordered]@{ name = $lockDirectoryName; lockId = $lockId }
-          command = [ordered]@{ executable = $command; arguments = @($arguments) }
+          command = if ($diagnosticVitestCommand) {
+            [ordered]@{ executable = 'pnpm'; arguments = @($diagnosticCommandArguments); text = ('pnpm ' + ($diagnosticCommandArguments -join ' ')); launchExecutable = $command; launchArguments = @($arguments) }
+          } else {
+            [ordered]@{ executable = $command; arguments = @($arguments) }
+          }
           start = $childStarted; end = $childEnded; exit = $exitCode; nativeExit = $nativeExitCode; elapsedMs = $childElapsedMs; timedOut = $childTimedOut
           containerRoot = $container; declarationSha256 = $diagnosticDefinition.sha256; modules = @($diagnosticModules)
           resources = [ordered]@{

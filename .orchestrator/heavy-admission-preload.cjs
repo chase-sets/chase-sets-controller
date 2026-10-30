@@ -268,13 +268,16 @@ function refuse(message) {
 function installDiagnosticModulePolicy(config, encodedConfiguration) {
   const diagnostic = config?.diagnostic;
   if (!diagnostic) return;
-  if (diagnostic.kind !== "standalone-node") refuse("diagnostic declaration kind was not standalone-node");
+  if (diagnostic.kind !== "standalone-node" && diagnostic.kind !== "vitest-command") {
+    refuse("diagnostic declaration kind was not supported");
+  }
   if (typeof moduleApi.registerHooks !== "function") refuse("diagnostic module hooks are unavailable");
   const worktree = path.resolve(diagnostic.worktree ?? config.worktree);
   const entry = path.resolve(diagnostic.entry ?? "");
   const manifestPrefix = path.resolve(diagnostic.moduleManifestPath ?? "");
   const boundHead = String(diagnostic.boundHead ?? "");
   const entrySha256 = String(diagnostic.entrySha256 ?? "").toLowerCase();
+  const allowTransformedEntry = diagnostic.kind === "vitest-command";
   if (!/^[a-f0-9]{40}$/.test(boundHead) || !/^[a-f0-9]{64}$/.test(entrySha256) || !entry || !manifestPrefix) {
     refuse("diagnostic module policy configuration was invalid");
   }
@@ -290,6 +293,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
   }
 
   const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+  const allowedRoots = Array.isArray(diagnostic.allowedRoots) ? diagnostic.allowedRoots.map((root) => path.resolve(String(root))) : [];
   const dependencies = diagnostic.dependencies ?? [];
   if (!Array.isArray(dependencies) || dependencies.length > 64 || dependencies.some((dependency) =>
     !dependency || typeof dependency.path !== "string" || !path.isAbsolute(dependency.path) ||
@@ -301,6 +305,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     const relative = path.relative(root, candidate);
     return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
   };
+  const insideAllowedRoot = (candidate) => allowedRoots.some((root) => samePath(root, candidate) || inside(root, candidate));
   const isNodeModulesFile = (candidate) => {
     if (!inside(worktree, candidate)) return false;
     const relative = path.relative(worktree, candidate).split(path.sep);
@@ -345,7 +350,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     } catch {
       refuse(`diagnostic module could not be resolved: ${url}`);
     }
-    if (!samePath(actual, entry) && !declaredDependency(actual) &&
+    if (!samePath(actual, entry) && !declaredDependency(actual) && !insideAllowedRoot(actual) &&
         (!inside(worktree, actual) || (!isNodeModulesFile(actual) && !tracked.has(path.relative(worktree, actual).replaceAll("\\", "/"))))) {
       refuse(`diagnostic module was not tracked at the bound head or under an admitted node_modules directory: ${actual}`);
     }
@@ -355,7 +360,7 @@ function installDiagnosticModulePolicy(config, encodedConfiguration) {
     const actual = authorize(url);
     if (!actual) return;
     const sha256 = digestBytes(loadedSourceBytes(source, actual));
-    if (samePath(actual, entry) && sha256 !== entrySha256) {
+    if (samePath(actual, entry) && sha256 !== entrySha256 && !allowTransformedEntry) {
       refuse("declared diagnostic entry changed before evaluation");
     }
     const dependency = declaredDependency(actual);

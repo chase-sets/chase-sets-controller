@@ -28,6 +28,26 @@
       "path": ".tmp/10761-json-census/census-runner.mjs",
       "sha256": "1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce",
       "maxBudgetSeconds": 600
+    },
+    "canonical-vitest-residual-v1": {
+      "enabled": true,
+      "kind": "vitest-command",
+      "path": "scripts/canonical-record.test.mjs",
+      "command": {
+        "executable": "pnpm",
+        "arguments": [
+          "exec",
+          "vitest",
+          "run",
+          "--config",
+          "./vitest.scripts.config.mjs",
+          "scripts/canonical-record.test.mjs",
+          "--maxWorkers=1",
+          "--fileParallelism=false",
+          "--silent=false"
+        ]
+      },
+      "maxBudgetSeconds": 600
     }
   }
 }
