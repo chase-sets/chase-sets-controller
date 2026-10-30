@@ -238,13 +238,17 @@ exit $code
     $preamble = if ($scenario.child) { Get-ClaudePreambleSegment ([string]$scenario.child.prompt) } else { '' }
     Assert-Policy ($preamble.Contains('Do not use Monitor, ScheduleWakeup, any Cron tool (CronCreate, CronDelete, or CronList)')) "AC1 $context preamble keeps the session-scoped tool bans"
     Assert-Policy ($preamble.Contains('one-hour') -and $preamble.Contains('harness bound, not a gate budget')) "AC1 $context preamble names the one-hour harness bound, not a gate budget"
-    Assert-Policy ($preamble.Contains('Run each finite gate in the foreground without an explicit timeout')) "AC1 $context preamble tells gates to omit explicit timeouts"
-    Assert-Policy ($preamble.Contains('Narrow reads and polls before calling them') -and $preamble.Contains('room to complete') -and
-      $preamble.Contains('never rely on the hour for them')) "AC1 $context preamble narrows reads/polls before short calls whose deadline allows completion"
+    Assert-Policy ($preamble.Contains('Never set a tool timeout parameter, a shell timeout wrapper, or any kill timer on a finite gate or test') -and
+      $preamble.Contains('let the launch''s foreground envelope be its only bound')) "AC1 $context preamble forbids explicit timeouts and kill timers on finite gates and tests"
+    Assert-Policy (-not $preamble.Contains('give any explicit deadline room to complete') -and -not $preamble.Contains('room to complete')) "AC1 $context preamble no longer permits an explicit deadline"
+    Assert-Policy ($preamble.Contains('Narrow reads and polls before calling them so each call is short and bounded') -and
+      $preamble.Contains('never rely on the hour for them')) "AC1 $context preamble still narrows reads and polls before short calls"
     Assert-Policy ($preamble -notmatch '\b(590|600)\s*(-?\s*s\b|-?\s*seconds?\b)|\b(590000|600000)\b') "AC1 $context preamble carries no 590/600 s timeout guidance"
     Assert-Policy ($preamble.Contains("forfeits this session's acceptance") -and $preamble.Contains('report it incomplete to the host') -and
       $preamble.Contains('do not recover and finish it') -and $preamble.Contains('retry it automatically, or report PASS')) `
       "AC4 $context preamble pins expiry as forfeited acceptance reported incomplete, never recovered, retried or PASS"
+    Assert-Policy ($preamble.Contains('A forfeit caused by a timeout you set yourself or by host load is a non-model failure') -and
+      $preamble.Contains('reruns it on the same configuration and never escalates it')) "AC4 $context preamble classifies a self-timeout or host-load forfeit as a non-model failure rerun on the same configuration"
   }
   Assert-Policy (((Get-SettingsSnapshot) -join "`n") -ceq $settingsBefore) 'AC1 successful Claude launches never write user, project or managed settings'
 
