@@ -1091,7 +1091,7 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
   New-Item -ItemType Directory -Path (Split-Path -Parent $fakePnpmScript) -Force | Out-Null
   Set-Content -LiteralPath $fakePnpmScript -Value @'
 const { pathToFileURL } = require('node:url');
-(async () => { await import(pathToFileURL(process.env.CANONICAL_ENTRY).href); })().catch((error) => { console.error(error); process.exitCode = 73; });
+(async () => { await import(`${pathToFileURL(process.env.CANONICAL_ENTRY).href}?canonical-entry`); })().catch((error) => { console.error(error); process.exitCode = 73; });
 '@
   $canonicalGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-synthetic'
   $canonicalGuardText=[IO.File]::ReadAllText($canonicalGuard)
@@ -1115,11 +1115,14 @@ const { pathToFileURL } = require('node:url');
 
   $unauthorizedPath=Join-Path $worktree '.orchestrator\canonical-unauthorized.mjs'
   Set-Content -LiteralPath $unauthorizedPath -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_UNAUTHORIZED_MARKER, 'unauthorized-body-ran');"
-  Set-Content -LiteralPath $canonicalEntry -Value @'
-import { pathToFileURL } from 'node:url';
-await import(pathToFileURL(process.env.CANONICAL_UNAUTHORIZED).href);
-import fs from 'node:fs';
-fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'canonical-body-ran');
+  Set-Content -LiteralPath $canonicalEntry -Value "export const canonicalEntry = true;"
+  Set-Content -LiteralPath $fakePnpmScript -Value @'
+const { pathToFileURL } = require('node:url');
+(async () => {
+  await import(`${pathToFileURL(process.env.CANONICAL_ENTRY).href}?canonical-entry`);
+  await new Promise((resolve) => setImmediate(resolve));
+  if (process.env.CANONICAL_UNAUTHORIZED) await import(pathToFileURL(process.env.CANONICAL_UNAUTHORIZED).href);
+})().catch((error) => { console.error(error); process.exitCode = 73; });
 '@
   Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs') | Out-Null
   Invoke-FixtureGit @('commit','-m','canonical vitest unauthorized import fixture') | Out-Null
@@ -1150,22 +1153,28 @@ fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'canonical-body-ran');
   # reloads itself with changed bytes must still be refused before its marker.
   $transformedRelative='.orchestrator/artifacts/canonical-transformed.mjs'
   $transformedPath=Join-Path $worktree ($transformedRelative -replace '/','\')
-  Set-Content -LiteralPath $transformedPath -Value @'
+  $transformedEntrySource=@'
 import fs from 'node:fs';
-const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
-fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
-await import('./canonical-transformed.mjs?transformed');
+import { pathToFileURL } from 'node:url';
+const entryUrl = pathToFileURL(process.argv[1]).href;
+if (new URL(import.meta.url).search === '') {
+  // The direct Node entrypoint is loaded before registerHooks can record it.
+  // Load the unchanged entry once through the hook, then exercise the
+  // standalone transformed-entry refusal on the second load.
+  await import(`${entryUrl}?original`);
+  const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
+  fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
+  await import(`${entryUrl}?transformed`);
+} else if (new URL(import.meta.url).search === '?transformed') {
+  fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');
+}
 '@
+  Set-Content -LiteralPath $transformedPath -Value $transformedEntrySource
   $scriptRelative=$transformedRelative; $scriptPath=$transformedPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 600
   $transformedControl=Invoke-Diagnostic @{} 'canonical-vitest-transformed-entry-control'
   Assert-CanonicalPreloadRefused $transformedControl 'declared diagnostic entry changed before evaluation'
   Write-Output 'PASS canonical-vitest transformed-entry-control exit=73 transformed-body=0 lock-released=1'
-  Set-Content -LiteralPath $transformedPath -Value @'
-import fs from 'node:fs';
-const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
-fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
-await import('./canonical-transformed.mjs?transformed');
-'@
+  Set-Content -LiteralPath $transformedPath -Value $transformedEntrySource
   $transformedMutantGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-transformed-mutant'
   $transformedMutantText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $transformedMutantGuard) 'heavy-admission-preload.cjs'))
   $transformedAnchor='const allowTransformedEntry = diagnostic.kind === "vitest-command";'
