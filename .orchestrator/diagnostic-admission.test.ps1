@@ -216,6 +216,29 @@ function Assert-Refused([object]$Case, [string]$ExpectedText) {
   Assert-True (-not (Test-Path -LiteralPath $Case.Marker)) 'fresh marker proves the diagnostic did not run'
   Assert-True (-not (Test-Path -LiteralPath $lockRoot)) 'refusal released no-acquisition lock'
 }
+function Get-DiagnosticReceiptPaths {
+  return @(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object FullName)
+}
+function Assert-CanonicalDeclarationRefused([object]$Case, [string]$ExpectedText, [string[]]$ReceiptsBefore) {
+  Assert-Refused $Case $ExpectedText
+  $receiptsAfter=Get-DiagnosticReceiptPaths
+  $newReceipts=@($receiptsAfter | Where-Object { $_ -notin $ReceiptsBefore })
+  Assert-True ($newReceipts.Count -eq 0) "canonical declaration refusal writes no receipt (new=$($newReceipts -join ';'))"
+}
+function Assert-CanonicalPreloadRefused([object]$Case, [string]$ExpectedText) {
+  Assert-True ($Case.Result.Code -eq 73) "canonical preload refusal uses exit 73 (actual=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
+  Assert-True ($Case.Result.Stderr -match [regex]::Escape($ExpectedText)) "canonical preload refusal names '$ExpectedText' (stderr=$($Case.Result.Stderr))"
+  Assert-True (-not (Test-Path -LiteralPath $Case.Marker)) 'canonical preload refusal leaves no body marker'
+  Assert-True (-not (Test-Path -LiteralPath $lockRoot)) 'canonical preload refusal releases its lock'
+}
+function Invoke-CanonicalDiagnostic([string]$MarkerName, [hashtable]$Overrides=@{}, [hashtable]$ChildEnvironment=@{}, [string]$GuardPath='') {
+  $receiptsBefore=Get-DiagnosticReceiptPaths
+  $parameters=@{ '-DiagnosticScriptPath'=$null; '-DiagnosticSha256'=$null; '-DiagnosticBudgetSeconds'='600' }
+  foreach ($entry in $Overrides.GetEnumerator()) { $parameters[$entry.Key]=$entry.Value }
+  $case=Invoke-Diagnostic $parameters $MarkerName $ChildEnvironment 'canonical-vitest-residual-v1' $GuardPath
+  Add-Member -InputObject $case -NotePropertyName ReceiptsBefore -NotePropertyValue $receiptsBefore
+  return $case
+}
 function Assert-TmpPackageRuns($Case) {
   Assert-True ($Case.Result.Code -eq 0 -and (Test-Path -LiteralPath $Case.Marker)) "tmp-package-clean-exact-head-must-admit: packaged diagnostic runs (exit=$($Case.Result.Code) stderr=$($Case.Result.Stderr))"
 }
@@ -1021,20 +1044,144 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
   } finally { Close-BarrierDiagnostic $mutantRun }
 
   # The Vitest route is a closed declaration, not a free-form command seam.
-  # Keep this negative control after the real fixture has an exact tracked
-  # canonical entry so the refusal exercises declaration admission itself.
+  # Keep these controls after the fixture has an exact tracked canonical entry
+  # so every refusal exercises declaration admission itself.
   $canonicalEntry=Join-Path $worktree 'scripts/canonical-record.test.mjs'
   New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalEntry) -Force | Out-Null
-  Set-Content -LiteralPath $canonicalEntry -Value "export const canonicalFixture = true;"
+  Set-Content -LiteralPath $canonicalEntry -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'canonical-body-ran');"
   Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs') | Out-Null
   Invoke-FixtureGit @('commit','-m','canonical vitest entry') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
-  $canonicalMutantDeclaration=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'diagnostic-declarations.json') -Raw | ConvertFrom-Json
-  $canonicalMutantDeclaration.diagnostics.'canonical-vitest-residual-v1'.command.arguments[5]='scripts/not-canonical-record.test.mjs'
-  [IO.File]::WriteAllText($declarationPath, ($canonicalMutantDeclaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
-  $canonicalMutant=Invoke-Diagnostic @{ '-DiagnosticScriptPath'=$null; '-DiagnosticSha256'=$null; '-DiagnosticBudgetSeconds'='600' } 'canonical-vitest-command-mutant' @{} 'canonical-vitest-residual-v1'
-  Assert-Refused $canonicalMutant 'vitest-command declaration does not pin the canonical command'
-  Write-Output 'KILLED mutant canonical-vitest-command-argv-mutant at assertion=canonical-command-pinned launched=0 exit=73 body-side-effect=0'
+  $canonicalReleasePath=Join-Path $PSScriptRoot 'diagnostic-declarations.json'
+  $canonicalDeclarationMutants=@(
+    @{ Name='canonical-test-path'; Expected='vitest-command entry path is not the canonical-record test'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.path='scripts/not-canonical-record.test.mjs' } },
+    @{ Name='canonical-config-path'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments[4]='./not-vitest.scripts.config.mjs' } },
+    @{ Name='canonical-executable'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.executable='npm' } },
+    @{ Name='canonical-extra-argument'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments=@($d.diagnostics.'canonical-vitest-residual-v1'.command.arguments) + @('--extra') } },
+    @{ Name='canonical-missing-argument'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments=@($d.diagnostics.'canonical-vitest-residual-v1'.command.arguments)[0..7] } },
+    @{ Name='canonical-argument-order'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $a=$d.diagnostics.'canonical-vitest-residual-v1'.command.arguments; $tmp=$a[4]; $a[4]=$a[5]; $a[5]=$tmp } },
+    @{ Name='canonical-test-file-value'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments[5]='scripts/not-canonical-record.test.mjs' } },
+    @{ Name='canonical-max-workers'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments[6]='--maxWorkers=2' } },
+    @{ Name='canonical-file-parallelism'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments[7]='--fileParallelism=true' } },
+    @{ Name='canonical-silent'; Expected='vitest-command declaration does not pin the canonical command'; Mutate={ param($d) $d.diagnostics.'canonical-vitest-residual-v1'.command.arguments[8]='--silent=true' } }
+  )
+  foreach ($mutant in $canonicalDeclarationMutants) {
+    $declaration=Get-Content -LiteralPath $canonicalReleasePath -Raw | ConvertFrom-Json
+    & $mutant.Mutate $declaration
+    [IO.File]::WriteAllText($declarationPath, ($declaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    $case=Invoke-CanonicalDiagnostic $mutant.Name
+    Assert-CanonicalDeclarationRefused $case $mutant.Expected $case.ReceiptsBefore
+    Write-Output "KILLED mutant $($mutant.Name) at assertion=canonical-command-pinned launched=0 exit=73 body-side-effect=0 receipt=0"
+  }
+  foreach ($mutant in @(
+    @{ Name='canonical-caller-supplied-path'; Override=@{ '-DiagnosticScriptPath'='scripts/canonical-record.test.mjs' } },
+    @{ Name='canonical-caller-supplied-hash'; Override=@{ '-DiagnosticSha256'=('0'*64) } }
+  )) {
+    $declaration=Get-Content -LiteralPath $canonicalReleasePath -Raw | ConvertFrom-Json
+    [IO.File]::WriteAllText($declarationPath, ($declaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    $case=Invoke-CanonicalDiagnostic $mutant.Name $mutant.Override
+    Assert-CanonicalDeclarationRefused $case 'vitest-command diagnostics do not accept a standalone script hash' $case.ReceiptsBefore
+    Write-Output "KILLED mutant $($mutant.Name) at assertion=caller-input-rejected launched=0 exit=73 body-side-effect=0 receipt=0"
+  }
+
+  # A small Node-hosted pnpm fixture reaches the real diagnostic launch and
+  # preload path without depending on this controller checkout's pnpm install.
+  $nodePath=(Get-Command node -ErrorAction Stop).Source
+  $fakePnpmScript=Join-Path $worktree '.orchestrator\canonical-pnpm\node_modules\pnpm\bin\pnpm.cjs'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $fakePnpmScript) -Force | Out-Null
+  Set-Content -LiteralPath $fakePnpmScript -Value @'
+const { pathToFileURL } = require('node:url');
+(async () => { await import(pathToFileURL(process.env.CANONICAL_ENTRY).href); })().catch((error) => { console.error(error); process.exitCode = 73; });
+'@
+  $canonicalGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-synthetic'
+  $canonicalGuardText=[IO.File]::ReadAllText($canonicalGuard)
+  $pnpmResolveAnchor='if (-not $hostNode -or -not $pnpmScript) {'
+  $pnpmResolveReplacement='$hostNode = $env:CANONICAL_TEST_NODE' + [Environment]::NewLine + '$pnpmScript = $env:CANONICAL_TEST_PNPM' + [Environment]::NewLine + $pnpmResolveAnchor
+  Assert-True (([regex]::Matches($canonicalGuardText,[regex]::Escape($pnpmResolveAnchor))).Count -eq 1) 'canonical synthetic fixture replaces only host Node/pnpm resolution'
+  [IO.File]::WriteAllText($canonicalGuard,$canonicalGuardText.Replace($pnpmResolveAnchor,$pnpmResolveReplacement),[Text.UTF8Encoding]::new($false))
+  $declaration=Get-Content -LiteralPath $canonicalReleasePath -Raw | ConvertFrom-Json
+  [IO.File]::WriteAllText($declarationPath, ($declaration | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+  $positive=Invoke-CanonicalDiagnostic 'canonical-vitest-positive' @{} @{
+    CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry
+  } $canonicalGuard
+  $positiveReceipts=@(Get-DiagnosticReceiptPaths | Where-Object { $_ -notin $positive.ReceiptsBefore })
+  Assert-True ($positive.Result.Code -eq 0 -and (Test-Path -LiteralPath $positive.Marker) -and @($positiveReceipts).Count -eq 1) "canonical Vitest synthetic route reaches the real launch path (exit=$($positive.Result.Code) marker=$(Test-Path -LiteralPath $positive.Marker) receipts=$(@($positiveReceipts).Count) stderr=$($positive.Result.Stderr))"
+  $positiveRecord=Get-Content -LiteralPath $positiveReceipts[0] -Raw | ConvertFrom-Json
+  Assert-True ($positiveRecord.command.executable -ceq 'pnpm' -and $positiveRecord.command.arguments.Count -eq 9 -and
+    [IO.Path]::GetFileName([string]$positiveRecord.command.launchExecutable) -ieq 'node.exe' -and
+    [IO.Path]::GetFileName([string]$positiveRecord.command.launchArguments[0]) -ieq 'pnpm.cjs' -and
+    $positiveRecord.exit -eq 0 -and $positiveRecord.nativeExit -eq 0 -and -not (Test-Path -LiteralPath $lockRoot)) 'canonical Vitest synthetic receipt binds user command, Node-hosted pnpm launch and native success'
+  Write-Output 'PASS canonical-vitest synthetic-route=1 launch-path=1 receipt-command=1 native-exit=0'
+
+  $unauthorizedPath=Join-Path $worktree '.orchestrator\canonical-unauthorized.mjs'
+  Set-Content -LiteralPath $unauthorizedPath -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_UNAUTHORIZED_MARKER, 'unauthorized-body-ran');"
+  Set-Content -LiteralPath $canonicalEntry -Value @'
+import { pathToFileURL } from 'node:url';
+await import(pathToFileURL(process.env.CANONICAL_UNAUTHORIZED).href);
+import fs from 'node:fs';
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'canonical-body-ran');
+'@
+  Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs') | Out-Null
+  Invoke-FixtureGit @('commit','-m','canonical vitest unauthorized import fixture') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  $policyControl=Invoke-CanonicalDiagnostic 'canonical-vitest-preload-control' @{} @{
+    CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry; CANONICAL_UNAUTHORIZED=$unauthorizedPath
+  } $canonicalGuard
+  Assert-CanonicalPreloadRefused $policyControl 'diagnostic module was not tracked at the bound head or under an admitted node_modules directory:'
+  Write-Output 'PASS canonical-vitest preload-root-control exit=73 unauthorized-body=0 lock-released=1'
+  $rootMutantGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-root-mutant'
+  $rootMutantPreload=Join-Path (Split-Path -Parent $rootMutantGuard) 'heavy-admission-preload.cjs'
+  $rootMutantText=[IO.File]::ReadAllText($rootMutantPreload)
+  $rootAnchor='const insideAllowedRoot = (candidate) => allowedRoots.some((root) => samePath(root, candidate) || inside(root, candidate));'
+  Assert-True (([regex]::Matches($rootMutantText,[regex]::Escape($rootAnchor))).Count -eq 1) 'canonical pnpm-root mutant target occurs exactly once'
+  [IO.File]::WriteAllText($rootMutantPreload,$rootMutantText.Replace($rootAnchor,'const insideAllowedRoot = (candidate) => true;'),[Text.UTF8Encoding]::new($false))
+  $rootMutant=Invoke-CanonicalDiagnostic 'canonical-vitest-pnpm-root-mutant' @{} @{
+    CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry; CANONICAL_UNAUTHORIZED=$unauthorizedPath
+  } $rootMutantGuard
+  $rootMutantFailed=$false
+  try { Assert-CanonicalPreloadRefused $rootMutant 'diagnostic module was not tracked at the bound head or under an admitted node_modules directory:' } catch {
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical preload refusal uses exit 73:')) { throw }
+    $rootMutantFailed=$true
+  }
+  Assert-True $rootMutantFailed 'pnpm-root widening mutant must fail the unauthorized-module refusal assertion'
+  Write-Output 'KILLED mutant allow-worktree-as-pnpm-root at assertion=canonical-preload-authorization launched=1 body-side-effect=1'
+
+  # The transformed-entry exception is Vitest-only. A standalone entry that
+  # reloads itself with changed bytes must still be refused before its marker.
+  $transformedRelative='.orchestrator/artifacts/canonical-transformed.mjs'
+  $transformedPath=Join-Path $worktree ($transformedRelative -replace '/','\')
+  Set-Content -LiteralPath $transformedPath -Value @'
+import fs from 'node:fs';
+const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
+fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
+await import('./canonical-transformed.mjs?transformed');
+'@
+  $scriptRelative=$transformedRelative; $scriptPath=$transformedPath; $scriptHash=Get-Sha256 $scriptPath; Write-Declaration $scriptRelative $scriptHash 600
+  $transformedControl=Invoke-Diagnostic @{} 'canonical-vitest-transformed-entry-control'
+  Assert-CanonicalPreloadRefused $transformedControl 'declared diagnostic entry changed before evaluation'
+  Write-Output 'PASS canonical-vitest transformed-entry-control exit=73 transformed-body=0 lock-released=1'
+  Set-Content -LiteralPath $transformedPath -Value @'
+import fs from 'node:fs';
+const transformed = "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'transformed-body-ran');";
+fs.writeFileSync(new URL('./canonical-transformed.mjs', import.meta.url), transformed);
+await import('./canonical-transformed.mjs?transformed');
+'@
+  $transformedMutantGuard=New-TestOnlyDiagnosticGuard 'canonical-vitest-transformed-mutant'
+  $transformedMutantText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $transformedMutantGuard) 'heavy-admission-preload.cjs'))
+  $transformedAnchor='const allowTransformedEntry = diagnostic.kind === "vitest-command";'
+  Assert-True (([regex]::Matches($transformedMutantText,[regex]::Escape($transformedAnchor))).Count -eq 1) 'canonical transformed-entry mutant target occurs exactly once'
+  $transformedRecordAnchor='if (recorded && sha256 !== recorded.sha256) {'
+  Assert-True (([regex]::Matches($transformedMutantText,[regex]::Escape($transformedRecordAnchor))).Count -eq 1) 'canonical transformed-entry recorded-digest mutant target occurs exactly once'
+  $transformedMutantText=$transformedMutantText.Replace($transformedAnchor,'const allowTransformedEntry = true;').Replace($transformedRecordAnchor,'if (recorded && sha256 !== recorded.sha256 && !allowTransformedEntry) {')
+  [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $transformedMutantGuard) 'heavy-admission-preload.cjs'),$transformedMutantText,[Text.UTF8Encoding]::new($false))
+  $transformedMutant=Invoke-Diagnostic @{} 'canonical-vitest-transformed-entry-mutant' @{} 'worst13-no-fit' $transformedMutantGuard
+  $transformedMutantFailed=$false
+  try { Assert-CanonicalPreloadRefused $transformedMutant 'declared diagnostic entry changed before evaluation' } catch {
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical preload refusal uses exit 73:')) { throw }
+    $transformedMutantFailed=$true
+  }
+  Assert-True $transformedMutantFailed 'transformed-entry widening mutant must fail the standalone entry refusal assertion'
+  Write-Output 'KILLED mutant allow-standalone-transformed-entry at assertion=canonical-preload-authorization launched=1 body-side-effect=1'
 
   $outside=Invoke-Diagnostic @{ '-ContainerRoot'=(Get-Location).Path } 'outside-container'
   Assert-Refused $outside 'arbitrary commands are fixture-only; use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest'
