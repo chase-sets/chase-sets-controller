@@ -1095,15 +1095,26 @@ function Invoke-CanonicalRecordScriptPinControl {
         $guard = $guard.Replace($old, $new)
       }
       if ($GuardMutant -ceq 'pnpm-run') {
-        $old = "elseif (`$Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }"
-        $new = "elseif (`$Gate -ceq 'test:canonical-record') { @(`$pnpmScript, 'run', `$Gate) }"
-        Assert-Harness ($guard.Contains($old)) 'canonical-record pnpm-run mutant has one exact pinned launch anchor'
+        $old = "    `$arguments = @(Get-CanonicalRecordPinnedLaunch)"
+        $new = "    `$arguments = @(`$pnpmScript, 'run', `$Gate)"
+        Assert-Harness ($guard.Contains($old)) 'canonical-record pnpm-run mutant has one exact post-validation launch anchor'
         $guard = $guard.Replace($old, $new)
       }
       if ($GuardMutant -ceq 'receipt-script-body') {
         $old = "            `$receipt.Add('scriptBody', `$canonicalRecordScriptExpected)"
         Assert-Harness ($guard.Contains($old)) 'canonical-record receipt mutant has one exact script-body anchor'
         $guard = $guard.Replace($old, "            # MUTANT receipt script body omitted")
+      }
+      if ($GuardMutant -ceq 'pre-validation-arguments') {
+        $oldArgv = '$canonicalRecordScriptArgv = $null'
+        $oldAccepted = '$canonicalRecordScriptPinAccepted = $false'
+        $oldBranch = "elseif (`$Gate -ceq 'test:canonical-record') { @(`$pnpmScript, 'exec', '<canonical-record-script-pin-pending>') }"
+        $oldRebuild = "    `$arguments = @(Get-CanonicalRecordPinnedLaunch)"
+        Assert-Harness ($guard.Contains($oldArgv) -and $guard.Contains($oldAccepted) -and $guard.Contains($oldBranch) -and $guard.Contains($oldRebuild)) 'canonical-record pre-validation-arguments mutant has exact ordering anchors'
+        $guard = $guard.Replace($oldArgv, '$canonicalRecordScriptArgv = @(''run'', ''test:canonical-record'')')
+        $guard = $guard.Replace($oldAccepted, '$canonicalRecordScriptPinAccepted = $true')
+        $guard = $guard.Replace($oldBranch, "elseif (`$Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }")
+        $guard = $guard.Replace($oldRebuild, '    # MUTANT post-validation argument rebuild omitted')
       }
       [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'), $guard)
       $marker = Join-Path $artifacts 'canonical-record-body.txt'
@@ -1161,6 +1172,10 @@ function Invoke-CanonicalRecordScriptPinControl {
   Assert-Harness ($receiptMutant.Exit -eq 0 -and $null -eq $receiptMutant.Receipt.scriptBody) 'receipt missing script body mutant goes red'
   Assert-Harness ($control.Receipt.scriptBody -ceq $expected) 'receipt control retains the pinned script body'
   Write-Output 'MUTANT_RED canonical-record-receipt-script-body exit=0 missing-scriptBody=1'
+
+  $preValidationArgumentsMutant = & $runCase 'pre-validation-arguments-mutant' $exact $null 'pre-validation-arguments'
+  Assert-Harness ($preValidationArgumentsMutant.Exit -ne 0 -or $preValidationArgumentsMutant.Body -cne 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false') 'pre-validation arguments mutant goes red when the post-validation rebuild is omitted'
+  Write-Output "MUTANT_RED canonical-record-pre-validation-arguments exit=$($preValidationArgumentsMutant.Exit)"
 }
 if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
 if ($Control -ceq 'canonical-record-script-pin') { Invoke-CanonicalRecordScriptPinControl; exit 0 }

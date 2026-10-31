@@ -163,7 +163,8 @@ $isBudgetedWorkspaceDb = $isWorkspaceDbTest
 $isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
 $canonicalRecordScriptExpected = 'vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false'
-$canonicalRecordScriptArgv = @($canonicalRecordScriptExpected -split ' ')
+$canonicalRecordScriptArgv = $null
+$canonicalRecordScriptPinAccepted = $false
 $canonicalRecordScriptActual = $null
 $canonicalRecordScriptPinFailure = $null
 $nativeRequest = $null
@@ -1800,6 +1801,9 @@ if ($isHostVerifier) {
   }
 }
 function Get-CanonicalRecordPinnedLaunch {
+  if (-not $canonicalRecordScriptPinAccepted -or $null -eq $canonicalRecordScriptArgv) {
+    throw 'heavy-verifier: canonical-record launch requested before script pin acceptance'
+  }
   @($pnpmScript, 'exec') + @($canonicalRecordScriptArgv)
 }
 $command = if ($isAttachedAdmission) {
@@ -1879,7 +1883,7 @@ $arguments = if ($isAttachedAdmission) {
 } else {
   if ($isWorkspaceTest) { @($pnpmScript, "--filter", $WorkspaceTest, "run", "test", "--maxWorkers=1", "--no-file-parallelism") }
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
-  elseif ($Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }
+  elseif ($Gate -ceq 'test:canonical-record') { @($pnpmScript, 'exec', '<canonical-record-script-pin-pending>') }
   else { @($pnpmScript, "run", $Gate) }
 }
 $ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
@@ -3254,6 +3258,8 @@ try {
   Assert-HostVerifierGitState
   if ($Gate -ceq 'test:canonical-record') {
     try { Assert-CanonicalRecordScriptPin } catch { $canonicalRecordScriptPinFailure = $_.Exception.Message; throw }
+    $canonicalRecordScriptPinAccepted = $true
+    $arguments = @(Get-CanonicalRecordPinnedLaunch)
   }
   # The reserved nested-owner pipe exists before accepted publication (Attach)
   # and before the guarded launch (Gate). It serves nothing until armed: the
