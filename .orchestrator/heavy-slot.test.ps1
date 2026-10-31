@@ -1715,6 +1715,7 @@ $secondHead = (Invoke-FixtureGit @("rev-parse", "HEAD") $secondWorktree).ToLower
 # Frozen gate/kind closure under test (mirrors invoke-heavy-verifier.ps1).
 $expectedKindClosure = [ordered]@{
   "test:scripts" = @("script-battery", "vitest-full")
+  "test:canonical-record" = @("repository-gate", "vitest-full")
   "build" = @("build")
   "verify:build" = @("build")
   "check:static" = @("repository-gate", "script-battery", "vitest-full")
@@ -2516,6 +2517,7 @@ try {
       [pscustomobject]@{ Gate = "test:fast"; RootClaim = "repository-gate" },
       [pscustomobject]@{ Gate = "verify:test-db"; RootClaim = "repository-gate" },
       [pscustomobject]@{ Gate = "verify:static"; RootClaim = "repository-gate" },
+      [pscustomobject]@{ Gate = "test:canonical-record"; RootClaim = "repository-gate" },
       [pscustomobject]@{ Gate = "verify"; RootClaim = "repository-gate" }
     )) {
     $gateHolder = Start-GateDriverHolder $gateCase.Gate @{ SLOT_ROOT_KIND = $gateCase.RootClaim }

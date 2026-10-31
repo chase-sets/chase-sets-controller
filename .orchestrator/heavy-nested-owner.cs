@@ -625,7 +625,7 @@ namespace ChaseSets.HeavyAdmission
             if (binding.Lane == null || !LaneShape.IsMatch(binding.Lane)) throw new ArgumentException("binding.Lane");
             if (binding.HostVerifier && (binding.State != "started" || binding.DispatchRecordRaw != null ||
                 binding.LaunchId != null || binding.LaneRole != null ||
-                Array.IndexOf(new[] { "verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite" }, binding.Gate) < 0))
+                Array.IndexOf(new[] { "verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record" }, binding.Gate) < 0))
                 throw new ArgumentException("host verifier requires a closed Gate launch, not a dispatch or Attach");
             if (string.IsNullOrEmpty(binding.Worktree) || !Path.IsPathFullyQualified(binding.Worktree)) throw new ArgumentException("binding.Worktree");
             if (binding.DispatchRecordRaw != null)

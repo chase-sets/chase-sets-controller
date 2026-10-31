@@ -159,6 +159,34 @@ No release qualification, installation, full controller battery, real browser
 suite, live-owner mutation, timeout increase, or test omission is authorized
 by these controls.
 
+## Canonical-record ordinary gate
+
+`test:canonical-record` is a closed ordinary host-heavy gate. It uses the
+same ordinary preload mode, cleanup, and live identity rechecks as the other
+ordinary gates; it is not an arbitrary-command or diagnostic route. Unlike
+other ordinary gates, it launches the validated body directly through
+`pnpm exec`, so package lifecycle hooks and a mutable worktree script lookup
+are not involved. Its nested-kind closure admits the ordinary pnpm root claim
+and `vitest-full`, which is the kind reached by the explicit Vitest test-file
+command.
+
+Before the child is launched, the verifier reads `package.json` from the exact
+Git object `HEAD:package.json`, never from the worktree, and requires
+`scripts.test:canonical-record` to equal exactly:
+
+```text
+vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false
+```
+
+The canonical-record argv is a fixed constant equal to the pinned body, is
+launched only after HEAD pin acceptance, and has command identity computed
+from that constant launch.
+
+A missing or byte-different script is a classified refusal with exit `73` and
+no product command execution. The `host-heavy-verifier/v1` receipt records the
+gate, exact HEAD, owner, exit code, pinned script body, its `HEAD:package.json`
+source, observed script body, exact launched executable/argv, and pin status.
+
 ## Observed discriminator output (2026-09-22)
 
 Baseline guard at `530540eb7a4ae5c1115063567aba1d7c3b69e78f`, harness exit 1:
