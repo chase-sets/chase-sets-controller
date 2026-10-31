@@ -474,6 +474,176 @@ function Assert-HostVerifierGitState {
     throw "heavy-verifier: host verifier requires a clean exact-head worktree`n$preview"
   }
 }
+# Status trusts the index and stat data, so an assume-unchanged or
+# skip-worktree entry (or a restored mtime) can hide edited bytes, and Vite's
+# module runner and config bundler read sources with fs, outside the preload's
+# module hooks. For vitest-command the verifier therefore opens every regular
+# file tracked at the exact HEAD with FileShare.Read, proves the bytes read
+# through that handle are the HEAD blob (or its uniform CRLF checkout), and
+# holds every handle until the child tree is proven dead. No index flag,
+# stat cache or Git filter is consulted, and no tracked file can be rewritten,
+# replaced or deleted while the command runs.
+$diagnosticExactHeadTree = $null
+function Initialize-DiagnosticExactHeadTreeType {
+  if ('HeavyExactHeadTree' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+public sealed class HeavyExactHeadTree : IDisposable {
+  readonly List<FileStream> streams = new List<FileStream>();
+  readonly HashSet<string> tracked = new HashSet<string>(StringComparer.Ordinal);
+  public int HeldCount { get { return streams.Count; } }
+  public bool IsTracked(string relative) { return tracked.Contains(relative); }
+  public static byte[] Git(string root, params string[] arguments) {
+    var start = new ProcessStartInfo("git") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+    start.ArgumentList.Add("-C"); start.ArgumentList.Add(root);
+    foreach (var argument in arguments) start.ArgumentList.Add(argument);
+    using (var process = Process.Start(start)) {
+      var error = process.StandardError.ReadToEndAsync();
+      using (var output = new MemoryStream()) {
+        process.StandardOutput.BaseStream.CopyTo(output);
+        process.WaitForExit(); error.Wait();
+        if (process.ExitCode != 0) throw new InvalidOperationException("git " + arguments[0] + " was unavailable");
+        return output.ToArray();
+      }
+    }
+  }
+  static string[] Records(byte[] output) { return new UTF8Encoding(false, true).GetString(output).Split('\0', StringSplitOptions.RemoveEmptyEntries); }
+  static string BlobId(byte[] bytes, int length, int oidLength) {
+    using (var hash = oidLength == 64 ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : IncrementalHash.CreateHash(HashAlgorithmName.SHA1)) {
+      hash.AppendData(Encoding.ASCII.GetBytes("blob " + length + "\0"));
+      hash.AppendData(bytes, 0, length);
+      return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+  }
+  // The HEAD blob itself, or its uniform CRLF checkout (core.autocrlf on a CR-free blob).
+  static bool MatchesBlob(byte[] bytes, string oid) {
+    if (BlobId(bytes, bytes.Length, oid.Length) == oid) return true;
+    var lf = new byte[bytes.Length]; int count = 0; bool sawLf = false;
+    for (int index = 0; index < bytes.Length; index++) {
+      if (bytes[index] == 13) { if (index + 1 >= bytes.Length || bytes[index + 1] != 10) return false; continue; }
+      if (bytes[index] == 10) { if (index == 0 || bytes[index - 1] != 13) return false; sawLf = true; }
+      lf[count++] = bytes[index];
+    }
+    return sawLf && BlobId(lf, count, oid.Length) == oid;
+  }
+  static bool IsReparse(string path) { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+  public static HeavyExactHeadTree Hold(string root, string head) {
+    var tree = new HeavyExactHeadTree();
+    var safeDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var rootFull = Path.GetFullPath(root).TrimEnd('\\', '/');
+    try {
+      foreach (var record in Records(Git(rootFull, "ls-tree", "-r", "-z", "--full-tree", head))) {
+        int tab = record.IndexOf('\t');
+        var meta = tab > 0 ? record.Substring(0, tab).Split(' ') : new string[0];
+        var relative = tab > 0 ? record.Substring(tab + 1) : record;
+        if (meta.Length != 3 || meta[1] != "blob" || (meta[0] != "100644" && meta[0] != "100755") ||
+            (meta[2].Length != 40 && meta[2].Length != 64)) {
+          throw new InvalidOperationException("exact-head tree entry is not a regular file: " + relative);
+        }
+        tree.tracked.Add(relative);
+        var full = Path.GetFullPath(Path.Combine(rootFull, relative.Replace('/', Path.DirectorySeparatorChar)));
+        if (!full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) {
+          throw new InvalidOperationException("exact-head tracked file escaped the worktree: " + relative);
+        }
+        FileStream stream;
+        try {
+          for (var directory = Path.GetDirectoryName(full); directory.Length > rootFull.Length && !safeDirectories.Contains(directory); directory = Path.GetDirectoryName(directory)) {
+            if (IsReparse(directory)) throw new IOException("reparse point");
+            safeDirectories.Add(directory);
+          }
+          if (IsReparse(full)) throw new IOException("reparse point");
+          stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.None);
+        } catch (Exception) {
+          throw new InvalidOperationException("exact-head tracked file is absent, unsafe or unreadable: " + relative);
+        }
+        tree.streams.Add(stream);
+        var bytes = new byte[stream.Length];
+        int offset = 0, read;
+        while (offset < bytes.Length && (read = stream.Read(bytes, offset, bytes.Length - offset)) > 0) offset += read;
+        if (offset != bytes.Length || stream.ReadByte() != -1 || !MatchesBlob(bytes, meta[2])) {
+          throw new InvalidOperationException("tracked file bytes do not match the exact HEAD blob: " + relative);
+        }
+      }
+    } catch { tree.Dispose(); throw; }
+    return tree;
+  }
+  // An ignored path is admitted only under node_modules where the preload
+  // admits it (the worktree root, or beside a package.json tracked at HEAD), or
+  // under an exempt directory. Returns the first other ignored path, or null.
+  public string FindUnadmittedIgnoredPath(string root, string[] exemptDirectories) {
+    var listing = Records(Git(root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"));
+    foreach (var entry in listing) {
+      if (IsAdmittedIgnored(entry, exemptDirectories)) continue;
+      bool containsExempt = false;
+      foreach (var exempt in exemptDirectories) {
+        if (entry.EndsWith("/") && exempt.StartsWith(entry, StringComparison.OrdinalIgnoreCase)) containsExempt = true;
+      }
+      if (!containsExempt) return entry;
+      foreach (var file in Records(Git(root, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ":(literal)" + entry))) {
+        if (!IsAdmittedIgnored(file, exemptDirectories)) return file;
+      }
+    }
+    return null;
+  }
+  bool IsAdmittedIgnored(string entry, string[] exemptDirectories) {
+    foreach (var exempt in exemptDirectories) {
+      if (entry.StartsWith(exempt, StringComparison.OrdinalIgnoreCase)) return true;
+    }
+    var segments = entry.TrimEnd('/').Split('/');
+    for (int index = 0; index < segments.Length; index++) {
+      if (!string.Equals(segments[index], "node_modules", StringComparison.OrdinalIgnoreCase)) continue;
+      if (index == 0) return true;
+      if (tracked.Contains(string.Join("/", segments, 0, index) + "/package.json")) return true;
+    }
+    return false;
+  }
+  public void Dispose() { foreach (var stream in streams) stream.Dispose(); streams.Clear(); }
+}
+'@
+}
+function Get-DiagnosticExactHeadFailure($ErrorRecord) {
+  return $ErrorRecord.Exception.GetBaseException().Message
+}
+function Open-DiagnosticExactHeadTree {
+  Initialize-DiagnosticExactHeadTreeType
+  try {
+    $tree = [HeavyExactHeadTree]::Hold($worktreeFull, $acquiredGitIdentity.Head)
+  } catch {
+    throw "heavy-verifier: vitest-command $(Get-DiagnosticExactHeadFailure $_)"
+  }
+  if (-not $tree.IsTracked('vitest.scripts.config.mjs')) {
+    $tree.Dispose()
+    throw 'heavy-verifier: vitest-command config is not tracked at the admitted exact head'
+  }
+  return $tree
+}
+# Vite reads imports, the config and its .env files with fs, so an ignored file
+# could be evaluated without a manifest record. Ignored paths are admitted only
+# where the preload admits modules: node_modules beside a package.json tracked
+# at HEAD (or at the root), the resolved pnpm installation root, and the
+# verifier-owned receipt root .orchestrator/artifacts/. Untracked files are
+# already refused by the clean-status check.
+function Assert-DiagnosticIgnoredPathsAdmitted {
+  $exempt = [Collections.Generic.List[string]]::new()
+  $exempt.Add('.orchestrator/artifacts/')
+  $pnpmRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmScript) '..')).TrimEnd('\', '/')
+  if ($pnpmRoot.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    $exempt.Add(([IO.Path]::GetRelativePath($worktreeFull, $pnpmRoot).Replace('\', '/')) + '/')
+  }
+  try {
+    $unadmitted = $diagnosticExactHeadTree.FindUnadmittedIgnoredPath($worktreeFull, $exempt.ToArray())
+  } catch {
+    throw "heavy-verifier: vitest-command ignored-path inventory was unavailable"
+  }
+  if ($unadmitted) {
+    throw "heavy-verifier: vitest-command worktree has an ignored path outside admitted node_modules: $unadmitted"
+  }
+}
 function Test-SafeFile([string]$Path) {
   try {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -849,6 +1019,30 @@ function Stop-DiagnosticTree([int]$RootPid, [long]$RootStartTicks = 0, [int[]]$K
     $expectedStart = if ($script:diagnosticObservedDescendantStarts.ContainsKey($descendantPid)) { $script:diagnosticObservedDescendantStarts[$descendantPid] } else { 0 }
     Stop-ExactVerifierProcess $descendantPid $expectedStart
   }
+}
+# The diagnostic source handles may be released only once the whole child tree
+# is proven dead: the root has exited, the kill-on-close job has no active
+# process, and no observed descendant identity is still live.
+function Test-DiagnosticTreeExited {
+  if ($null -eq $child) { return $true }
+  try { if (-not $child.HasExited) { return $false } } catch { return $false }
+  if ($IsWindows) {
+    if ($diagnosticJobHandle -ne [IntPtr]::Zero) {
+      try { if ([HeavyDiagnosticJob]::HasActiveProcesses($diagnosticJobHandle)) { return $false } } catch { return $false }
+    }
+    return -not (Test-ObservedDiagnosticDescendants @($diagnosticObservedDescendants))
+  }
+  return (Test-PossibleOwnedChild $owner -GuardedRootOnly) -eq $false
+}
+function Stop-DiagnosticTreeUntilExited([int]$TimeoutMilliseconds = 10000) {
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  while (-not (Test-DiagnosticTreeExited)) {
+    if ($watch.ElapsedMilliseconds -ge $TimeoutMilliseconds) { return $false }
+    # Re-request identity-checked termination until exit is established.
+    try { Stop-DiagnosticTree $child.Id $childStartTicks @($diagnosticObservedDescendants) } catch {}
+    try { [void]$child.WaitForExit(250) } catch { Start-Sleep -Milliseconds 250 }
+  }
+  return $true
 }
 function Test-ObservedDiagnosticDescendants([int[]]$Pids) {
   foreach ($descendantProcessId in @($Pids | Select-Object -Unique)) {
@@ -3303,6 +3497,12 @@ try {
       if (Test-Path -LiteralPath $diagnosticResultPath) {
         throw "heavy-verifier: diagnostic result file already exists"
       }
+      if ($diagnosticVitestCommand) {
+        # Held before the entry launch handle: the entry, the fixed config and
+        # every other tracked source are the exact HEAD bytes from here on.
+        $diagnosticExactHeadTree = Open-DiagnosticExactHeadTree
+        Assert-DiagnosticIgnoredPathsAdmitted
+      }
       $diagnosticSourceStream = [IO.File]::Open($diagnosticScriptFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
       $launchHashBytes = [Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)
       $launchHash = [Convert]::ToHexString($launchHashBytes).ToLowerInvariant()
@@ -3530,9 +3730,10 @@ try {
       if ($entryModule.Count -eq 0 -and $diagnosticVitestCommand) {
         # Vitest evaluates the test file through Vite's module runner, which reads
         # it with fs rather than Node's module hooks, so no manifest can record it.
-        # The launch handle (FileShare.Read, live until child exit) and the
-        # exact-head/clean-tree checks bind it instead: re-hash through that
-        # handle and record the entry at its launch digest.
+        # The exact-head tree hold (every tracked file proven to be its HEAD
+        # blob and held with FileShare.Read until the child tree is proven
+        # dead) binds it instead: re-hash through the launch handle and record
+        # the entry at its launch digest.
         $diagnosticSourceStream.Position = 0
         $exitEntryHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)).ToLowerInvariant()
         if ($exitEntryHash -cne $diagnosticDefinition.sha256) {
@@ -3594,6 +3795,7 @@ try {
     if ($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) {
       Assert-LiveGitIdentityUnchanged -AfterExecution
       Assert-HostVerifierGitState
+      if ($diagnosticVitestCommand -and $diagnosticExactHeadTree) { Assert-DiagnosticIgnoredPathsAdmitted }
       if ($isControllerHostHeavyVerifier) { Assert-ControllerHostHeavyControllerState; Assert-ControllerHostHeavyGitState }
       if (-not (Test-ThisOwner)) { throw "heavy-verifier: receipt refused because exact owner changed" }
     }
@@ -3698,7 +3900,21 @@ try {
   Stop-NestedOwner
   $leftoverWorkspaceDbStage = Get-Variable -Name workspaceDbStagePath -ValueOnly -ErrorAction SilentlyContinue
   if ($leftoverWorkspaceDbStage) { Remove-Item -LiteralPath $leftoverWorkspaceDbStage -Force -ErrorAction SilentlyContinue }
-  if ($diagnosticSourceStream) { $diagnosticSourceStream.Dispose(); $diagnosticSourceStream = $null }
+  # Terminate the child tree and prove it exited before any source handle is
+  # released, on every path (success, timeout and error). If exit cannot be
+  # proven the handles stay open until this process exits and the slot is not
+  # released as if cleanup had succeeded.
+  $diagnosticSourcesRetained = $false
+  if ($diagnosticSourceStream -or $diagnosticExactHeadTree) {
+    if (Stop-DiagnosticTreeUntilExited) {
+      if ($diagnosticSourceStream) { $diagnosticSourceStream.Dispose(); $diagnosticSourceStream = $null }
+      if ($diagnosticExactHeadTree) { $diagnosticExactHeadTree.Dispose(); $diagnosticExactHeadTree = $null }
+      if ($child) { [Console]::Error.WriteLine("heavy-verifier: diagnostic source handles released after child-tree exit was proven") }
+    } else {
+      $diagnosticSourcesRetained = $true
+      [Console]::Error.WriteLine("heavy-verifier: diagnostic source handles retained because child-tree exit was not proven")
+    }
+  }
   if ($diagnosticJobHandle -ne [IntPtr]::Zero) {
     [HeavyDiagnosticJob]::Close($diagnosticJobHandle)
     $diagnosticJobHandle = [IntPtr]::Zero
@@ -3718,7 +3934,9 @@ try {
     try { $child.StandardInput.Close() }
     finally { Stop-ExactVerifierProcess $child.Id $childStartTicks; [void]$child.WaitForExit(30000) }
   }
-  if (($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) -and $null -ne $child -and
+  if ($diagnosticSourcesRetained) {
+    $releaseMismatch = $true
+  } elseif (($isHostVerifier -or $isControllerFixture -or $isControllerHostHeavyVerifier) -and $null -ne $child -and
       ($owner.state -cne 'started' -or
        (Get-ProcessIdentityState $owner.childPid $owner.childProcessStartUtc) -cne 'dead' -or
        (Test-PossibleOwnedChild $owner -GuardedRootOnly) -ne $false)) {

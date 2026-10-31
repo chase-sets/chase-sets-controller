@@ -67,19 +67,31 @@ and admission environment. The verifier binds the entry bytes to the clean
 exact Git head at launch, records the user-facing command vector and actual
 launch vector in the receipt, and applies the same finite budget, module
 policy, Job Object and descendant identity cleanup as a standalone diagnostic.
-Vitest evaluates that tracked entry through Vite's module runner, which reads
-the file with `fs` rather than Node's module hooks, so no per-process manifest
-records it. For this kind only, when the merged manifests lack the entry the
-verifier re-hashes it through its open launch handle (FileShare.Read, held
-until child exit), refuses if the bytes differ from the launch digest, and
-records the entry in the receipt at that digest; the exact-head and clean-tree
-checks bind those bytes to the admitted head. If Node's hooks do load the
-entry (for example through Vite's transform), the preload admits the
-transformed evaluation bytes for this kind only. Test-file imports that Vite's
-runner evaluates are likewise outside the module hooks and are bound by the
-clean exact-head tree; externalized dependencies still load through Node and
-remain under the module policy. The standalone-node manifest-entry requirement
-and source-digest refusal remain unchanged.
+Vite's config bundler and module runner read the config, the test entry and
+its inlined imports with `fs` rather than Node's module hooks, so no
+per-process manifest records them and `git status` alone cannot bind them
+(an assume-unchanged or skip-worktree entry hides edited bytes). Before launch
+the verifier therefore opens every regular file tracked at the exact head with
+FileShare.Read, refuses unless the bytes read through each handle are that
+file's HEAD blob or its uniform CRLF checkout (no index flag, stat cache or Git
+filter is consulted), requires `vitest.scripts.config.mjs` to be tracked, and
+holds every handle until the child tree is proven dead, so no tracked file can
+be rewritten, replaced or deleted while the command runs. Before launch and
+after the run it also refuses any ignored path except node_modules at the root
+or beside a package.json tracked at the head (the preload's own rule), the
+resolved pnpm installation root and the verifier-owned receipt root
+`.orchestrator/artifacts/`; untracked files are refused by the clean-status
+check. When the merged manifests lack the entry the verifier re-hashes it
+through its open launch handle, refuses if the bytes differ from the launch
+digest, and records the entry in the receipt at that digest. If Node's hooks do
+load the entry (for example through Vite's transform), the preload admits the
+transformed evaluation bytes for this kind only; externalized dependencies
+still load through Node and remain under the module policy. On every path
+(success, timeout and error) the verifier terminates the child tree and proves
+the root, the Job Object and every observed descendant have exited before it
+releases any source handle; if exit cannot be proven the handles stay open
+until the verifier exits and the slot is not released. The standalone-node
+manifest-entry requirement and source-digest refusal remain unchanged.
 Because the normal Node-hosted pnpm entry is outside the product worktree, the
 verifier passes only its resolved installation root as a runtime-derived module
 root; no caller-supplied module root is accepted and Node-loaded Vitest/test

@@ -231,6 +231,71 @@ function Assert-CanonicalPreloadRefused([object]$Case, [string]$ExpectedText) {
   Assert-True (-not (Test-Path -LiteralPath $Case.Marker)) 'canonical preload refusal leaves no body marker'
   Assert-True (-not (Test-Path -LiteralPath $lockRoot)) 'canonical preload refusal releases its lock'
 }
+# A test-only verifier copy whose only production change is the synthetic
+# Node/pnpm resolution, plus any named mechanical substitutions.
+function New-CanonicalSyntheticGuard([string]$Name, [object[]]$Substitutions = @()) {
+  $guardPath=New-TestOnlyDiagnosticGuard $Name
+  Set-TestVerifierSubstitution $guardPath 'if (-not $hostNode -or -not $pnpmScript) {' ('$hostNode = $env:CANONICAL_TEST_NODE' + [Environment]::NewLine + '$pnpmScript = $env:CANONICAL_TEST_PNPM' + [Environment]::NewLine + 'if (-not $hostNode -or -not $pnpmScript) {') "$Name-synthetic-pnpm"
+  foreach ($substitution in $Substitutions) { Set-TestVerifierSubstitution $guardPath $substitution.Anchor $substitution.Replacement "$Name-$($substitution.Name)" }
+  return $guardPath
+}
+# A mutant must launch, run its body and pass setup; it is killed only by the
+# control's first (exit-code) assertion.
+function Assert-CanonicalExactHeadMutantKilled($Case, [string]$Name, [string]$ExpectedText, [string]$ExpectedMarker, [string]$Assertion = 'canonical-exact-head-bytes') {
+  $markerText=if (Test-Path -LiteralPath $Case.Marker) { [IO.File]::ReadAllText($Case.Marker) } else { '<none>' }
+  Assert-True ($Case.Result.Code -eq 0 -and $markerText -ceq $ExpectedMarker) "$Name-mutant-launched: verifier admitted and the body evaluated the substituted bytes (exit=$($Case.Result.Code) marker=$markerText stderr=$($Case.Result.Stderr))"
+  $failed=$false
+  try { Assert-CanonicalDeclarationRefused $Case $ExpectedText $Case.ReceiptsBefore } catch {
+    if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: refused with documented code')) { throw }
+    $failed=$true
+  }
+  Assert-True $failed "$Name mutant must fail the exact-head refusal assertion"
+  Write-Output "KILLED mutant $Name at assertion=$Assertion launched=1 exit=0 body-evaluated=1"
+}
+function Start-CanonicalCleanupRun([string]$Name, [string]$GuardPath, [hashtable]$ChildEnvironment) {
+  $parameters=[ordered]@{ '-Diagnostic'='canonical-vitest-residual-v1'; '-DiagnosticBudgetSeconds'='600'; '-Worktree'=$worktree; '-Lane'='lane-test'; '-Branch'='codex/test'; '-ClaimedHead'=$head; '-ContainerRoot'=$container }
+  $arguments=@('-NoProfile','-NonInteractive','-File',$GuardPath); foreach ($entry in $parameters.GetEnumerator()) { $arguments += @($entry.Key,[string]$entry.Value) }
+  $clock=Join-Path $root "$Name.clock.json"; Set-DiagnosticClock $clock ([DateTimeOffset]::UtcNow)
+  $run=[pscustomobject]@{ Name=$Name; Marker=(Join-Path $root "$Name.marker"); PidPath=(Join-Path $root "$Name.pid"); Fault=(Join-Path $root "$Name.fault"); Clock=$clock; ReceiptsBefore=(Get-DiagnosticReceiptPaths); Started=$null }
+  $environment=@{ DIAGNOSTIC_MARKER=$run.Marker; DIAGNOSTIC_CHILD_PID=$run.PidPath; DIAGNOSTIC_CLOCK_FIXTURE=$clock; DIAGNOSTIC_CLOCK_OBSERVED=(Join-Path $root "$Name.clock-observed"); DIAGNOSTIC_TEST_FAULT=$run.Fault; DIAGNOSTIC_TEST_KILL_IGNORED_MS='6000' }
+  foreach ($entry in $ChildEnvironment.GetEnumerator()) { $environment[$entry.Key]=$entry.Value }
+  $run.Started=Start-TestChild $arguments $environment
+  $watch=[Diagnostics.Stopwatch]::StartNew()
+  while ($watch.ElapsedMilliseconds -lt 60000) {
+    if ($run.Started.Process.HasExited) {
+      $early=Complete-TestChild $run.Started
+      Assert-True $false "$Name-ready: verifier exited before the rewriting child was observed (exit=$($early.Code) stderr=$($early.Stderr))"
+    }
+    if ((Test-Path -LiteralPath $run.PidPath) -and (Test-Path -LiteralPath $run.Marker) -and @(Get-CanonicalCleanupAttempts $run).Count -ge 2) { return $run }
+    Start-Sleep -Milliseconds 25
+  }
+  Assert-True $false "$Name-ready: rewriting child never reported attempts"
+}
+function Get-CanonicalCleanupAttempts($Run) {
+  if (-not (Test-Path -LiteralPath $Run.Marker)) { return @() }
+  # Only newline-terminated records count; a kill can tear the final append.
+  $records=[IO.File]::ReadAllText($Run.Marker).Split("`n")
+  if ($records.Count -lt 2) { return @() }
+  return @($records[0..($records.Count - 2)] | Where-Object { $_ })
+}
+function Complete-CanonicalCleanupRun($Run) {
+  if (-not $Run.Started.Process.WaitForExit(90000)) {
+    Stop-TestExactProcess $Run.Started.Process $Run.Started.StartTicks
+    Assert-True $false "$($Run.Name)-completes: verifier did not finish cleanup"
+  }
+  $result=Complete-TestChild $Run.Started
+  $childPid=[int]([IO.File]::ReadAllText($Run.PidPath))
+  $childAlive=$null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)
+  return [pscustomobject]@{ Result=$result; ChildAlive=$childAlive; Attempts=@(Get-CanonicalCleanupAttempts $Run) }
+}
+# The source handles must stay held from launch until the child tree is proven
+# dead: every rewrite attempt, including those made after the first
+# termination request was ignored, fails while the verifier holds the entry.
+function Assert-CanonicalHeldUntilExit($Outcome, [int]$AttemptsBeforeTrigger, [string]$Name) {
+  $wrote=@($Outcome.Attempts | Where-Object { $_ -ceq 'wrote' }).Count
+  $busy=@($Outcome.Attempts | Where-Object { $_ -ceq 'EBUSY' }).Count
+  Assert-True ($wrote -eq 0 -and $busy -eq $Outcome.Attempts.Count -and $Outcome.Attempts.Count -gt $AttemptsBeforeTrigger) "canonical-cleanup-held-until-exit: $Name child kept attempting after the kill request and never rewrote the entry (wrote=$wrote busy=$busy before=$AttemptsBeforeTrigger total=$($Outcome.Attempts.Count))"
+}
 function Invoke-CanonicalDiagnostic([string]$MarkerName, [hashtable]$Overrides=@{}, [hashtable]$ChildEnvironment=@{}, [string]$GuardPath='') {
   $receiptsBefore=Get-DiagnosticReceiptPaths
   $parameters=@{ '-DiagnosticScriptPath'=$null; '-DiagnosticSha256'=$null; '-DiagnosticBudgetSeconds'='600' }
@@ -1049,7 +1114,13 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
   $canonicalEntry=Join-Path $worktree 'scripts/canonical-record.test.mjs'
   New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalEntry) -Force | Out-Null
   Set-Content -LiteralPath $canonicalEntry -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'canonical-body-ran');"
-  Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs') | Out-Null
+  # The route holds the tracked fixed config at the exact HEAD and admits ignored
+  # paths only under node_modules, the pnpm root and the receipt root, so the
+  # earlier standalone junction fixture leaves the ignored .orchestrator tree.
+  $canonicalConfig=Join-Path $worktree 'vitest.scripts.config.mjs'
+  Set-Content -LiteralPath $canonicalConfig -Value "globalThis.canonicalConfig = 'head-config';"
+  if ($junctionPath -and (Test-Path -LiteralPath $junctionPath)) { [IO.Directory]::Delete($junctionPath) }
+  Invoke-FixtureGit @('add','--','scripts/canonical-record.test.mjs','vitest.scripts.config.mjs') | Out-Null
   Invoke-FixtureGit @('commit','-m','canonical vitest entry') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
   $canonicalReleasePath=Join-Path $PSScriptRoot 'diagnostic-declarations.json'
@@ -1113,7 +1184,9 @@ const { pathToFileURL } = require('node:url');
     $positiveRecord.exit -eq 0 -and $positiveRecord.nativeExit -eq 0 -and -not (Test-Path -LiteralPath $lockRoot)) 'canonical Vitest synthetic receipt binds user command, Node-hosted pnpm launch and native success'
   Write-Output 'PASS canonical-vitest synthetic-route=1 launch-path=1 receipt-command=1 native-exit=0'
 
-  $unauthorizedPath=Join-Path $worktree '.orchestrator\canonical-unauthorized.mjs'
+  # Inside the verifier-owned receipt root, so the ignored-path inventory admits
+  # it and the preload's module policy is the refusal under test.
+  $unauthorizedPath=Join-Path $worktree '.orchestrator\artifacts\canonical-unauthorized.mjs'
   Set-Content -LiteralPath $unauthorizedPath -Value "import fs from 'node:fs'; fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, 'unauthorized-body-ran');"
   Set-Content -LiteralPath $canonicalEntry -Value "export const canonicalEntry = true;"
   Set-Content -LiteralPath $fakePnpmScript -Value @'
@@ -1180,6 +1253,165 @@ fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, `runner-read-entry bytes=${sourc
   $runnerEntryModules=@($runnerRecord.modules | Where-Object { [string]::Equals([IO.Path]::GetFullPath([string]$_.path), [IO.Path]::GetFullPath($canonicalEntry), [StringComparison]::OrdinalIgnoreCase) })
   Assert-True ($runnerEntryModules.Count -eq 1 -and [string]$runnerEntryModules[0].sha256 -ceq $runnerEntrySha256 -and [string]$runnerRecord.declarationSha256 -ceq $runnerEntrySha256 -and -not (Test-Path -LiteralPath $lockRoot)) "canonical Vitest receipt records the entry at its launch digest (modules=$(@($runnerRecord.modules).Count) entry=$($runnerEntryModules.Count))"
   Write-Output 'PASS canonical-vitest runner-read-entry exit=0 entry-launch-digest=1 rewrite=EBUSY lock-released=1'
+
+  # Vite's config bundler and module runner read the config, the test and its
+  # imports with fs and evaluate them outside Node's module hooks. This
+  # Vite-style reader does the same, so only the verifier's exact-head tree
+  # hold and ignored-path inventory can bind what it evaluates.
+  $canonicalHelper=Join-Path $worktree 'scripts\canonical-helper.mjs'
+  Set-Content -LiteralPath $canonicalHelper -Value "globalThis.canonicalHelper = 'head-helper';"
+  Invoke-FixtureGit @('add','--','scripts/canonical-helper.mjs') | Out-Null
+  Invoke-FixtureGit @('commit','-m','canonical vite-style reader fixture') | Out-Null
+  $head=Invoke-FixtureGit @('rev-parse','HEAD')
+  Set-Content -LiteralPath $fakePnpmScript -Value @'
+const fs = require('node:fs');
+const vm = require('node:vm');
+fs.readFileSync(process.env.CANONICAL_ENTRY);
+for (const file of [process.env.CANONICAL_CONFIG, process.env.CANONICAL_HELPER, process.env.CANONICAL_EXTRA].filter(Boolean)) {
+  if (fs.existsSync(file)) vm.runInThisContext(fs.readFileSync(file, 'utf8'), { filename: file });
+}
+fs.writeFileSync(process.env.DIAGNOSTIC_MARKER, `config=${globalThis.canonicalConfig} helper=${globalThis.canonicalHelper} extra=${globalThis.canonicalExtra ?? 'none'}`);
+'@
+  $extraPath=Join-Path $worktree 'scripts\canonical-extra.local.mjs'
+  $viteEnvironment=@{ CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry; CANONICAL_CONFIG=$canonicalConfig; CANONICAL_HELPER=$canonicalHelper; CANONICAL_EXTRA=$extraPath }
+  $excludePath=Join-Path $worktree '.git\info\exclude'
+  Add-Content -LiteralPath $excludePath -Value @('/node_modules/', 'scripts/*.local.mjs', 'scripts/node_modules/')
+  $rootDependency=Join-Path $worktree 'node_modules\vite-dep\index.js'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $rootDependency) -Force | Out-Null
+  Set-Content -LiteralPath $rootDependency -Value 'module.exports = 1;'
+  $viteControl=Invoke-CanonicalDiagnostic 'canonical-vite-exact-head' @{} $viteEnvironment $canonicalGuard
+  $viteReceipts=@(Get-DiagnosticReceiptPaths | Where-Object { $_ -notin $viteControl.ReceiptsBefore })
+  $viteMarker=if (Test-Path -LiteralPath $viteControl.Marker) { [IO.File]::ReadAllText($viteControl.Marker) } else { '<none>' }
+  Assert-True ($viteControl.Result.Code -eq 0 -and $viteMarker -ceq 'config=head-config helper=head-helper extra=none' -and $viteReceipts.Count -eq 1 -and -not (Test-Path -LiteralPath $lockRoot)) "canonical Vite-style reader at the exact head with an admitted root node_modules is admitted (exit=$($viteControl.Result.Code) marker=$viteMarker stderr=$($viteControl.Result.Stderr))"
+  Write-Output 'PASS canonical-vitest vite-reader exact-head exit=0 config=head helper=head root-node_modules=admitted receipt=1'
+
+  $byteMutantGuard=New-CanonicalSyntheticGuard 'canonical-exact-head-bytes-mutant' @(@{ Name='skip-byte-proof'; Anchor='|| !MatchesBlob(bytes, meta[2])) {'; Replacement=') {' })
+  foreach ($hidden in @(
+    @{ Name='skip-worktree'; Flag='--skip-worktree'; Clear='--no-skip-worktree'; Relative='scripts/canonical-helper.mjs'; Path=$canonicalHelper; Head="globalThis.canonicalHelper = 'head-helper';"; Hidden="globalThis.canonicalHelper = 'hidden-helper';"; Marker='config=head-config helper=hidden-helper extra=none' },
+    @{ Name='assume-unchanged'; Flag='--assume-unchanged'; Clear='--no-assume-unchanged'; Relative='vitest.scripts.config.mjs'; Path=$canonicalConfig; Head="globalThis.canonicalConfig = 'head-config';"; Hidden="globalThis.canonicalConfig = 'hidden-config';"; Marker='config=hidden-config helper=head-helper extra=none' }
+  )) {
+    Invoke-FixtureGit @('update-index',$hidden.Flag,'--',$hidden.Relative) | Out-Null
+    try {
+      Set-Content -LiteralPath $hidden.Path -Value $hidden.Hidden
+      $hiddenStatus=Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all','--ignore-submodules=none')
+      Assert-True ($hiddenStatus -ceq '') "$($hidden.Name) hides the changed tracked file from git status (status=$hiddenStatus)"
+      $expected="vitest-command tracked file bytes do not match the exact HEAD blob: $($hidden.Relative)"
+      $hiddenControl=Invoke-CanonicalDiagnostic "canonical-vite-$($hidden.Name)" @{} $viteEnvironment $canonicalGuard
+      Assert-CanonicalDeclarationRefused $hiddenControl $expected $hiddenControl.ReceiptsBefore
+      Write-Output "PASS canonical-vitest hidden-$($hidden.Name) status-clean=1 exit=73 body=not-run receipt=0"
+      $hiddenMutant=Invoke-CanonicalDiagnostic "canonical-vite-$($hidden.Name)-mutant" @{} $viteEnvironment $byteMutantGuard
+      Assert-CanonicalExactHeadMutantKilled $hiddenMutant "exact-head-bytes-$($hidden.Name)" $expected $hidden.Marker
+    } finally {
+      Invoke-FixtureGit @('update-index',$hidden.Clear,'--',$hidden.Relative) | Out-Null
+      Set-Content -LiteralPath $hidden.Path -Value $hidden.Head
+    }
+  }
+
+  Set-Content -LiteralPath $extraPath -Value "globalThis.canonicalExtra = 'ignored-extra';"
+  try {
+    $ignoredStatus=Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all','--ignore-submodules=none')
+    Assert-True ($ignoredStatus -ceq '') "ignored Vite-read file is invisible to git status (status=$ignoredStatus)"
+    $ignoredExpected='vitest-command worktree has an ignored path outside admitted node_modules: scripts/canonical-extra.local.mjs'
+    $ignoredControl=Invoke-CanonicalDiagnostic 'canonical-vite-ignored' @{} $viteEnvironment $canonicalGuard
+    Assert-CanonicalDeclarationRefused $ignoredControl $ignoredExpected $ignoredControl.ReceiptsBefore
+    Write-Output 'PASS canonical-vitest ignored-vite-import status-clean=1 exit=73 body=not-run receipt=0'
+    $ignoredMutantGuard=New-CanonicalSyntheticGuard 'canonical-ignored-path-mutant' @(@{ Name='skip-ignored-inventory'; Anchor='  if ($unadmitted) {'; Replacement='  if ($false) {' })
+    $ignoredMutant=Invoke-CanonicalDiagnostic 'canonical-vite-ignored-mutant' @{} $viteEnvironment $ignoredMutantGuard
+    Assert-CanonicalExactHeadMutantKilled $ignoredMutant 'ignored-vite-import' $ignoredExpected 'config=head-config helper=head-helper extra=ignored-extra' 'canonical-ignored-path-inventory'
+  } finally { Remove-Item -LiteralPath $extraPath -Force -ErrorAction SilentlyContinue }
+
+  $nestedDependency=Join-Path $worktree 'scripts\node_modules\shadow\index.js'
+  New-Item -ItemType Directory -Path (Split-Path -Parent $nestedDependency) -Force | Out-Null
+  Set-Content -LiteralPath $nestedDependency -Value 'module.exports = 2;'
+  try {
+    $nestedControl=Invoke-CanonicalDiagnostic 'canonical-vite-nested-node-modules' @{} $viteEnvironment $canonicalGuard
+    Assert-CanonicalDeclarationRefused $nestedControl 'vitest-command worktree has an ignored path outside admitted node_modules: scripts/node_modules/' $nestedControl.ReceiptsBefore
+    Write-Output 'PASS canonical-vitest node_modules-without-tracked-package exit=73 receipt=0'
+  } finally { Remove-Item -LiteralPath (Join-Path $worktree 'scripts\node_modules') -Recurse -Force -ErrorAction SilentlyContinue }
+
+  $untrackedPath=Join-Path $worktree 'scripts\canonical-untracked.mjs'
+  Set-Content -LiteralPath $untrackedPath -Value "globalThis.canonicalExtra = 'untracked';"
+  try {
+    $untrackedControl=Invoke-CanonicalDiagnostic 'canonical-vite-untracked' @{} $viteEnvironment $canonicalGuard
+    Assert-CanonicalDeclarationRefused $untrackedControl 'host verifier requires a clean exact-head worktree' $untrackedControl.ReceiptsBefore
+    Write-Output 'PASS canonical-vitest untracked-file exit=73 receipt=0'
+  } finally { Remove-Item -LiteralPath $untrackedPath -Force -ErrorAction SilentlyContinue }
+
+  # The source handles must outlive the child tree on the error and timeout
+  # paths. The test-only verifier copy ignores termination requests for six
+  # seconds after the first one (a kill that has not yet taken effect) and can
+  # fault inside the monitoring loop; the child keeps trying to rewrite its
+  # entry every 25 ms throughout.
+  Set-Content -LiteralPath $fakePnpmScript -Value @'
+const fs = require('node:fs');
+fs.writeFileSync(process.env.DIAGNOSTIC_CHILD_PID, String(process.pid));
+const attempt = () => {
+  try {
+    fs.writeFileSync(process.env.CANONICAL_ENTRY, 'export const replaced = true;\n');
+    fs.appendFileSync(process.env.DIAGNOSTIC_MARKER, 'wrote\n');
+    return;
+  } catch (error) { fs.appendFileSync(process.env.DIAGNOSTIC_MARKER, `${error.code}\n`); }
+  setTimeout(attempt, 25);
+};
+attempt();
+'@
+  $cleanupEntryBytes=[IO.File]::ReadAllBytes($canonicalEntry)
+  $cleanupEntrySha256=Get-Sha256 $canonicalEntry
+  $cleanupSeams=@(
+    @{ Name='kill-not-yet-effective'; Anchor='  # Kernel job membership is handle-bound, not inferred from reusable PIDs.'; Replacement=@'
+  if ($env:DIAGNOSTIC_TEST_KILL_IGNORED_MS) {
+    if (-not $script:testFirstTerminationRequest) { $script:testFirstTerminationRequest = [Diagnostics.Stopwatch]::StartNew() }
+    if ($script:testFirstTerminationRequest.ElapsedMilliseconds -lt [int]$env:DIAGNOSTIC_TEST_KILL_IGNORED_MS) { [Console]::Error.WriteLine('heavy-verifier: test termination request ignored'); return }
+  }
+  # Kernel job membership is handle-bound, not inferred from reusable PIDs.
+'@ },
+    @{ Name='fault-after-launch'; Anchor='        if ($child.HasExited) {'; Replacement=@'
+        if (Test-Path -LiteralPath $env:DIAGNOSTIC_TEST_FAULT) { throw 'heavy-verifier: test fault after launch' }
+        if ($child.HasExited) {
+'@ }
+  )
+  $cleanupGuard=New-CanonicalSyntheticGuard 'canonical-cleanup' $cleanupSeams
+  $releaseMutantGuard=New-CanonicalSyntheticGuard 'canonical-cleanup-release-mutant' ($cleanupSeams + @(@{ Name='release-before-exit-proof'; Anchor='    if (Stop-DiagnosticTreeUntilExited) {'; Replacement=@'
+    if ($diagnosticSourceStream) { $diagnosticSourceStream.Dispose(); $diagnosticSourceStream = $null }
+    if ($diagnosticExactHeadTree) { $diagnosticExactHeadTree.Dispose(); $diagnosticExactHeadTree = $null }
+    if (Stop-DiagnosticTreeUntilExited) {
+'@ }))
+  $cleanupEnvironment=@{ CANONICAL_TEST_NODE=$nodePath; CANONICAL_TEST_PNPM=$fakePnpmScript; CANONICAL_ENTRY=$canonicalEntry }
+  foreach ($cleanupPath in @('error','timeout')) {
+    foreach ($releaseMutant in @($false,$true)) {
+      $runName="canonical-cleanup-$cleanupPath$(if ($releaseMutant) { '-release-mutant' })"
+      $run=Start-CanonicalCleanupRun $runName $(if ($releaseMutant) { $releaseMutantGuard } else { $cleanupGuard }) $cleanupEnvironment
+      try {
+        $attemptsBefore=@(Get-CanonicalCleanupAttempts $run).Count
+        if ($cleanupPath -ceq 'error') { New-Item -ItemType File -Path $run.Fault -Force | Out-Null }
+        else { Set-DiagnosticClock $run.Clock ([DateTimeOffset]::UtcNow.AddSeconds(601)) }
+        $outcome=Complete-CanonicalCleanupRun $run
+      } finally {
+        if (-not $run.Started.Process.HasExited) { Stop-TestExactProcess $run.Started.Process $run.Started.StartTicks }
+      }
+      $stderr=$outcome.Result.Stderr
+      $newReceipts=@(Get-DiagnosticReceiptPaths | Where-Object { $_ -notin $run.ReceiptsBefore })
+      $expectedExit=if ($cleanupPath -ceq 'error') { 73 } else { 124 }
+      $pathReached=if ($cleanupPath -ceq 'error') { $stderr.Contains('heavy-verifier: test fault after launch') -and $newReceipts.Count -eq 0 } else { $newReceipts.Count -eq 1 -and (Get-Content -LiteralPath $newReceipts[0] -Raw | ConvertFrom-Json).timedOut -eq $true }
+      Assert-True ($outcome.Result.Code -eq $expectedExit -and $pathReached -and $stderr.Contains('heavy-verifier: test termination request ignored') -and
+        $stderr.Contains('heavy-verifier: diagnostic source handles released after child-tree exit was proven') -and -not $outcome.ChildAlive -and
+        -not (Test-Path -LiteralPath $lockRoot)) "$runName-launched: real $cleanupPath path, ignored first kill, proven exit, dead child and released slot (exit=$($outcome.Result.Code) receipts=$($newReceipts.Count) childAlive=$($outcome.ChildAlive) stderr=$stderr)"
+      if (-not $releaseMutant) {
+        Assert-CanonicalHeldUntilExit $outcome $attemptsBefore $cleanupPath
+        Assert-True ((Get-Sha256 $canonicalEntry) -ceq $cleanupEntrySha256) "$runName entry bytes are unchanged"
+        Write-Output "PASS canonical-vitest cleanup-$cleanupPath exit=$expectedExit attempts-after-kill-request=$($outcome.Attempts.Count - $attemptsBefore) rewrite=0 handles-released-after-exit=1 lock-released=1"
+      } else {
+        $failed=$false
+        try { Assert-CanonicalHeldUntilExit $outcome $attemptsBefore $cleanupPath } catch {
+          if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: canonical-cleanup-held-until-exit:')) { throw }
+          $failed=$true
+        }
+        Assert-True $failed "release-before-exit-proof mutant must fail the held-until-exit assertion on the $cleanupPath path"
+        [IO.File]::WriteAllBytes($canonicalEntry, $cleanupEntryBytes)
+        Write-Output "KILLED mutant release-before-exit-proof-$cleanupPath at assertion=canonical-cleanup-held-until-exit launched=1 exit=$expectedExit entry-rewritten=1"
+      }
+    }
+  }
 
   # The launch-handle entry binding is vitest-command only: a standalone
   # diagnostic whose manifest lacks its entry must still be refused.
