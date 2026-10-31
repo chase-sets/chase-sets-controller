@@ -1167,7 +1167,7 @@ $plan = [ordered]@{
   heavyVerifier = [ordered]@{
     preamble = $gatePreamble
     entrypoint = (Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1")
-    supportedGates = @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db")
+    supportedGates = @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:canonical-record")
     loadSensitiveProof = "unchanged isolated pass with material timing collapse, then one-worker/file-serial complete gate; never raise timeouts, edit product files, or skip tests"
   }
   heavyAdmission = $heavyAdmissionPlan

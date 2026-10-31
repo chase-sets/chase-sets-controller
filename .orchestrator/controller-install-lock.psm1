@@ -124,7 +124,7 @@ function Test-ControllerInstallOwnerShape($Record) {
   if ("$($Record.lockId)" -cnotmatch '^[a-f0-9]{32}$' -or
       "$($Record.commandIdentity)" -cnotmatch '^[a-f0-9]{64}$' -or
       "$($Record.lane)" -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$' -or
-      $Record.gate -cnotin @('verify:static', 'check:static', 'test:scripts', 'verify:test', 'test', 'test:fast', 'build', 'verify', 'verify:build', 'verify:test-db', 'test:e2e:suite', 'repository-gate', 'playwright', 'vitest-full', 'script-battery', 'diagnostic') -or
+      $Record.gate -cnotin @('verify:static', 'check:static', 'test:scripts', 'verify:test', 'test', 'test:fast', 'build', 'verify', 'verify:build', 'verify:test-db', 'test:e2e:suite', 'test:canonical-record', 'repository-gate', 'playwright', 'vitest-full', 'script-battery', 'diagnostic') -or
       -not (Test-ControllerInstallPositivePid $Record.pid) -or
       -not (Test-ControllerInstallUtc ([string]$Record.processStartUtc)) -or
       -not (Test-ControllerInstallUtc ([string]$Record.startedUtc))) { return $false }

@@ -22,7 +22,7 @@ verdict belongs to #9275.
 #>
 [CmdletBinding(DefaultParameterSetName = "Gate")]
 param(
-  [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite")][string]$Gate,
+  [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record")][string]$Gate,
   [Parameter(ParameterSetName = "Gate")][ValidatePattern('^[a-z][a-z0-9_]*$')][string]$E2eSuite,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][ValidateSet("@chase-sets/ordering")][string]$WorkspaceTest,
   [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][ValidateSet("@chase-sets/payments", IgnoreCase = $false)][string]$WorkspaceDbTest,
@@ -162,6 +162,9 @@ if ($isControllerBattery -and $ControllerBatteryClaimantPid -eq 0 -and -not [str
 $isBudgetedWorkspaceDb = $isWorkspaceDbTest
 $isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
+$canonicalRecordScriptExpected = 'vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false'
+$canonicalRecordScriptActual = $null
+$canonicalRecordScriptPinFailure = $null
 $nativeRequest = $null
 $nativeReplyWritten = $false
 $nativeCleanupProof = $null
@@ -401,6 +404,31 @@ function Get-LiveGitIdentity {
     Worktree = $canonical
     Branch = $branch
     Head = $head
+  }
+}
+
+function Assert-CanonicalRecordScriptPin {
+  if ($Gate -cne 'test:canonical-record') { return }
+  $objectName = "$($acquiredGitIdentity.Head):package.json"
+  $packageLines = @(& git -C $worktreeFull cat-file blob $objectName 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    throw 'heavy-verifier: canonical-record script pin refusal: package.json is missing at exact HEAD'
+  }
+  try {
+    $package = ($packageLines -join "`n") | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    throw 'heavy-verifier: canonical-record script pin refusal: package.json at exact HEAD is unreadable'
+  }
+  $scriptsProperty = $package.PSObject.Properties | Where-Object Name -ceq 'scripts' | Select-Object -First 1
+  $scriptProperty = if ($scriptsProperty -and $scriptsProperty.Value) {
+    $scriptsProperty.Value.PSObject.Properties | Where-Object Name -ceq 'test:canonical-record' | Select-Object -First 1
+  }
+  if (-not $scriptProperty -or $scriptProperty.Value -isnot [string]) {
+    throw 'heavy-verifier: canonical-record script pin refusal: scripts.test:canonical-record is missing at exact HEAD'
+  }
+  $script:canonicalRecordScriptActual = [string]$scriptProperty.Value
+  if ($script:canonicalRecordScriptActual -cne $canonicalRecordScriptExpected) {
+    throw 'heavy-verifier: canonical-record script pin refusal: scripts.test:canonical-record differs from the pinned command'
   }
 }
 
@@ -2024,7 +2052,7 @@ function Test-OwnerShape($Record) {
   if ("$($Record.lockId)" -cnotmatch "^[a-f0-9]{32}$" -or
       "$($Record.commandIdentity)" -cnotmatch "^[a-f0-9]{64}$" -or
       "$($Record.lane)" -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" -or
-      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "repository-gate", "playwright", "vitest-full", "script-battery", "diagnostic") -or
+      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record", "repository-gate", "playwright", "vitest-full", "script-battery", "diagnostic") -or
       -not (Test-PositivePid $Record.pid) -or
       -not (Test-UtcIdentity ([string]$Record.processStartUtc)) -or
       -not (Test-UtcIdentity ([string]$Record.startedUtc))) {
@@ -2994,6 +3022,7 @@ if ($nestedOwnerEligible) {
 # Everything else is a crossed claim and is refused.
 $nestedKindClosure = [ordered]@{
   "test:scripts" = @("script-battery", "vitest-full")
+  "test:canonical-record" = @("repository-gate", "vitest-full")
   "build" = @("build")
   "verify:build" = @("build")
   "verify:static" = @("repository-gate", "script-battery", "vitest-full")
@@ -3217,6 +3246,9 @@ try {
   }
   Assert-LiveGitIdentityUnchanged
   Assert-HostVerifierGitState
+  if ($Gate -ceq 'test:canonical-record') {
+    try { Assert-CanonicalRecordScriptPin } catch { $canonicalRecordScriptPinFailure = $_.Exception.Message; throw }
+  }
   # The reserved nested-owner pipe exists before accepted publication (Attach)
   # and before the guarded launch (Gate). It serves nothing until armed: the
   # dispatch binding resolves right after publication, while the guarded root
@@ -3592,6 +3624,13 @@ try {
           lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
           root = @{ pid = $child.Id; processStartUtc = $childStarted }; exit = $exitCode
         }
+          if ($Gate -ceq 'test:canonical-record') {
+            $receipt.Add('owner', $owner.owner)
+            $receipt.Add('scriptBody', $canonicalRecordScriptExpected)
+            $receipt.Add('scriptBodySource', 'HEAD:package.json')
+            $receipt.Add('scriptBodyObserved', $canonicalRecordScriptActual)
+            $receipt.Add('scriptPin', [ordered]@{ status = 'accepted' })
+          }
       }
       $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
       try { $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 5)); $stream.Write($bytes); $stream.Flush($true) }
@@ -3627,6 +3666,32 @@ try {
       Assert-ControllerPrecursorArtifactState -AfterSuccess
     }
   }
+} catch {
+  if (-not $canonicalRecordScriptPinFailure) { throw }
+  $exitCode = 73
+  $receiptRoot = Join-Path $worktreeFull ".orchestrator/artifacts"
+  if (-not (Test-Path -LiteralPath $receiptRoot)) { [IO.Directory]::CreateDirectory($receiptRoot) | Out-Null }
+  if (-not (Test-SafeDirectory $receiptRoot) -or -not (Test-SafeDirectory (Split-Path -Parent $receiptRoot))) {
+    throw "heavy-verifier: receipt directory is unsafe"
+  }
+  $receiptPath = Join-Path $receiptRoot "host-heavy-verifier-$lockId.json"
+  $receipt = [ordered]@{
+    schema = "host-heavy-verifier/v1"; authority = "host-verifier"
+    worktree = $worktreeFull; head = $acquiredGitIdentity.Head; lane = $Lane
+    identityMode = $identityMode; branch = $owner.branch; gate = $ownerGate
+    owner = $owner.owner; commandIdentity = $commandIdentity
+    executable = $command; arguments = @($arguments)
+    scriptBody = $canonicalRecordScriptExpected; scriptBodySource = "HEAD:package.json"
+    scriptBodyObserved = $canonicalRecordScriptActual
+    scriptPin = [ordered]@{ status = "refused"; reason = $canonicalRecordScriptPinFailure }
+    lockId = $lockId; wrapper = @{ pid = $PID; processStartUtc = $started }
+    exit = $exitCode; nativeExit = $null; refused = $true
+  }
+  $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $bytes = [Text.Encoding]::UTF8.GetBytes(($receipt | ConvertTo-Json -Depth 8)); $stream.Write($bytes); $stream.Flush($true) }
+  finally { $stream.Dispose() }
+  [Console]::Error.WriteLine($canonicalRecordScriptPinFailure)
+  [Console]::Error.WriteLine("heavy-verifier: receipt=$receiptPath exit=$exitCode")
 } finally {
   # The nested owner stops before release: after this point no descendant can
   # obtain a signed continuation from this wrapper, and the private key dies here.

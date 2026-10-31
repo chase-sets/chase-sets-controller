@@ -7,7 +7,7 @@ $script:FleetAdmissionTokenName = "CHASE_SETS_FLEET_ADMISSION_TOKEN"
 $script:FleetAdmissionGates = @(
   "verify:static", "check:static", "test:scripts", "verify:test", "test",
   "test:fast", "build", "verify", "verify:build", "verify:test-db",
-  "interrupted-canonical-integration"
+  "test:canonical-record", "interrupted-canonical-integration"
 )
 $script:FleetAdmissionCountNames = @(
   "candidates", "examined", "active", "legacyLiveOwners",

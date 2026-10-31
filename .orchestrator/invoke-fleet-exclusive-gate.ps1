@@ -11,7 +11,7 @@ param(
   [Parameter(Mandatory)][string]$Worktree,
   [Parameter(Mandatory)][string]$Branch,
   [Parameter(Mandatory)][ValidatePattern("^[a-f0-9]{40}$")][string]$ClaimedHead,
-  [Parameter(Mandatory)][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db")][string]$Gate
+  [Parameter(Mandatory)][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:canonical-record")][string]$Gate
 )
 
 $ErrorActionPreference = "Stop"

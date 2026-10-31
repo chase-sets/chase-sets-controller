@@ -21,6 +21,7 @@ const HEAVY_GATES = new Set([
   "verify",
   "verify:build",
   "verify:test-db",
+  "test:canonical-record",
 ]);
 const E2E_SCRIPTS = new Set(["test:e2e", "test:e2e:deployed", "test:e2e:headed", "test:e2e:suite"]);
 const E2E_SCRIPT_BASENAMES = new Set(["browser-e2e-probe.mjs"]);
