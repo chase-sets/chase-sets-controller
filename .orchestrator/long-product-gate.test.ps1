@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [ValidateSet('supervisor','queue','transient','mutants')][string]$Part = '',
-  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line','census-immediate')][string]$Mutant = ''
+  [ValidateSet('','direct-host','stale-result','verifier-override','interruption-reclaims-owner','clocks','single-shot','fresh-ticket','no-cap','non-atomic-ready','replacement-line','census-immediate','temp-cleanup')][string]$Mutant = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +37,32 @@ function Assert-NoVerifierOverride([string[]]$Paths) {
     }
   })
   Assert-True ($matches.Count -eq 0) 'production long-gate scripts expose a verifier override'
+}
+function Remove-LongGateTempRoot([string]$Path, [switch]$DoubleSeparator) {
+  $resolved = [IO.Path]::GetFullPath($Path)
+  $tempPrefix = if ($DoubleSeparator) {
+    [IO.Path]::GetFullPath([IO.Path]::GetTempPath()) + [IO.Path]::DirectorySeparatorChar
+  } else {
+    [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+  }
+  if ($resolved.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+function Assert-LongGateTempCleanup([string]$TempRoot, [string]$ControllerRoot, [switch]$Mutant) {
+  $inside = Join-Path $TempRoot ('long-product-gate-cleanup-assertion-' + [guid]::NewGuid().ToString('N'))
+  $outside = Join-Path $ControllerRoot ('.long-product-gate-cleanup-outside-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $inside, $outside | Out-Null
+  try {
+    Remove-LongGateTempRoot $inside -DoubleSeparator:$Mutant
+    Assert-True (-not (Test-Path -LiteralPath $inside)) 'long-product-gate temp root is gone after cleanup'
+    Remove-LongGateTempRoot $outside
+    Assert-True (Test-Path -LiteralPath $outside) 'long-product-gate cleanup refuses path outside TEMP'
+  } finally {
+    if (Test-Path -LiteralPath $inside) { Remove-Item -LiteralPath $inside -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $outside) { Remove-Item -LiteralPath $outside -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  if ($Mutant) { Write-Output 'PASS MUTANT temp-cleanup killed at long-product-gate temp root is gone after cleanup' }
 }
 function New-ControllerScriptFixture([string]$Root) {
   $orchestrator = Join-Path $Root '.orchestrator'
@@ -727,6 +753,19 @@ $controllerRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('long-product-gate-test-' + [guid]::NewGuid().ToString('N'))
 $fixtureRoot = Join-Path $controllerRoot ('.long-product-gate-fixture-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot, $fixtureRoot | Out-Null
+$cleanupMutant = $Mutant -ceq 'temp-cleanup'
+if (-not $Mutant -or $cleanupMutant) {
+  if ($cleanupMutant) {
+    $failure = $null
+    try { Assert-LongGateTempCleanup $testRoot $controllerRoot -Mutant } catch { $failure = $_.Exception.Message }
+    Assert-True ($failure -ceq 'ASSERTION FAILED: long-product-gate temp root is gone after cleanup') 'MUTANT temp-cleanup reaches its named cleanup assertion'
+    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Output 'PASS MUTANT temp-cleanup reaches its named cleanup assertion'
+    return
+  }
+  Assert-LongGateTempCleanup $testRoot $controllerRoot
+}
 $fixtureOrchestrator = New-ControllerScriptFixture $fixtureRoot
 $productionDispatch = Join-Path $fixtureOrchestrator 'dispatch-lane.ps1'
 $productionSupervisor = Join-Path $fixtureOrchestrator 'long-product-gate.ps1'
@@ -890,7 +929,9 @@ try {
   }
   $fixturePath = [IO.Path]::GetFullPath($fixtureRoot)
   $tempPath = [IO.Path]::GetFullPath($testRoot)
-  if ($fixturePath.StartsWith(([IO.Path]::GetFullPath($controllerRoot) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $fixturePath -Recurse -Force -ErrorAction SilentlyContinue }
-  if ($tempPath.StartsWith(([IO.Path]::GetFullPath([IO.Path]::GetTempPath()) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $tempPath -Recurse -Force -ErrorAction SilentlyContinue }
+  $controllerPrefix = [IO.Path]::GetFullPath($controllerRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
+  if ($fixturePath.StartsWith($controllerPrefix, [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $fixturePath -Recurse -Force -ErrorAction SilentlyContinue }
+  Remove-LongGateTempRoot $tempPath
+  Assert-True (-not (Test-Path -LiteralPath $tempPath)) 'long-product-gate temp root is gone after cleanup'
   Exit-RoutingDataTestScope $routingScope
 }
