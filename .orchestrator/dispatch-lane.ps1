@@ -136,6 +136,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Browser/computer-use access is currently bound to the interactive host
+# session, not to detached CIM-launched lanes. Refuse before routing, census,
+# ownership records or child start until a verified host probe supports lanes.
+if ($Row -eq 6) {
+  [Console]::Error.WriteLine('BROWSER_HOST_UNREACHABLE: browser/computer-use steps must run in the host session; host must run the browser steps itself')
+  exit 73
+}
+
 function Get-LanePriority([string]$Path, [string]$Override) {
   if ($Override) { return @{ priorityClass=$Override; prioritySource='parameter' } }
   try {

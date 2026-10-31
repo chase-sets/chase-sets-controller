@@ -91,7 +91,7 @@ try {
       $launchArgs.Placement='override-todd';Refuses { & $launch @launchArgs -Harness $harness -Model $model } 'successor placement is override-Todd'
       $launchArgs.Placement='override-Todd'
       $launchArgs.LaneRole='implementation'
-      foreach($row in @(1,2,4,5,6,7,8,9,11,12,14,15)){ $launchArgs.Row=$row;Refuses { & $launch @launchArgs -Harness $harness -Model $model } 'only on rows 3, 10 and 13' }
+      foreach($row in @(1,2,4,5,7,8,9,11,12,14,15)){ $launchArgs.Row=$row;Refuses { & $launch @launchArgs -Harness $harness -Model $model } 'only on rows 3, 10 and 13' }
       foreach($row in @(3,10,13)){
         $launchArgs.Row=$row;$launchArgs.Placement=if($row-eq10){'override-Todd'}else{'provisional'}
         $plan=& $launch @launchArgs -Harness $harness -Model $model|ConvertFrom-Json
