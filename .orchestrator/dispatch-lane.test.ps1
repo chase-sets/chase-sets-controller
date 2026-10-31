@@ -1282,6 +1282,74 @@ try {
   }
 
   if ($ValidatorOnly) {
+    $browserHostRuntime = Join-Path $testRoot 'browser-host-refusal-runtime'
+    $browserHostTemp = Join-Path $testRoot 'browser-host-refusal-temp'
+    New-Item -ItemType Directory -Path $browserHostRuntime, $browserHostTemp | Out-Null
+    $browserHostError = Join-Path $testRoot 'browser-host-refusal.err'
+    $browserHostOutput = Join-Path $testRoot 'browser-host-refusal.out'
+    $browserHostProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+      -ArgumentList @('-NoProfile','-NonInteractive','-File',$launcher,
+        '-Harness','codex','-Model','gpt-6-astra','-Effort','high','-LaneRole','implementation',
+        '-Issue','239','-Row','6','-Placement','provisional','-PromptFile',$prompt,
+        '-Worktree',$worktree,'-Label','browser-host-refusal','-DryRun',
+        '-ExecutablePath',(Join-Path $PSHOME 'pwsh.exe'),
+        '-TestRuntimeRoot',$browserHostRuntime,'-TestTempRoot',$browserHostTemp) `
+      -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $browserHostOutput -RedirectStandardError $browserHostError
+    $browserHostExit = $browserHostProcess.ExitCode
+    $browserHostDiagnostic = if (Test-Path -LiteralPath $browserHostError) { [IO.File]::ReadAllText($browserHostError).Trim() } else { '' }
+    Assert-True ($browserHostExit -eq 73 -and $browserHostDiagnostic -ceq 'BROWSER_HOST_UNREACHABLE: browser/computer-use steps must run in the host session; host must run the browser steps itself') "row 6 refuses with the typed browser-host code before any launch (exit=$browserHostExit diagnostic=$browserHostDiagnostic)"
+    Assert-True ([IO.File]::ReadAllText($browserHostOutput).Trim().Length -eq 0) 'row 6 refusal starts no child or produces a launch plan'
+    Assert-True (@(Get-ChildItem -LiteralPath $browserHostRuntime -Force).Count -eq 0) 'row 6 refusal creates no launch record, transcript or census artifact'
+    Write-Output 'PASS browser-host-unreachable row=6 exit=73 child=0 launch-record=0'
+
+    $browserGuard = @'
+# Browser/computer-use access is currently bound to the interactive host
+# session, not to detached CIM-launched lanes. Refuse before routing, census,
+# ownership records or child start until a verified host probe supports lanes.
+if ($Row -eq 6) {
+  [Console]::Error.WriteLine('BROWSER_HOST_UNREACHABLE: browser/computer-use steps must run in the host session; host must run the browser steps itself')
+  exit 73
+}
+'@
+    $launcherSource = [IO.File]::ReadAllText($launcher).Replace("`r`n", "`n")
+    $browserGuard = $browserGuard.Replace("`r`n", "`n")
+    Assert-True $launcherSource.Contains($browserGuard.Trim()) 'row 6 browser guard anchor is present for mutation control'
+    $mutantLauncher = Join-Path $testRoot 'dispatch-lane-browser-guard-mutant.ps1'
+    [IO.File]::WriteAllText($mutantLauncher, $launcherSource.Replace($browserGuard.Trim(), '').TrimStart(), [Text.UTF8Encoding]::new($false))
+    $mutantError = Join-Path $testRoot 'browser-host-mutant.err'
+    $mutantOutput = Join-Path $testRoot 'browser-host-mutant.out'
+    $mutantRuntime = Join-Path $testRoot 'browser-host-mutant-runtime'
+    $mutantTemp = Join-Path $testRoot 'browser-host-mutant-temp'
+    New-Item -ItemType Directory -Path $mutantRuntime, $mutantTemp | Out-Null
+    $mutantCaught = $false
+    try {
+      $mutantProcess = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') `
+        -ArgumentList @('-NoProfile','-NonInteractive','-File',$mutantLauncher,
+          '-Harness','codex','-Model','gpt-6-astra','-Effort','high','-LaneRole','implementation',
+          '-Issue','239','-Row','6','-Placement','provisional','-PromptFile',$prompt,
+          '-Worktree',$worktree,'-Label','browser-host-mutant','-DryRun',
+          '-ExecutablePath',(Join-Path $PSHOME 'pwsh.exe'),
+          '-TestRuntimeRoot',$mutantRuntime,'-TestTempRoot',$mutantTemp) `
+        -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $mutantOutput -RedirectStandardError $mutantError
+      $mutantDiagnostic = if (Test-Path -LiteralPath $mutantError) { [IO.File]::ReadAllText($mutantError).Trim() } else { '' }
+      Assert-True ($mutantProcess.ExitCode -eq 73 -and $mutantDiagnostic -ceq 'BROWSER_HOST_UNREACHABLE: browser/computer-use steps must run in the host session; host must run the browser steps itself') 'removed row 6 browser guard must fail the refusal assertion'
+    } catch { $mutantCaught = $true }
+    Assert-True $mutantCaught 'mutant removing the row 6 browser guard goes red'
+    Write-Output 'PASS browser-host guard mutant removed-guard=red'
+
+    foreach ($row in @(3,4,5)) {
+      $rowRuntime = Join-Path $testRoot "row-$row-dry-run-runtime"
+      $rowTemp = Join-Path $testRoot "row-$row-dry-run-temp"
+      New-Item -ItemType Directory -Path $rowRuntime, $rowTemp | Out-Null
+      $rowOutput = @(& $launcher -Harness codex -Row $row -LaneRole implementation -Issue 239 `
+        -PromptFile $prompt -Worktree $worktree -Label "row-$row-dry-run" -DryRun `
+        -ExecutablePath $fakeExe -TestRuntimeRoot $rowRuntime -TestTempRoot $rowTemp 2>&1)
+      $rowExit = $LASTEXITCODE
+      $rowPlan = if ($rowExit -eq 0) { ($rowOutput -join "`n") | ConvertFrom-Json } else { $null }
+      Assert-True ($rowExit -eq 0 -and $null -ne $rowPlan -and $rowPlan.routing.row -eq $row -and $rowPlan.laneRole -ceq 'implementation') "row $row dry-run remains admitted and side-effect free (exit=$rowExit output=$($rowOutput -join ' '))"
+      Assert-True (@(Get-ChildItem -LiteralPath $rowRuntime -Force).Count -eq 0) "row $row dry-run creates no launch artifacts"
+    }
+    Write-Output 'PASS browser-host guard leaves rows=3,4,5 dry-run behavior unchanged'
     Write-Output "PASS dispatch-lane direct ownership validator"
     return
   }
