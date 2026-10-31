@@ -1094,6 +1094,12 @@ function Invoke-CanonicalRecordScriptPinControl {
         Assert-Harness ($guard.Contains($old)) 'canonical-record worktree mutant has one exact HEAD read anchor'
         $guard = $guard.Replace($old, $new)
       }
+      if ($GuardMutant -ceq 'pnpm-run') {
+        $old = "elseif (`$Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }"
+        $new = "elseif (`$Gate -ceq 'test:canonical-record') { @(`$pnpmScript, 'run', `$Gate) }"
+        Assert-Harness ($guard.Contains($old)) 'canonical-record pnpm-run mutant has one exact pinned launch anchor'
+        $guard = $guard.Replace($old, $new)
+      }
       if ($GuardMutant -ceq 'receipt-script-body') {
         $old = "            `$receipt.Add('scriptBody', `$canonicalRecordScriptExpected)"
         Assert-Harness ($guard.Contains($old)) 'canonical-record receipt mutant has one exact script-body anchor'
@@ -1122,8 +1128,10 @@ function Invoke-CanonicalRecordScriptPinControl {
   Assert-Harness ($control.Exit -eq 0 -and $control.Body -eq 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false' -and
     $control.Receipt -and $control.Receipt.gate -ceq 'test:canonical-record' -and $control.Receipt.head -match '^[a-f0-9]{40}$' -and
     $control.Receipt.owner -and $control.Receipt.exit -eq 0 -and $control.Receipt.scriptBody -ceq $expected -and
-    $control.Receipt.scriptBodySource -ceq 'HEAD:package.json' -and $control.Receipt.scriptPin.status -ceq 'accepted') 'canonical-record exact script control passes through ordinary pnpm and records the pin'
-  Write-Output 'PASS canonical-record control exit=0 ordinary-pnpm=1 body=1 receipt-script-pin=1'
+    $control.Receipt.scriptBodySource -ceq 'HEAD:package.json' -and $control.Receipt.scriptPin.status -ceq 'accepted' -and
+    $control.Receipt.scriptLaunch -and $control.Receipt.scriptLaunch.arguments[1] -ceq 'exec' -and
+    (@($control.Receipt.scriptLaunch.arguments | Select-Object -Skip 2) -join ' ') -ceq $expected) 'canonical-record exact script control launches the pinned body with pnpm exec and records the exact argv'
+  Write-Output 'PASS canonical-record control exit=0 pnpm-exec=1 body=1 receipt-script-pin=1'
 
   $missingResult = & $runCase 'missing' $missing
   Assert-Harness ($missingResult.Exit -eq 73 -and $null -eq $missingResult.Body -and $missingResult.Receipt -and
@@ -1137,10 +1145,16 @@ function Invoke-CanonicalRecordScriptPinControl {
   Write-Output 'MUTANT_RED canonical-record one-byte-script-change exit=73 body=0'
 
   $worktreeResult = & $runCase 'worktree-edit' $exact $changed
-  Assert-Harness ($worktreeResult.Exit -eq 0 -and $worktreeResult.Body -and $worktreeResult.Receipt.scriptBody -ceq $expected) 'worktree edit control still reads the exact HEAD object'
+  Assert-Harness ($worktreeResult.Exit -eq 0 -and $worktreeResult.Body -eq 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false' -and
+    $worktreeResult.Receipt.scriptBody -ceq $expected -and $worktreeResult.Receipt.scriptBodyObserved -ceq $expected -and
+    $worktreeResult.Receipt.scriptLaunch -and $worktreeResult.Receipt.scriptLaunch.arguments[1] -ceq 'exec' -and
+    (@($worktreeResult.Receipt.scriptLaunch.arguments | Select-Object -Skip 2) -join ' ') -ceq $expected) 'changed worktree control executes the exact HEAD-pinned body and argv'
+  $worktreeLaunchMutant = & $runCase 'worktree-launch-mutant' $exact $changed 'pnpm-run'
+  Assert-Harness ($worktreeLaunchMutant.Exit -eq 0 -and $worktreeLaunchMutant.Body -and $worktreeLaunchMutant.Body -cne 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false') 'pnpm-run mutant executes the changed worktree body and goes red'
   $worktreeMutant = & $runCase 'worktree-source-mutant' $missing $exact 'worktree-package'
   Assert-Harness ($worktreeMutant.Exit -eq 0 -and $worktreeMutant.Body) 'worktree-read mutant is observable as an incorrect admission'
   Assert-Harness ($worktreeResult.Receipt.scriptBodySource -ceq 'HEAD:package.json' -and $worktreeMutant.Receipt.scriptPin.status -ceq 'accepted') 'worktree source mutant is distinguished from the HEAD pin control'
+  Write-Output 'MUTANT_RED canonical-record-pnpm-run body=1 changed-worktree-body=1'
   Write-Output 'MUTANT_RED canonical-record-worktree-read exit=0 body=1 where HEAD control refuses'
 
   $receiptMutant = & $runCase 'receipt-script-body-mutant' $exact $null 'receipt-script-body'

@@ -163,6 +163,7 @@ $isBudgetedWorkspaceDb = $isWorkspaceDbTest
 $isTimedRoute = $isDiagnostic -or $isBudgetedWorkspaceDb
 $diagnosticBudgetSupplied = $PSBoundParameters.ContainsKey('DiagnosticBudgetSeconds')
 $canonicalRecordScriptExpected = 'vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false'
+$canonicalRecordScriptArgv = @($canonicalRecordScriptExpected -split ' ')
 $canonicalRecordScriptActual = $null
 $canonicalRecordScriptPinFailure = $null
 $nativeRequest = $null
@@ -430,6 +431,7 @@ function Assert-CanonicalRecordScriptPin {
   if ($script:canonicalRecordScriptActual -cne $canonicalRecordScriptExpected) {
     throw 'heavy-verifier: canonical-record script pin refusal: scripts.test:canonical-record differs from the pinned command'
   }
+  $script:canonicalRecordScriptArgv = @($script:canonicalRecordScriptActual -split ' ')
 }
 
 function Test-LaneBranchHistory {
@@ -1797,6 +1799,9 @@ if ($isHostVerifier) {
     throw "heavy-verifier: invoke-heavy-verifier.ps1 requires a plain Node executable and Node-hosted pnpm distribution; no unguarded fallback"
   }
 }
+function Get-CanonicalRecordPinnedLaunch {
+  @($pnpmScript, 'exec') + @($canonicalRecordScriptArgv)
+}
 $command = if ($isAttachedAdmission) {
   $guarded.Path
 } elseif ($isNativeDb) {
@@ -1874,6 +1879,7 @@ $arguments = if ($isAttachedAdmission) {
 } else {
   if ($isWorkspaceTest) { @($pnpmScript, "--filter", $WorkspaceTest, "run", "test", "--maxWorkers=1", "--no-file-parallelism") }
   elseif ($Gate -ceq 'test:e2e:suite') { @($pnpmScript, 'run', $Gate, '--', $E2eSuite) }
+  elseif ($Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }
   else { @($pnpmScript, "run", $Gate) }
 }
 $ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
@@ -3629,6 +3635,7 @@ try {
             $receipt.Add('scriptBody', $canonicalRecordScriptExpected)
             $receipt.Add('scriptBodySource', 'HEAD:package.json')
             $receipt.Add('scriptBodyObserved', $canonicalRecordScriptActual)
+            $receipt.Add('scriptLaunch', [ordered]@{ executable = $command; arguments = @($arguments) })
             $receipt.Add('scriptPin', [ordered]@{ status = 'accepted' })
           }
       }

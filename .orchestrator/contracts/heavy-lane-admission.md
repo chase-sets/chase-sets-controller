@@ -162,11 +162,13 @@ by these controls.
 ## Canonical-record ordinary gate
 
 `test:canonical-record` is a closed ordinary host-heavy gate. It uses the
-same `pnpm run <Gate>` launch, ordinary preload mode, cleanup, and live
-identity rechecks as the other ordinary gates; it is not an arbitrary-command
-or diagnostic route. Its nested-kind closure admits the ordinary pnpm root
-claim and `vitest-full`, which is the kind reached by the explicit Vitest
-test-file command.
+same ordinary preload mode, cleanup, and live identity rechecks as the other
+ordinary gates; it is not an arbitrary-command or diagnostic route. Unlike
+other ordinary gates, it launches the validated body directly through
+`pnpm exec`, so package lifecycle hooks and a mutable worktree script lookup
+are not involved. Its nested-kind closure admits the ordinary pnpm root claim
+and `vitest-full`, which is the kind reached by the explicit Vitest test-file
+command.
 
 Before the child is launched, the verifier reads `package.json` from the exact
 Git object `HEAD:package.json`, never from the worktree, and requires
@@ -179,7 +181,7 @@ vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mj
 A missing or byte-different script is a classified refusal with exit `73` and
 no product command execution. The `host-heavy-verifier/v1` receipt records the
 gate, exact HEAD, owner, exit code, pinned script body, its `HEAD:package.json`
-source, observed script body, and pin status.
+source, observed script body, exact launched executable/argv, and pin status.
 
 ## Observed discriminator output (2026-09-22)
 
