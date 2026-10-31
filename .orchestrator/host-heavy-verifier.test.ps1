@@ -1077,7 +1077,12 @@ function Invoke-CanonicalRecordScriptPinControl {
       [IO.File]::WriteAllText((Join-Path $worktree 'package.json'), $HeadPackage)
       [IO.File]::WriteAllText((Join-Path $worktree 'pnpm-lock.yaml'), "lockfileVersion: '9.0'`n")
       [IO.File]::WriteAllText((Join-Path $worktree 'node_modules/.bin/vitest.cmd'), "@echo off`r`nnode `"%~dp0vitest.cjs`" %*`r`n")
-      [IO.File]::WriteAllText((Join-Path $worktree 'node_modules/.bin/vitest.cjs'), "require('node:fs').writeFileSync(process.env.CANONICAL_RECORD_BODY, process.argv.slice(2).join(' '));")
+      [IO.File]::WriteAllText((Join-Path $worktree 'node_modules/.bin/vitest.cjs'), @"
+const fs = require('node:fs');
+fs.writeFileSync(process.env.CANONICAL_RECORD_BODY, process.argv.slice(2).join(' '));
+const owner = JSON.parse(fs.readFileSync(process.env.CANONICAL_RECORD_OWNER_PATH, 'utf8'));
+fs.writeFileSync(process.env.CANONICAL_RECORD_OWNER_IDENTITY, owner.commandIdentity);
+"@)
       & git -C $worktree init -b synthetic-canonical --quiet | Out-Null
       & git -C $worktree -c user.name=Synthetic -c user.email=synthetic@example.invalid add package.json .gitignore | Out-Null
       & git -C $worktree -c user.name=Synthetic -c user.email=synthetic@example.invalid commit -m synthetic --quiet | Out-Null
@@ -1105,15 +1110,32 @@ function Invoke-CanonicalRecordScriptPinControl {
         Assert-Harness ($guard.Contains($old)) 'canonical-record receipt mutant has one exact script-body anchor'
         $guard = $guard.Replace($old, "            # MUTANT receipt script body omitted")
       }
+      if ($GuardMutant -ceq 'command-identity-argv') {
+        $old = '$identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"'
+        $new = '$identityInput = "$ownerGate`n$command`n<canonical-record-command-identity-placeholder>"'
+        Assert-Harness ($guard.Contains($old)) 'canonical-record command-identity mutant has one exact launch identity anchor'
+        $guard = $guard.Replace($old, $new)
+      }
       [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'), $guard)
       $marker = Join-Path $artifacts 'canonical-record-body.txt'
+      $ownerIdentityMarker = Join-Path $artifacts 'canonical-record-owner-identity.txt'
       $arguments = @('-NoProfile', '-File', (Join-Path $runtime 'invoke-heavy-verifier.ps1'), '-Gate', 'test:canonical-record', '-Worktree', $worktree, '-Lane', 'canonical-pin', '-ImmutableHead', $head, '-ContainerRoot', $root)
       $env:CANONICAL_RECORD_BODY = $marker
-      $output = @(& $pwsh @arguments 2>&1)
-      $exit = $LASTEXITCODE
-      $receiptFiles = @(Get-ChildItem -LiteralPath $artifacts -Filter 'host-heavy-verifier-*.json' -File -ErrorAction SilentlyContinue)
-      $receipt = if ($receiptFiles.Count -eq 1) { Get-Content -LiteralPath $receiptFiles[0].FullName -Raw | ConvertFrom-Json -DateKind String } else { $null }
-      return [pscustomobject]@{ Name = $Name; Exit = $exit; Output = ($output -join "`n"); Receipt = $receipt; Body = if (Test-Path -LiteralPath $marker) { Get-Content -LiteralPath $marker -Raw } else { $null } }
+      $env:CANONICAL_RECORD_OWNER_PATH = Join-Path $runtime 'verify-lock.d/owner.json'
+      $env:CANONICAL_RECORD_OWNER_IDENTITY = $ownerIdentityMarker
+      try {
+        $output = @(& $pwsh @arguments 2>&1)
+        $exit = $LASTEXITCODE
+        $receiptFiles = @(Get-ChildItem -LiteralPath $artifacts -Filter 'host-heavy-verifier-*.json' -File -ErrorAction SilentlyContinue)
+        $receipt = if ($receiptFiles.Count -eq 1) { Get-Content -LiteralPath $receiptFiles[0].FullName -Raw | ConvertFrom-Json -DateKind String } else { $null }
+        return [pscustomobject]@{
+          Name = $Name; Exit = $exit; Output = ($output -join "`n"); Receipt = $receipt
+          Body = if (Test-Path -LiteralPath $marker) { Get-Content -LiteralPath $marker -Raw } else { $null }
+          OwnerCommandIdentity = if (Test-Path -LiteralPath $ownerIdentityMarker) { Get-Content -LiteralPath $ownerIdentityMarker -Raw } else { $null }
+        }
+      } finally {
+        Remove-Item Env:CANONICAL_RECORD_BODY, Env:CANONICAL_RECORD_OWNER_PATH, Env:CANONICAL_RECORD_OWNER_IDENTITY -ErrorAction SilentlyContinue
+      }
     } finally {
       if ($assumeUnchanged) { & git -C $worktree update-index --no-assume-unchanged package.json 2>$null | Out-Null }
       Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
@@ -1125,13 +1147,18 @@ function Invoke-CanonicalRecordScriptPinControl {
   $changed = [ordered]@{ name = 'synthetic-canonical'; private = $true; scripts = [ordered]@{ 'test:canonical-record' = $oneByteDifferent } } | ConvertTo-Json -Compress
 
   $control = & $runCase 'control' $exact
+  $controlIdentityInput = "$($control.Receipt.gate)`n$($control.Receipt.scriptLaunch.executable)`n$($control.Receipt.scriptLaunch.arguments -join "`n")"
+  $controlCommandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($controlIdentityInput))).ToLowerInvariant()
+  $controlExpectedArguments = @($control.Receipt.scriptLaunch.arguments[0], 'exec') + @($expected -split ' ')
   Assert-Harness ($control.Exit -eq 0 -and $control.Body -eq 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false' -and
     $control.Receipt -and $control.Receipt.gate -ceq 'test:canonical-record' -and $control.Receipt.head -match '^[a-f0-9]{40}$' -and
     $control.Receipt.owner -and $control.Receipt.exit -eq 0 -and $control.Receipt.scriptBody -ceq $expected -and
     $control.Receipt.scriptBodySource -ceq 'HEAD:package.json' -and $control.Receipt.scriptPin.status -ceq 'accepted' -and
-    $control.Receipt.scriptLaunch -and $control.Receipt.scriptLaunch.arguments[1] -ceq 'exec' -and
-    (@($control.Receipt.scriptLaunch.arguments | Select-Object -Skip 2) -join ' ') -ceq $expected) 'canonical-record exact script control launches the pinned body with pnpm exec and records the exact argv'
-  Write-Output 'PASS canonical-record control exit=0 pnpm-exec=1 body=1 receipt-script-pin=1'
+    $control.Receipt.scriptLaunch -and
+    ((@($control.Receipt.scriptLaunch.arguments) -join "`n") -ceq ($controlExpectedArguments -join "`n")) -and
+    $control.Receipt.commandIdentity -ceq $controlCommandIdentity -and
+    $control.OwnerCommandIdentity -ceq $controlCommandIdentity) 'canonical-record exact script control launches the pinned body with pnpm exec, records the exact argv, and binds owner/receipt identity to that launch'
+  Write-Output 'PASS canonical-record control exit=0 pnpm-exec=1 body=1 receipt-script-pin=1 command-identity=1'
 
   $missingResult = & $runCase 'missing' $missing
   Assert-Harness ($missingResult.Exit -eq 73 -and $null -eq $missingResult.Body -and $missingResult.Receipt -and
@@ -1161,6 +1188,14 @@ function Invoke-CanonicalRecordScriptPinControl {
   Assert-Harness ($receiptMutant.Exit -eq 0 -and $null -eq $receiptMutant.Receipt.scriptBody) 'receipt missing script body mutant goes red'
   Assert-Harness ($control.Receipt.scriptBody -ceq $expected) 'receipt control retains the pinned script body'
   Write-Output 'MUTANT_RED canonical-record-receipt-script-body exit=0 missing-scriptBody=1'
+
+  $commandIdentityMutant = & $runCase 'command-identity-argv-mutant' $exact $null 'command-identity-argv'
+  $mutantIdentityInput = "$($commandIdentityMutant.Receipt.gate)`n$($commandIdentityMutant.Receipt.scriptLaunch.executable)`n$($commandIdentityMutant.Receipt.scriptLaunch.arguments -join "`n")"
+  $mutantExpectedIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($mutantIdentityInput))).ToLowerInvariant()
+  Assert-Harness ($commandIdentityMutant.Exit -eq 0 -and $commandIdentityMutant.Body -eq 'run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false' -and
+    $commandIdentityMutant.Receipt.commandIdentity -cne $mutantExpectedIdentity -and
+    $commandIdentityMutant.OwnerCommandIdentity -cne $mutantExpectedIdentity) 'command-identity argv mutant launches the real argv but goes red against the observed launch identity'
+  Write-Output 'MUTANT_RED canonical-record-command-identity-argv launch=real identity=placeholder'
 }
 if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
 if ($Control -ceq 'canonical-record-script-pin') { Invoke-CanonicalRecordScriptPinControl; exit 0 }

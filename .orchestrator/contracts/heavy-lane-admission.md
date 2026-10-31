@@ -178,6 +178,10 @@ Git object `HEAD:package.json`, never from the worktree, and requires
 vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false
 ```
 
+The canonical-record argv is a fixed constant equal to the pinned body, is
+launched only after HEAD pin acceptance, and has command identity computed
+from that constant launch.
+
 A missing or byte-different script is a classified refusal with exit `73` and
 no product command execution. The `host-heavy-verifier/v1` receipt records the
 gate, exact HEAD, owner, exit code, pinned script body, its `HEAD:package.json`
