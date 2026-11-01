@@ -18,6 +18,19 @@ $pins=@{
 $newTestPins=@{
   'heavy-verifier-priority.test.ps1'='11465f6804b615fe90c64a5eec1fd35b06132f77c909649eb7fa530544ff9d59'
 }
+# Baseline nodes retired by an intentional behavior change, keyed by exact node text.
+# Each entry must be consumed by a node that is absent from the candidate, or the check refuses.
+$conservationRetirements=@{
+  # #239: dispatch-lane refuses row 6 before routing; capacity-continuation now asserts that refusal for these row-6 plans.
+  'dispatch-routing-data.test.ps1'=@(
+    'CommandAst:Assert-True ($null -ne (Plan ($astra+@{Row=6})).capacityFlip) ''valid attributed history does not exclude the row policy slot''',
+    'BinaryExpressionAst:$null -ne (Plan ($astra+@{Row=6})).capacityFlip',
+    'CommandAst:Plan ($astra+@{Row=6})',
+    'CommandAst:Assert-True ($null -ne (Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}).capacityFlip) ''row 6 from Sol flips to its own Claude slot''',
+    'BinaryExpressionAst:$null -ne (Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}).capacityFlip',
+    'CommandAst:Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}'
+  )
+}
 function Assert-Conservation($Manifest,$Overrides=@{}) {
   $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
   foreach($entry in $Manifest.sourceConservation){
@@ -48,13 +61,16 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     $predicate={param($n) $n-is[Management.Automation.Language.CommandAst]-or
       $n-is[Management.Automation.Language.BinaryExpressionAst]-or$n-is[Management.Automation.Language.UnaryExpressionAst]-or
       $n-is[Management.Automation.Language.HashtableAst]}
-    $available=@{}
+    $available=@{};$retired=@{}
+    if($conservationRetirements.ContainsKey($leaf)){foreach($retiredKey in $conservationRetirements[$leaf]){$retired[$retiredKey]++}}
     foreach($node in $after.FindAll($predicate,$true)){$key=$node.GetType().Name+':'+$node.Extent.Text;$available[$key]++}
     foreach($node in $before.FindAll($predicate,$true)){
       $key=$node.GetType().Name+':'+$node.Extent.Text
+      if($available[$key]-le0-and$retired[$key]-gt0){$retired[$key]--;continue}
       Assert-Ci ($available[$key]-gt0) "baseline command/predicate/mutant table lost: $leaf $key"
       $available[$key]--
     }
+    Assert-Ci (@($retired.Values|Where-Object{$_-gt0}).Count-eq0) "unused conservation retirement: $leaf"
     if($before.ParamBlock){
       if($leaf-ceq'cleanup-orphan-worktree-dirs.test.ps1'){
         foreach($beforeParameter in $before.ParamBlock.Parameters){
@@ -623,6 +639,10 @@ Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps
 Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps1'=$text.Replace('Invoke-Case $name','Invoke-Case $name;Invoke-Case $name') }}
 Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps1'=$text.Replace('"case-$name"','"routing-mutant-$name"') }}
 Refuses-Coverage {Assert-Conservation $manifest @{'dispatch-routing-data.test.ps1'=$text.Replace('$exit-eq1-and','$exit-ne1-and') }}
+$savedRetirements=$conservationRetirements
+$conservationRetirements=@{}; Refuses-Coverage {Assert-Conservation $manifest}
+$conservationRetirements=@{'dispatch-routing-data.test.ps1'=@($savedRetirements['dispatch-routing-data.test.ps1'])+@('CommandAst:Plan ($astra+@{Row=8})')}; Refuses-Coverage {Assert-Conservation $manifest}
+$conservationRetirements=$savedRetirements
 if($EvidenceDirectory){Write-CiJson @{baselineHead=$BaselineHead;baselineBlobs=$pins;routing=$routing;parts=@($manifest.items|Select-Object identity,ownership)
   repeatedWitnesses='Mutant children run their original -Case without -Part. Landed per-part synthetic-witness checks cover each disjoint retained fixture set; setup and unchanged summary lines may repeat.'} (Join-Path $EvidenceDirectory 'source-coverage.json')}
-Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, six board parts with required ten-item split, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate controls refused'
+Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, six board parts with required ten-item split, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate and missing/unused-retirement controls refused'
