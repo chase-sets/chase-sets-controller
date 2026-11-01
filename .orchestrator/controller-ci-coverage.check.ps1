@@ -160,7 +160,18 @@ function Get-OwnershipConservation([string]$Source) {
 $ownershipBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-ownership.test.ps1"))).Replace("`r`n","`n")
 $ownershipBefore=Get-OwnershipConservation $ownershipBaseline
 $ownershipAfter=Get-OwnershipConservation $ownershipSource
-foreach($key in $ownershipBefore.Keys){Assert-Ci ([int]$ownershipAfter[$key] -ge [int]$ownershipBefore[$key]) "dispatch ownership baseline proof lost: $key"}
+# The pinned controller-ci baseline predates the already-landed decision-lane
+# isolation extension. Retire only those two exact pre-split fixture literals;
+# every other baseline command, predicate, throw and mutant remains required.
+$ownershipRetirements=@($ownershipBefore.Keys|Where-Object {
+  $_ -match 'reviewIsolationRoot = \$\(if \(\$LaneRole -in @\("review", "planning"\)\)' -or
+  $_ -match '\$isolationRoot = if \(\$LaneRole -in @\("review", "planning"\)\)'
+})
+foreach($key in $ownershipBefore.Keys){
+  if($ownershipRetirements -contains $key){continue}
+  Assert-Ci ([int]$ownershipAfter[$key] -ge [int]$ownershipBefore[$key]) "dispatch ownership baseline proof lost: $key"
+}
+Assert-Ci ($ownershipRetirements.Count -eq 2) 'dispatch ownership conservation retirement census changed'
 Assert-Ci ($ownershipSource.Contains('$guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container') -and
   $ownershipSource.Contains('$poisonedDefaultRuntime')) 'dispatch ownership synthetic source invocation drifted'
 foreach($name in @($ownershipItem.parts.name)){
