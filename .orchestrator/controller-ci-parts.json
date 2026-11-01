@@ -566,6 +566,40 @@
       "ownership": {
         "parts": ["supervisor", "queue", "transient", "mutants"]
       }
+    },
+    {
+      "identity": "test:landed-integration-r3.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "r3-signal", "weight": 1 },
+        { "name": "r3-prior-teardown", "weight": 1 },
+        { "name": "r3-census", "weight": 1 },
+        { "name": "auth", "weight": 1 },
+        { "name": "7962-native", "weight": 1 },
+        { "name": "7926-f2", "weight": 1 },
+        { "name": "7926-reused-parent", "weight": 1 },
+        { "name": "7926-f1", "weight": 1 },
+        { "name": "f13", "weight": 1 },
+        { "name": "f14", "weight": 1 },
+        { "name": "f15", "weight": 1 },
+        { "name": "7926", "weight": 1 },
+        { "name": "8102-held", "weight": 1 },
+        { "name": "8102-vacant", "weight": 1 },
+        { "name": "8102-mutant", "weight": 1 },
+        { "name": "7963-retained", "weight": 1 },
+        { "name": "ordinary-dispatch", "weight": 1 },
+        { "name": "successor-dispatch", "weight": 1 },
+        { "name": "successor-completion", "weight": 1 },
+        { "name": "successor-depth", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": [
+          "r3-signal", "r3-prior-teardown", "r3-census", "auth", "7962-native",
+          "7926-f2", "7926-reused-parent", "7926-f1", "f13", "f14", "f15", "7926",
+          "8102-held", "8102-vacant", "8102-mutant", "7963-retained", "ordinary-dispatch",
+          "successor-dispatch", "successor-completion", "successor-depth"
+        ]
+      }
     }
   ],
   "baselineHead": "e671d823b96d45a3b71d7b81cf05a24d173df73a",

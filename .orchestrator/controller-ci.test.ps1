@@ -4,7 +4,7 @@ $controllerRoot=Split-Path -Parent $PSScriptRoot
 foreach($identity in @('test:rebase-integration.test.ps1','test:lane-stall-watchdog.test.ps1')){
   Assert-Ci ($null -eq (Get-CiRestriction $identity $controllerRoot)) "historical carrier remains restricted: $identity"
 }
-foreach($identity in @('test:dispatch-ownership.test.ps1','test:landed-integration-r3.test.ps1')){
+foreach($identity in @('test:dispatch-ownership.test.ps1')){
   $restriction=Get-CiRestriction $identity $controllerRoot
   Assert-Ci ($restriction.classification -ceq 'LOCAL_ONLY' -and $restriction.notHermetic -and -not $restriction.reason.Contains('b3b4ac2')) "remaining carrier restriction drift: $identity"
   $reference=[regex]::Match($restriction.reason,'interrupted-integration-test-support.ps1:([0-9,]+)')
