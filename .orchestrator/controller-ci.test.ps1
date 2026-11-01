@@ -12,7 +12,10 @@ Assert-Ci ($codexSmoke.classification -ceq 'LOCAL_ONLY' -and $codexSmoke.reason.
 Assert-Ci ($null -eq (Get-CiRestriction 'test:dispatch-lane-installed-claude.test.ps1' $controllerRoot)) 'Claude portable identity remains hosted'
 $claudeSmoke=Get-CiRestriction 'test:dispatch-lane-installed-claude.test.ps1#local-smoke' $controllerRoot
 Assert-Ci ($claudeSmoke.classification -ceq 'LOCAL_ONLY' -and $claudeSmoke.reason.Contains('Installed Claude CLI --help probe')) 'Claude installed smoke restriction drift'
-foreach($identity in @('test:dispatch-ownership.test.ps1','test:landed-integration-r3.test.ps1')){
+Assert-Ci ($null -eq (Get-CiRestriction 'test:dispatch-ownership.test.ps1' $controllerRoot)) 'dispatch ownership portable identity remains hosted'
+$ownershipSmoke=Get-CiRestriction 'test:dispatch-ownership.test.ps1#local-smoke' $controllerRoot
+Assert-Ci ($ownershipSmoke.classification -ceq 'LOCAL_ONLY' -and $ownershipSmoke.notHermetic -and $ownershipSmoke.reason.Contains('Default-source live ownership census smoke')) 'dispatch ownership local-smoke restriction drift'
+foreach($identity in @('test:landed-integration-r3.test.ps1')){
   $restriction=Get-CiRestriction $identity $controllerRoot
   Assert-Ci ($restriction.classification -ceq 'LOCAL_ONLY' -and $restriction.notHermetic -and -not $restriction.reason.Contains('b3b4ac2')) "remaining carrier restriction drift: $identity"
   $reference=[regex]::Match($restriction.reason,'interrupted-integration-test-support.ps1:([0-9,]+)')

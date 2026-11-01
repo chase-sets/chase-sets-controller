@@ -568,6 +568,24 @@
       }
     },
     {
+      "identity": "test:dispatch-ownership.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "portable", "weight": 1 },
+        {
+          "name": "local-smoke",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Default-source live ownership census smoke; hosted execution is bounded to synthetic runtime records and own-process identities."
+          }
+        }
+      ],
+      "ownership": {
+        "parts": ["portable", "local-smoke"]
+      }
+    },
+    {
       "identity": "test:codex-launch-boundary.test.ps1",
       "selector": "-Part",
       "parts": [
