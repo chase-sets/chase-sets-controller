@@ -1071,7 +1071,19 @@ try {
   $env:CHASE_SETS_ROUTING_LKG_PATH = Join-Path $staleRoutingRoot 'absent-lkg.json'
   $routingTestScope = Enter-RoutingDataTestScope
   try {
-    Test-7963ResumeCarrier 'ownership' -TestFleetContainer $(if ($Part -ceq 'portable') { $root } else { '' }) | Tee-Object -Variable ownershipCarrierOutput
+    $priorFleetContainer = [string]$env:CHASE_SETS_TEST_FLEET_CONTAINER
+    try {
+      if ($Part -ceq 'portable') { $env:CHASE_SETS_TEST_FLEET_CONTAINER = $root }
+      Test-7963ResumeCarrier 'ownership' | Tee-Object -Variable ownershipCarrierOutput
+    } finally {
+      if ($Part -ceq 'portable') {
+        if ([string]::IsNullOrEmpty($priorFleetContainer)) {
+          Remove-Item Env:CHASE_SETS_TEST_FLEET_CONTAINER -ErrorAction SilentlyContinue
+        } else {
+          $env:CHASE_SETS_TEST_FLEET_CONTAINER = $priorFleetContainer
+        }
+      }
+    }
     $scopeRoot = [IO.Path]::GetFullPath($routingTestScope.root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     $childInputs = @($ownershipCarrierOutput | ForEach-Object { [regex]::Matches([string]$_, 'raw=(\S+)\.result\.json') } |
       ForEach-Object { "$($_.Groups[1].Value).input.json" } | Sort-Object -Unique | Where-Object { Test-Path -LiteralPath $_ })

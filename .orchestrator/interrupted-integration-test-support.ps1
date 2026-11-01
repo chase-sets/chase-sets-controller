@@ -70,7 +70,7 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='', [Parameter(DontShow)][string]$TestFleetContainer='') {
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
   if ($Part -in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native')) { $Incident = '7906' }
   if ($Part -in @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
@@ -96,7 +96,8 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $candidateTag = $candidateHead.Substring(0,8)+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
   # #8102: the platform slot of the container holding this checkout is observed
   # (never taken) around each timed fixture window.
-  $fleetContainer=if($TestFleetContainer){[IO.Path]::GetFullPath($TestFleetContainer)}else{Split-Path -Parent (Split-Path -Parent $PSScriptRoot)}
+  $fleetContainerOverride=[string]$env:CHASE_SETS_TEST_FLEET_CONTAINER
+  $fleetContainer=if($fleetContainerOverride){[IO.Path]::GetFullPath($fleetContainerOverride)}else{Split-Path -Parent (Split-Path -Parent $PSScriptRoot)}
   # Retained proof never samples the live controller/product fleet. Classifier
   # copies keep their explicit 8102-* container and its synthetic holder.
   if($Carrier-ceq'retained'-and(Split-Path -Leaf $fleetContainer)-notlike'8102-*'){$fleetContainer=$root}
