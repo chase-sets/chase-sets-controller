@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([string]$GuardRevision = '',
-  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot')][string]$Mutant = '')
+  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot', 'restore-process-snapshot-fallback', 'restore-git-snapshot-fallback', 'restore-detached-default')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -49,7 +49,23 @@ if ($Mutant -ceq 'restore-per-candidate-snapshot') {
   $ownershipSource = $ownershipSource.Replace('$useProcessSnapshot = -not $PSBoundParameters.ContainsKey(''ProcessStateResolver'')', '$useProcessSnapshot = $false')
   $ownershipSource = $ownershipSource.Replace('$useGitSnapshot = -not $PSBoundParameters.ContainsKey(''GitIdentityResolver'')', '$useGitSnapshot = $false')
 }
+if ($Mutant -ceq 'restore-process-snapshot-fallback') {
+  $needle = "        `$processState = 'failed'"
+  Assert-True ($ownershipSource.Contains($needle)) 'restore-process-snapshot-fallback target exists'
+  $ownershipSource = $ownershipSource.Replace($needle, "        `$processState = & `$ProcessStateResolver `$ownerProcessId `$startIdentity")
+}
+if ($Mutant -ceq 'restore-git-snapshot-fallback') {
+  $needle = "        `$gitIdentity = [pscustomobject]@{ status = 'failed' }"
+  Assert-True ($ownershipSource.Contains($needle)) 'restore-git-snapshot-fallback target exists'
+  $ownershipSource = $ownershipSource.Replace($needle, "        `$gitIdentity = & `$GitIdentityResolver `$canonicalWorktree")
+}
+if ($Mutant -ceq 'restore-detached-default') {
+  $needle = '        $candidate.branchCount + $candidate.detachedCount -eq 1 -and'
+  Assert-True ($ownershipSource.Contains($needle)) 'restore-detached-default target exists'
+  $ownershipSource = $ownershipSource.Replace($needle, '        $true -and')
+}
 . ([scriptblock]::Create($ownershipSource))
+$nativeGitSnapshot = ${function:Get-DispatchGitIdentitySnapshot}
 # Instrument only clock construction in extracted production functions.
 $source = $source.Replace('[Diagnostics.Stopwatch]::StartNew()', '(New-CensusClock)')
 $tokens = $null; $errors = $null
@@ -63,6 +79,12 @@ foreach ($definition in $ast.FindAll({ param($n)
 $census = ${function:Get-LiveDispatchOwnership}
 $instant = [datetime]::SpecifyKind([datetime]'2026-01-01', [DateTimeKind]::Utc)
 function Get-Process([int]$Id) { [pscustomobject]@{ StartTime = $instant } }
+$script:perCandidateProcessCalls = 0
+$script:perCandidateGitCalls = 0
+function Get-DispatchProcessIdentityState([int]$ProcessId, [string]$StartIdentity) {
+  $script:perCandidateProcessCalls++
+  return 'live'
+}
 function Get-HeavyCallerAncestry {
   if ($fixture.Mode -ceq 'churn-late' -and $fixture.Calls -eq 1) { & $fixture.Hook }
   if ($fixture.Mode -ceq 'churn-persistent') { & $fixture.Hook }
@@ -70,6 +92,7 @@ function Get-HeavyCallerAncestry {
   return @{ 9011 = $instant.Ticks }
 }
 function Get-DispatchGitIdentity([string]$Worktree) {
+  $script:perCandidateGitCalls++
   if ($fixture.Mode -ceq 'git-failed') { return [pscustomobject]@{ status = 'failed' } }
   return [pscustomobject]@{ status = 'ok'; worktree = $Worktree; branch = 'synthetic/census'; head = ('a' * 40) }
 }
@@ -93,14 +116,21 @@ function Get-LiveDispatchOwnership {
   $parameters = @{
     RuntimeRoot = $RuntimeRoot; TempRoot = $TempRoot; ContainerRoot = $ContainerRoot; DeadlineMs = $DeadlineMs
     MaxRecords = $fixture.MaxRecords
-    ProcessStateResolver = { param($ProcessId, $StartIdentity)
-      if ($fixture.Mode -ceq 'process-unknown') { return 'failed' }
-      return 'live'
+    ProcessStateSnapshotResolver = { param($ProcessIds)
+      $map = [Collections.Generic.Dictionary[int, object]]::new()
+      foreach ($processId in @($ProcessIds)) {
+        $map[[int]$processId] = [pscustomobject]@{ state = 'live'; startIdentity = $instant.ToString('o') }
+      }
+      return $map
     }
     GitIdentitySnapshotResolver = {
       param($Worktrees, $SnapshotContainerRoot)
       & $callerSnapshotResolver $Worktrees $SnapshotContainerRoot
     }
+  }
+  if ($fixture.Mode -ceq 'process-unknown') {
+    $parameters.Remove('ProcessStateSnapshotResolver')
+    $parameters.ProcessStateResolver = { param($ProcessId, $StartIdentity) return 'failed' }
   }
   $parameters.ClockResolver = { New-CensusClock }
   if ($fixture.Mode -ceq 'deadline-persistent' -or
@@ -192,6 +222,154 @@ try {
   $replacementRaw = $replacement | ConvertTo-Json -Compress
   $tailPath = Join-Path $runtime 'dispatch-launch-00000000-0000-0000-0000-000000000100.json'
 
+
+  # Cost control comes before the admission-path assertions. Restoring either
+  # removed batch fallback must fail here on its per-candidate call count, not
+  # on an incidental identity assertion later in this test.
+  $costRuntime = Join-Path $root 'cost-runtime'
+  [IO.Directory]::CreateDirectory($costRuntime) | Out-Null
+  foreach ($number in 1..25) {
+    $launch = '20000000-0000-0000-0000-{0:d12}' -f $number
+    $lane = 'cost-{0:d2}' -f $number
+    $worktree = Join-Path $container $lane
+    [IO.Directory]::CreateDirectory($worktree) | Out-Null
+    $costRecord = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+    $costRecord.launchId = $launch; $costRecord.promptPath = Join-Path $costRuntime "dispatch-heavy-verifier-$launch.prompt.txt"
+    $costRecord.childPid = 10000 + $number; $costRecord.worktree = $worktree; $costRecord.lane = $lane; $costRecord.label = $lane
+    $costRecord.transcriptPath = Join-Path $costRuntime "$lane.jsonl"
+    [IO.File]::WriteAllText((Join-Path $costRuntime "dispatch-launch-$launch.json"), ($costRecord | ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($costRecord.transcriptPath, "{`"type`":`"item.completed`"}`n")
+  }
+  $costProcessCalls = [pscustomobject]@{ count = 0 }; $costGitCalls = [pscustomobject]@{ count = 0 }; $script:perCandidateProcessCalls = 0; $script:perCandidateGitCalls = 0
+  $costProcessSnapshot = {
+    param($ProcessIds)
+    $costProcessCalls.count++
+    $map = [Collections.Generic.Dictionary[int, object]]::new()
+    foreach ($processId in @($ProcessIds)) { $map[[int]$processId] = [pscustomobject]@{ state = 'live'; startIdentity = $instant.ToString('o') } }
+    return $map
+  }.GetNewClosure()
+  $costGitSnapshot = {
+    param($Worktrees, $ContainerRoot)
+    $costGitCalls.count++
+    $map = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($worktree in @($Worktrees)) {
+      $canonical = Get-DispatchCanonicalRoot $worktree
+      $map[$canonical] = [pscustomobject]@{ status = 'ok'; worktree = $canonical; branch = 'synthetic/census'; head = ('a' * 40) }
+    }
+    return $map
+  }.GetNewClosure()
+  $costWatch = [Diagnostics.Stopwatch]::StartNew()
+  $costResult = & $census $costRuntime $temp $container 64 120000 `
+    -ProcessStateSnapshotResolver $costProcessSnapshot -GitIdentitySnapshotResolver $costGitSnapshot `
+    -ClockResolver { New-CensusClock }
+  $costWatch.Stop()
+  Assert-True ($costResult.health.status -ceq 'ok' -and $costResult.health.counts.candidates -eq 25 -and
+    $costResult.health.counts.examined -eq 25 -and $costResult.health.counts.active -eq 25 -and
+    $costProcessCalls.count -eq 1 -and $costGitCalls.count -eq 1 -and
+    $script:perCandidateProcessCalls -eq 0 -and $script:perCandidateGitCalls -eq 0) `
+    "25-candidate batch cost is O(1): processSnapshots=$costProcessCalls gitSnapshots=$costGitCalls processCalls=$($script:perCandidateProcessCalls) gitCalls=$($script:perCandidateGitCalls)"
+  Write-Output "CONTROL batched-census-25-cost candidates=25 processSnapshots=$($costProcessCalls.count) gitSnapshots=$($costGitCalls.count) processCalls=$($script:perCandidateProcessCalls) gitCalls=$($script:perCandidateGitCalls) wallMs=$($costWatch.ElapsedMilliseconds)"
+
+  function New-GoodProcessSnapshot {
+    param($ProcessIds)
+    $map = [Collections.Generic.Dictionary[int, object]]::new()
+    foreach ($processId in @($ProcessIds)) { $map[[int]$processId] = [pscustomobject]@{ state = 'live'; startIdentity = $instant.ToString('o') } }
+    return $map
+  }
+  function New-GoodGitSnapshot {
+    param($Worktrees)
+    $map = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($worktree in @($Worktrees)) {
+      $canonical = Get-DispatchCanonicalRoot $worktree
+      $map[$canonical] = [pscustomobject]@{ status = 'ok'; worktree = $canonical; branch = 'synthetic/census'; head = ('a' * 40) }
+    }
+    return $map
+  }
+  foreach ($failureKind in @('process-throw', 'process-null', 'process-missing', 'git-throw', 'git-null', 'git-missing')) {
+    $script:perCandidateProcessCalls = 0; $script:perCandidateGitCalls = 0
+    $processResolver = ${function:New-GoodProcessSnapshot}
+    $gitResolver = ${function:New-GoodGitSnapshot}
+    if ($failureKind -ceq 'process-throw') { $processResolver = { throw 'synthetic process snapshot failure' } }
+    if ($failureKind -ceq 'process-null') { $processResolver = { return $null } }
+    if ($failureKind -ceq 'process-missing') {
+      $processResolver = { param($ProcessIds); $map = New-GoodProcessSnapshot $ProcessIds; $map.Remove([int]$ProcessIds[0]); return $map }.GetNewClosure()
+    }
+    if ($failureKind -ceq 'git-throw') { $gitResolver = { throw 'synthetic git snapshot failure' } }
+    if ($failureKind -ceq 'git-null') { $gitResolver = { return $null } }
+    if ($failureKind -ceq 'git-missing') {
+      $gitResolver = { param($Worktrees, $ContainerRoot); $map = New-GoodGitSnapshot $Worktrees; $map.Remove((Get-DispatchCanonicalRoot $Worktrees[0])); return $map }.GetNewClosure()
+    }
+    $failureResult = & $census $runtime $temp $container 64 120000 `
+      -ProcessStateSnapshotResolver $processResolver -GitIdentitySnapshotResolver $gitResolver `
+      -ClockResolver { New-CensusClock }
+    Assert-True ($failureResult.health.status -cne 'ok' -and
+      $script:perCandidateProcessCalls -eq 0 -and $script:perCandidateGitCalls -eq 0) `
+      "batch snapshot failure is incomplete and has no fallback: $failureKind"
+    Write-Output "CONTROL batch-snapshot-failure case=$failureKind status=$($failureResult.health.status) processCalls=$($script:perCandidateProcessCalls) gitCalls=$($script:perCandidateGitCalls)"
+  }
+
+  $appearsRuntime = Join-Path $root 'appears-runtime'
+  [IO.Directory]::CreateDirectory($appearsRuntime) | Out-Null
+  $appearsPath = Join-Path $container 'appears-01'
+  if ([IO.Directory]::Exists($appearsPath)) { [IO.Directory]::Delete($appearsPath, $true) }
+  $appearsRecord = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+  $appearsRecord.worktree = $appearsPath; $appearsRecord.lane = 'appears-01'; $appearsRecord.label = 'appears-01'
+  $appearsRecord.promptPath = Join-Path $appearsRuntime 'dispatch-heavy-verifier-appears.prompt.txt'; $appearsRecord.transcriptPath = Join-Path $appearsRuntime 'appears-01.jsonl'
+  [IO.File]::WriteAllText((Join-Path $appearsRuntime 'dispatch-launch-appears.json'), ($appearsRecord | ConvertTo-Json -Compress))
+  [IO.File]::WriteAllText($appearsRecord.transcriptPath, "{`"type`":`"item.completed`"}`n")
+  $script:perCandidateGitCalls = 0
+  $appearsGitSnapshot = {
+    param($Worktrees, $ContainerRoot)
+    [IO.Directory]::CreateDirectory($appearsPath) | Out-Null
+    return [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  }.GetNewClosure()
+  $appearsResult = & $census $appearsRuntime $temp $container 64 120000 `
+    -ProcessStateSnapshotResolver ${function:New-GoodProcessSnapshot} -GitIdentitySnapshotResolver $appearsGitSnapshot `
+    -ClockResolver { New-CensusClock }
+  Assert-True ($appearsResult.health.status -cne 'ok' -and $script:perCandidateGitCalls -eq 0) 'worktree appearing after snapshot remains failed without fresh Git'
+  Write-Output "CONTROL worktree-appears-after-snapshot status=$($appearsResult.health.status) gitCalls=$($script:perCandidateGitCalls)"
+
+  # Exercise the porcelain parser independently of live Git. Every malformed
+  # block is a failed snapshot, while detached/prunable/locked markers retain
+  # the same identity contract as an attached branch.
+  $porcelainRoot = Join-Path $root 'porcelain-container'
+  [IO.Directory]::CreateDirectory($porcelainRoot) | Out-Null
+  $porcelainPath = Join-Path $porcelainRoot 'porcelain-01'
+  [IO.Directory]::CreateDirectory($porcelainPath) | Out-Null
+  $script:porcelainLines = @()
+  $script:porcelainCalls = 0
+  function git { $script:porcelainCalls++; $global:LASTEXITCODE = 0; return $script:porcelainLines }
+  function Invoke-PorcelainSnapshotCase([string]$Case, [string[]]$Lines) {
+    $script:porcelainLines = $Lines
+    $snapshot = & $nativeGitSnapshot @($porcelainPath) $porcelainRoot
+    $key = Get-DispatchCanonicalRoot $porcelainPath
+    Assert-True ($script:porcelainCalls -gt 0 -and $snapshot.ContainsKey($key) -and [string]$snapshot[$key].status -ceq 'failed') "malformed porcelain fails closed: $Case calls=$script:porcelainCalls keys=$(@($snapshot.Keys) -join ',') status=$(if ($snapshot.ContainsKey($key)) { $snapshot[$key].status } else { 'missing' })"
+    Write-Output "CONTROL porcelain-malformed case=$Case status=$($snapshot[$key].status)"
+  }
+  $head = 'a' * 40
+  Invoke-PorcelainSnapshotCase 'truncated' @("worktree $porcelainPath", "HEAD $head")
+  Invoke-PorcelainSnapshotCase 'duplicate-marker' @("worktree $porcelainPath", "HEAD $head", "HEAD $head", 'detached')
+  Invoke-PorcelainSnapshotCase 'no-branch-or-detached' @("worktree $porcelainPath", "HEAD $head")
+  $detachedPath = Join-Path $porcelainRoot 'detached'
+  $prunablePath = Join-Path $porcelainRoot 'prunable'
+  $lockedPath = Join-Path $porcelainRoot 'locked'
+  foreach ($path in @($detachedPath, $prunablePath, $lockedPath)) { [IO.Directory]::CreateDirectory($path) | Out-Null }
+  $missingPath = Join-Path $porcelainRoot 'missing'
+  if ([IO.Directory]::Exists($missingPath)) { [IO.Directory]::Delete($missingPath, $true) }
+  $script:porcelainLines = @(
+    "worktree $detachedPath", "HEAD $head", 'detached', '',
+    "worktree $prunablePath", "HEAD $head", 'detached', 'prunable stale', '',
+    "worktree $lockedPath", "HEAD $head", 'branch refs/heads/synthetic/census', 'locked operator', ''
+  )
+  $equivalence = & $nativeGitSnapshot @($detachedPath, $missingPath, $prunablePath, $lockedPath) $porcelainRoot
+  $detachedKey = Get-DispatchCanonicalRoot $detachedPath; $missingKey = Get-DispatchCanonicalRoot $missingPath
+  $prunableKey = Get-DispatchCanonicalRoot $prunablePath; $lockedKey = Get-DispatchCanonicalRoot $lockedPath
+  Assert-True ([string]$equivalence[$detachedKey].status -ceq 'ok' -and
+    [string]$equivalence[$prunableKey].status -ceq 'ok' -and
+    [string]$equivalence[$lockedKey].status -ceq 'ok' -and
+    [string]$equivalence[$missingKey].status -ceq 'failed') 'detached/missing/prunable/locked equivalence is fail closed'
+  Write-Output "CONTROL porcelain-equivalence detached=$($equivalence[$detachedKey].status) missing=$($equivalence[$missingKey].status) prunable=$($equivalence[$prunableKey].status) locked=$($equivalence[$lockedKey].status)"
+  Remove-Item Function:\git -ErrorAction SilentlyContinue
 
   $failures = [Collections.Generic.List[string]]::new()
   $referenceBinding = $null

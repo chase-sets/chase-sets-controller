@@ -810,12 +810,17 @@ function Get-DispatchGitIdentitySnapshot([string[]]$Worktrees, [string]$Containe
   $requested = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($worktree in @($Worktrees)) {
     if ([string]::IsNullOrWhiteSpace([string]$worktree)) { continue }
+    # Keep a canonical key even when the worktree is absent at snapshot time.
+    # The final evaluation must consume that recorded failure if the path is
+    # created during evaluation; it must not reopen Git authority.
     $canonical = Get-DispatchCanonicalExistingPath ([string]$worktree)
+    if (-not $canonical) { $canonical = Get-DispatchCanonicalRoot ([string]$worktree) }
     if ($canonical) { $requested[$canonical] = [string]$worktree }
   }
   $snapshot = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
   $checkouts = [Collections.Generic.List[string]]::new()
   $successfulCheckout = $false
+  $snapshotParseFailed = $false
   foreach ($candidateCheckout in @($ContainerRoot, (Join-Path $ContainerRoot 'main'))) {
     $checkout = Get-DispatchCanonicalExistingPath $candidateCheckout
     if ($checkout -and -not $checkouts.Contains($checkout)) { $checkouts.Add($checkout) }
@@ -837,23 +842,67 @@ function Get-DispatchGitIdentitySnapshot([string[]]$Worktrees, [string]$Containe
         $entry = $null
         continue
       }
-      if ([string]$line -like 'worktree *') {
-        if ($null -ne $entry) { $entries.Add([pscustomobject]$entry) }
-        $entry = [ordered]@{ path = ([string]$line).Substring(9); head = $null; branch = '' }
-      } elseif ($null -ne $entry -and [string]$line -like 'HEAD *') {
-        $entry.head = ([string]$line).Substring(5).Trim().ToLowerInvariant()
-      } elseif ($null -ne $entry -and [string]$line -like 'branch *') {
-        $branchRef = ([string]$line).Substring(7).Trim()
-        $entry.branch = if ($branchRef.StartsWith('refs/heads/', [StringComparison]::Ordinal)) {
-          $branchRef.Substring(11)
-        } else { $branchRef }
-      } elseif ($null -ne $entry -and [string]$line -ceq 'detached') {
-        $entry.branch = ''
+      $text = [string]$line
+      if ($text -cmatch '^worktree (.+)$') {
+        if ($null -ne $entry) {
+          # Git emits blank-delimited blocks. A second marker without a
+          # boundary is a malformed/truncated block, not a new valid entry.
+          $entry.invalid = $true
+          $entries.Add([pscustomobject]$entry)
+        }
+        $entry = [ordered]@{
+          path = $Matches[1]
+          pathCount = 1
+          head = $null
+          headCount = 0
+          branch = $null
+          branchCount = 0
+          detachedCount = 0
+          invalid = $false
+        }
+      } elseif ($null -eq $entry) {
+        # An entry cannot begin with a marker other than worktree.
+        $entries.Add([pscustomobject][ordered]@{ path = $null; pathCount = 0; head = $null; headCount = 0; branch = $null; branchCount = 0; detachedCount = 0; invalid = $true })
+      } elseif ($text -cmatch '^HEAD (.*)$') {
+        $entry.headCount++
+        if ($entry.headCount -eq 1) { $entry.head = $Matches[1].Trim().ToLowerInvariant() }
+        else { $entry.invalid = $true }
+      } elseif ($text -cmatch '^branch (\S+)$') {
+        $entry.branchCount++
+        if ($entry.branchCount -eq 1) {
+          $branchRef = $Matches[1]
+          $entry.branch = if ($branchRef.StartsWith('refs/heads/', [StringComparison]::Ordinal)) {
+            $branchRef.Substring(11)
+          } else { $branchRef }
+        } else { $entry.invalid = $true }
+      } elseif ($text -ceq 'detached') {
+        $entry.detachedCount++
+        if ($entry.detachedCount -gt 1) { $entry.invalid = $true }
+      } elseif ($text -cmatch '^prunable(?: .*)?$' -or $text -cmatch '^locked(?: .*)?$') {
+        # These are valid worktree-list state markers. They do not replace the
+        # required branch/detached identity marker.
+        continue
+      } else {
+        $entry.invalid = $true
       }
     }
     foreach ($candidate in $entries) {
-      if ([string]$candidate.head -cnotmatch '^[a-f0-9]{40}$') { continue }
+      $candidateValid = -not [bool]$candidate.invalid -and
+        $candidate.pathCount -eq 1 -and $candidate.headCount -eq 1 -and
+        $candidate.branchCount + $candidate.detachedCount -eq 1 -and
+        [string]$candidate.head -cmatch '^[a-f0-9]{40}$'
+      if (-not $candidateValid) {
+        $snapshotParseFailed = $true
+        $candidateCanonical = if ([string]::IsNullOrWhiteSpace([string]$candidate.path)) { $null } else {
+          try { Get-DispatchCanonicalRoot ([string]$candidate.path) } catch { $null }
+        }
+        if ($candidateCanonical -and $requested.ContainsKey($candidateCanonical)) {
+          $snapshot[$candidateCanonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+        }
+        continue
+      }
       $canonical = Get-DispatchCanonicalExistingPath ([string]$candidate.path)
+      if (-not $canonical) { $canonical = Get-DispatchCanonicalRoot ([string]$candidate.path) }
       if ($canonical -and $requested.ContainsKey($canonical)) {
         if ($snapshot.ContainsKey($canonical)) {
           $snapshot[$canonical] = [pscustomobject]@{ status = 'mismatch'; worktree = $null; branch = $null; head = $null }
@@ -865,10 +914,19 @@ function Get-DispatchGitIdentitySnapshot([string[]]$Worktrees, [string]$Containe
       }
     }
   }
+  if ($snapshotParseFailed) {
+    # A malformed block is not local evidence. Fail every requested key closed
+    # so a second checkout cannot turn a partial porcelain stream into
+    # affirmative ownership.
+    foreach ($canonical in @($requested.Keys)) {
+      $snapshot[$canonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+    }
+  }
   if (-not $successfulCheckout -and -not (Test-Path -LiteralPath (Join-Path $ContainerRoot '.git'))) {
-    # A few integration helpers intentionally place one standalone repository
-    # beneath a non-repository fixture root. Preserve its exact old identity
-    # result; the live controller/product roots always take the batch above.
+    # Explicit standalone compatibility: these fixtures have no repository
+    # checkout from which a worktree-list snapshot can answer identity. Bound
+    # this legacy fallback to the validated requested-candidate set, and never
+    # use it after a selected batch checkout returned a partial/error result.
     foreach ($canonical in @($requested.Keys)) {
       if (-not $snapshot.ContainsKey($canonical)) {
         $snapshot[$canonical] = Get-DispatchGitIdentity $requested[$canonical]
@@ -1406,12 +1464,24 @@ function Get-LiveDispatchOwnership(
     }
   }
   $processSnapshot = $null
+  $processSnapshotFailed = $false
   if ($useProcessSnapshot) {
-    try { $processSnapshot = & $ProcessStateSnapshotResolver $ownerProcessIds.ToArray() } catch { $processSnapshot = $null }
+    try {
+      $processSnapshot = & $ProcessStateSnapshotResolver $ownerProcessIds.ToArray()
+      if ($null -eq $processSnapshot -or -not $processSnapshot.PSObject.Methods['ContainsKey']) {
+        $processSnapshotFailed = $true
+      }
+    } catch { $processSnapshot = $null; $processSnapshotFailed = $true }
   }
   $gitSnapshot = $null
+  $gitSnapshotFailed = $false
   if ($useGitSnapshot) {
-    try { $gitSnapshot = & $GitIdentitySnapshotResolver $gitWorktrees.ToArray() $containerResolved } catch { $gitSnapshot = $null }
+    try {
+      $gitSnapshot = & $GitIdentitySnapshotResolver $gitWorktrees.ToArray() $containerResolved
+      if ($null -eq $gitSnapshot -or -not $gitSnapshot.PSObject.Methods['ContainsKey']) {
+        $gitSnapshotFailed = $true
+      }
+    } catch { $gitSnapshot = $null; $gitSnapshotFailed = $true }
   }
   foreach ($recordPath in $orderedCandidatePaths) {
     if ($watch.ElapsedMilliseconds -ge $productBudget.deadline) {
@@ -1434,9 +1504,13 @@ function Get-LiveDispatchOwnership(
     $ownerProcessId = if ($record.state -ceq "started") { $record.childPid } else { $record.launcherPid }
     $startIdentity = if ($record.state -ceq "started") { $record.childStartIdentity } else { $record.launcherStartIdentity }
     try {
-      if ($useProcessSnapshot -and $null -ne $processSnapshot -and
+      if ($useProcessSnapshot -and -not $processSnapshotFailed -and
           $processSnapshot.ContainsKey([int]$ownerProcessId)) {
         $processState = Get-DispatchProcessSnapshotState $processSnapshot ([int]$ownerProcessId) $startIdentity
+      } elseif ($useProcessSnapshot) {
+        # A selected batch authority owns this candidate even when it is
+        # unavailable. Never replace it with a fresh per-candidate probe.
+        $processState = 'failed'
       } else {
         $processState = & $ProcessStateResolver $ownerProcessId $startIdentity
       }
@@ -1521,9 +1595,14 @@ function Get-LiveDispatchOwnership(
     }
     if (-not $platformSeat) {
     try {
-      if ($useGitSnapshot -and $null -ne $gitSnapshot -and
+      if ($useGitSnapshot -and -not $gitSnapshotFailed -and
           $gitSnapshot.ContainsKey($canonicalWorktree)) {
         $gitIdentity = $gitSnapshot[$canonicalWorktree]
+      } elseif ($useGitSnapshot) {
+        # A selected batch authority owns this candidate even when it is
+        # missing from the snapshot. Keep the recorded failure; do not reopen
+        # authority with a per-candidate Git call.
+        $gitIdentity = [pscustomobject]@{ status = 'failed' }
       } else {
         $gitIdentity = & $GitIdentityResolver $canonicalWorktree
       }
@@ -1603,6 +1682,9 @@ function Get-LiveDispatchOwnership(
 
     $logicalBranch = [string]$gitIdentity.branch
     if ($record.identityMode -ceq 'branch' -and [string]::IsNullOrWhiteSpace($logicalBranch)) {
+      # Porcelain deliberately reports detached during native rebase. The
+      # batch snapshot cannot establish the logical rebase branch, so this is
+      # the one bounded per-candidate Git authority retained for that state.
       try { $logicalBranch = Get-DispatchRebaseBranch $canonicalWorktree }
       catch {
         $counts.probeFailures += 1
