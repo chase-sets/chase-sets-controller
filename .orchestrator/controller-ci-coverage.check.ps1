@@ -28,7 +28,10 @@ $conservationRetirements=@{
     'CommandAst:Plan ($astra+@{Row=6})',
     'CommandAst:Assert-True ($null -ne (Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}).capacityFlip) ''row 6 from Sol flips to its own Claude slot''',
     'BinaryExpressionAst:$null -ne (Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}).capacityFlip',
-    'CommandAst:Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}'
+    'CommandAst:Plan @{Model=''gpt-6.1-sol'';Effort=''high'';Placement=''provisional'';Row=6}',
+    # #244: two capacity mutant seams retarget the decision-aware review line in routing-data.ps1 (d0c63bb).
+    'HashtableAst:@{name=''code-exclusion-dropped'';file=''routing-data.ps1'';case=''capacity-roles'';old="    if (`$role -ceq ''implementation'') { return ''code'' }`n    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }";new="    if (`$role -ceq ''implementation'') { return `$null }`n    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }"}',
+    'HashtableAst:@{name=''brief-authors-merged'';file=''routing-data.ps1'';case=''capacity-roles'';old="    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }";new="    if (`$role -ceq ''planning'') { return ''code'' }`n    if (`$role -ceq ''review'') { return `$null }"}'
   )
 }
 function Assert-Conservation($Manifest,$Overrides=@{}) {
