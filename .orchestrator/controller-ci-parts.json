@@ -666,6 +666,18 @@
           ]
         },
         {
+          "offset": 712,
+          "remove": 2,
+          "original": [
+            "      @{name='code-exclusion-dropped';file='routing-data.ps1';case='capacity-roles';old=\"    if (`$role -ceq 'implementation') { return 'code' }`n    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -ceq 'review') { return `$null }\";new=\"    if (`$role -ceq 'implementation') { return `$null }`n    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -ceq 'review') { return `$null }\"},",
+            "      @{name='brief-authors-merged';file='routing-data.ps1';case='capacity-roles';old=\"    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -ceq 'review') { return `$null }\";new=\"    if (`$role -ceq 'planning') { return 'code' }`n    if (`$role -ceq 'review') { return `$null }\"},"
+          ],
+          "replacement": [
+            "      @{name='code-exclusion-dropped';file='routing-data.ps1';case='capacity-roles';old=\"    if (`$role -ceq 'implementation') { return 'code' }`n    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -cin @('review','decision')) { return `$null }\";new=\"    if (`$role -ceq 'implementation') { return `$null }`n    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -cin @('review','decision')) { return `$null }\"},",
+            "      @{name='brief-authors-merged';file='routing-data.ps1';case='capacity-roles';old=\"    if (`$role -ceq 'planning') { return 'brief' }`n    if (`$role -cin @('review','decision')) { return `$null }\";new=\"    if (`$role -ceq 'planning') { return 'code' }`n    if (`$role -cin @('review','decision')) { return `$null }\"},"
+          ]
+        },
+        {
           "offset": 746,
           "remove": 0,
           "original": [],
