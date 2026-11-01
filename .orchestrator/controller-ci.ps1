@@ -42,8 +42,8 @@ function Get-CiRestriction([string]$Identity, [string]$Root) {
   if ($Identity -ceq 'test:codex-launch-boundary.test.ps1#local-smoke') {
     return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited.' }
   }
-  if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture.' }
+  if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1#local-smoke') {
+    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture and never launch a model or session.' }
   }
   if ($Identity -ceq 'test:dispatch-ownership.test.ps1') {
     return @{ classification='LOCAL_ONLY'; reason='Native ownership carrier reads the live ownership census via interrupted-integration-test-support.ps1:983.'; notHermetic=$true }

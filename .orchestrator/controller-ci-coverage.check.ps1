@@ -96,8 +96,8 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     Assert-Ci ($mapping.Count-eq1-and$mapping[0].identity.Substring(5)-ceq$name) 'new proof test mapping missing/drifted'
     Assert-Ci ((Get-CiSourceDigest (Join-Path $root ('.orchestrator/'+$name)))-ceq$newTestPins[$name]) 'new proof test source drifted'
   }
-  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:codex-launch-boundary.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq11-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq12-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
@@ -113,6 +113,24 @@ foreach($name in @($codexItem.parts.name)){
   Refuses-Coverage { Assert-Ci ((@($codexItem.parts.name|Where-Object{$_-cne$name}|Sort-Object)-join',') -ceq ((Get-SuiteExpectedParts $codexPath|Sort-Object)-join',')) "codex launch boundary dropped part survived: $name" }
 }
 Write-Output 'PASS codex launch boundary part ownership: portable and local-smoke selectors are complete and dropped-part mutants refuse'
+
+$claudePath=Join-Path $PSScriptRoot 'dispatch-lane-installed-claude.test.ps1'
+$claudeItem=$manifest.items|Where-Object identity -eq 'test:dispatch-lane-installed-claude.test.ps1'
+Assert-Ci ($null -ne $claudeItem) 'installed Claude split mapping missing'
+Assert-Ci ((@($claudeItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable') 'installed Claude part census changed'
+Assert-Ci ((Get-SuiteExpectedParts $claudePath|Sort-Object)-join',' -ceq 'local-smoke,portable') 'installed Claude selector census changed'
+$claudeLocal=$claudeItem.parts|Where-Object name -ceq 'local-smoke'
+Assert-Ci ($claudeLocal.restriction.classification -ceq 'LOCAL_ONLY') 'installed Claude local-smoke restriction missing'
+foreach($name in @($claudeItem.parts.name)){
+  Refuses-Coverage { Assert-Ci ((@($claudeItem.parts.name|Where-Object{$_-cne$name}|Sort-Object)-join',') -ceq ((Get-SuiteExpectedParts $claudePath|Sort-Object)-join',')) "installed Claude dropped part survived: $name" }
+}
+$claudeSource=[IO.File]::ReadAllText($claudePath)
+$claudePathAnchor='$env:PATH = "$(Split-Path -Parent $gitExe);$PSHOME;$testRoot"'
+Assert-Ci ($claudeSource.Contains("[ValidateSet('portable','local-smoke')][string]`$Part")) 'installed Claude selector source missing'
+Assert-Ci ($claudeSource.Contains("if (-not `$Part -or `$Part -ceq 'portable')") -and $claudeSource.Contains("if (-not `$Part -or `$Part -ceq 'local-smoke')")) 'installed Claude part guards missing'
+Assert-Ci ($claudeSource.Contains("Get-Command claude -CommandType Application") -and $claudeSource.Contains($claudePathAnchor)) 'installed Claude native lookup guard drifted'
+Assert-Ci ($claudeSource.Contains("if (`$ValidatorOnly)")) 'installed Claude ValidatorOnly mode missing'
+Write-Output 'PASS installed Claude part ownership: portable fixture/argv proof and explicit local-smoke selector are complete and hosted native lookup is poisoned'
 
 function Get-DispatchCoverageKeys([string]$Source) {
   $tokens=$null;$errors=$null
