@@ -70,7 +70,7 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='', [switch]$NoHistoricalArchive) {
   if ($Part -in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native')) { $Incident = '7906' }
   if ($Part -in @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
@@ -84,7 +84,7 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
   if([string]::IsNullOrWhiteSpace($historicalSource)){$historicalSource='fixture'}
   if($historicalSource-cnotin @('fixture','archive')){throw "HISTORICAL_FIXTURE: unknown test source '$historicalSource'"}
-  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive')); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive' -and -not $NoHistoricalArchive)); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
@@ -1110,9 +1110,9 @@ exit 0
 # MEASURED_LOAD ends the test process with exit 75 and one standalone
 # MEASURED_LOAD line (holder identity and elapsed time), never PASS or FAIL.
 # Every other failure propagates unchanged (exit 1).
-function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='') {
+function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [switch]$NoHistoricalArchive) {
   foreach ($carrier in $Carriers) {
-    try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part }
+    try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part -NoHistoricalArchive:$NoHistoricalArchive }
     catch {
       if ($_.Exception.Message -clike 'MEASURED_LOAD *') { Write-Output $_.Exception.Message; exit 75 }
       throw
@@ -2432,7 +2432,7 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
 # the copy so every fixture probe observes the copy's container.
 function Invoke-8102CarrierCopy($Copy,[string]$Carrier) {
   $runner=Join-Path $Copy.container "run-$Carrier.ps1"
-  [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier')`n",[Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier') -NoHistoricalArchive`n",[Text.UTF8Encoding]::new($false))
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$Copy.root
   foreach($argument in @('-NoProfile','-NonInteractive','-File',$runner)){[void]$psi.ArgumentList.Add($argument)}
   # A classifier leg proves its whole carrier; proof-arm relevance never applies inside it.

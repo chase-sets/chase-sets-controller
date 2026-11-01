@@ -1,5 +1,7 @@
-param([ValidateSet('','auth','7926','7962','guards','harness','copy-signal','prior-teardown','census-latency','census-deadline')][string]$Control='',[ValidateRange(0,60000)][int]$CensusLatencyMs=0,[ValidateSet('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release')][string[]]$Modes=@('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release'))
+param([ValidateSet('','auth','7926','7962','guards','harness','copy-signal','prior-teardown','census-latency','census-deadline')][string]$Control='',[ValidateRange(0,60000)][int]$CensusLatencyMs=0,[ValidateSet('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release')][string[]]$Modes=@('prospective','platform','platform-complete','platform-complete-recheck','late-owed','legacy','skip-release','review','planning','foreign-release'),[string]$Part='')
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @((Get-LandedIntegrationR3PartMap).Keys) $PSBoundParameters @('Control','CensusLatencyMs','Modes')
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
@@ -480,6 +482,7 @@ function Test-8103ReusedParentEndsChain {
 
 try{
   New-Item -ItemType Directory -Path $fixtureRoot -Force|Out-Null
+  $runPart = { param([string]$Name) Test-SuitePart $Part $Name }
   Write-R3BoundTable
   if($PSBoundParameters.ContainsKey('Modes')-and$Control-cne'7926'){throw 'R3 mode selection requires the focused 7926 control; default proof always runs all ten modes'}
   if($Control){
@@ -496,14 +499,25 @@ try{
     Write-Output "PASS R3 focused $Control"
     return
   }
-  Test-R3SignalControls
-  Test-R3PriorTeardown
-  Test-R3CensusLatency
-  Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs
+  if (& $runPart 'r3-signal') { Test-R3SignalControls }
+  if (& $runPart 'r3-prior-teardown') { Test-R3PriorTeardown }
+  if (& $runPart 'r3-census') { Test-R3CensusLatency }
+  if (& $runPart 'auth') { Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs }
   foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
+    $partName = switch($controlCase.name){
+      '7962-native' {'7962-native';break}
+      '7926-F2' {'7926-f2';break}
+      'reused-parent-ends-chain' {'7926-reused-parent';break}
+      '7926-F1' {'7926-f1';break}
+      'F13' {'f13';break}
+      'F14' {'f14';break}
+      'F15' {'f15';break}
+      '7926' {'7926';break}
+    }
+    if(-not (& $runPart $partName)){continue}
     try{& $controlCase.body;Write-Output "CONTROL $($controlCase.name) PASS"}catch{$failures.Add("$($controlCase.name): $($_.Exception.Message)");Write-Output "CONTROL $($controlCase.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
   }
-  Assert-SyntheticIntegrationWitnesses $fixtureRoot
+  if (& $runPart '7926') { Assert-SyntheticIntegrationWitnesses $fixtureRoot }
   if($failures.Count-gt0){throw "R3 controls failed: $($failures -join ' | ')"}
   Write-Output 'PASS R3 branch-scoped ownership and acknowledgement-gated terminal integration controls including F15 bounded acknowledgement-only reconciliation'
 }finally{
@@ -563,30 +577,46 @@ function Assert-8102([bool]$Condition,[string]$Test,[string]$Name,$Leg) {
 # the unmodified carrier passes.
 function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $test='timed-fixture-under-fleet-load-measures-load'
+  $runHeld = -not $Part -or $Part -ceq '8102-held'
+  $runVacant = -not $Part -or $Part -ceq '8102-vacant'
+  $runMutant = -not $Part -or $Part -ceq '8102-mutant'
   # Classifier legs are proof arms (Test-BatteryProofRelevant); the unmodified
   # retained carrier always runs.
   if(-not(Test-BatteryProofRelevant @('landed-integration-evidence.psm1','landed-integration-r3.test.ps1'))){
     Write-Output "SKIPPED 8102 $test classifier legs: classifier files unchanged in impact battery"
-    Invoke-7963ResumeCarriers @('retained')
+    Invoke-7963ResumeCarriers @('retained') -NoHistoricalArchive
     return
   }
   $phantomEdits=@{'landed-integration-evidence.psm1'=@(,@($phantom8102PsmNeedle,$phantom8102Psm));'interrupted-integration-test-support.ps1'=@(,@($phantom8102SupportNeedle,$phantom8102Support))}
-  $loaded=Invoke-8102RetainedLeg $test 'phantom-root-held' $phantomEdits $true
-  Assert-8102 ($loaded.holder-cne'none'-and$loaded.exit-eq75-and$loaded.measured.Count-eq1-and-not$loaded.finished) $test "refused retained-retry arm under a live holder exits 75 with one MEASURED_LOAD line and an unfinished carrier (actual exit=$($loaded.exit) measuredLines=$($loaded.measured.Count))" $loaded
-  $measuredLine=[regex]::Match($loaded.measured[0],'^MEASURED_LOAD 7963 retained fleetHolder='+[regex]::Escape($loaded.holder)+' elapsedSeconds=(\d+(\.\d+)?) discriminator=retained retry binds its current full index mutantExit=[1-9]\d* raw=\S+$')
-  Assert-8102 $measuredLine.Success $test "MEASURED_LOAD line names the synthetic holder identity and the measured elapsed time: $($loaded.measured[0])" $loaded
-  Assert-8102 (-not$loaded.text.Contains('independent omitted guard actual exit=')) $test 'MEASURED_LOAD leg is not the plain discriminator FAIL and never PASS' $loaded
-  $vacant=Invoke-8102RetainedLeg $test 'phantom-root-vacant' $phantomEdits $false
-  Assert-8102 ($vacant.exit-eq1-and$vacant.measured.Count-eq0-and-not$vacant.finished-and$vacant.text.Contains('7963 retained ASSERTION FAILED: retained retry binds its current full index independent omitted guard actual exit=')) $test "same refusal with no holder stays FAIL exit=1 with no MEASURED_LOAD line (actual exit=$($vacant.exit) measuredLines=$($vacant.measured.Count))" $vacant
-  $mutantEdits=@{'landed-integration-evidence.psm1'=@(,@($phantom8102PsmNeedle,$phantom8102Psm));'interrupted-integration-test-support.ps1'=@(@($phantom8102SupportNeedle,$phantom8102Support),@($unconditional8102Needle,$unconditional8102))}
-  $mutant=Invoke-8102RetainedLeg $test 'phantom-root-vacant-unconditional-mutant' $mutantEdits $false
-  Assert-8102 ($mutant.exit-eq75-and$mutant.measured.Count-eq1-and$mutant.measured[0]-clike'MEASURED_LOAD 7963 retained fleetHolder=none elapsedSeconds=*') $test "discriminator mutant that classifies MEASURED_LOAD without a concurrent holder reports fleetHolder=none on a vacant fleet (actual exit=$($mutant.exit))" $mutant
-  Assert-8102 (-not($mutant.exit-eq1-and$mutant.measured.Count-eq0-and$mutant.text.Contains('independent omitted guard actual exit='))) $test 'vacant-fleet FAIL control rejects that mutant' $mutant
-  Invoke-7963ResumeCarriers @('retained')
+  if($runHeld){
+    $loaded=Invoke-8102RetainedLeg $test 'phantom-root-held' $phantomEdits $true
+    Assert-8102 ($loaded.holder-cne'none'-and$loaded.exit-eq75-and$loaded.measured.Count-eq1-and-not$loaded.finished) $test "refused retained-retry arm under a live holder exits 75 with one MEASURED_LOAD line and an unfinished carrier (actual exit=$($loaded.exit) measuredLines=$($loaded.measured.Count))" $loaded
+    $measuredLine=[regex]::Match($loaded.measured[0],'^MEASURED_LOAD 7963 retained fleetHolder='+[regex]::Escape($loaded.holder)+' elapsedSeconds=(\d+(\.\d+)?) discriminator=retained retry binds its current full index mutantExit=[1-9]\d* raw=\S+$')
+    Assert-8102 $measuredLine.Success $test "MEASURED_LOAD line names the synthetic holder identity and the measured elapsed time: $($loaded.measured[0])" $loaded
+    Assert-8102 (-not$loaded.text.Contains('independent omitted guard actual exit=')) $test 'MEASURED_LOAD leg is not the plain discriminator FAIL and never PASS' $loaded
+  }
+  if($runVacant){
+    $vacant=Invoke-8102RetainedLeg $test 'phantom-root-vacant' $phantomEdits $false
+    Assert-8102 ($vacant.exit-eq1-and$vacant.measured.Count-eq0-and-not$vacant.finished-and$vacant.text.Contains('7963 retained ASSERTION FAILED: retained retry binds its current full index independent omitted guard actual exit=')) $test "same refusal with no holder stays FAIL exit=1 with no MEASURED_LOAD line (actual exit=$($vacant.exit) measuredLines=$($vacant.measured.Count))" $vacant
+  }
+  if($runMutant){
+    $mutantEdits=@{'landed-integration-evidence.psm1'=@(,@($phantom8102PsmNeedle,$phantom8102Psm));'interrupted-integration-test-support.ps1'=@(@($phantom8102SupportNeedle,$phantom8102Support),@($unconditional8102Needle,$unconditional8102))}
+    $mutant=Invoke-8102RetainedLeg $test 'phantom-root-vacant-unconditional-mutant' $mutantEdits $false
+    Assert-8102 ($mutant.exit-eq75-and$mutant.measured.Count-eq1-and$mutant.measured[0]-clike'MEASURED_LOAD 7963 retained fleetHolder=none elapsedSeconds=*') $test "discriminator mutant that classifies MEASURED_LOAD without a concurrent holder reports fleetHolder=none on a vacant fleet (actual exit=$($mutant.exit))" $mutant
+    Assert-8102 (-not($mutant.exit-eq1-and$mutant.measured.Count-eq0-and$mutant.text.Contains('independent omitted guard actual exit='))) $test 'vacant-fleet FAIL control rejects that mutant' $mutant
+  }
+  if(-not $Part){ Invoke-7963ResumeCarriers @('retained') -NoHistoricalArchive }
   Write-Output "PASS 8102 $test held-refusal=MEASURED_LOAD vacant-refusal=FAIL vacant-mutant=CAUGHT vacant=PASS"
-  foreach($leg in @($loaded,$vacant,$mutant)){Remove-8102FixtureCopy $leg.copy}
+  foreach($leg in @($loaded,$vacant,$mutant)){if($null -ne $leg){Remove-8102FixtureCopy $leg.copy}}
 }
 
-Test-TimedFixtureUnderFleetLoadMeasuresLoad
-Invoke-9334OrdinaryCarriers @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')
+if(-not $Part -or $Part -in @('8102-held','8102-vacant','8102-mutant')) { Test-TimedFixtureUnderFleetLoadMeasuresLoad }
+if($Part -ceq '7963-retained') { Invoke-7963ResumeCarriers @('retained') -NoHistoricalArchive }
+if(-not $Part) {
+  Invoke-9334OrdinaryCarriers @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')
+} else {
+  foreach($carrier in @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')) {
+    if (& $runPart $carrier) { Invoke-9334OrdinaryCarriers @($carrier) }
+  }
+}
 } finally { Exit-RoutingDataTestScope $routingTestScope }

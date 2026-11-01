@@ -96,6 +96,31 @@ function Get-LaneWatchdogPartMap {
   }
 }
 
+function Get-LandedIntegrationR3PartMap {
+  [ordered]@{
+    'r3-signal' = 'r3-signal'
+    'r3-prior-teardown' = 'r3-prior-teardown'
+    'r3-census' = 'r3-census'
+    'auth' = 'auth'
+    '7962-native' = '7962-native'
+    '7926-f2' = '7926-f2'
+    '7926-reused-parent' = '7926-reused-parent'
+    '7926-f1' = '7926-f1'
+    'f13' = 'f13'
+    'f14' = 'f14'
+    'f15' = 'f15'
+    '7926' = '7926'
+    '8102-held' = '8102-held'
+    '8102-vacant' = '8102-vacant'
+    '8102-mutant' = '8102-mutant'
+    '7963-retained' = '7963-retained'
+    'ordinary-dispatch' = 'ordinary-dispatch'
+    'successor-dispatch' = 'successor-dispatch'
+    'successor-completion' = 'successor-completion'
+    'successor-depth' = 'successor-depth'
+  }
+}
+
 function Get-HistoricalSuitePartOwners([ValidateSet('rebase','watchdog')][string]$Suite,[string]$Source) {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
@@ -222,6 +247,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'rebase-integration.test.ps1'){return @((Get-RebaseIntegrationPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'lane-stall-watchdog.test.ps1'){return @((Get-LaneWatchdogPartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'landed-integration-r3.test.ps1'){return @((Get-LandedIntegrationR3PartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'long-product-gate.test.ps1'){return @((Get-LongProductGatePartMap).Keys)}
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
