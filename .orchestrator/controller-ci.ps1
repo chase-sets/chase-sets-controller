@@ -153,7 +153,7 @@ if ($Mode -ceq 'Plan') {
   # These hosted adapter checks are explicit additions to the source battery
   # inventory, not substitutions for any of its required identities.
   if(Test-Path -LiteralPath (Join-Path $ControllerRoot '.orchestrator/controller-ci-parts.json')) {
-    foreach($name in @('controller-ci-coverage','controller-ci-sharding','controller-ci-record-durations')) {
+    foreach($name in @('controller-ci-coverage','controller-ci-sharding','controller-ci-record-durations','historical-fixture-manifest')) {
       $path=".orchestrator/$name.check.ps1"
       Assert-Ci (Test-Path -LiteralPath (Join-Path $ControllerRoot $path)) "required checker missing: $path"
       $inventory+=[pscustomobject]@{identity="check:$name";path=$path;command="pwsh $path"

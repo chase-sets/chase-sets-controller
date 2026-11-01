@@ -1,6 +1,8 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci.ps1') -Mode Library
 $controllerRoot=Split-Path -Parent $PSScriptRoot
+Assert-Ci (([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-ci.ps1')) -match "'historical-fixture-manifest'") -and
+  (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'historical-fixture-manifest.check.ps1') -PathType Leaf)) 'historical fixture manifest check is not registered'
 foreach($identity in @('test:rebase-integration.test.ps1','test:lane-stall-watchdog.test.ps1')){
   Assert-Ci ($null -eq (Get-CiRestriction $identity $controllerRoot)) "historical carrier remains restricted: $identity"
 }

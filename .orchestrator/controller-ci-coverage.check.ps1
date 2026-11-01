@@ -452,6 +452,28 @@ Assert-Ci (([IO.File]::ReadAllText($watchdogPath).Contains("if(-not `$Part){")))
 Refuses-Coverage { Assert-CarrierPartContract $rebasePath ([pscustomobject]@{parts=@($rebaseItem.parts|Where-Object name -cne 'rebase-amend');identity=$rebaseItem.identity}) @() }
 Refuses-Coverage { Assert-CarrierPartContract $watchdogPath ([pscustomobject]@{parts=@($watchdogItem.parts|Where-Object name -cne 'watchdog-historical');identity=$watchdogItem.identity}) @() }
 Write-Output 'PASS historical carrier part ownership: rebase and watchdog selectors, carrier arms, legacy whole-run guard, and dropped-part mutants refused'
+function Assert-HistoricalSelectorContract([string]$Path, [string[]]$Parts, [string[]]$LegacySelectors) {
+  $source = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+  Assert-Ci ($source.Contains("if(`$Part -ceq 'all'){`$Part=''")) "aggregate all selector normalization missing: $Path"
+  Assert-Ci ($source.Contains('if(-not $Part){') -or $source.Contains('if(-not$Part){')) "aggregate whole-run guard missing: $Path"
+  $names = @('all') + @($Parts)
+  $bound = @{}
+  Assert-SuiteSelection 'all' $names $bound $LegacySelectors
+  function Refuses-Selector([scriptblock]$Body) {
+    $refused = $false
+    try { & $Body } catch { $refused = $true }
+    Assert-Ci $refused 'suite selector refusal control survived'
+  }
+  Refuses-Selector { Assert-SuiteSelection 'unknown-part' $names @{ Part = 'unknown-part' } $LegacySelectors }
+  if ($LegacySelectors.Count -gt 0) {
+    $conflicting = @{ Part = $Parts[0] }
+    $conflicting[$LegacySelectors[0]] = $true
+    Refuses-Selector { Assert-SuiteSelection $Parts[0] $names $conflicting $LegacySelectors }
+  }
+}
+Assert-HistoricalSelectorContract $rebasePath @($rebaseItem.parts.name) @()
+Assert-HistoricalSelectorContract $watchdogPath @($watchdogItem.parts.name) @('CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','Named8098Control','Named8186Control','HostHoldControl')
+Write-Output 'PASS historical selector contract: omitted/all keeps aggregate guards; unknown and conflicting selectors refuse'
 function Get-CarrierProofCensus([string]$Source){
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
