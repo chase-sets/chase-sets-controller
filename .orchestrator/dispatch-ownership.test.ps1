@@ -323,7 +323,7 @@ try {
   New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000aa" | Out-Null
   New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000ab" | Out-Null
   $guardRuntime = New-ControlRuntime "synthetic-census-guard-runtime"
-  $guardWorktree = Add-ControlWorktree $identityMain "lane-99" "control/census-guard"
+  $guardWorktree = Add-ControlWorktree $identityMain "lane-97" "control/census-guard"
   $guardRecord = New-ReducerOwnershipRecord $guardRuntime $guardWorktree -LaunchId "00000000-0000-0000-0000-0000000000ac"
   $guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container
   Assert-True ($guardOwners.health.status -ceq "ok" -and
