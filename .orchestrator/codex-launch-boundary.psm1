@@ -862,7 +862,11 @@ function Add-CodexBoundaryProcessToJob {
 
 function Test-CodexLaunchBoundaryStillValid {
   [CmdletBinding()]
-  param([Parameter(Mandatory)]$Boundary)
+  param(
+    [Parameter(Mandatory)]$Boundary,
+    [scriptblock]$HarnessResolver,
+    [scriptblock]$SurfaceValidator
+  )
   $requiredKeys = @(
     "argvTemplate", "descendantPolicy", "effectiveFeatureStates", "harness",
     "isolatedCodexHome", "networkPolicy", "profileSha256", "readableRoots",
@@ -879,14 +883,14 @@ function Test-CodexLaunchBoundaryStillValid {
       [string]$Boundary.profileSha256 -cne (Get-CodexBoundaryProfileSha256 -Record $Boundary)) {
     Throw-CodexBoundaryRefusal "codex-boundary-revalidation-drift"
   }
-  $harness = Resolve-CodexBoundaryHarness
+  $harness = if ($null -ne $HarnessResolver) { & $HarnessResolver } else { Resolve-CodexBoundaryHarness }
   if ([string]$Boundary.harness.path -cne $harness.path -or
       [string]$Boundary.harness.sha256 -cne $harness.sha256 -or
       [int64]$Boundary.harness.length -ne $harness.length -or
       [string]$Boundary.harness.version -cne $harness.version) {
     Throw-CodexBoundaryRefusal "codex-boundary-revalidation-drift"
   }
-  $surfaceSha256 = Assert-CodexBoundarySurface -Harness $harness
+  $surfaceSha256 = if ($null -ne $SurfaceValidator) { & $SurfaceValidator $harness } else { Assert-CodexBoundarySurface -Harness $harness }
   if ([string]$Boundary.surfaceFixtureSha256 -cne $surfaceSha256) {
     Throw-CodexBoundaryRefusal "codex-boundary-revalidation-drift"
   }

@@ -109,15 +109,16 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
     foreach ($part in $split.parts) {
       $id = "$($item.identity)#$($part.name)"
       Assert-Ci ($seen.Add($id)) 'duplicate execution identity'
-      $partTiming = Get-CiEstimatedDuration ([pscustomobject]@{identity=$id;path=$item.path;restriction=$null}) $Profile $Root $Now $sourceSet
-      $estimate = [long][Math]::Ceiling($timing.elapsedMs * ([double]$part.weight / $weight))
-      $timingSource = $timing.source + '-split-estimate'
-      if ($partTiming.source -ceq 'recorded') { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
+      $partRestriction = if ($null -ne $part.restriction) { $part.restriction } else { $null }
+      $partTiming = Get-CiEstimatedDuration ([pscustomobject]@{identity=$id;path=$item.path;restriction=$partRestriction}) $Profile $Root $Now $sourceSet
+      $estimate = if ($partRestriction) { 0L } else { [long][Math]::Ceiling($timing.elapsedMs * ([double]$part.weight / $weight)) }
+      $timingSource = if ($partRestriction) { 'local-only' } else { $timing.source + '-split-estimate' }
+      if (-not $partRestriction -and $partTiming.source -ceq 'recorded') { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
       # A hosted part observation keeps its own shape; an equal-weight share of
       # the whole suite is only the last resort for a part never observed.
-      elseif ($partTiming.source -ceq 'stale-recorded') { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
+      elseif (-not $partRestriction -and $partTiming.source -ceq 'stale-recorded') { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
       $tasks.Add([pscustomobject]@{identity=$id;requiredIdentity=$item.identity;path=$item.path;command=$item.command
-        arguments=@($item.arguments) + @($split.selector,$part.name);restriction=$item.restriction
+        arguments=@($item.arguments) + @($split.selector,$part.name);restriction=$partRestriction
         estimatedMs=$estimate;timingSource=$timingSource})
     }
   }
@@ -192,13 +193,14 @@ function ConvertTo-CiRequiredResults($Plan, [object[]]$Results) {
     $rows = @($Results | Where-Object { $_.identity -cin @($tasks.identity) })
     Assert-Ci ($rows.Count -eq $tasks.Count) 'required item has missing parts'
     if ($tasks.Count -eq 1 -and $tasks[0].identity -ceq $required.identity) { $merged.Add($rows[0]); continue }
-    Assert-Ci (@($rows | Where-Object result -CEQ 'LOCAL_ONLY').Count -eq 0) 'split exclusion forbidden'
     $failed = @($rows | Where-Object result -CEQ 'FAIL')
-    $merged.Add([pscustomobject]@{identity=$required.identity;exitCode=$(if($failed.Count){$failed[0].exitCode}else{0})
-      result=$(if($failed.Count){'FAIL'}else{'PASS'});fleetLoad='none';elapsedMs=[long](($rows | Measure-Object elapsedMs -Sum).Sum)
+    $localOnly = @($rows | Where-Object result -CEQ 'LOCAL_ONLY')
+    Assert-Ci ($localOnly.Count -eq 0 -or @($tasks | Where-Object restriction).Count -eq $localOnly.Count) 'split exclusion forbidden'
+    $merged.Add([pscustomobject]@{identity=$required.identity;exitCode=$(if($failed.Count){$failed[0].exitCode}elseif($localOnly.Count){125}else{0})
+      result=$(if($failed.Count){'FAIL'}elseif($localOnly.Count){'LOCAL_ONLY'}else{'PASS'});fleetLoad='none';elapsedMs=[long](($rows | Measure-Object elapsedMs -Sum).Sum)
       startedUtc=($rows.startedUtc | Sort-Object | Select-Object -First 1)
       finishedUtc=($rows.finishedUtc | Sort-Object | Select-Object -Last 1)
-      provenance=@{kind='execution';command=$required.command;attempt="github-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-split"
+      provenance=@{kind=$(if($localOnly.Count){'local-only'}else{'execution'});command=$required.command;attempt="github-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-split"
         parts=@($rows | Select-Object identity,provenance)}})
   }
   Assert-Ci (@($Results | Where-Object { $_.identity -cnotin @($Plan.executionItems.identity) }).Count -eq 0) 'unmapped execution result'

@@ -28591,6 +28591,21 @@
       "planSha256": "0a6b99551e90e00efd610e2b7211f312529b6138a20709f2c4c53e3e04596552",
       "result": "PASS",
       "exitCode": 0
+    },
+    {
+      "identity": "test:codex-launch-boundary.test.ps1#portable",
+      "elapsedMs": 8516,
+      "recordedAtUtc": "2026-11-01T00:00:00.0000000Z",
+      "sourceSha256": "1fbe38a9dfa5e0a8ae8bd9263af07c6131f289db9171b37c7e62aa61f3a32c51",
+      "sourceSetSha256": "276f611231c78cc66e85f8d928ad563b7f071434780bd0d6a321fa49e34426df",
+      "controllerHead": "6d09a9437821b2c7acb9c463067f791fa09a5ca4",
+      "checkoutHead": "6d09a9437821b2c7acb9c463067f791fa09a5ca4",
+      "runnerHead": "0000000000000000000000000000000000000000",
+      "productSha": "0000000000000000000000000000000000000000",
+      "runId": "0",
+      "planSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "result": "PASS",
+      "exitCode": 0
     }
   ]
 }

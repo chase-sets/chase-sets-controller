@@ -6,6 +6,9 @@ Assert-Ci (([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-ci-cover
 foreach($identity in @('test:rebase-integration.test.ps1','test:lane-stall-watchdog.test.ps1')){
   Assert-Ci ($null -eq (Get-CiRestriction $identity $controllerRoot)) "historical carrier remains restricted: $identity"
 }
+Assert-Ci ($null -eq (Get-CiRestriction 'test:codex-launch-boundary.test.ps1' $controllerRoot)) 'codex portable identity remains hosted'
+$codexSmoke=Get-CiRestriction 'test:codex-launch-boundary.test.ps1#local-smoke' $controllerRoot
+Assert-Ci ($codexSmoke.classification -ceq 'LOCAL_ONLY' -and $codexSmoke.reason.Contains('installed Codex native sandbox executable')) 'codex installed smoke restriction drift'
 foreach($identity in @('test:dispatch-ownership.test.ps1','test:landed-integration-r3.test.ps1')){
   $restriction=Get-CiRestriction $identity $controllerRoot
   Assert-Ci ($restriction.classification -ceq 'LOCAL_ONLY' -and $restriction.notHermetic -and -not $restriction.reason.Contains('b3b4ac2')) "remaining carrier restriction drift: $identity"
