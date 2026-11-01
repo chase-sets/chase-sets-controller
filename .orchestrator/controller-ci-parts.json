@@ -571,7 +571,9 @@
       "identity": "test:dispatch-ownership.test.ps1",
       "selector": "-Part",
       "parts": [
-        { "name": "portable", "weight": 1 },
+        { "name": "portable-census", "weight": 1 },
+        { "name": "portable-reducer", "weight": 1 },
+        { "name": "portable-carrier", "weight": 1 },
         {
           "name": "local-smoke",
           "weight": 1,
@@ -583,7 +585,7 @@
         }
       ],
       "ownership": {
-        "parts": ["portable", "local-smoke"]
+        "parts": ["portable-census", "portable-reducer", "portable-carrier", "local-smoke"]
       }
     },
     {

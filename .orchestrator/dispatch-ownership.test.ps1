@@ -1,11 +1,13 @@
 param(
-  [ValidateSet('portable','local-smoke')][string]$Part = '',
+  [ValidateSet('portable-census','portable-reducer','portable-carrier','local-smoke')][string]$Part = '',
   [switch]$ProductCensusOnly,
   [switch]$OrdinaryProofOnly
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
-Assert-SuiteSelection $Part @('portable','local-smoke') $PSBoundParameters @('ProductCensusOnly','OrdinaryProofOnly')
+Assert-SuiteSelection $Part @('portable-census','portable-reducer','portable-carrier','local-smoke') $PSBoundParameters @('ProductCensusOnly','OrdinaryProofOnly')
+# Hosted parts each run one section; no -Part runs every section and the local smoke.
+$runSection = { param([string]$Name) -not $Part -or $Part -ceq $Name }
 
 function Invoke-DispatchOwnershipLocalSmoke {
   . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
@@ -34,6 +36,7 @@ if ($OrdinaryProofOnly) {
 # #9619: census verdicts run under the deterministic budget meter, never elapsed
 # real time. The real-clock deadline keeps its own directional controls: the
 # -DeadlineMs 0 truncation control below and product-census-budget.test.ps1.
+if (& $runSection 'portable-census') {
 Invoke-DeterministicBudget {
   Test-ProductCensusProjection
   Test-ProductCensusProofMatrix
@@ -41,6 +44,7 @@ Invoke-DeterministicBudget {
   Test-CensusGitLatencyInjection
   Test-CensusGitOutputBound
   Test-CensusGitWaitSchedule
+}
 }
 if ($ProductCensusOnly) { return }
 
@@ -226,6 +230,7 @@ function Get-BoundedAttemptProjection([scriptblock]$Projection, [string]$Mutatio
   }
 }
 
+if (& $runSection 'portable-reducer') {
 try {
   $currentStart = Get-DispatchProcessStartIdentity $PID
   $identityJson = [ordered]@{ childStartIdentity = $currentStart } |
@@ -1019,11 +1024,13 @@ try {
   }
   Remove-Item -LiteralPath $rootResolved -Recurse -Force -ErrorAction SilentlyContinue
 }
+}
 
 if (-not $Part) {
   Invoke-DispatchOwnershipLocalSmoke
 }
 
+if (& $runSection 'portable-carrier') {
 # #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
 $ordinaryState = [ordered]@{branch='synthetic/9334';originalHead=('1'*40);onto=('2'*40);stoppedHead=('2'*40);stoppedCommit=('3'*40);oldBase=('4'*40);metadataSha256=('a'*64);indexSha256=('b'*64);stagesSha256=('c'*64);dirtySha256=('d'*64);stagedSha256=('e'*64);unstagedSha256=('f'*64)}
 $ordinaryBinding = [ordered]@{schemaVersion='interrupted-canonical-integration/v2'
@@ -1073,10 +1080,10 @@ try {
   try {
     $priorFleetContainer = [string]$env:CHASE_SETS_TEST_FLEET_CONTAINER
     try {
-      if ($Part -ceq 'portable') { $env:CHASE_SETS_TEST_FLEET_CONTAINER = $root }
+      if ($Part -ceq 'portable-carrier') { $env:CHASE_SETS_TEST_FLEET_CONTAINER = $root }
       Test-7963ResumeCarrier 'ownership' | Tee-Object -Variable ownershipCarrierOutput
     } finally {
-      if ($Part -ceq 'portable') {
+      if ($Part -ceq 'portable-carrier') {
         if ([string]::IsNullOrEmpty($priorFleetContainer)) {
           Remove-Item Env:CHASE_SETS_TEST_FLEET_CONTAINER -ErrorAction SilentlyContinue
         } else {
@@ -1101,4 +1108,5 @@ try {
   $env:CHASE_SETS_ROUTING_DATA_ROOT = $ambientRouting.root
   $env:CHASE_SETS_ROUTING_LKG_PATH = $ambientRouting.lkg
   Remove-Item -LiteralPath $staleRoutingRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 }

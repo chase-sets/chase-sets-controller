@@ -112,7 +112,9 @@ function Get-DispatchLaneInstalledClaudePartMap {
 
 function Get-DispatchOwnershipPartMap {
   [ordered]@{
-    'portable'='portable'
+    'portable-census'='portable-census'
+    'portable-reducer'='portable-reducer'
+    'portable-carrier'='portable-carrier'
     'local-smoke'='local-smoke'
   }
 }

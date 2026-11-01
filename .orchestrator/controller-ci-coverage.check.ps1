@@ -135,12 +135,16 @@ Write-Output 'PASS installed Claude part ownership: portable fixture/argv proof 
 $ownershipPath=Join-Path $PSScriptRoot 'dispatch-ownership.test.ps1'
 $ownershipItem=$manifest.items|Where-Object identity -eq 'test:dispatch-ownership.test.ps1'
 Assert-Ci ($null -ne $ownershipItem) 'dispatch ownership split mapping missing'
-Assert-Ci ((@($ownershipItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable') 'dispatch ownership part census changed'
-Assert-Ci ((Get-SuiteExpectedParts $ownershipPath|Sort-Object)-join',' -ceq 'local-smoke,portable') 'dispatch ownership selector census changed'
+Assert-Ci ((@($ownershipItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable-carrier,portable-census,portable-reducer') 'dispatch ownership part census changed'
+Assert-Ci ((Get-SuiteExpectedParts $ownershipPath|Sort-Object)-join',' -ceq 'local-smoke,portable-carrier,portable-census,portable-reducer') 'dispatch ownership selector census changed'
 $ownershipLocal=$ownershipItem.parts|Where-Object name -ceq 'local-smoke'
 Assert-Ci ($ownershipLocal.restriction.classification -ceq 'LOCAL_ONLY' -and $ownershipLocal.restriction.notHermetic) 'dispatch ownership local-smoke restriction missing'
 $ownershipSource=[IO.File]::ReadAllText($ownershipPath).Replace("`r`n","`n")
-Assert-Ci ($ownershipSource.Contains("[ValidateSet('portable','local-smoke')][string]`$Part = ''")) 'dispatch ownership selector source missing'
+Assert-Ci ($ownershipSource.Contains("[ValidateSet('portable-census','portable-reducer','portable-carrier','local-smoke')][string]`$Part = ''")) 'dispatch ownership selector source missing'
+Assert-Ci ($ownershipSource.Contains('$runSection = { param([string]$Name) -not $Part -or $Part -ceq $Name }')) 'dispatch ownership section gate missing'
+foreach($section in @('portable-census','portable-reducer','portable-carrier')){
+  Assert-Ci (([regex]::Matches($ownershipSource,[regex]::Escape("if (& `$runSection '$section') {"))).Count -eq 1) "dispatch ownership hosted section is not gated exactly once: $section"
+}
 Assert-Ci ($ownershipSource.Contains("if (`$Part -ceq 'local-smoke')") -and $ownershipSource.Contains('Invoke-DispatchOwnershipLocalSmoke')) 'dispatch ownership local-smoke guard missing'
 Assert-Ci ($ownershipSource.Contains('poisoned-default-runtime') -and $ownershipSource.Contains('hosted ownership census reads only the synthetic runtime')) 'dispatch ownership hosted source guard missing'
 function Get-OwnershipConservation([string]$Source) {
