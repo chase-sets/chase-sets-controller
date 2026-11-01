@@ -319,6 +319,12 @@ function Get-DispatchProcessIdentitySnapshot([int[]]$ProcessIds) {
         $snapshot[$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
       }
     }
+    # A requested PID absent from a completed enumeration is not running: dead, as the per-PID helper reports.
+    foreach ($processId in $wanted) {
+      if (-not $snapshot.ContainsKey($processId)) {
+        $snapshot[$processId] = [pscustomobject]@{ state = "dead"; startIdentity = $null }
+      }
+    }
     $completed = $true
   } catch {
     foreach ($processId in @($ProcessIds)) {

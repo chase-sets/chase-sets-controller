@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([string]$GuardRevision = '',
-  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot', 'restore-process-snapshot-fallback', 'restore-git-snapshot-fallback', 'restore-detached-default')][string]$Mutant = '')
+  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot', 'restore-process-snapshot-fallback', 'restore-git-snapshot-fallback', 'restore-detached-default', 'omit-absent-pid-dead')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -64,8 +64,23 @@ if ($Mutant -ceq 'restore-detached-default') {
   Assert-True ($ownershipSource.Contains($needle)) 'restore-detached-default target exists'
   $ownershipSource = $ownershipSource.Replace($needle, '        $true -and')
 }
+if ($Mutant -ceq 'omit-absent-pid-dead') {
+  $needle = '        $snapshot[$processId] = [pscustomobject]@{ state = "dead"; startIdentity = $null }'
+  Assert-True ($ownershipSource.Contains($needle)) 'omit-absent-pid-dead target exists'
+  $ownershipSource = $ownershipSource.Replace($needle, '        continue')
+}
 . ([scriptblock]::Create($ownershipSource))
 $nativeGitSnapshot = ${function:Get-DispatchGitIdentitySnapshot}
+# The built-in process snapshot (real Get-Process, before the stub below) records an absent
+# requested PID as dead, so an exited owner stays advisory rather than a blocking probe failure.
+$absentPid = [int]::MaxValue
+$nativeProcessSnapshot = Get-DispatchProcessIdentitySnapshot ([int[]]@($PID, $absentPid, 0))
+$selfStart = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+Assert-True ($nativeProcessSnapshot.ContainsKey($absentPid) -and [string]$nativeProcessSnapshot[$absentPid].state -ceq 'dead') 'built-in snapshot records an absent requested PID as dead'
+Assert-True ((Get-DispatchProcessSnapshotState $nativeProcessSnapshot $absentPid $selfStart) -ceq 'dead') 'absent PID reduces to dead'
+Assert-True ((Get-DispatchProcessSnapshotState $nativeProcessSnapshot $PID $selfStart) -ceq 'live') 'present PID with matching start reduces to live'
+Assert-True ([string]$nativeProcessSnapshot[0].state -ceq 'ambiguous') 'non-positive PID stays ambiguous'
+Write-Output 'PASS built-in process snapshot: absent PID dead, present PID live, non-positive ambiguous'
 # Instrument only clock construction in extracted production functions.
 $source = $source.Replace('[Diagnostics.Stopwatch]::StartNew()', '(New-CensusClock)')
 $tokens = $null; $errors = $null
