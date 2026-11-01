@@ -566,6 +566,24 @@
       "ownership": {
         "parts": ["supervisor", "queue", "transient", "mutants"]
       }
+    },
+    {
+      "identity": "test:codex-launch-boundary.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "portable", "weight": 1 },
+        {
+          "name": "local-smoke",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited."
+          }
+        }
+      ],
+      "ownership": {
+        "parts": ["portable", "local-smoke"]
+      }
     }
   ],
   "baselineHead": "e671d823b96d45a3b71d7b81cf05a24d173df73a",
