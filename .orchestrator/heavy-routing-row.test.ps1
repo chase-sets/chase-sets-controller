@@ -20,6 +20,11 @@ $definitions = @($ast.FindAll({ param($n)
   $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-HeavyRoutingRow'
 }, $false))
 Assert-True ($definitions.Count -eq 1) 'one production routing-row reader'
+$observationDefinitions = @($ast.FindAll({ param($n)
+  $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Assert-DispatchObservationTime'
+}, $false))
+Assert-True ($observationDefinitions.Count -eq 1) 'one production dispatch observation clock helper'
+. ([scriptblock]::Create($observationDefinitions[0].Extent.Text))
 . ([scriptblock]::Create($definitions[0].Extent.Text))
 
 # Run the real closed validator and routing reader against a private ledger.
