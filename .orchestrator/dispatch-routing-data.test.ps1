@@ -28,12 +28,26 @@ function Reset-Fixture {
   if([IO.File]::Exists($fixture.lkgPath)){[IO.File]::Delete($fixture.lkgPath)}
   $env:CHASE_SETS_ROUTING_DATA_ROOT=$fixture.stateRoot;$env:CHASE_SETS_ROUTING_LKG_PATH=$fixture.lkgPath
 }
-function Plan([hashtable]$Extra=@{}) {
+function New-PlanParameters([hashtable]$Extra) {
   $parameters=@{Harness='codex';Row=4;LaneRole='implementation';PromptFile=$prompt;Worktree=$repo
     Label=('plan-'+[guid]::NewGuid().ToString('N'));DryRun=$true;ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$runtime;TestTempRoot=$providerTemp}
   foreach($key in $Extra.Keys){$parameters[$key]=$Extra[$key]}
+  return $parameters
+}
+function Plan([hashtable]$Extra=@{}) {
+  $parameters=New-PlanParameters $Extra
   try { return (& $LauncherPath @parameters | ConvertFrom-Json -DateKind String) }
   catch { throw "ASSERTION FAILED: fixture plan unexpectedly refused: $($_.Exception.Message)" }
+}
+# Row 6 (browser/computer use) is refused by dispatch-lane before routing (#239):
+# exit 73 and no plan, including under -DryRun. The diagnostic text is asserted in dispatch-lane.test.ps1.
+function Assert-BrowserRowRefused([hashtable]$Extra,[string]$Message) {
+  $parameters=New-PlanParameters $Extra
+  Assert-True ($parameters.Row -eq 6) "browser refusal helper called for row $($parameters.Row)"
+  $global:LASTEXITCODE=0
+  $output=@(& $LauncherPath @parameters)
+  $exit=$LASTEXITCODE
+  Assert-True ($exit -eq 73 -and $output.Count -eq 0) "$Message (exit=$exit planOutputLines=$($output.Count))"
 }
 function Refuses([hashtable]$Extra,[string]$Reason){
   $message='';try{Plan $Extra | Out-Null}catch{$message=$_.Exception.Message}
@@ -118,6 +132,7 @@ function Test-CapacityCases([string]$Name) {
         $f=Copy-Forecast;$f.balance.toward=$toward;$f.balance.steps=$k;Set-Forecast $f
         $from=if($onToward){$toward}elseif($toward -ceq 'claude'){'codex'}else{'claude'}
         $model=if($from -ceq 'codex' -and $row -in @(14,15)){'gpt-6-astra'}elseif($from -ceq 'codex'){'gpt-6.1-sol'}else{'claude-opus-5-5'}
+        if($row -eq 6){Assert-BrowserRowRefused @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row} "matrix $toward k=$k row=6 on=$onToward refuses before planning";$count++;continue}
         $p=Plan @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row}
         # Toward Claude every off-toward row with an admitted own Claude slot flips once steps >= 1;
         # toward Codex the ordered prefix still bounds the first k rows.
@@ -518,8 +533,10 @@ function Test-CapacityCases([string]$Name) {
       # Route continuations no longer exclude reviewers: every row flips to its own slot regardless of history.
       $f=Copy-Forecast;$f.balance.steps=1;Set-Forecast $f
       $astra=@{Model='gpt-6-astra';Effort='high';Placement='override-Todd'}
-      Assert-True ($null -ne (Plan ($astra+@{Row=6})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
-      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6}).capacityFlip) 'row 6 from Sol flips to its own Claude slot'
+      Assert-BrowserRowRefused ($astra+@{Row=6}) 'row 6 from Astra refuses before planning'
+      Assert-BrowserRowRefused @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6} 'row 6 from Sol refuses before planning'
+      Assert-True ($null -ne (Plan ($astra+@{Row=5})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
+      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=5}).capacityFlip) 'row 5 from Sol flips to its own Claude slot'
       Assert-True ($null -ne (Plan ($astra+@{Row=8})).capacityFlip) 'valid attributed history does not exclude the row policy slot'
       foreach($row in @(9,11,12)) { Assert-True ($null -ne (Plan ($astra+@{Row=$row})).capacityFlip) "row $row from Astra flips to its own Claude slot" }
       $f=Copy-Forecast;$f.balance.toward='codex';$f.balance.steps=1;Set-Forecast $f
