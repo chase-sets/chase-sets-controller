@@ -1,5 +1,28 @@
-param([switch]$ProductCensusOnly,[switch]$OrdinaryProofOnly)
+param(
+  [ValidateSet('portable','local-smoke')][string]$Part = '',
+  [switch]$ProductCensusOnly,
+  [switch]$OrdinaryProofOnly
+)
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('portable','local-smoke') $PSBoundParameters @('ProductCensusOnly','OrdinaryProofOnly')
+
+function Invoke-DispatchOwnershipLocalSmoke {
+  . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
+  $liveRuntime = [IO.Path]::GetFullPath($PSScriptRoot)
+  $liveTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+  $liveContainer = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+  $census = Get-LiveDispatchOwnership $liveRuntime $liveTemp $liveContainer
+  if ($census.health.status -notin @('ok','partial')) {
+    throw "ASSERTION FAILED: default-source local ownership smoke returned health=$($census.health.status)"
+  }
+  Write-Output "PASS dispatch-ownership local-smoke default-source candidates=$($census.health.counts.candidates) status=$($census.health.status)"
+}
+
+if ($Part -ceq 'local-smoke') {
+  Invoke-DispatchOwnershipLocalSmoke
+  return
+}
 if ($OrdinaryProofOnly) {
   . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
   Test-9334OrdinaryProof
@@ -291,6 +314,24 @@ try {
   )
   Invoke-TestGit $identityMain @("add", "seed.txt") | Out-Null
   Invoke-TestGit $identityMain @("commit", "-m", "fixture seed") | Out-Null
+
+  # Hosted proof must never silently fall back to a live controller runtime.
+  # The poisoned source has two valid records and the synthetic source has one;
+  # health and exact census counts make a source substitution fail closed.
+  $poisonedDefaultRuntime = New-ControlRuntime "poisoned-default-runtime"
+  $poisonedWorktree = Add-ControlWorktree $identityMain "lane-poisoned" "control/poisoned-default"
+  New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000aa" | Out-Null
+  New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000ab" | Out-Null
+  $guardRuntime = New-ControlRuntime "synthetic-census-guard-runtime"
+  $guardWorktree = Add-ControlWorktree $identityMain "lane-guard" "control/census-guard"
+  $guardRecord = New-ReducerOwnershipRecord $guardRuntime $guardWorktree -LaunchId "00000000-0000-0000-0000-0000000000ac"
+  $guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container
+  Assert-True ($guardOwners.health.status -ceq "ok" -and
+    $guardOwners.health.counts.candidates -eq 1 -and
+    $guardOwners.health.counts.examined -eq 1 -and
+    $guardOwners.health.counts.truncated -eq 0 -and
+    @($guardOwners.activeLanes | Where-Object { $_.launchId -ceq $guardRecord.record.launchId }).Count -eq 1) "hosted ownership census reads only the synthetic runtime, never the poisoned default source"
+  Write-Output "CONTROL hosted-census-source syntheticCandidates=1 poisonedCandidates=2 PASS"
 
   $advancedWorktree = Add-ControlWorktree $identityMain "lane-01" "agent/issue-6263-registration-atomicity"
   $advancedRuntime = New-ControlRuntime "branch-advanced-runtime"
@@ -977,6 +1018,10 @@ try {
     throw "refusing unsafe test cleanup target: $rootResolved"
   }
   Remove-Item -LiteralPath $rootResolved -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if (-not $Part) {
+  Invoke-DispatchOwnershipLocalSmoke
 }
 
 # #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
