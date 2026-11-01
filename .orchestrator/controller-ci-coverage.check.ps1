@@ -474,6 +474,14 @@ function Assert-HistoricalSelectorContract([string]$Path, [string[]]$Parts, [str
 Assert-HistoricalSelectorContract $rebasePath @($rebaseItem.parts.name) @()
 Assert-HistoricalSelectorContract $watchdogPath @($watchdogItem.parts.name) @('CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','Named8098Control','Named8186Control','HostHoldControl')
 Write-Output 'PASS historical selector contract: omitted/all keeps aggregate guards; unknown and conflicting selectors refuse'
+# The fixture manifest check runs inside this existing timed identity rather than
+# as a new required hosted identity: a new identity has no duration record, and
+# enforced candidate plans refuse fallback estimates.
+$fixtureCheck=Join-Path $PSScriptRoot 'historical-fixture-manifest.check.ps1'
+Assert-Ci (Test-Path -LiteralPath $fixtureCheck -PathType Leaf) 'historical fixture manifest check missing'
+$fixtureOutput=@(& (Get-Process -Id $PID).Path -NoProfile -File $fixtureCheck 2>&1)
+Assert-Ci ($LASTEXITCODE -eq 0 -and (@($fixtureOutput | Where-Object { "$_" -clike 'PASS historical fixture manifest validation:*' }).Count -eq 1)) "historical fixture manifest check failed: $(($fixtureOutput | Select-Object -Last 3) -join ' | ')"
+Write-Output 'PASS historical fixture manifests: delegated check passed inside check:controller-ci-coverage'
 function Get-CarrierProofCensus([string]$Source){
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
