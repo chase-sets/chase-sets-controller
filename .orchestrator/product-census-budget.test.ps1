@@ -154,18 +154,78 @@ function Write-BudgetMeasurement($Result,[string]$Site,[string]$Mode) {
     evaluationGitMs=@($s.evaluations | ForEach-Object gitMs);evaluationCharges=@($s.evaluations | ForEach-Object charges);
     generations=@($s.evaluations | ForEach-Object generation);refusedOutcomes=@($s.outcomes)} | ConvertTo-Json -Depth 8 -Compress))
 }
+function New-CensusEvaluationExpectation([string[]]$OperationNames,[long[]]$CumulativeMeter,[int]$SpawnCount,[string]$StopReason,[string]$StopPoint) {
+  [pscustomobject]@{operationNames=@($OperationNames);cumulativeMeter=@($CumulativeMeter);spawnCount=$SpawnCount;
+    gitElapsedCount=@($OperationNames).Count;stopReason=$StopReason;stopPoint=$StopPoint}
+}
+function Get-CensusFreshMeter([int]$Count) {
+  $meter=[Collections.Generic.List[long]]::new()
+  for($i=1;$i -le $Count;$i++) { $meter.Add([long]$i) }
+  return @($meter)
+}
+function Get-CensusCrossingMeter([int]$Count) {
+  $meter=[Collections.Generic.List[long]]::new()
+  for($i=1;$i -lt $Count;$i++) { $meter.Add([long]$i) }
+  $meter.Add([long](5001+$Count))
+  return @($meter)
+}
+function Get-CensusEvaluationExpectations([string]$Site,[string]$Mode) {
+  $matrix=@(Get-CensusOperationMatrix $Site)
+  $seatSuffix=@('seat.repository','seat.branch','seat.remote','seat.endpoint.fetch','seat.endpoint.push','seat.config')
+  $anchorConfigIndex=[array]::IndexOf($matrix,'anchor.config')
+  $anchorPrefix=@($matrix[0..$anchorConfigIndex])
+  $firstOperation=@($matrix[0])
+  $fresh=Get-CensusFreshMeter $matrix.Count
+  $crossingFirst=Get-CensusCrossingMeter $firstOperation.Count
+  $crossingAnchor=Get-CensusCrossingMeter $anchorPrefix.Count
+  switch($Mode) {
+    'quiet' {
+      return @(New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'loaded' {
+      return @(New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0]),
+        (New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'unauthorized' {
+      $operations=@($matrix+$seatSuffix)
+      return @(New-CensusEvaluationExpectation $operations (Get-CensusFreshMeter $operations.Count) $operations.Count 'authorization-refusal' $operations[-1])
+    }
+    'persistent' {
+      return @(New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0]),
+        (New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0])
+    }
+    'unknown' {
+      return @(New-CensusEvaluationExpectation $firstOperation (Get-CensusFreshMeter $firstOperation.Count) 0 'unknown-refusal' $firstOperation[0])
+    }
+    'poisoned-anchor' {
+      return @(New-CensusEvaluationExpectation $anchorPrefix $crossingAnchor ($anchorPrefix.Count-1) 'git-deadline' $anchorPrefix[-1]),
+        (New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'changed-identity' {
+      $operations=@($matrix+$seatSuffix)
+      return @(New-CensusEvaluationExpectation $anchorPrefix $crossingAnchor ($anchorPrefix.Count-1) 'git-deadline' $anchorPrefix[-1]),
+        (New-CensusEvaluationExpectation $operations (Get-CensusFreshMeter $operations.Count) $operations.Count 'changed-identity-refusal' $operations[-1])
+    }
+    default { throw "unknown census evaluation mode: $Mode" }
+  }
+}
 function Assert-BudgetOperationMatrix($Result,[string]$Site,[string]$Mode) {
-  $expected=@(Get-CensusOperationMatrix $Site)
-  $complete=@($Result.stats.evaluations | Where-Object { $_.operationNames.Count -eq $expected.Count })
-  Assert-CensusFixture ($complete.Count -eq 1) "$Site/$Mode one complete operation matrix"
-  $entry=$complete[0]
-  Assert-CensusFixture ((@($entry.operationNames) -join '|') -ceq ($expected -join '|')) "$Site/$Mode operation names exact matrix"
-  Assert-CensusFixture ($entry.spawnCount -eq $expected.Count) "$Site/$Mode one native spawn per operation"
-  Assert-CensusFixture ($entry.cumulativeMeter.Count -eq $expected.Count -and
-    $entry.cumulativeMeter[-1] -eq $entry.charges) "$Site/$Mode cumulative meter captured"
-  Assert-CensusFixture ($entry.gitElapsedMs.Count -eq $expected.Count) "$Site/$Mode Git elapsed captured per operation"
-  Assert-CensusFixture ($null -ne $entry.wholeCallMs) "$Site/$Mode whole-call elapsed captured"
-  Write-Output "CONTROL product-census-budget-operation-matrix $Site $Mode PASS operations=$($expected.Count) spawns=$($entry.spawnCount)"
+  $expected=@(Get-CensusEvaluationExpectations $Site $Mode)
+  Assert-CensusFixture ($Result.stats.evaluations.Count -eq $expected.Count) "$Site/$Mode expected envelope count"
+  for($i=0;$i-lt$expected.Count;$i++) {
+    $expectation=$expected[$i]
+    $entry=$Result.stats.evaluations[$i]
+    $label="$Site/$Mode evaluation=$($i+1) stop=$($expectation.stopPoint)"
+    if($expectation.stopReason -eq 'complete-matrix') {
+      Assert-CensusFixture ($entry.operationNames.Count -eq $expectation.operationNames.Count) "$Site/$Mode one complete operation matrix"
+    }
+    Assert-CensusFixture ((@($entry.operationNames) -join '|') -ceq (@($expectation.operationNames) -join '|')) "$label operation prefix exact"
+    Assert-CensusFixture ($entry.spawnCount -eq $expectation.spawnCount) "$label native spawn envelope"
+    Assert-CensusFixture ((@($entry.cumulativeMeter) -join '|') -ceq (@($expectation.cumulativeMeter) -join '|')) "$label cumulative meter exact sequence"
+    Assert-CensusFixture ($entry.gitElapsedMs.Count -eq $expectation.gitElapsedCount) "$label Git elapsed envelope"
+    Assert-CensusFixture ($null -ne $entry.wholeCallMs) "$label whole-call elapsed captured"
+  }
+  Write-Output "CONTROL product-census-budget-operation-matrix $Site $Mode PASS evaluations=$($expected.Count)"
 }
 function Assert-BudgetResult($Result,[string]$Site,[string]$Mode,[int]$Evaluations) {
   Assert-CensusFixture ($Result.stats.evaluations.Count -eq $Evaluations) "$Site/$Mode allowance evaluations=$Evaluations"
@@ -362,7 +422,7 @@ try {
         } else {
           $count=if ($mode -in @('loaded','persistent','poisoned-anchor','changed-identity')) {2} else {1}
           Assert-BudgetResult $result $site $mode $count
-          if ($mode -in @('quiet','loaded')) { Assert-BudgetOperationMatrix $result $site $mode }
+          Assert-BudgetOperationMatrix $result $site $mode
           if ($mode -in @('loaded','poisoned-anchor')) {
             Assert-CensusFixture ($result.stats.evaluations[0].charges -gt 5000 -and
               $result.stats.evaluations[1].reads.Count -eq $quietGitCalls -and
@@ -388,6 +448,17 @@ try {
   $reductionOld = 'Assert-ProductCensusEndpoints $anchorPath $Budget'
   Assert-CensusFixture ([regex]::Matches($candidateReduction,[regex]::Escape($reductionOld)).Count -eq 1) 'reduction mutant exact native endpoint anchor'
   Write-Output "CONTROL product-census-budget-before-candidate pair=unchanged nativeInputs=identical productionChange=none sourceSha256=$beforeCandidateHash"
+  $sequenceMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet
+  foreach($entry in @($sequenceMutant.stats.evaluations)) {
+    # Named sequence-collapse mutant: a collapsed capture such as
+    # Add($entry.charges) must not satisfy the per-operation meter contract.
+    $entry.cumulativeMeter=[Collections.Generic.List[long]]::new()
+    $entry.cumulativeMeter.Add([long]$entry.charges)
+  }
+  $killed=$null
+  try { Assert-BudgetOperationMatrix $sequenceMutant ownership quiet } catch { $killed=$_.Exception.Message }
+  Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet evaluation=1 stop=complete-matrix cumulative meter exact sequence') 'sequence-collapse mutant killed by exact cumulative meter sequence'
+  Write-Output 'MUTANT product-census-budget-cumulative-meter sequence-collapse KILLED reason=cumulative-meter-sequence mutation=Add(entry.charges)'
   try {
     [IO.File]::WriteAllText($ownershipPath,$candidateReduction.Replace($reductionOld,'$null # SYNTHETIC_CENSUS_REDUCTION_REMOVED_MUTANT'))
     $reductionMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet
@@ -514,6 +585,7 @@ try {
     }
   } finally { Remove-Module $module }
   Write-Output 'CONTROL product-census-budget-shared-rule source-derived-nondeadline/unknown/smaller-cap PASS'
+  Write-Output 'CONCLUSION no causal reduction was demonstrated or implemented in this slice'
   if ($failures.Count) { throw ($failures -join "`n") }
   Write-Output 'PASS product-census-budget'
 } finally { Remove-CensusFixture $parent }
