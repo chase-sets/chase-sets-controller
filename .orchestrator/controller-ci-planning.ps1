@@ -113,10 +113,12 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
       $partTiming = Get-CiEstimatedDuration ([pscustomobject]@{identity=$id;path=$item.path;restriction=$partRestriction}) $Profile $Root $Now $sourceSet
       $estimate = if ($partRestriction) { 0L } else { [long][Math]::Ceiling($timing.elapsedMs * ([double]$part.weight / $weight)) }
       $timingSource = if ($partRestriction) { 'local-only' } else { $timing.source + '-split-estimate' }
-      if (-not $partRestriction -and $partTiming.source -ceq 'recorded') { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
+      if ($partTiming.source -ceq 'recorded' -and -not $partRestriction) { $estimate=$partTiming.elapsedMs; $timingSource='recorded-part' }
       # A hosted part observation keeps its own shape; an equal-weight share of
       # the whole suite is only the last resort for a part never observed.
-      elseif (-not $partRestriction -and $partTiming.source -ceq 'stale-recorded') { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
+      elseif ($partTiming.source -ceq 'stale-recorded') {
+        if (-not $partRestriction) { $estimate=$partTiming.elapsedMs; $timingSource='stale-recorded-part' }
+      }
       $tasks.Add([pscustomobject]@{identity=$id;requiredIdentity=$item.identity;path=$item.path;command=$item.command
         arguments=@($item.arguments) + @($split.selector,$part.name);restriction=$partRestriction
         estimatedMs=$estimate;timingSource=$timingSource})
