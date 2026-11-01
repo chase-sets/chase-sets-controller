@@ -3,18 +3,67 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
 
+# Synthetic per-evaluation meter offset; not a charge, so meter != charges.
+$CensusEntryOffset = 7L
+
+function Get-CensusOperationMatrix([string]$Site) {
+  if ($Site -ceq 'ownership') {
+    return @('seat.repository','seat.branch','anchor.repository','product.repository','container.repository',
+      'anchor.remote','anchor.endpoint.fetch','anchor.endpoint.push','anchor.config',
+      'seat.remote','seat.endpoint.fetch','seat.endpoint.push','seat.config')
+  }
+  if ($Site -ceq 'authentication') {
+    return @('product.repository','target.repository','seat.repository','seat.branch','anchor.repository',
+      'container.repository','anchor.remote','anchor.endpoint.fetch','anchor.endpoint.push','anchor.config',
+      'seat.remote','seat.endpoint.fetch','seat.endpoint.push','seat.config')
+  }
+  return @()
+}
+
 # All Git repositories, records and process identities are local synthetic
 # fixtures. Only copied budget reads are metered; native proof and authorizers run.
 $probe = {
-  param($Fixture, $Obligation, $OwnerPath, $Site, $Mode, $Unscoped)
+  param($Fixture, $Obligation, $OwnerPath, $Site, $Mode, $Unscoped, $EntryOffset)
   $script:budgetStats = @{ evaluations=[Collections.Generic.List[object]]::new();
-    outcomes=[Collections.Generic.List[string]]::new(); gitMs=0L; calls=0; spawns=0; records=0 }
+    outcomes=[Collections.Generic.List[string]]::new(); gitMs=0L; calls=0; spawns=0; records=0;
+    producerMs=0L; producerPendingMs=0L; producerCalls=0 }
   $script:nativeBudgetGit = ${function:Invoke-ProductCensusGit}
   $script:nativeBudgetRecord = ${function:Get-ValidatedDispatchOwnershipRecord}
   $script:budgetMode = $Mode
+  $script:budgetEntryOffset = [long]$EntryOffset
   $script:budgetFixture = $Fixture
   $script:budgetOwnerPath = $OwnerPath
   $script:delayedAnchor = $false
+  function script:Get-CensusOperationName {
+    param($Checkout,$Arguments)
+    $role = if (Test-DispatchSamePath $Checkout $script:budgetFixture.seat) { 'seat' }
+      elseif (Test-DispatchSamePath $Checkout $script:budgetFixture.anchor) { 'anchor' }
+      elseif (Test-DispatchSamePath $Checkout (Join-Path $script:budgetFixture.container 'main')) { 'product' }
+      elseif (Test-DispatchSamePath $Checkout $script:budgetFixture.product) { 'target' }
+      elseif (Test-DispatchSamePath $Checkout $script:budgetFixture.container) { 'container' }
+      else { throw 'unmapped census checkout' }
+    if ($Arguments[0] -ceq 'rev-parse') { return "$role.repository" }
+    if ($Arguments[0] -ceq 'branch') { return "$role.branch" }
+    if ($Arguments[0] -ceq 'config') { return "$role.config" }
+    if ($Arguments[0] -ceq 'remote' -and $Arguments.Count -eq 1) { return "$role.remote" }
+    if ($Arguments[0] -ceq 'remote' -and $Arguments[1] -ceq 'get-url') {
+      return "$role.endpoint.$(if ($Arguments -contains '--push') { 'push' } else { 'fetch' })"
+    }
+    throw 'unmapped census Git operation'
+  }
+  function script:Complete-CensusEvaluation {
+    param($Budget,[long]$ElapsedMs)
+    $s = $script:budgetStats
+    $entry = @($s.evaluations | Where-Object generation -EQ $Budget.watch.restarts)
+    if ($entry.Count -eq 0) {
+      $entry = @{generation=$Budget.watch.restarts; cap=$Budget.deadline; calls=0; gitMs=0L; charges=0L;
+        operationNames=[Collections.Generic.List[string]]::new(); spawnCount=0; cumulativeMeter=[Collections.Generic.List[long]]::new();
+        gitElapsedMs=[Collections.Generic.List[long]]::new(); producerPreBudgetMs=[long]$s.producerPendingMs; wholeCallMs=$null}
+      $s.producerPendingMs = 0L
+      $s.evaluations.Add($entry)
+    } else { $entry = $entry[0] }
+    $entry.wholeCallMs = $ElapsedMs
+  }
   function script:Get-ValidatedDispatchOwnershipRecord {
     param($RecordPath,$RuntimeRoot,$TempRoot,$DateKindSupported)
     $script:budgetStats.records++
@@ -25,12 +74,21 @@ $probe = {
     $s = $script:budgetStats
     $entry = @($s.evaluations | Where-Object generation -EQ $Budget.watch.restarts)
     if ($entry.Count -eq 0) {
-      $entry = @{generation=$Budget.watch.restarts; cap=$Budget.deadline; calls=0; gitMs=0L; charges=0L; reads=[Collections.Generic.List[string]]::new()}
+      $entry = @{generation=$Budget.watch.restarts; cap=$Budget.deadline; calls=0; gitMs=0L; charges=0L; reads=[Collections.Generic.List[string]]::new();
+        operationNames=[Collections.Generic.List[string]]::new(); spawnCount=0; cumulativeMeter=[Collections.Generic.List[long]]::new();
+        gitElapsedMs=[Collections.Generic.List[long]]::new(); producerPreBudgetMs=[long]$s.producerPendingMs; wholeCallMs=$null;
+        entryOffset=$script:budgetEntryOffset}
+      $s.producerPendingMs = 0L
       $s.evaluations.Add($entry)
+      # Fixed synthetic pre-Git meter offset, deliberately outside $entry.charges,
+      # so the captured elapsed meter can never equal the charge ledger.
+      $Budget.watch.Charge($script:budgetEntryOffset)
     } else { $entry = $entry[0] }
     $entry.calls++; $s.calls++
+    $entry.operationNames.Add((Get-CensusOperationName $Checkout $Arguments))
     $Budget.watch.Charge(1); $entry.charges++
     $entry.reads.Add("$Checkout|$($Arguments -join ' ')")
+    $beforeSpawns = $s.spawns
     $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
       if (($script:budgetMode -eq 'loaded' -and $s.calls -eq 1) -or
@@ -51,8 +109,26 @@ $probe = {
       if ($script:budgetMode -eq 'unknown') { throw 'synthetic-secret-unknown' }
       & $script:nativeBudgetGit $Checkout $Arguments $Budget
     } finally {
-      $entry.gitMs += $timer.ElapsedMilliseconds
-      $s.gitMs += $timer.ElapsedMilliseconds
+      $elapsed = $timer.ElapsedMilliseconds
+      $entry.gitMs += $elapsed
+      $entry.gitElapsedMs.Add($elapsed)
+      $entry.spawnCount += ($s.spawns - $beforeSpawns)
+      $entry.cumulativeMeter.Add([long]$Budget.watch.ElapsedMilliseconds)
+      $s.gitMs += $elapsed
+    }
+  }
+  if ($Site -eq 'authentication' -and (Get-Command Assert-RebaseProducerProcess -CommandType Function -ErrorAction SilentlyContinue)) {
+    $script:nativeBudgetProducer = ${function:Assert-RebaseProducerProcess}
+    function script:Assert-RebaseProducerProcess {
+      param($Runtime)
+      $timer = [Diagnostics.Stopwatch]::StartNew()
+      try { & $script:nativeBudgetProducer $Runtime }
+      finally {
+        $elapsed = $timer.ElapsedMilliseconds
+        $script:budgetStats.producerMs += $elapsed
+        $script:budgetStats.producerPendingMs += $elapsed
+        $script:budgetStats.producerCalls++
+      }
     }
   }
   $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -69,18 +145,95 @@ $probe = {
   [pscustomobject]@{value=$value;failure=$failure;stats=$script:budgetStats;elapsedMs=$timer.ElapsedMilliseconds}
 }
 
-function Invoke-BudgetProbe($Fixture,$Obligation,$OwnerPath,[string]$Source,[string]$Site,[string]$Mode,[switch]$Unscoped) {
+function Invoke-BudgetProbe($Fixture,$Obligation,$OwnerPath,[string]$Source,[string]$Site,[string]$Mode,[switch]$Unscoped,[scriptblock]$Probe=$probe) {
   $module = Import-Module (Join-Path $Source 'landed-integration-evidence.psm1') -Force -PassThru -DisableNameChecking
-  try { & $module $probe $Fixture $Obligation $OwnerPath $Site $Mode $Unscoped.IsPresent }
+  try { & $module $Probe $Fixture $Obligation $OwnerPath $Site $Mode $Unscoped.IsPresent $CensusEntryOffset }
   finally { Remove-Module $module }
 }
 function Write-BudgetMeasurement($Result,[string]$Site,[string]$Mode) {
   $s=$Result.stats
-  Write-Output ("MEASURED " + (@{site=$Site;mode=$Mode;gitSegmentMs=$s.gitMs;wholeCallMs=$Result.elapsedMs;
+  Write-Output ("MEASUREMENT " + (@{site=$Site;mode=$Mode;gitSegmentMs=$s.gitMs;wholeCallMs=$Result.elapsedMs;
     evaluations=$s.evaluations.Count;gitCalls=$s.calls;gitSpawns=$s.spawns;recordReads=$s.records;records=2;seats=2;
+    producerProcessPreBudgetMs=$s.producerMs;producerProcessCalls=$s.producerCalls;operationMatrix=(Get-CensusOperationMatrix $Site);
+    evaluationEnvelope=@($s.evaluations | ForEach-Object { @{generation=$_.generation;operationNames=@($_.operationNames);spawnCount=$_.spawnCount;
+      gitElapsedMs=@($_.gitElapsedMs);producerProcessPreBudgetMs=$_.producerPreBudgetMs;cumulativeMeter=@($_.cumulativeMeter);
+      wholeCallMs=$_.wholeCallMs} });
     signal='exact git-deadline only';evaluationCaps=@($s.evaluations | ForEach-Object cap);
     evaluationGitMs=@($s.evaluations | ForEach-Object gitMs);evaluationCharges=@($s.evaluations | ForEach-Object charges);
-    generations=@($s.evaluations | ForEach-Object generation);refusedOutcomes=@($s.outcomes)} | ConvertTo-Json -Compress))
+    generations=@($s.evaluations | ForEach-Object generation);refusedOutcomes=@($s.outcomes)} | ConvertTo-Json -Depth 8 -Compress))
+}
+function New-CensusEvaluationExpectation([string[]]$OperationNames,[long[]]$CumulativeMeter,[int]$SpawnCount,[string]$StopReason,[string]$StopPoint) {
+  [pscustomobject]@{operationNames=@($OperationNames);cumulativeMeter=@($CumulativeMeter);spawnCount=$SpawnCount;
+    gitElapsedCount=@($OperationNames).Count;stopReason=$StopReason;stopPoint=$StopPoint}
+}
+function Get-CensusFreshMeter([int]$Count) {
+  $meter=[Collections.Generic.List[long]]::new()
+  for($i=1;$i -le $Count;$i++) { $meter.Add([long]($CensusEntryOffset+$i)) }
+  return @($meter)
+}
+function Get-CensusCrossingMeter([int]$Count) {
+  $meter=[Collections.Generic.List[long]]::new()
+  for($i=1;$i -lt $Count;$i++) { $meter.Add([long]($CensusEntryOffset+$i)) }
+  $meter.Add([long]($CensusEntryOffset+5001+$Count))
+  return @($meter)
+}
+function Get-CensusEvaluationExpectations([string]$Site,[string]$Mode) {
+  $matrix=@(Get-CensusOperationMatrix $Site)
+  $seatSuffix=@('seat.repository','seat.branch','seat.remote','seat.endpoint.fetch','seat.endpoint.push','seat.config')
+  $anchorConfigIndex=[array]::IndexOf($matrix,'anchor.config')
+  $anchorPrefix=@($matrix[0..$anchorConfigIndex])
+  $firstOperation=@($matrix[0])
+  $fresh=Get-CensusFreshMeter $matrix.Count
+  $crossingFirst=Get-CensusCrossingMeter $firstOperation.Count
+  $crossingAnchor=Get-CensusCrossingMeter $anchorPrefix.Count
+  switch($Mode) {
+    'quiet' {
+      return @(New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'loaded' {
+      return @(New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0]),
+        (New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'unauthorized' {
+      $operations=@($matrix+$seatSuffix)
+      return @(New-CensusEvaluationExpectation $operations (Get-CensusFreshMeter $operations.Count) $operations.Count 'authorization-refusal' $operations[-1])
+    }
+    'persistent' {
+      return @(New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0]),
+        (New-CensusEvaluationExpectation $firstOperation $crossingFirst 0 'git-deadline' $firstOperation[0])
+    }
+    'unknown' {
+      return @(New-CensusEvaluationExpectation $firstOperation (Get-CensusFreshMeter $firstOperation.Count) 0 'unknown-refusal' $firstOperation[0])
+    }
+    'poisoned-anchor' {
+      return @(New-CensusEvaluationExpectation $anchorPrefix $crossingAnchor ($anchorPrefix.Count-1) 'git-deadline' $anchorPrefix[-1]),
+        (New-CensusEvaluationExpectation $matrix $fresh $matrix.Count 'complete-matrix' 'complete-matrix')
+    }
+    'changed-identity' {
+      $operations=@($matrix+$seatSuffix)
+      return @(New-CensusEvaluationExpectation $anchorPrefix $crossingAnchor ($anchorPrefix.Count-1) 'git-deadline' $anchorPrefix[-1]),
+        (New-CensusEvaluationExpectation $operations (Get-CensusFreshMeter $operations.Count) $operations.Count 'changed-identity-refusal' $operations[-1])
+    }
+    default { throw "unknown census evaluation mode: $Mode" }
+  }
+}
+function Assert-BudgetOperationMatrix($Result,[string]$Site,[string]$Mode) {
+  $expected=@(Get-CensusEvaluationExpectations $Site $Mode)
+  Assert-CensusFixture ($Result.stats.evaluations.Count -eq $expected.Count) "$Site/$Mode expected envelope count"
+  for($i=0;$i-lt$expected.Count;$i++) {
+    $expectation=$expected[$i]
+    $entry=$Result.stats.evaluations[$i]
+    $label="$Site/$Mode evaluation=$($i+1) stop=$($expectation.stopPoint)"
+    if($expectation.stopReason -eq 'complete-matrix') {
+      Assert-CensusFixture ($entry.operationNames.Count -eq $expectation.operationNames.Count) "$Site/$Mode one complete operation matrix"
+    }
+    Assert-CensusFixture ((@($entry.operationNames) -join '|') -ceq (@($expectation.operationNames) -join '|')) "$label operation prefix exact"
+    Assert-CensusFixture ($entry.spawnCount -eq $expectation.spawnCount) "$label native spawn envelope"
+    Assert-CensusFixture ((@($entry.cumulativeMeter) -join '|') -ceq (@($expectation.cumulativeMeter) -join '|')) "$label cumulative meter exact sequence"
+    Assert-CensusFixture ($entry.gitElapsedMs.Count -eq $expectation.gitElapsedCount) "$label Git elapsed envelope"
+    Assert-CensusFixture ($null -ne $entry.wholeCallMs) "$label whole-call elapsed captured"
+  }
+  Write-Output "CONTROL product-census-budget-operation-matrix $Site $Mode PASS evaluations=$($expected.Count)"
 }
 function Assert-BudgetResult($Result,[string]$Site,[string]$Mode,[int]$Evaluations) {
   Assert-CensusFixture ($Result.stats.evaluations.Count -eq $Evaluations) "$Site/$Mode allowance evaluations=$Evaluations"
@@ -249,6 +402,10 @@ try {
     Assert-CensusFixture ([regex]::Matches($instrumented,[regex]::Escape($retryGuard)).Count -eq 1) 'one shared retry decision'
     $instrumented=$instrumented.Replace($retryGuard,'$script:budgetStats.outcomes.Add($_.Exception.Message); ' + $retryGuard)
   }
+  $evaluationCall='try { return & $Evaluate $budget }'
+  Assert-CensusFixture ([regex]::Matches($instrumented,[regex]::Escape($evaluationCall)).Count -eq 1) 'one census evaluation timing hook'
+  $evaluationTimedCall='try { $censusEvaluationTimer=[Diagnostics.Stopwatch]::StartNew(); try { return & $Evaluate $budget } finally { if ($script:budgetStats -and (Get-Command Complete-CensusEvaluation -CommandType Function -ErrorAction SilentlyContinue)) { Complete-CensusEvaluation $budget $censusEvaluationTimer.ElapsedMilliseconds } } }'
+  $instrumented=$instrumented.Replace($evaluationCall,$evaluationTimedCall)
   [IO.File]::WriteAllText($ownershipPath,$instrumented)
   foreach ($site in @('ownership','authentication')) {
     foreach ($mode in @('quiet','loaded','unauthorized','persistent','unknown','poisoned-anchor','changed-identity')) {
@@ -273,6 +430,7 @@ try {
         } else {
           $count=if ($mode -in @('loaded','persistent','poisoned-anchor','changed-identity')) {2} else {1}
           Assert-BudgetResult $result $site $mode $count
+          Assert-BudgetOperationMatrix $result $site $mode
           if ($mode -in @('loaded','poisoned-anchor')) {
             Assert-CensusFixture ($result.stats.evaluations[0].charges -gt 5000 -and
               $result.stats.evaluations[1].reads.Count -eq $quietGitCalls -and
@@ -290,6 +448,49 @@ try {
     if ($failures.Count) { throw ($failures -join "`n") }
     return
   }
+  # AC2: the pair is predeclared as the unchanged copied subject. The
+  # reduction-removed mutant deletes one native endpoint operation; the fixed
+  # matrix must turn that candidate into red without changing production.
+  $beforeCandidateHash = (Get-FileHash -LiteralPath $ownershipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $candidateReduction = [IO.File]::ReadAllText($ownershipPath)
+  $reductionOld = 'Assert-ProductCensusEndpoints $anchorPath $Budget'
+  Assert-CensusFixture ([regex]::Matches($candidateReduction,[regex]::Escape($reductionOld)).Count -eq 1) 'reduction mutant exact native endpoint anchor'
+  Write-Output "CONTROL product-census-budget-before-candidate pair=unchanged nativeInputs=identical productionChange=none sourceSha256=$beforeCandidateHash"
+  $sequenceMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet
+  foreach($entry in @($sequenceMutant.stats.evaluations)) {
+    # Named sequence-collapse mutant: a collapsed capture such as
+    # Add($entry.charges) must not satisfy the per-operation meter contract.
+    $entry.cumulativeMeter=[Collections.Generic.List[long]]::new()
+    $entry.cumulativeMeter.Add([long]$entry.charges)
+  }
+  $killed=$null
+  try { Assert-BudgetOperationMatrix $sequenceMutant ownership quiet } catch { $killed=$_.Exception.Message }
+  Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet evaluation=1 stop=complete-matrix cumulative meter exact sequence') 'sequence-collapse mutant killed by exact cumulative meter sequence'
+  Write-Output 'MUTANT product-census-budget-cumulative-meter sequence-collapse KILLED reason=cumulative-meter-sequence mutation=collapsed-Add(entry.charges)'
+  # Named per-operation charges mutant: the probe's own meter capture is
+  # rewritten to record the charge ledger. The fixed entry offset keeps every
+  # captured meter value distinct from the charge total, so this must go red.
+  $meterCapture='$entry.cumulativeMeter.Add([long]$Budget.watch.ElapsedMilliseconds)'
+  $probeText=$probe.ToString()
+  Assert-CensusFixture ([regex]::Matches($probeText,[regex]::Escape($meterCapture)).Count -eq 1) 'per-operation charges mutant exact meter capture anchor'
+  $chargesProbe=[scriptblock]::Create($probeText.Replace($meterCapture,'$entry.cumulativeMeter.Add([long]$entry.charges)'))
+  $chargesMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet -Probe $chargesProbe
+  $killed=$null
+  try { Assert-BudgetOperationMatrix $chargesMutant ownership quiet } catch { $killed=$_.Exception.Message }
+  $mutantMatrix=@(Get-CensusOperationMatrix ownership)
+  Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet evaluation=1 stop=complete-matrix cumulative meter exact sequence' -and
+    (@($chargesMutant.stats.evaluations[0].operationNames) -join '|') -ceq ($mutantMatrix -join '|') -and
+    (@($chargesMutant.stats.evaluations[0].cumulativeMeter) -join '|') -ceq ((1..$mutantMatrix.Count) -join '|')) 'per-operation charges mutant killed only by exact cumulative meter sequence'
+  Write-Output 'MUTANT product-census-budget-cumulative-meter per-operation-charges KILLED reason=cumulative-meter-sequence mutation=Add(entry.charges)'
+  try {
+    [IO.File]::WriteAllText($ownershipPath,$candidateReduction.Replace($reductionOld,'$null # SYNTHETIC_CENSUS_REDUCTION_REMOVED_MUTANT'))
+    $reductionMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet
+    $killed=$null
+    try { Assert-BudgetOperationMatrix $reductionMutant ownership quiet } catch { $killed=$_.Exception.Message }
+    Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet one complete operation matrix' -and
+      $reductionMutant.stats.evaluations[0].operationNames.Count -eq 9) 'reduction-removed mutant killed by exact operation matrix'
+    Write-Output "MUTANT product-census-budget-operation-matrix reduction-removed KILLED reason=operation-matrix expected=13 observed=$($reductionMutant.stats.evaluations[0].operationNames.Count)"
+  } finally { [IO.File]::WriteAllText($ownershipPath,$candidateReduction) }
   $result=Invoke-BudgetProbe $f $obligation $owner.path $source publication persistent
   Assert-BudgetResult $result publication persistent 2
   Assert-CensusFixture (@(Get-ChildItem $f.runtime -Filter 'integration-rebase-*').Count -eq 0 -and
@@ -407,6 +608,7 @@ try {
     }
   } finally { Remove-Module $module }
   Write-Output 'CONTROL product-census-budget-shared-rule source-derived-nondeadline/unknown/smaller-cap PASS'
+  Write-Output 'CONCLUSION no causal reduction was demonstrated or implemented in this slice'
   if ($failures.Count) { throw ($failures -join "`n") }
   Write-Output 'PASS product-census-budget'
 } finally { Remove-CensusFixture $parent }
