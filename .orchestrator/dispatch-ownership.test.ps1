@@ -319,11 +319,11 @@ try {
   # The poisoned source has two valid records and the synthetic source has one;
   # health and exact census counts make a source substitution fail closed.
   $poisonedDefaultRuntime = New-ControlRuntime "poisoned-default-runtime"
-  $poisonedWorktree = Add-ControlWorktree $identityMain "lane-98-poisoned-default" "control/poisoned-default"
+  $poisonedWorktree = Add-ControlWorktree $identityMain "lane-98" "control/poisoned-default"
   New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000aa" | Out-Null
   New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000ab" | Out-Null
   $guardRuntime = New-ControlRuntime "synthetic-census-guard-runtime"
-  $guardWorktree = Add-ControlWorktree $identityMain "lane-99-census-guard" "control/census-guard"
+  $guardWorktree = Add-ControlWorktree $identityMain "lane-99" "control/census-guard"
   $guardRecord = New-ReducerOwnershipRecord $guardRuntime $guardWorktree -LaunchId "00000000-0000-0000-0000-0000000000ac"
   $guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container
   Assert-True ($guardOwners.health.status -ceq "ok" -and
