@@ -121,6 +121,23 @@ try {
   $modulePath = Join-Path $PSScriptRoot "codex-launch-boundary.psm1"
   $module = Import-Module $modulePath -Force -PassThru
   $contract = & $module { $script:CodexBoundaryContract }
+  $pinnedHarnessPath = [string]$contract.harnessPath
+  if ($Part -ceq 'portable') {
+    # Poison the module's native path before any portable code can resolve it.
+    # This makes an accidental live resolver call fail closed instead of
+    # launching an installed executable on a hosted runner.
+    $portableMissingHarness = Join-Path $testRoot "portable-installed-codex-must-not-be-used.exe"
+    & $module {
+      param($Path)
+      $script:CodexBoundaryContract.harnessPath = $Path
+    } $portableMissingHarness
+  }
+  $exportedRevalidation = Get-Command Test-CodexLaunchBoundaryStillValid -CommandType Function
+  foreach ($forbiddenParameter in @('HarnessResolver', 'SurfaceValidator')) {
+    if ($exportedRevalidation.Parameters.ContainsKey($forbiddenParameter)) {
+      throw "ASSERTION FAILED: exported revalidation exposes forbidden parameter $forbiddenParameter"
+    }
+  }
 
   $identity = $null
   if (-not $Part -or $Part -ceq 'local-smoke') {
@@ -140,10 +157,14 @@ try {
   $versionReader = { param($Path) $versionReads.count++; return "codex-cli 999.1.2" }.GetNewClosure()
   $absent = Join-Path $testRoot "absent\codex.exe"
   $code = Get-RefusalCode {
-    & $module {
-      param($Path, $Reader)
-      Resolve-CodexBoundaryHarnessInternal -ExecutablePath $Path -VersionReader $Reader
-    } $absent $versionReader
+    if ($Part -ceq 'portable') {
+      Resolve-CodexBoundaryHarness
+    } else {
+      & $module {
+        param($Path, $Reader)
+        Resolve-CodexBoundaryHarnessInternal -ExecutablePath $Path -VersionReader $Reader
+      } $absent $versionReader
+    }
   }
   Assert-True ($code -ceq "codex-boundary-harness-absent" -and $versionReads.count -eq 0) "absent harness refuses before child creation"
 
@@ -204,18 +225,20 @@ try {
   Assert-True (($minimalKeys -join "`n") -ceq ($expectedMinimalKeys -join "`n")) "behavioral child environment is an explicit closed set with no credential aliases"
   Write-Output "PASS codex boundary makes build identity observational while path/kind/version-shape discriminators fail closed"
 
-  $decoyDirectory = Join-Path $testRoot "decoy-path"
-  [void][IO.Directory]::CreateDirectory($decoyDirectory)
-  [IO.File]::WriteAllText((Join-Path $decoyDirectory "codex.exe"), "not a PE", [Text.UTF8Encoding]::new($false))
-  $oldPath = $env:PATH
-  try {
-    $env:PATH = "$decoyDirectory;$oldPath"
-    $decoyResult = Resolve-CodexBoundaryHarness
-    Assert-True ($decoyResult.path -ceq $contract.harnessPath) "earlier PATH decoy cannot change the pinned path"
-  } finally {
-    $env:PATH = $oldPath
+  if (-not $Part -or $Part -ceq 'local-smoke') {
+    $decoyDirectory = Join-Path $testRoot "decoy-path"
+    [void][IO.Directory]::CreateDirectory($decoyDirectory)
+    [IO.File]::WriteAllText((Join-Path $decoyDirectory "codex.exe"), "not a PE", [Text.UTF8Encoding]::new($false))
+    $oldPath = $env:PATH
+    try {
+      $env:PATH = "$decoyDirectory;$oldPath"
+      $decoyResult = Resolve-CodexBoundaryHarness
+      Assert-True ($decoyResult.path -ceq $pinnedHarnessPath) "earlier PATH decoy cannot change the pinned path"
+    } finally {
+      $env:PATH = $oldPath
+    }
+    Write-Output "PASS codex boundary resolution never consults PATH order or shims"
   }
-  Write-Output "PASS codex boundary resolution never consults PATH order or shims"
 
   # Retain the historical evidence bytes, but admit the live build from its
   # closed behavioral/capability surface rather than byte equality.
@@ -393,7 +416,6 @@ try {
   $boundary = ($profile | ConvertTo-Json -Depth 100) | ConvertFrom-Json -Depth 100 -DateKind String
   Move-Item -LiteralPath $ordinaryRoot -Destination (Join-Path $testRoot "ordinary\old-child")
   [void][IO.Directory]::CreateDirectory($ordinaryRoot)
-  $revalidationArguments = @{ Boundary = $boundary }
   if ($Part -ceq 'portable') {
     $portableHarnessResolver = { $identity }.GetNewClosure()
     $portableSurfaceValidator = {
@@ -404,10 +426,20 @@ try {
       } (& $portableSurfaceReader $Harness)
       return $contract.surfaceFixtureSha256
     }.GetNewClosure()
-    $revalidationArguments.HarnessResolver = $portableHarnessResolver
-    $revalidationArguments.SurfaceValidator = $portableSurfaceValidator
   }
-  $code = Get-RefusalCode { Test-CodexLaunchBoundaryStillValid @revalidationArguments }
+  $code = Get-RefusalCode {
+    if ($Part -ceq 'portable') {
+      & $module {
+        param($Boundary, $HarnessResolver, $SurfaceValidator)
+        Test-CodexLaunchBoundaryStillValidInternal `
+          -Boundary $Boundary `
+          -HarnessResolver $HarnessResolver `
+          -SurfaceValidator $SurfaceValidator
+      } $boundary $portableHarnessResolver $portableSurfaceValidator
+    } else {
+      Test-CodexLaunchBoundaryStillValid -Boundary $boundary
+    }
+  }
   Assert-True ($code -ceq "codex-boundary-revalidation-drift") "same path with changed filesystem identity refuses revalidation"
   Write-Output "PASS codex boundary revalidation detects construction-to-launch root drift"
 

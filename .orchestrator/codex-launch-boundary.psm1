@@ -860,8 +860,7 @@ function Add-CodexBoundaryProcessToJob {
   [ChaseSets.Controller.CodexBoundaryNative]::AssignProcess($Job, $ProcessId)
 }
 
-function Test-CodexLaunchBoundaryStillValid {
-  [CmdletBinding()]
+function Test-CodexLaunchBoundaryStillValidInternal {
   param(
     [Parameter(Mandatory)]$Boundary,
     [scriptblock]$HarnessResolver,
@@ -903,6 +902,14 @@ function Test-CodexLaunchBoundaryStillValid {
     }
   }
   return $true
+}
+
+function Test-CodexLaunchBoundaryStillValid {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)]$Boundary
+  )
+  return Test-CodexLaunchBoundaryStillValidInternal -Boundary $Boundary
 }
 
 Export-ModuleMember -Function @(
