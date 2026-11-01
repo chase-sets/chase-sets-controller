@@ -64,8 +64,19 @@ try {
     # part trusts must be documented by the real --help output.
     $fixtureOptions = @([regex]::Matches($expected, '(?m)^(--[A-Za-z][A-Za-z0-9-]*)\s*$') | ForEach-Object { $_.Groups[1].Value })
     if ($fixtureOptions.Count -eq 0) { throw 'CLAUDE_HELP_FIXTURE: pinned help fixture lists no options' }
+    # Only option declaration heads count: a short indent, optional "-x, ",
+    # comma-separated long options, optional <arg>/[arg] placeholders, then
+    # end of line or a two-space gap before the description. Description and
+    # continuation lines never declare an option.
+    $declarationHead = '^ {1,4}(?:-[A-Za-z], )?(?<names>--[A-Za-z][A-Za-z0-9-]*(?:, --[A-Za-z][A-Za-z0-9-]*)*)(?: (?:<[^>]+>|\[[^\]]+\]))*(?: {2,}\S.*)?$'
+    $declared = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($line in ($actual -split "\r?\n")) {
+      $m = [regex]::Match($line, $declarationHead)
+      if ($m.Success) { foreach ($name in ($m.Groups['names'].Value -split ', ')) { [void]$declared.Add($name) } }
+    }
+    if ($declared.Count -eq 0) { throw 'CLAUDE_HELP_FIXTURE: installed Claude --help declares no options' }
     foreach ($option in $fixtureOptions) {
-      if ($actual -notmatch "(?m)^\s*(-[A-Za-z], )?$([regex]::Escape($option))(\s|,|=|$)") {
+      if (-not $declared.Contains($option)) {
         throw "CLAUDE_HELP_FIXTURE: installed Claude --help does not document fixture option $option"
       }
     }
