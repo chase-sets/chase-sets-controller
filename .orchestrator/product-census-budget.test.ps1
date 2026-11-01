@@ -3,6 +3,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
 
+# Synthetic per-evaluation meter offset; not a charge, so meter != charges.
+$CensusEntryOffset = 7L
+
 function Get-CensusOperationMatrix([string]$Site) {
   if ($Site -ceq 'ownership') {
     return @('seat.repository','seat.branch','anchor.repository','product.repository','container.repository',
@@ -20,13 +23,14 @@ function Get-CensusOperationMatrix([string]$Site) {
 # All Git repositories, records and process identities are local synthetic
 # fixtures. Only copied budget reads are metered; native proof and authorizers run.
 $probe = {
-  param($Fixture, $Obligation, $OwnerPath, $Site, $Mode, $Unscoped)
+  param($Fixture, $Obligation, $OwnerPath, $Site, $Mode, $Unscoped, $EntryOffset)
   $script:budgetStats = @{ evaluations=[Collections.Generic.List[object]]::new();
     outcomes=[Collections.Generic.List[string]]::new(); gitMs=0L; calls=0; spawns=0; records=0;
     producerMs=0L; producerPendingMs=0L; producerCalls=0 }
   $script:nativeBudgetGit = ${function:Invoke-ProductCensusGit}
   $script:nativeBudgetRecord = ${function:Get-ValidatedDispatchOwnershipRecord}
   $script:budgetMode = $Mode
+  $script:budgetEntryOffset = [long]$EntryOffset
   $script:budgetFixture = $Fixture
   $script:budgetOwnerPath = $OwnerPath
   $script:delayedAnchor = $false
@@ -72,9 +76,13 @@ $probe = {
     if ($entry.Count -eq 0) {
       $entry = @{generation=$Budget.watch.restarts; cap=$Budget.deadline; calls=0; gitMs=0L; charges=0L; reads=[Collections.Generic.List[string]]::new();
         operationNames=[Collections.Generic.List[string]]::new(); spawnCount=0; cumulativeMeter=[Collections.Generic.List[long]]::new();
-        gitElapsedMs=[Collections.Generic.List[long]]::new(); producerPreBudgetMs=[long]$s.producerPendingMs; wholeCallMs=$null}
+        gitElapsedMs=[Collections.Generic.List[long]]::new(); producerPreBudgetMs=[long]$s.producerPendingMs; wholeCallMs=$null;
+        entryOffset=$script:budgetEntryOffset}
       $s.producerPendingMs = 0L
       $s.evaluations.Add($entry)
+      # Fixed synthetic pre-Git meter offset, deliberately outside $entry.charges,
+      # so the captured elapsed meter can never equal the charge ledger.
+      $Budget.watch.Charge($script:budgetEntryOffset)
     } else { $entry = $entry[0] }
     $entry.calls++; $s.calls++
     $entry.operationNames.Add((Get-CensusOperationName $Checkout $Arguments))
@@ -137,9 +145,9 @@ $probe = {
   [pscustomobject]@{value=$value;failure=$failure;stats=$script:budgetStats;elapsedMs=$timer.ElapsedMilliseconds}
 }
 
-function Invoke-BudgetProbe($Fixture,$Obligation,$OwnerPath,[string]$Source,[string]$Site,[string]$Mode,[switch]$Unscoped) {
+function Invoke-BudgetProbe($Fixture,$Obligation,$OwnerPath,[string]$Source,[string]$Site,[string]$Mode,[switch]$Unscoped,[scriptblock]$Probe=$probe) {
   $module = Import-Module (Join-Path $Source 'landed-integration-evidence.psm1') -Force -PassThru -DisableNameChecking
-  try { & $module $probe $Fixture $Obligation $OwnerPath $Site $Mode $Unscoped.IsPresent }
+  try { & $module $Probe $Fixture $Obligation $OwnerPath $Site $Mode $Unscoped.IsPresent $CensusEntryOffset }
   finally { Remove-Module $module }
 }
 function Write-BudgetMeasurement($Result,[string]$Site,[string]$Mode) {
@@ -160,13 +168,13 @@ function New-CensusEvaluationExpectation([string[]]$OperationNames,[long[]]$Cumu
 }
 function Get-CensusFreshMeter([int]$Count) {
   $meter=[Collections.Generic.List[long]]::new()
-  for($i=1;$i -le $Count;$i++) { $meter.Add([long]$i) }
+  for($i=1;$i -le $Count;$i++) { $meter.Add([long]($CensusEntryOffset+$i)) }
   return @($meter)
 }
 function Get-CensusCrossingMeter([int]$Count) {
   $meter=[Collections.Generic.List[long]]::new()
-  for($i=1;$i -lt $Count;$i++) { $meter.Add([long]$i) }
-  $meter.Add([long](5001+$Count))
+  for($i=1;$i -lt $Count;$i++) { $meter.Add([long]($CensusEntryOffset+$i)) }
+  $meter.Add([long]($CensusEntryOffset+5001+$Count))
   return @($meter)
 }
 function Get-CensusEvaluationExpectations([string]$Site,[string]$Mode) {
@@ -458,7 +466,22 @@ try {
   $killed=$null
   try { Assert-BudgetOperationMatrix $sequenceMutant ownership quiet } catch { $killed=$_.Exception.Message }
   Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet evaluation=1 stop=complete-matrix cumulative meter exact sequence') 'sequence-collapse mutant killed by exact cumulative meter sequence'
-  Write-Output 'MUTANT product-census-budget-cumulative-meter sequence-collapse KILLED reason=cumulative-meter-sequence mutation=Add(entry.charges)'
+  Write-Output 'MUTANT product-census-budget-cumulative-meter sequence-collapse KILLED reason=cumulative-meter-sequence mutation=collapsed-Add(entry.charges)'
+  # Named per-operation charges mutant: the probe's own meter capture is
+  # rewritten to record the charge ledger. The fixed entry offset keeps every
+  # captured meter value distinct from the charge total, so this must go red.
+  $meterCapture='$entry.cumulativeMeter.Add([long]$Budget.watch.ElapsedMilliseconds)'
+  $probeText=$probe.ToString()
+  Assert-CensusFixture ([regex]::Matches($probeText,[regex]::Escape($meterCapture)).Count -eq 1) 'per-operation charges mutant exact meter capture anchor'
+  $chargesProbe=[scriptblock]::Create($probeText.Replace($meterCapture,'$entry.cumulativeMeter.Add([long]$entry.charges)'))
+  $chargesMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet -Probe $chargesProbe
+  $killed=$null
+  try { Assert-BudgetOperationMatrix $chargesMutant ownership quiet } catch { $killed=$_.Exception.Message }
+  $mutantMatrix=@(Get-CensusOperationMatrix ownership)
+  Assert-CensusFixture ($killed -ceq 'ASSERTION FAILED: ownership/quiet evaluation=1 stop=complete-matrix cumulative meter exact sequence' -and
+    (@($chargesMutant.stats.evaluations[0].operationNames) -join '|') -ceq ($mutantMatrix -join '|') -and
+    (@($chargesMutant.stats.evaluations[0].cumulativeMeter) -join '|') -ceq ((1..$mutantMatrix.Count) -join '|')) 'per-operation charges mutant killed only by exact cumulative meter sequence'
+  Write-Output 'MUTANT product-census-budget-cumulative-meter per-operation-charges KILLED reason=cumulative-meter-sequence mutation=Add(entry.charges)'
   try {
     [IO.File]::WriteAllText($ownershipPath,$candidateReduction.Replace($reductionOld,'$null # SYNTHETIC_CENSUS_REDUCTION_REMOVED_MUTANT'))
     $reductionMutant=Invoke-BudgetProbe $f $obligation $owner.path $source ownership quiet
