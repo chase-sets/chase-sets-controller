@@ -330,7 +330,7 @@ try {
     $guardOwners.health.counts.candidates -eq 1 -and
     $guardOwners.health.counts.examined -eq 1 -and
     $guardOwners.health.counts.truncated -eq 0 -and
-    @($guardOwners.activeLanes | Where-Object { $_.launchId -ceq $guardRecord.record.launchId }).Count -eq 1) "hosted ownership census reads only the synthetic runtime, never the poisoned default source"
+    @($guardOwners.activeLanes | Where-Object { $_.launchId -ceq $guardRecord.record.launchId }).Count -eq 1) "hosted ownership census reads only the synthetic runtime, never the poisoned default source (status=$($guardOwners.health.status) candidates=$($guardOwners.health.counts.candidates) examined=$($guardOwners.health.counts.examined) truncated=$($guardOwners.health.counts.truncated) diagnostics=$(@($guardOwners.health.diagnostics | ForEach-Object { $_.code }) -join ',') active=$(@($guardOwners.activeLanes | ForEach-Object { $_.launchId }) -join ','))"
   Write-Output "CONTROL hosted-census-source syntheticCandidates=1 poisonedCandidates=2 PASS"
 
   $advancedWorktree = Add-ControlWorktree $identityMain "lane-01" "agent/issue-6263-registration-atomicity"
