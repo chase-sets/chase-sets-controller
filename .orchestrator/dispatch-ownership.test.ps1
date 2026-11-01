@@ -7,6 +7,19 @@ $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 Assert-SuiteSelection $Part @('portable','local-smoke') $PSBoundParameters @('ProductCensusOnly','OrdinaryProofOnly')
 
+$sectionTimings = [ordered]@{}
+function Start-SectionTiming([string]$Name) {
+  $sectionTimings[$Name] = [Diagnostics.Stopwatch]::StartNew()
+}
+function Stop-SectionTiming([string]$Name) {
+  $watch = $sectionTimings[$Name]
+  if ($watch -is [Diagnostics.Stopwatch]) {
+    $watch.Stop()
+    Write-Output ("TIMING dispatch-ownership section={0} elapsedMs={1:F0}" -f $Name, $watch.Elapsed.TotalMilliseconds)
+    $sectionTimings[$Name] = $watch.Elapsed.TotalMilliseconds
+  }
+}
+
 function Invoke-DispatchOwnershipLocalSmoke {
   . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
   $liveRuntime = [IO.Path]::GetFullPath($PSScriptRoot)
@@ -34,6 +47,7 @@ if ($OrdinaryProofOnly) {
 # #9619: census verdicts run under the deterministic budget meter, never elapsed
 # real time. The real-clock deadline keeps its own directional controls: the
 # -DeadlineMs 0 truncation control below and product-census-budget.test.ps1.
+Start-SectionTiming 'product-census'
 Invoke-DeterministicBudget {
   Test-ProductCensusProjection
   Test-ProductCensusProofMatrix
@@ -42,6 +56,7 @@ Invoke-DeterministicBudget {
   Test-CensusGitOutputBound
   Test-CensusGitWaitSchedule
 }
+Stop-SectionTiming 'product-census'
 if ($ProductCensusOnly) { return }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("dispatch-ownership-test-" + [guid]::NewGuid())
@@ -226,6 +241,7 @@ function Get-BoundedAttemptProjection([scriptblock]$Projection, [string]$Mutatio
   }
 }
 
+Start-SectionTiming 'synthetic-reducer-ownership'
 try {
   $currentStart = Get-DispatchProcessStartIdentity $PID
   $identityJson = [ordered]@{ childStartIdentity = $currentStart } |
@@ -1019,12 +1035,14 @@ try {
   }
   Remove-Item -LiteralPath $rootResolved -Recurse -Force -ErrorAction SilentlyContinue
 }
+Stop-SectionTiming 'synthetic-reducer-ownership'
 
 if (-not $Part) {
   Invoke-DispatchOwnershipLocalSmoke
 }
 
 # #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
+Start-SectionTiming 'ordinary-proof'
 $ordinaryState = [ordered]@{branch='synthetic/9334';originalHead=('1'*40);onto=('2'*40);stoppedHead=('2'*40);stoppedCommit=('3'*40);oldBase=('4'*40);metadataSha256=('a'*64);indexSha256=('b'*64);stagesSha256=('c'*64);dirtySha256=('d'*64);stagedSha256=('e'*64);unstagedSha256=('f'*64)}
 $ordinaryBinding = [ordered]@{schemaVersion='interrupted-canonical-integration/v2'
   obligation=[ordered]@{schemaVersion='ordinary-integration/v1';pr=[long]996334;targetHead=('1'*40);newBase=('2'*40);branch='synthetic/9334';worktree='D:\synthetic\9334-lane';integrationLane='9334-shape'}
@@ -1050,12 +1068,14 @@ foreach ($name in $ordinaryMutations.Keys) {
 Write-Output 'PASS 9334 ordinary binding shape controls'
 . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 Test-9334OrdinaryProof
+Stop-SectionTiming 'ordinary-proof'
 
 # #9619 AC3 ambient-routing-stale-injection: the ambient routing root and LKG
 # name a registry 4 h old (past the 3 h freshness bound) with no LKG. The
 # carrier routes only from its own test scope, as every other carrier caller
 # does, so every captured child input must name that scope's root.
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
+Start-SectionTiming 'ownership-carrier-routing'
 $ambientRouting = [pscustomobject]@{ root = $env:CHASE_SETS_ROUTING_DATA_ROOT; lkg = $env:CHASE_SETS_ROUTING_LKG_PATH }
 $staleRoutingRoot = Join-Path ([IO.Path]::GetTempPath()) ('routing-stale-ambient-' + [guid]::NewGuid().ToString('N'))
 try {
@@ -1102,3 +1122,4 @@ try {
   $env:CHASE_SETS_ROUTING_LKG_PATH = $ambientRouting.lkg
   Remove-Item -LiteralPath $staleRoutingRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+Stop-SectionTiming 'ownership-carrier-routing'
