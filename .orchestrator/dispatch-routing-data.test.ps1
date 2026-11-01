@@ -132,9 +132,8 @@ function Test-CapacityCases([string]$Name) {
         $f=Copy-Forecast;$f.balance.toward=$toward;$f.balance.steps=$k;Set-Forecast $f
         $from=if($onToward){$toward}elseif($toward -ceq 'claude'){'codex'}else{'claude'}
         $model=if($from -ceq 'codex' -and $row -in @(14,15)){'gpt-6-astra'}elseif($from -ceq 'codex'){'gpt-6.1-sol'}else{'claude-opus-5-5'}
-        $request=@{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row}
-        if($row -eq 6){Assert-BrowserRowRefused $request "matrix $toward k=$k row=6 on=$onToward refuses before planning";$count++;continue}
-        $p=Plan $request
+        if($row -eq 6){Assert-BrowserRowRefused @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row} "matrix $toward k=$k row=6 on=$onToward refuses before planning";$count++;continue}
+        $p=Plan @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row}
         # Toward Claude every off-toward row with an admitted own Claude slot flips once steps >= 1;
         # toward Codex the ordered prefix still bounds the first k rows.
         $flip=if($toward -ceq 'claude'){-not $onToward -and $k -ge 1 -and $claudeEffort.ContainsKey($row)}else{-not $onToward -and $row -in @(@(3,13,10,4) | Select-Object -First $k)}
@@ -150,7 +149,7 @@ function Test-CapacityCases([string]$Name) {
         }
         $count++
       }}}}
-      Write-Output "PASS capacity matrix cases=$count (150 off-toward + 150 on-toward; every row toward Claude, prefix toward Codex; row 6 refuses before planning)"
+      Write-Output "PASS capacity matrix cases=$count (150 off-toward + 150 on-toward; every row toward Claude, prefix toward Codex)"
     }
     'capacity-history' {
       $branch=(& git -C $repo branch --show-current).Trim()

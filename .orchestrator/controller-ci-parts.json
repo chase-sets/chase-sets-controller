@@ -588,6 +588,66 @@
           ]
         },
         {
+          "offset": 28,
+          "remove": 1,
+          "original": [
+            "function Plan([hashtable]$Extra=@{}) {"
+          ],
+          "replacement": [
+            "function New-PlanParameters([hashtable]$Extra) {"
+          ]
+        },
+        {
+          "offset": 32,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  return $parameters",
+            "}",
+            "function Plan([hashtable]$Extra=@{}) {",
+            "  $parameters=New-PlanParameters $Extra"
+          ]
+        },
+        {
+          "offset": 35,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "# Row 6 (browser/computer use) is refused by dispatch-lane before routing (#239):",
+            "# exit 73 and no plan, including under -DryRun. The diagnostic text is asserted in dispatch-lane.test.ps1.",
+            "function Assert-BrowserRowRefused([hashtable]$Extra,[string]$Message) {",
+            "  $parameters=New-PlanParameters $Extra",
+            "  Assert-True ($parameters.Row -eq 6) \"browser refusal helper called for row $($parameters.Row)\"",
+            "  $global:LASTEXITCODE=0",
+            "  $output=@(& $LauncherPath @parameters)",
+            "  $exit=$LASTEXITCODE",
+            "  Assert-True ($exit -eq 73 -and $output.Count -eq 0) \"$Message (exit=$exit planOutputLines=$($output.Count))\"",
+            "}"
+          ]
+        },
+        {
+          "offset": 118,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "        if($row -eq 6){Assert-BrowserRowRefused @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row} \"matrix $toward k=$k row=6 on=$onToward refuses before planning\";$count++;continue}"
+          ]
+        },
+        {
+          "offset": 518,
+          "remove": 2,
+          "original": [
+            "      Assert-True ($null -ne (Plan ($astra+@{Row=6})).capacityFlip) 'valid attributed history does not exclude the row policy slot'",
+            "      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6}).capacityFlip) 'row 6 from Sol flips to its own Claude slot'"
+          ],
+          "replacement": [
+            "      Assert-BrowserRowRefused ($astra+@{Row=6}) 'row 6 from Astra refuses before planning'",
+            "      Assert-BrowserRowRefused @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=6} 'row 6 from Sol refuses before planning'",
+            "      Assert-True ($null -ne (Plan ($astra+@{Row=5})).capacityFlip) 'valid attributed history does not exclude the row policy slot'",
+            "      Assert-True ($null -ne (Plan @{Model='gpt-6.1-sol';Effort='high';Placement='provisional';Row=5}).capacityFlip) 'row 5 from Sol flips to its own Claude slot'"
+          ]
+        },
+        {
           "offset": 672,
           "remove": 1,
           "original": [
