@@ -103,6 +103,13 @@ function Get-CodexLaunchBoundaryPartMap {
   }
 }
 
+function Get-DispatchLaneInstalledClaudePartMap {
+  [ordered]@{
+    'portable'='portable'
+    'local-smoke'='local-smoke'
+  }
+}
+
 function Get-HistoricalSuitePartOwners([ValidateSet('rebase','watchdog')][string]$Suite,[string]$Source) {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
@@ -230,6 +237,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   if((Split-Path -Leaf $Path)-ceq'rebase-integration.test.ps1'){return @((Get-RebaseIntegrationPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'lane-stall-watchdog.test.ps1'){return @((Get-LaneWatchdogPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'codex-launch-boundary.test.ps1'){return @((Get-CodexLaunchBoundaryPartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'dispatch-lane-installed-claude.test.ps1'){return @((Get-DispatchLaneInstalledClaudePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'long-product-gate.test.ps1'){return @((Get-LongProductGatePartMap).Keys)}
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
