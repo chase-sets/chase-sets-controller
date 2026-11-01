@@ -227,9 +227,13 @@ try {
   # PASS at 01ca863b7907c77cad26eb7d0b1acd1d1e167594. No v2.94 merge change.
   # #8797 pagination: controller-8797-pagination-g4 revalidated this blob
   # against the unchanged 16-mutation manifest (all applied once and killed).
-  # #9123: controller-9123 repair revalidated this blob (Report velocityLanding projection and -Projection branch removed) against the unchanged 16-mutation manifest (all applied once and killed).
+  # #9123: controller-9123 repair revalidated the pre-3f89a50 blob (Report
+  # velocityLanding projection and -Projection branch removed) against the
+  # unchanged 16-mutation manifest (all applied once and killed).
+  # 3f89a50 added exact-head check-suite identity and changed the production
+  # blob; the same 16-mutation manifest remains the guard against regressions.
   Assert-6254Evidence ($LASTEXITCODE -eq 0 -and
-    $candidateBlob -ceq "839de71884b764ae3b7cd77db8602169ca7f3c62") `
+    $candidateBlob -ceq "ad64f4780ac2c4bb1c19218a4d37290ec56da33f") `
     "production landing-preflight blob changed (observed=$candidateBlob)"
 
   $applied = 0
