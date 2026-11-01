@@ -441,6 +441,56 @@ try {
     Write-Output "CONTROL batched-census-equivalence case=$Case processSnapshots=$($processSnapshotCalls.count) gitSnapshots=$($gitSnapshotCalls.count) truncated=$($batched.health.counts.truncated)"
   }
   foreach ($case in @('reused-pid', 'exited', 'ambiguous', 'truncated')) { Invoke-CensusComparison $case }
+  $denseRuntime = Join-Path $root 'dense-runtime'
+  [IO.Directory]::CreateDirectory($denseRuntime) | Out-Null
+  $denseWorktrees = [Collections.Generic.List[string]]::new()
+  foreach ($number in 1..25) {
+    $launch = '10000000-0000-0000-0000-{0:d12}' -f $number
+    $lane = 'dense-{0:d2}' -f $number
+    $worktree = Join-Path $container $lane
+    [IO.Directory]::CreateDirectory($worktree) | Out-Null
+    $record = $recordBytes[$foreignPath] | ConvertFrom-Json -DateKind String
+    $record.launchId = $launch
+    $record.promptPath = Join-Path $denseRuntime "dispatch-heavy-verifier-$launch.prompt.txt"
+    $record.childPid = 9000 + $number
+    $record.childStartIdentity = $instant.ToString('o')
+    $record.worktree = $worktree
+    $record.lane = $lane
+    $record.label = $lane
+    $record.transcriptPath = Join-Path $denseRuntime "$lane.jsonl"
+    [IO.File]::WriteAllText((Join-Path $denseRuntime "dispatch-launch-$launch.json"), ($record | ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($record.transcriptPath, "{`"type`":`"item.completed`"}`n")
+    $denseWorktrees.Add($worktree)
+  }
+  $denseProcessCalls = [pscustomobject]@{ count = 0 }
+  $denseGitCalls = [pscustomobject]@{ count = 0 }
+  $denseProcessSnapshot = {
+    param($ProcessIds)
+    $denseProcessCalls.count++
+    $map = [Collections.Generic.Dictionary[int, object]]::new()
+    foreach ($processId in @($ProcessIds)) {
+      $map[[int]$processId] = [pscustomobject]@{ state = 'live'; startIdentity = $instant.ToString('o') }
+    }
+    return $map
+  }.GetNewClosure()
+  $denseGitSnapshot = {
+    param($Worktrees, $ContainerRoot)
+    $denseGitCalls.count++
+    $map = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($worktree in @($Worktrees)) {
+      $canonical = Get-DispatchCanonicalRoot $worktree
+      $map[$canonical] = [pscustomobject]@{ status = 'ok'; worktree = $canonical; branch = 'synthetic/census'; head = ('a' * 40) }
+    }
+    return $map
+  }.GetNewClosure()
+  $dense = & $census $denseRuntime $temp $container 64 120000 `
+    -ProcessStateSnapshotResolver $denseProcessSnapshot -GitIdentitySnapshotResolver $denseGitSnapshot `
+    -ClockResolver { New-CensusClock }
+  Assert-True ($dense.health.status -ceq 'ok' -and $dense.health.counts.candidates -eq 25 -and
+    $dense.health.counts.examined -eq 25 -and $dense.health.counts.active -eq 25 -and
+    $dense.health.counts.truncated -eq 0 -and $denseProcessCalls.count -eq 1 -and $denseGitCalls.count -eq 1) `
+    "25-candidate batched census is complete with constant snapshot calls"
+  Write-Output "CONTROL batched-census-25 candidates=$($dense.health.counts.candidates) examined=$($dense.health.counts.examined) truncated=$($dense.health.counts.truncated) processSnapshots=$($denseProcessCalls.count) gitSnapshots=$($denseGitCalls.count)"
   if ($Mutant -ceq 'restore-per-candidate-snapshot') { throw 'ASSERTION FAILED: restore-per-candidate-snapshot mutant was not killed' }
   Write-Output 'MUTANT restore-per-candidate-snapshot KILLED'
 
