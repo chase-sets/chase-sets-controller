@@ -170,7 +170,7 @@ foreach($key in $ownershipBefore.Keys){
   if($ownershipRetirements -contains $key){continue}
   Assert-Ci ([int]$ownershipAfter[$key] -ge [int]$ownershipBefore[$key]) "dispatch ownership baseline proof lost: $key"
 }
-Assert-Ci ($ownershipRetirements.Count -eq 4) 'dispatch ownership conservation retirement census changed'
+Assert-Ci ($ownershipRetirements.Count -eq 3) 'dispatch ownership conservation retirement census changed'
 Assert-Ci ($ownershipSource.Contains('$guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container') -and
   $ownershipSource.Contains('$poisonedDefaultRuntime')) 'dispatch ownership synthetic source invocation drifted'
 foreach($name in @($ownershipItem.parts.name)){
