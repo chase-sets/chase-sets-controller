@@ -62,10 +62,19 @@ function Get-CimInstance {
 function Get-DispatchGitIdentity([string]$Worktree) {
   [pscustomobject]@{ status = 'ok'; worktree = $Worktree; branch = 'synthetic/ancestry'; head = ('a' * 40) }
 }
+function Get-DispatchGitIdentitySnapshot {
+  param([string[]]$Worktrees, [string]$ContainerRoot)
+  $snapshot = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($worktree in @($Worktrees)) {
+    $canonical = Get-DispatchCanonicalRoot $worktree
+    $snapshot[$canonical] = Get-DispatchGitIdentity $worktree
+  }
+  return $snapshot
+}
 function Get-LiveDispatchOwnership {
-  param($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$DeadlineMs, [scriptblock]$GitIdentityResolver)
+  param($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$DeadlineMs, [scriptblock]$GitIdentitySnapshotResolver)
   & $census -RuntimeRoot $RuntimeRoot -TempRoot $TempRoot -ContainerRoot $ContainerRoot -DeadlineMs $DeadlineMs `
-    -GitIdentityResolver $GitIdentityResolver -ProcessStateResolver {
+    -GitIdentitySnapshotResolver $GitIdentitySnapshotResolver -ProcessStateResolver {
       param($ProcessId, $StartIdentity)
       if (-not $processes.ContainsKey([int]$ProcessId)) { return 'dead' }
       if ($processes[[int]$ProcessId].Start.Ticks -ne [DateTimeOffset]::Parse($StartIdentity).UtcTicks) { return 'dead' }
