@@ -1155,11 +1155,11 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     $censusDeadlineMs = [int][Math]::Min($RemainingMs, $Evaluation.deadline-$Evaluation.watch.ElapsedMilliseconds)
     if ($censusDeadlineMs -le 0) { throw 'dispatch census evaluation exhausted' }
     Write-AdmissionPending $censusDeadlineMs
-    $live = Get-LiveDispatchOwnership -RuntimeRoot $runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $container -DeadlineMs $censusDeadlineMs -GitIdentityResolver {
-      param($Worktree)
-      $identity = Get-DispatchGitIdentity $Worktree
-      $observedGitIdentities[$Worktree] = $identity
-      return $identity
+    $live = Get-LiveDispatchOwnership -RuntimeRoot $runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $container -DeadlineMs $censusDeadlineMs -GitIdentitySnapshotResolver {
+      param($Worktrees, $ContainerRoot)
+      $snapshot = Get-DispatchGitIdentitySnapshot $Worktrees $ContainerRoot
+      foreach ($worktree in @($snapshot.Keys)) { $observedGitIdentities[$worktree] = $snapshot[$worktree] }
+      return $snapshot
     }
     Assert-DispatchObservationTime
     if ($Evaluation.ContainsKey('selectedPath') -and (-not [IO.File]::Exists($Evaluation.selectedPath) -or

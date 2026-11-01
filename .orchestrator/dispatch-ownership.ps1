@@ -291,6 +291,74 @@ function Get-DispatchProcessIdentityState([int]$ProcessId, [string]$StartIdentit
   }
 }
 
+function Get-DispatchProcessIdentitySnapshot([int[]]$ProcessIds) {
+  $wanted = [Collections.Generic.HashSet[int]]::new()
+  foreach ($processId in @($ProcessIds)) {
+    if ($processId -gt 0) { [void]$wanted.Add([int]$processId) }
+  }
+  $snapshot = [Collections.Generic.Dictionary[int, object]]::new()
+  foreach ($processId in @($ProcessIds)) {
+    if ($processId -le 0) {
+      $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+    }
+  }
+  $completed = $false
+  try {
+    foreach ($process in @(Get-Process -ErrorAction Stop)) {
+      $processId = 0
+      if (-not [int]::TryParse([string]$process.Id, [ref]$processId) -or
+          -not $wanted.Contains($processId)) { continue }
+      try {
+        $startIdentity = $process.StartTime.ToUniversalTime().ToString("o")
+        if ($snapshot.ContainsKey($processId)) {
+          $snapshot[$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+        } else {
+          $snapshot[$processId] = [pscustomobject]@{ state = "live"; startIdentity = $startIdentity }
+        }
+      } catch {
+        $snapshot[$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+    # A requested PID absent from a completed enumeration is not running: dead, as the per-PID helper reports.
+    foreach ($processId in $wanted) {
+      if (-not $snapshot.ContainsKey($processId)) {
+        $snapshot[$processId] = [pscustomobject]@{ state = "dead"; startIdentity = $null }
+      }
+    }
+    $completed = $true
+  } catch {
+    foreach ($processId in @($ProcessIds)) {
+      if ($processId -gt 0 -and -not $snapshot.ContainsKey([int]$processId)) {
+        $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+  }
+  if (-not $completed) {
+    foreach ($processId in @($ProcessIds)) {
+      if ($processId -gt 0) {
+        $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+  }
+  return $snapshot
+}
+
+function Get-DispatchProcessSnapshotState($Snapshot, [int]$ProcessId, [string]$StartIdentity) {
+  if ($ProcessId -le 0 -or -not (Test-DispatchUtcIdentity $StartIdentity)) { return "ambiguous" }
+  if ($null -eq $Snapshot -or -not $Snapshot.ContainsKey($ProcessId)) { return "dead" }
+  $observed = $Snapshot[$ProcessId]
+  if ($null -eq $observed) { return "ambiguous" }
+  if ([string]$observed.state -eq "dead") { return "dead" }
+  if ([string]$observed.state -ne "live") { return "ambiguous" }
+  try {
+    $expected = [DateTimeOffset]::Parse($StartIdentity).ToUniversalTime().Ticks
+    $actual = [DateTimeOffset]::Parse([string]$observed.startIdentity).ToUniversalTime().Ticks
+    return $(if ($actual -eq $expected) { "live" } else { "dead" })
+  } catch {
+    return "ambiguous"
+  }
+}
+
 function Test-DispatchFullyQualifiedPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   try {
@@ -744,6 +812,144 @@ function Get-DispatchGitIdentity([string]$Worktree) {
   }
 }
 
+function Get-DispatchGitIdentitySnapshot([string[]]$Worktrees, [string]$ContainerRoot) {
+  $requested = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($worktree in @($Worktrees)) {
+    if ([string]::IsNullOrWhiteSpace([string]$worktree)) { continue }
+    # Keep a canonical key even when the worktree is absent at snapshot time.
+    # The final evaluation must consume that recorded failure if the path is
+    # created during evaluation; it must not reopen Git authority.
+    $canonical = Get-DispatchCanonicalExistingPath ([string]$worktree)
+    if (-not $canonical) { $canonical = Get-DispatchCanonicalRoot ([string]$worktree) }
+    if ($canonical) { $requested[$canonical] = [string]$worktree }
+  }
+  $snapshot = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  $checkouts = [Collections.Generic.List[string]]::new()
+  $successfulCheckout = $false
+  $snapshotParseFailed = $false
+  foreach ($candidateCheckout in @($ContainerRoot, (Join-Path $ContainerRoot 'main'))) {
+    $checkout = Get-DispatchCanonicalExistingPath $candidateCheckout
+    if ($checkout -and -not $checkouts.Contains($checkout)) { $checkouts.Add($checkout) }
+  }
+  foreach ($checkout in $checkouts) {
+    $lines = @()
+    $gitExitCode = 1
+    try {
+      $lines = @(& git --no-optional-locks -C $checkout worktree list --porcelain 2>$null)
+      $gitExitCode = $LASTEXITCODE
+    } catch { $lines = @() }
+    if ($gitExitCode -ne 0 -or $lines.Count -eq 0) { continue }
+    $successfulCheckout = $true
+    $entries = [Collections.Generic.List[object]]::new()
+    $entry = $null
+    foreach ($line in $lines + @('')) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) {
+        if ($null -ne $entry) { $entries.Add([pscustomobject]$entry) }
+        $entry = $null
+        continue
+      }
+      $text = [string]$line
+      if ($text -cmatch '^worktree (.+)$') {
+        if ($null -ne $entry) {
+          # Git emits blank-delimited blocks. A second marker without a
+          # boundary is a malformed/truncated block, not a new valid entry.
+          $entry.invalid = $true
+          $entries.Add([pscustomobject]$entry)
+        }
+        $entry = [ordered]@{
+          path = $Matches[1]
+          pathCount = 1
+          head = $null
+          headCount = 0
+          branch = $null
+          branchCount = 0
+          detachedCount = 0
+          invalid = $false
+        }
+      } elseif ($null -eq $entry) {
+        # An entry cannot begin with a marker other than worktree.
+        $entries.Add([pscustomobject][ordered]@{ path = $null; pathCount = 0; head = $null; headCount = 0; branch = $null; branchCount = 0; detachedCount = 0; invalid = $true })
+      } elseif ($text -cmatch '^HEAD (.*)$') {
+        $entry.headCount++
+        if ($entry.headCount -eq 1) { $entry.head = $Matches[1].Trim().ToLowerInvariant() }
+        else { $entry.invalid = $true }
+      } elseif ($text -cmatch '^branch (\S+)$') {
+        $entry.branchCount++
+        if ($entry.branchCount -eq 1) {
+          $branchRef = $Matches[1]
+          $entry.branch = if ($branchRef.StartsWith('refs/heads/', [StringComparison]::Ordinal)) {
+            $branchRef.Substring(11)
+          } else { $branchRef }
+        } else { $entry.invalid = $true }
+      } elseif ($text -ceq 'detached') {
+        $entry.detachedCount++
+        if ($entry.detachedCount -gt 1) { $entry.invalid = $true }
+      } elseif ($text -cmatch '^prunable(?: .*)?$' -or $text -cmatch '^locked(?: .*)?$') {
+        # These are valid worktree-list state markers. They do not replace the
+        # required branch/detached identity marker.
+        continue
+      } else {
+        $entry.invalid = $true
+      }
+    }
+    foreach ($candidate in $entries) {
+      $candidateValid = -not [bool]$candidate.invalid -and
+        $candidate.pathCount -eq 1 -and $candidate.headCount -eq 1 -and
+        $candidate.branchCount + $candidate.detachedCount -eq 1 -and
+        [string]$candidate.head -cmatch '^[a-f0-9]{40}$'
+      if (-not $candidateValid) {
+        $snapshotParseFailed = $true
+        $candidateCanonical = if ([string]::IsNullOrWhiteSpace([string]$candidate.path)) { $null } else {
+          try { Get-DispatchCanonicalRoot ([string]$candidate.path) } catch { $null }
+        }
+        if ($candidateCanonical -and $requested.ContainsKey($candidateCanonical)) {
+          $snapshot[$candidateCanonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+        }
+        continue
+      }
+      $canonical = Get-DispatchCanonicalExistingPath ([string]$candidate.path)
+      if (-not $canonical) { $canonical = Get-DispatchCanonicalRoot ([string]$candidate.path) }
+      if ($canonical -and $requested.ContainsKey($canonical)) {
+        if ($snapshot.ContainsKey($canonical)) {
+          $snapshot[$canonical] = [pscustomobject]@{ status = 'mismatch'; worktree = $null; branch = $null; head = $null }
+        } else {
+          $snapshot[$canonical] = [pscustomobject]@{
+            status = 'ok'; worktree = $canonical; branch = [string]$candidate.branch; head = [string]$candidate.head
+          }
+        }
+      }
+    }
+  }
+  if ($snapshotParseFailed) {
+    # A malformed block is not local evidence. Fail every requested key closed
+    # so a second checkout cannot turn a partial porcelain stream into
+    # affirmative ownership.
+    foreach ($canonical in @($requested.Keys)) {
+      $snapshot[$canonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+    }
+  }
+  if (-not $successfulCheckout -and -not (Test-Path -LiteralPath (Join-Path $ContainerRoot '.git'))) {
+    # Explicit standalone compatibility: these fixtures have no repository
+    # checkout from which a worktree-list snapshot can answer identity. Bound
+    # this legacy fallback to the validated requested-candidate set, and never
+    # use it after a selected batch checkout returned a partial/error result.
+    foreach ($canonical in @($requested.Keys)) {
+      if (-not $snapshot.ContainsKey($canonical)) {
+        $snapshot[$canonical] = Get-DispatchGitIdentity $requested[$canonical]
+      }
+    }
+  }
+  foreach ($canonical in @($requested.Keys)) {
+    if (-not $snapshot.ContainsKey($canonical)) {
+      # A record missing from the one authoritative snapshot is unknown. Do
+      # not fall back to per-candidate Git calls or turn a moving worktree into
+      # affirmative ownership.
+      $snapshot[$canonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+    }
+  }
+  return $snapshot
+}
+
 # An attached branch and a branch undergoing native rebase are different Git
 # states. This projection preserves the logical branch without claiming HEAD is
 # attached. It is useful to *exclude* competing claimants, never to admit a
@@ -1153,9 +1359,17 @@ function Get-LiveDispatchOwnership(
     param($ProcessId, $StartIdentity)
     Get-DispatchProcessIdentityState ([int]$ProcessId) ([string]$StartIdentity)
   },
+  [scriptblock]$ProcessStateSnapshotResolver = {
+    param($ProcessIds)
+    Get-DispatchProcessIdentitySnapshot ([int[]]$ProcessIds)
+  },
   [scriptblock]$GitIdentityResolver = {
     param($Worktree)
     Get-DispatchGitIdentity ([string]$Worktree)
+  },
+  [scriptblock]$GitIdentitySnapshotResolver = {
+    param($Worktrees, $ContainerRoot)
+    Get-DispatchGitIdentitySnapshot ([string[]]$Worktrees) ([string]$ContainerRoot)
   },
   [scriptblock]$AttemptStateResolver = {
     param($TranscriptPath)
@@ -1167,6 +1381,8 @@ function Get-LiveDispatchOwnership(
   },
   [scriptblock]$ClockResolver = { [Diagnostics.Stopwatch]::StartNew() }
 ) {
+  $useProcessSnapshot = -not $PSBoundParameters.ContainsKey('ProcessStateResolver')
+  $useGitSnapshot = -not $PSBoundParameters.ContainsKey('GitIdentityResolver')
   $evaluationState = @{}
   $evaluate = {
   param($productBudget)
@@ -1240,6 +1456,39 @@ function Get-LiveDispatchOwnership(
   $watch = $productBudget.watch
   $watch.Restart()
   $productAnchors = @{}
+  $recordCache = @{}
+  $ownerProcessIds = [Collections.Generic.List[int]]::new()
+  $gitWorktrees = [Collections.Generic.List[string]]::new()
+  foreach ($recordPath in $orderedCandidatePaths) {
+    $record = Get-ValidatedDispatchOwnershipRecord $recordPath $runtimeResolved $TempRoot `
+      -DateKindSupported $dateKindSupported
+    $recordCache[$recordPath] = $record
+    if ($null -ne $record) {
+      $ownerProcessId = if ($record.state -ceq "started") { $record.childPid } else { $record.launcherPid }
+      $ownerProcessIds.Add([int]$ownerProcessId)
+      if ($record.schemaVersion -in @(4, 5)) { $gitWorktrees.Add([string]$record.worktree) }
+    }
+  }
+  $processSnapshot = $null
+  $processSnapshotFailed = $false
+  if ($useProcessSnapshot) {
+    try {
+      $processSnapshot = & $ProcessStateSnapshotResolver $ownerProcessIds.ToArray()
+      if ($null -eq $processSnapshot -or -not $processSnapshot.PSObject.Methods['ContainsKey']) {
+        $processSnapshotFailed = $true
+      }
+    } catch { $processSnapshot = $null; $processSnapshotFailed = $true }
+  }
+  $gitSnapshot = $null
+  $gitSnapshotFailed = $false
+  if ($useGitSnapshot) {
+    try {
+      $gitSnapshot = & $GitIdentitySnapshotResolver $gitWorktrees.ToArray() $containerResolved
+      if ($null -eq $gitSnapshot -or -not $gitSnapshot.PSObject.Methods['ContainsKey']) {
+        $gitSnapshotFailed = $true
+      }
+    } catch { $gitSnapshot = $null; $gitSnapshotFailed = $true }
+  }
   foreach ($recordPath in $orderedCandidatePaths) {
     if ($watch.ElapsedMilliseconds -ge $productBudget.deadline) {
       $deadlineUnexamined = $orderedCandidatePaths.Count - $counts.examined
@@ -1251,8 +1500,7 @@ function Get-LiveDispatchOwnership(
       break
     }
     $counts.examined += 1
-    $record = Get-ValidatedDispatchOwnershipRecord $recordPath $runtimeResolved $TempRoot `
-      -DateKindSupported $dateKindSupported
+    $record = $recordCache[$recordPath]
     if ($null -eq $record) {
       $counts.rejected += 1
       $diagnostics += [ordered]@{ code = "ownership-record-invalid" }
@@ -1262,7 +1510,16 @@ function Get-LiveDispatchOwnership(
     $ownerProcessId = if ($record.state -ceq "started") { $record.childPid } else { $record.launcherPid }
     $startIdentity = if ($record.state -ceq "started") { $record.childStartIdentity } else { $record.launcherStartIdentity }
     try {
-      $processState = & $ProcessStateResolver $ownerProcessId $startIdentity
+      if ($useProcessSnapshot -and -not $processSnapshotFailed -and
+          $processSnapshot.ContainsKey([int]$ownerProcessId)) {
+        $processState = Get-DispatchProcessSnapshotState $processSnapshot ([int]$ownerProcessId) $startIdentity
+      } elseif ($useProcessSnapshot) {
+        # A selected batch authority owns this candidate even when it is
+        # unavailable. Never replace it with a fresh per-candidate probe.
+        $processState = 'failed'
+      } else {
+        $processState = & $ProcessStateResolver $ownerProcessId $startIdentity
+      }
     } catch {
       $processState = "failed"
     }
@@ -1344,7 +1601,17 @@ function Get-LiveDispatchOwnership(
     }
     if (-not $platformSeat) {
     try {
-      $gitIdentity = & $GitIdentityResolver $canonicalWorktree
+      if ($useGitSnapshot -and -not $gitSnapshotFailed -and
+          $gitSnapshot.ContainsKey($canonicalWorktree)) {
+        $gitIdentity = $gitSnapshot[$canonicalWorktree]
+      } elseif ($useGitSnapshot) {
+        # A selected batch authority owns this candidate even when it is
+        # missing from the snapshot. Keep the recorded failure; do not reopen
+        # authority with a per-candidate Git call.
+        $gitIdentity = [pscustomobject]@{ status = 'failed' }
+      } else {
+        $gitIdentity = & $GitIdentityResolver $canonicalWorktree
+      }
     } catch {
       $gitIdentity = [pscustomobject]@{ status = "failed" }
     }
@@ -1421,6 +1688,9 @@ function Get-LiveDispatchOwnership(
 
     $logicalBranch = [string]$gitIdentity.branch
     if ($record.identityMode -ceq 'branch' -and [string]::IsNullOrWhiteSpace($logicalBranch)) {
+      # Porcelain deliberately reports detached during native rebase. The
+      # batch snapshot cannot establish the logical rebase branch, so this is
+      # the one bounded per-candidate Git authority retained for that state.
       try { $logicalBranch = Get-DispatchRebaseBranch $canonicalWorktree }
       catch {
         $counts.probeFailures += 1
