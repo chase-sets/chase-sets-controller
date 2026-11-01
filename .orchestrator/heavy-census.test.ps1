@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param([string]$GuardRevision = '',
-  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck')][string]$Mutant = '')
+  [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -20,7 +20,6 @@ function New-CensusClock {
   return $clock
 }
 $ownershipSource = Read-Source 'dispatch-ownership.ps1'
-. ([scriptblock]::Create($ownershipSource))
 $source = Read-Source 'invoke-heavy-verifier.ps1'
 if ($Mutant -ceq 'omit-truncation') {
   $needle = '$live.health.counts.truncated -gt 0 -or '
@@ -40,6 +39,17 @@ if ($Mutant -ceq 'omit-lock-expiry-recheck') {
   Assert-True ($source.Contains($needle)) 'omit-lock-expiry-recheck target exists'
   $source = $source.Replace($needle, '')
 }
+if ($Mutant -ceq 'restore-per-candidate-snapshot') {
+  foreach ($needle in @(
+      '$useProcessSnapshot = -not $PSBoundParameters.ContainsKey(''ProcessStateResolver'')',
+      '$useGitSnapshot = -not $PSBoundParameters.ContainsKey(''GitIdentityResolver'')'
+    )) {
+    Assert-True ($ownershipSource.Contains($needle)) "restore-per-candidate-snapshot target exists: $needle"
+  }
+  $ownershipSource = $ownershipSource.Replace('$useProcessSnapshot = -not $PSBoundParameters.ContainsKey(''ProcessStateResolver'')', '$useProcessSnapshot = $false')
+  $ownershipSource = $ownershipSource.Replace('$useGitSnapshot = -not $PSBoundParameters.ContainsKey(''GitIdentityResolver'')', '$useGitSnapshot = $false')
+}
+. ([scriptblock]::Create($ownershipSource))
 # Instrument only clock construction in extracted production functions.
 $source = $source.Replace('[Diagnostics.Stopwatch]::StartNew()', '(New-CensusClock)')
 $tokens = $null; $errors = $null
@@ -63,13 +73,23 @@ function Get-DispatchGitIdentity([string]$Worktree) {
   if ($fixture.Mode -ceq 'git-failed') { return [pscustomobject]@{ status = 'failed' } }
   return [pscustomobject]@{ status = 'ok'; worktree = $Worktree; branch = 'synthetic/census'; head = ('a' * 40) }
 }
+function Get-DispatchGitIdentitySnapshot {
+  param([string[]]$Worktrees, [string]$ContainerRoot)
+  $snapshot = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($worktree in @($Worktrees)) {
+    $fixture.GitCalls++
+    $fixture.Now += $fixture.Cost
+    $snapshot[(Get-DispatchCanonicalRoot $worktree)] = Get-DispatchGitIdentity $worktree
+  }
+  return $snapshot
+}
 function Write-AdmissionPending([int]$BudgetMs) { $fixture.Pending.Add($BudgetMs) }
 function Get-LiveDispatchOwnership {
-  param($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$DeadlineMs, [scriptblock]$GitIdentityResolver)
+  param($RuntimeRoot, $TempRoot, $ContainerRoot, [int]$DeadlineMs, [scriptblock]$GitIdentitySnapshotResolver)
   $fixture.Calls++
   Assert-True ($fixture.Pending.Count -gt 0 -and $fixture.Pending[-1] -eq $DeadlineMs -and
     $DeadlineMs -le 210000) 'every census receives its exact pending heartbeat budget'
-  $callerGitResolver = $GitIdentityResolver
+  $callerSnapshotResolver = $GitIdentitySnapshotResolver
   $parameters = @{
     RuntimeRoot = $RuntimeRoot; TempRoot = $TempRoot; ContainerRoot = $ContainerRoot; DeadlineMs = $DeadlineMs
     MaxRecords = $fixture.MaxRecords
@@ -77,11 +97,9 @@ function Get-LiveDispatchOwnership {
       if ($fixture.Mode -ceq 'process-unknown') { return 'failed' }
       return 'live'
     }
-    GitIdentityResolver = {
-      param($Worktree)
-      $fixture.GitCalls++
-      $fixture.Now += $fixture.Cost
-      & $callerGitResolver $Worktree
+    GitIdentitySnapshotResolver = {
+      param($Worktrees, $SnapshotContainerRoot)
+      & $callerSnapshotResolver $Worktrees $SnapshotContainerRoot
     }
   }
   $parameters.ClockResolver = { New-CensusClock }
@@ -369,6 +387,62 @@ try {
     $lockEffects.attempts -eq 1 -and $lockEffects.releases -eq 1 -and
     $lockEffects.queueRemovals -eq 0) "lock-acquired-expiry reason=$lockReason attempts=$($lockEffects.attempts) releases=$($lockEffects.releases) queueRemovals=$($lockEffects.queueRemovals)"
   Write-Output 'PASS lock-acquired-expiry: released empty lock before queue mutation or owner publication'
+
+  function Invoke-CensusComparison([string]$Case, [int]$MaxRecords = 64) {
+    Reset-Fixture
+    if ($Case -ceq 'truncated') { $MaxRecords = 10 }
+    $firstPid = 9001
+    $oldProcess = {
+      param($ProcessId, $StartIdentity)
+      if ([int]$ProcessId -eq $firstPid -and $Case -ceq 'exited') { return 'dead' }
+      if ([int]$ProcessId -eq $firstPid -and $Case -ceq 'reused-pid') { return 'dead' }
+      if ([int]$ProcessId -eq $firstPid -and $Case -ceq 'ambiguous') { return 'ambiguous' }
+      return 'live'
+    }.GetNewClosure()
+    $oldGit = {
+      param($Worktree)
+      [pscustomobject]@{ status = 'ok'; worktree = $Worktree; branch = 'synthetic/census'; head = ('a' * 40) }
+    }
+    $old = & $census $runtime $temp $container $MaxRecords 120000 `
+      -ProcessStateResolver $oldProcess -GitIdentityResolver $oldGit `
+      -ClockResolver { New-CensusClock }
+
+    $processSnapshotCalls = [pscustomobject]@{ count = 0 }
+    $gitSnapshotCalls = [pscustomobject]@{ count = 0 }
+    $processSnapshot = {
+      param($ProcessIds)
+      $processSnapshotCalls.count++
+      $map = [Collections.Generic.Dictionary[int, object]]::new()
+      foreach ($processId in @($ProcessIds)) {
+        $state = 'live'; $start = $instant.ToString('o')
+        if ([int]$processId -eq $firstPid -and $Case -ceq 'exited') { $state = 'dead'; $start = $null }
+        if ([int]$processId -eq $firstPid -and $Case -ceq 'reused-pid') { $state = 'live'; $start = $instant.AddSeconds(1).ToString('o') }
+        if ([int]$processId -eq $firstPid -and $Case -ceq 'ambiguous') { $state = 'ambiguous'; $start = $null }
+        $map[[int]$processId] = [pscustomobject]@{ state = $state; startIdentity = $start }
+      }
+      return $map
+    }.GetNewClosure()
+    $gitSnapshot = {
+      param($Worktrees, $ContainerRoot)
+      $gitSnapshotCalls.count++
+      $map = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+      foreach ($worktree in @($Worktrees)) {
+        $canonical = Get-DispatchCanonicalRoot $worktree
+        $map[$canonical] = [pscustomobject]@{ status = 'ok'; worktree = $canonical; branch = 'synthetic/census'; head = ('a' * 40) }
+      }
+      return $map
+    }.GetNewClosure()
+    $batched = & $census $runtime $temp $container $MaxRecords 120000 `
+      -ProcessStateSnapshotResolver $processSnapshot -GitIdentitySnapshotResolver $gitSnapshot `
+      -ClockResolver { New-CensusClock }
+    Assert-True ((($old | ConvertTo-Json -Depth 20 -Compress) -ceq
+        ($batched | ConvertTo-Json -Depth 20 -Compress))) "batched verdict equals per-candidate verdict: $Case"
+    Assert-True ($processSnapshotCalls.count -eq 1 -and $gitSnapshotCalls.count -eq 1) "batched invocation count is constant: $Case"
+    Write-Output "CONTROL batched-census-equivalence case=$Case processSnapshots=$($processSnapshotCalls.count) gitSnapshots=$($gitSnapshotCalls.count) truncated=$($batched.health.counts.truncated)"
+  }
+  foreach ($case in @('reused-pid', 'exited', 'ambiguous', 'truncated')) { Invoke-CensusComparison $case }
+  if ($Mutant -ceq 'restore-per-candidate-snapshot') { throw 'ASSERTION FAILED: restore-per-candidate-snapshot mutant was not killed' }
+  Write-Output 'MUTANT restore-per-candidate-snapshot KILLED'
 
   Reset-Fixture
   $binding = Get-HeavyCallerBinding

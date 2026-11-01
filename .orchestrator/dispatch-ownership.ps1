@@ -291,6 +291,68 @@ function Get-DispatchProcessIdentityState([int]$ProcessId, [string]$StartIdentit
   }
 }
 
+function Get-DispatchProcessIdentitySnapshot([int[]]$ProcessIds) {
+  $wanted = [Collections.Generic.HashSet[int]]::new()
+  foreach ($processId in @($ProcessIds)) {
+    if ($processId -gt 0) { [void]$wanted.Add([int]$processId) }
+  }
+  $snapshot = [Collections.Generic.Dictionary[int, object]]::new()
+  foreach ($processId in @($ProcessIds)) {
+    if ($processId -le 0) {
+      $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+    }
+  }
+  $completed = $false
+  try {
+    foreach ($process in @(Get-Process -ErrorAction Stop)) {
+      $processId = 0
+      if (-not [int]::TryParse([string]$process.Id, [ref]$processId) -or
+          -not $wanted.Contains($processId)) { continue }
+      try {
+        $startIdentity = $process.StartTime.ToUniversalTime().ToString("o")
+        if ($snapshot.ContainsKey($processId)) {
+          $snapshot[$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+        } else {
+          $snapshot[$processId] = [pscustomobject]@{ state = "live"; startIdentity = $startIdentity }
+        }
+      } catch {
+        $snapshot[$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+    $completed = $true
+  } catch {
+    foreach ($processId in @($ProcessIds)) {
+      if ($processId -gt 0 -and -not $snapshot.ContainsKey([int]$processId)) {
+        $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+  }
+  if (-not $completed) {
+    foreach ($processId in @($ProcessIds)) {
+      if ($processId -gt 0) {
+        $snapshot[[int]$processId] = [pscustomobject]@{ state = "ambiguous"; startIdentity = $null }
+      }
+    }
+  }
+  return $snapshot
+}
+
+function Get-DispatchProcessSnapshotState($Snapshot, [int]$ProcessId, [string]$StartIdentity) {
+  if ($ProcessId -le 0 -or -not (Test-DispatchUtcIdentity $StartIdentity)) { return "ambiguous" }
+  if ($null -eq $Snapshot -or -not $Snapshot.ContainsKey($ProcessId)) { return "dead" }
+  $observed = $Snapshot[$ProcessId]
+  if ($null -eq $observed) { return "ambiguous" }
+  if ([string]$observed.state -eq "dead") { return "dead" }
+  if ([string]$observed.state -ne "live") { return "ambiguous" }
+  try {
+    $expected = [DateTimeOffset]::Parse($StartIdentity).ToUniversalTime().Ticks
+    $actual = [DateTimeOffset]::Parse([string]$observed.startIdentity).ToUniversalTime().Ticks
+    return $(if ($actual -eq $expected) { "live" } else { "dead" })
+  } catch {
+    return "ambiguous"
+  }
+}
+
 function Test-DispatchFullyQualifiedPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   try {
@@ -744,6 +806,86 @@ function Get-DispatchGitIdentity([string]$Worktree) {
   }
 }
 
+function Get-DispatchGitIdentitySnapshot([string[]]$Worktrees, [string]$ContainerRoot) {
+  $requested = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($worktree in @($Worktrees)) {
+    if ([string]::IsNullOrWhiteSpace([string]$worktree)) { continue }
+    $canonical = Get-DispatchCanonicalExistingPath ([string]$worktree)
+    if ($canonical) { $requested[$canonical] = [string]$worktree }
+  }
+  $snapshot = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+  $checkouts = [Collections.Generic.List[string]]::new()
+  $successfulCheckout = $false
+  foreach ($candidateCheckout in @($ContainerRoot, (Join-Path $ContainerRoot 'main'))) {
+    $checkout = Get-DispatchCanonicalExistingPath $candidateCheckout
+    if ($checkout -and -not $checkouts.Contains($checkout)) { $checkouts.Add($checkout) }
+  }
+  foreach ($checkout in $checkouts) {
+    $lines = @()
+    $gitExitCode = 1
+    try {
+      $lines = @(& git --no-optional-locks -C $checkout worktree list --porcelain 2>$null)
+      $gitExitCode = $LASTEXITCODE
+    } catch { $lines = @() }
+    if ($gitExitCode -ne 0 -or $lines.Count -eq 0) { continue }
+    $successfulCheckout = $true
+    $entries = [Collections.Generic.List[object]]::new()
+    $entry = $null
+    foreach ($line in $lines + @('')) {
+      if ([string]::IsNullOrWhiteSpace([string]$line)) {
+        if ($null -ne $entry) { $entries.Add([pscustomobject]$entry) }
+        $entry = $null
+        continue
+      }
+      if ([string]$line -like 'worktree *') {
+        if ($null -ne $entry) { $entries.Add([pscustomobject]$entry) }
+        $entry = [ordered]@{ path = ([string]$line).Substring(9); head = $null; branch = '' }
+      } elseif ($null -ne $entry -and [string]$line -like 'HEAD *') {
+        $entry.head = ([string]$line).Substring(5).Trim().ToLowerInvariant()
+      } elseif ($null -ne $entry -and [string]$line -like 'branch *') {
+        $branchRef = ([string]$line).Substring(7).Trim()
+        $entry.branch = if ($branchRef.StartsWith('refs/heads/', [StringComparison]::Ordinal)) {
+          $branchRef.Substring(11)
+        } else { $branchRef }
+      } elseif ($null -ne $entry -and [string]$line -ceq 'detached') {
+        $entry.branch = ''
+      }
+    }
+    foreach ($candidate in $entries) {
+      if ([string]$candidate.head -cnotmatch '^[a-f0-9]{40}$') { continue }
+      $canonical = Get-DispatchCanonicalExistingPath ([string]$candidate.path)
+      if ($canonical -and $requested.ContainsKey($canonical)) {
+        if ($snapshot.ContainsKey($canonical)) {
+          $snapshot[$canonical] = [pscustomobject]@{ status = 'mismatch'; worktree = $null; branch = $null; head = $null }
+        } else {
+          $snapshot[$canonical] = [pscustomobject]@{
+            status = 'ok'; worktree = $canonical; branch = [string]$candidate.branch; head = [string]$candidate.head
+          }
+        }
+      }
+    }
+  }
+  if (-not $successfulCheckout -and -not (Test-Path -LiteralPath (Join-Path $ContainerRoot '.git'))) {
+    # A few integration helpers intentionally place one standalone repository
+    # beneath a non-repository fixture root. Preserve its exact old identity
+    # result; the live controller/product roots always take the batch above.
+    foreach ($canonical in @($requested.Keys)) {
+      if (-not $snapshot.ContainsKey($canonical)) {
+        $snapshot[$canonical] = Get-DispatchGitIdentity $requested[$canonical]
+      }
+    }
+  }
+  foreach ($canonical in @($requested.Keys)) {
+    if (-not $snapshot.ContainsKey($canonical)) {
+      # A record missing from the one authoritative snapshot is unknown. Do
+      # not fall back to per-candidate Git calls or turn a moving worktree into
+      # affirmative ownership.
+      $snapshot[$canonical] = [pscustomobject]@{ status = 'failed'; worktree = $null; branch = $null; head = $null }
+    }
+  }
+  return $snapshot
+}
+
 # An attached branch and a branch undergoing native rebase are different Git
 # states. This projection preserves the logical branch without claiming HEAD is
 # attached. It is useful to *exclude* competing claimants, never to admit a
@@ -1153,9 +1295,17 @@ function Get-LiveDispatchOwnership(
     param($ProcessId, $StartIdentity)
     Get-DispatchProcessIdentityState ([int]$ProcessId) ([string]$StartIdentity)
   },
+  [scriptblock]$ProcessStateSnapshotResolver = {
+    param($ProcessIds)
+    Get-DispatchProcessIdentitySnapshot ([int[]]$ProcessIds)
+  },
   [scriptblock]$GitIdentityResolver = {
     param($Worktree)
     Get-DispatchGitIdentity ([string]$Worktree)
+  },
+  [scriptblock]$GitIdentitySnapshotResolver = {
+    param($Worktrees, $ContainerRoot)
+    Get-DispatchGitIdentitySnapshot ([string[]]$Worktrees) ([string]$ContainerRoot)
   },
   [scriptblock]$AttemptStateResolver = {
     param($TranscriptPath)
@@ -1167,6 +1317,8 @@ function Get-LiveDispatchOwnership(
   },
   [scriptblock]$ClockResolver = { [Diagnostics.Stopwatch]::StartNew() }
 ) {
+  $useProcessSnapshot = -not $PSBoundParameters.ContainsKey('ProcessStateResolver')
+  $useGitSnapshot = -not $PSBoundParameters.ContainsKey('GitIdentityResolver')
   $evaluationState = @{}
   $evaluate = {
   param($productBudget)
@@ -1240,6 +1392,27 @@ function Get-LiveDispatchOwnership(
   $watch = $productBudget.watch
   $watch.Restart()
   $productAnchors = @{}
+  $recordCache = @{}
+  $ownerProcessIds = [Collections.Generic.List[int]]::new()
+  $gitWorktrees = [Collections.Generic.List[string]]::new()
+  foreach ($recordPath in $orderedCandidatePaths) {
+    $record = Get-ValidatedDispatchOwnershipRecord $recordPath $runtimeResolved $TempRoot `
+      -DateKindSupported $dateKindSupported
+    $recordCache[$recordPath] = $record
+    if ($null -ne $record) {
+      $ownerProcessId = if ($record.state -ceq "started") { $record.childPid } else { $record.launcherPid }
+      $ownerProcessIds.Add([int]$ownerProcessId)
+      if ($record.schemaVersion -in @(4, 5)) { $gitWorktrees.Add([string]$record.worktree) }
+    }
+  }
+  $processSnapshot = $null
+  if ($useProcessSnapshot) {
+    try { $processSnapshot = & $ProcessStateSnapshotResolver $ownerProcessIds.ToArray() } catch { $processSnapshot = $null }
+  }
+  $gitSnapshot = $null
+  if ($useGitSnapshot) {
+    try { $gitSnapshot = & $GitIdentitySnapshotResolver $gitWorktrees.ToArray() $containerResolved } catch { $gitSnapshot = $null }
+  }
   foreach ($recordPath in $orderedCandidatePaths) {
     if ($watch.ElapsedMilliseconds -ge $productBudget.deadline) {
       $deadlineUnexamined = $orderedCandidatePaths.Count - $counts.examined
@@ -1251,8 +1424,7 @@ function Get-LiveDispatchOwnership(
       break
     }
     $counts.examined += 1
-    $record = Get-ValidatedDispatchOwnershipRecord $recordPath $runtimeResolved $TempRoot `
-      -DateKindSupported $dateKindSupported
+    $record = $recordCache[$recordPath]
     if ($null -eq $record) {
       $counts.rejected += 1
       $diagnostics += [ordered]@{ code = "ownership-record-invalid" }
@@ -1262,7 +1434,12 @@ function Get-LiveDispatchOwnership(
     $ownerProcessId = if ($record.state -ceq "started") { $record.childPid } else { $record.launcherPid }
     $startIdentity = if ($record.state -ceq "started") { $record.childStartIdentity } else { $record.launcherStartIdentity }
     try {
-      $processState = & $ProcessStateResolver $ownerProcessId $startIdentity
+      if ($useProcessSnapshot -and $null -ne $processSnapshot -and
+          $processSnapshot.ContainsKey([int]$ownerProcessId)) {
+        $processState = Get-DispatchProcessSnapshotState $processSnapshot ([int]$ownerProcessId) $startIdentity
+      } else {
+        $processState = & $ProcessStateResolver $ownerProcessId $startIdentity
+      }
     } catch {
       $processState = "failed"
     }
@@ -1344,7 +1521,12 @@ function Get-LiveDispatchOwnership(
     }
     if (-not $platformSeat) {
     try {
-      $gitIdentity = & $GitIdentityResolver $canonicalWorktree
+      if ($useGitSnapshot -and $null -ne $gitSnapshot -and
+          $gitSnapshot.ContainsKey($canonicalWorktree)) {
+        $gitIdentity = $gitSnapshot[$canonicalWorktree]
+      } else {
+        $gitIdentity = & $GitIdentityResolver $canonicalWorktree
+      }
     } catch {
       $gitIdentity = [pscustomobject]@{ status = "failed" }
     }
