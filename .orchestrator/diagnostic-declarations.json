@@ -33,7 +33,7 @@
       "enabled": true,
       "kind": "standalone-node",
       "path": ".tmp/10761-json-census-cost/diagnostic-runner.mjs",
-      "sha256": "975e4e9356edde98d90861ea87a7b9654a1ab7d2f0a212de984a85bf453aa7b8",
+      "sha256": "50b2a18135f92913e162fc3ce97fd761361b181ec2b3c67aa23f4262ba8f3b42",
       "maxBudgetSeconds": 600
     }
   }

@@ -210,6 +210,43 @@ function deepFreeze(value) {
   }
   return value;
 }
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isNonNegativeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+function isPathList(value) {
+  if (!Array.isArray(value)) return false;
+  for (const item of value) if (typeof item !== "string" || item.length === 0) return false;
+  return true;
+}
+function assertWorkEvidence(work) {
+  if (!isRecord(work)) throw new Error("Mandatory inventory.work evidence is missing or malformed");
+  for (const name of ["gitSubprocesses", "wholeTreeScans"]) {
+    if (!isNonNegativeInteger(work[name])) throw new Error(`Malformed inventory.work.${name}`);
+  }
+  for (const name of [
+    "fileReads", "fullParses", "configParses", "indexCandidates",
+    "discoveredWorkspaces", "enrolledWorkspaces", "manifestCandidates",
+  ]) {
+    if (!isPathList(work[name])) throw new Error(`Malformed inventory.work.${name}`);
+  }
+  if (!isRecord(work.sourceIndex) || work.sourceIndex.kind !== "git-index-source/v1") {
+    throw new Error("Malformed inventory.work.sourceIndex");
+  }
+  for (const name of ["pathCount", "sourceCount", "prefilterCount", "candidateCount"]) {
+    if (!isNonNegativeInteger(work.sourceIndex[name])) throw new Error(`Malformed inventory.work.sourceIndex.${name}`);
+  }
+  if (!isPathList(work.sourceIndex.candidates)) throw new Error("Malformed inventory.work.sourceIndex.candidates");
+  if (!Array.isArray(work.closures)) throw new Error("Malformed inventory.work.closures");
+  for (const closure of work.closures) {
+    if (!isRecord(closure) || !isPathList(closure.seeds) || !isNonNegativeInteger(closure.indexed) ||
+      !isPathList(closure.relevant) || !isNonNegativeInteger(closure.size)) {
+      throw new Error("Malformed inventory.work.closures");
+    }
+  }
+}
 try {
   const config = JSON.parse(Buffer.from(process.env.CHASE_SETS_HEAVY_ADMISSION_CONFIG ?? "", "base64").toString("utf8"));
   const slot = process.env.CHASE_SETS_HEAVY_SLOT_ID;
@@ -245,7 +282,10 @@ try {
     return censusModule.validateJsonImportAttributes();
   });
   await stage("freeze", () => deepFreeze(result));
-  receipt.work = result.inventory.work;
+  const workJson = JSON.stringify(result.inventory.work);
+  const work = workJson === undefined ? undefined : JSON.parse(workJson);
+  assertWorkEvidence(work);
+  receipt.work = work;
   receipt.correctness = { declarations: result.inventory.declarations.length, partition: result.inventory.partition, violations: result.violations };
   artifact("work", receipt.work);
   session.disconnect(); session = undefined;

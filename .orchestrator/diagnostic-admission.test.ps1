@@ -65,7 +65,7 @@ Assert-True ((Test-Path -LiteralPath $censusRunnerSource -PathType Leaf) -and
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($censusRunnerSource))).ToLowerInvariant() -ceq $censusDeclaration.sha256) 'committed diagnostics/10761-json-census-runner.mjs hashes to the declared json-census-five-run sha256'
 Write-Output 'PASS release declaration json-census-five-run committed-runner sha256=declared'
 $costDeclaration = $releaseDeclarations.diagnostics.'json-census-cost-attribution'
-$costReviewedSha256 = '975e4e9356edde98d90861ea87a7b9654a1ab7d2f0a212de984a85bf453aa7b8'
+$costReviewedSha256 = '50b2a18135f92913e162fc3ce97fd761361b181ec2b3c67aa23f4262ba8f3b42'
 $costRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-cost-runner.mjs'
 Assert-True ($costDeclaration.enabled -eq $true -and $costDeclaration.kind -ceq 'standalone-node' -and
   $costDeclaration.path -ceq '.tmp/10761-json-census-cost/diagnostic-runner.mjs' -and
@@ -831,7 +831,26 @@ export function validateJsonImportAttributes(...args) {
   fs.readdirSync(new URL('../lib/', import.meta.url));
   fs.existsSync(new URL('../lib/repo.mjs', import.meta.url));
   childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true });
-  const work = { schema: 'inert-work/v1', traversals: 1, counts: { tracked: 6 }, retained: ['full', { nested: true }] };
+  const work = {
+    schema: 'inert-work/v1',
+    gitSubprocesses: 1,
+    wholeTreeScans: 0,
+    fileReads: ['scripts/lib/repo.mjs'],
+    fullParses: [],
+    configParses: [],
+    indexCandidates: ['scripts/lib/repo.mjs'],
+    discoveredWorkspaces: [],
+    enrolledWorkspaces: [],
+    manifestCandidates: [],
+    sourceIndex: {
+      kind: 'git-index-source/v1', pathCount: 1, sourceCount: 1,
+      prefilterCount: 1, candidateCount: 1, candidates: ['scripts/lib/repo.mjs'],
+    },
+    closures: [{ seeds: ['scripts/lib/repo.mjs'], indexed: 1, relevant: ['scripts/lib/repo.mjs'], size: 1 }],
+    traversals: 1,
+    counts: { tracked: 6 },
+    retained: ['full', { nested: true }],
+  };
   const result = { inventory: { work, declarations: [], partition: { inert: true } }, violations: [] };
   if (mode === 'freeze-error') result.bad = new Proxy({}, { ownKeys() { throw new Error('inert freeze error'); } });
   const inventory = result.inventory;
@@ -945,7 +964,9 @@ function deepFreeze(value) {
     $source -cnotmatch 'startPreciseCoverage|takePreciseCoverage|run\.mjs|spawn\(|execFile\(|process\.binding|registerHooks|\.open\(' -and
     $source.Contains('original[name].apply(this, args)') -and $source.Contains('original.execFileSync.apply(this, args)') -and
     $source.Contains('syncBuiltinESMExports()') -and $source.Contains('import(pathToFileURL(path.join(root, sourcePaths[0])).href)') -and
-    $source.Contains('receipt.work = result.inventory.work;')) 'cost-source: one production call, no Vitest/test/five-run/coverage/loader/transformation/debug listener; exact helper and guarded original wrappers'
+    $source.Contains('const workJson = JSON.stringify(result.inventory.work);') -and
+    $source.Contains('const work = workJson === undefined ? undefined : JSON.parse(workJson);') -and
+    $source.Contains('assertWorkEvidence(work);') -and $source.Contains('receipt.work = work;')) 'cost-source: one production call, no Vitest/test/five-run/coverage/loader/transformation/debug listener; exact helper and guarded original wrappers; mandatory work evidence is validated before publication'
   Write-Output 'PASS cost-source one-call=1 options=0 helper=exact guards=retained precise-coverage=off product-execution=NOT_EXECUTED'
   $scriptRelative=[string]$costDeclaration.path
   if ($CostPart -in @('All','Admission')) {
