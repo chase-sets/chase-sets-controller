@@ -653,6 +653,125 @@ Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Select-Object -Skip 1|Sort-O
 Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name)+@('r3-duplicate')|Sort-Object)-join',' -eq (@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) 'r3 duplicate part survived' }
 Write-Output 'PASS r3 named part ownership: selector map is complete and dropped/duplicate part mutants refuse'
 
+# Compare ordered assertion/control traces, not multisets. Only selector-only
+# conditions are evaluated; no fixture, test body, native child or fleet read runs.
+function Get-R3AggregateOrder([string]$Source,[string]$FunctionName) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'aggregate-order source parse failed'
+  $functions=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq$FunctionName},$true))
+  Assert-Ci ($functions.Count-eq1) "aggregate-order function missing/duplicated: $FunctionName"
+  foreach($node in $functions[0].Body.FindAll({param($n)
+    $n-is[Management.Automation.Language.CommandAst]-and($n.GetCommandName()-clike'Assert-*'-or$n.GetCommandName()-clike'Proof*'-or
+      $n.GetCommandName()-cin @('Check','Control','ValidPlan9334','Refusal9334','Discriminator9334','Mutant9334','New-Subject','Invoke-8102RetainedLeg','Test-9334OrdinaryCarrier'))
+  },$true)){
+    $included=$true
+    for($parent=$node.Parent;$parent-and$parent-ne$functions[0];$parent=$parent.Parent){
+      if($parent-isnot[Management.Automation.Language.IfStatementAst]){continue}
+      $conditions=@($parent.Clauses|ForEach-Object{$_.Item1})
+      $variables=@($conditions|ForEach-Object{$_.FindAll({param($n) $n-is[Management.Automation.Language.VariableExpressionAst]},$true)})
+      if($variables.Count-eq0-or@($variables|Where-Object{$_.VariablePath.UserPath-cne'Part'}).Count){continue}
+      Assert-Ci (@($conditions|ForEach-Object{$_.FindAll({param($n) $n-is[Management.Automation.Language.CommandAst]-or$n-is[Management.Automation.Language.InvokeMemberExpressionAst]},$true)}).Count-eq0) 'aggregate selector condition must be expression-only'
+      $selected=$parent.ElseClause
+      foreach($clause in $parent.Clauses){
+        if(& ([scriptblock]::Create('param($Part) '+$clause.Item1.Extent.Text)) ''){$selected=$clause.Item2;break}
+      }
+      if($null-eq$selected-or$node.Extent.StartOffset-lt$selected.Extent.StartOffset-or$node.Extent.EndOffset-gt$selected.Extent.EndOffset){$included=$false;break}
+    }
+    if($included){$node.GetCommandName()+':'+$node.Extent.Text}
+  }
+}
+function Assert-R3AggregateTrace([string[]]$Actual,[string[]]$Expected,[string]$FunctionName) {
+  Assert-Ci ($Expected.Count-gt0-and$Actual.Count-eq$Expected.Count) "aggregate assertion/control count changed: $FunctionName"
+  for($i=0;$i-lt$Expected.Count;$i++){
+    Assert-Ci ($Actual[$i]-ceq$Expected[$i]) "aggregate assertion/control order changed: $FunctionName index=$i"
+  }
+}
+function Assert-R3AggregateOrder([string]$Source,[string]$Baseline,[string]$FunctionName) {
+  $expected=@(Get-R3AggregateOrder $Baseline $FunctionName)
+  $actual=@(Get-R3AggregateOrder $Source $FunctionName)
+  Assert-R3AggregateTrace $actual $expected $FunctionName
+  return $actual.Count
+}
+$aggregateBase='67ecf1ff740ad8a65aa27689eb49e345854e2e68'
+$aggregateSources=@{
+  'interrupted-integration-test-support.ps1'=@{blob='d727ffd657698017569d7ae4dcf3d9823238f368';functions=@('Test-9334OrdinaryCarrier','Test-7963ResumeCarrier','Invoke-9334OrdinaryCarriers')}
+  'integration-dispatch-test-support.ps1'=@{blob='1d7a8fa8695478f02896f171bb74037d4a2e00af';functions=@('Test-7962NativeControls')}
+  'landed-integration-evidence-test-support.ps1'=@{blob='8e36cbefe749fbdd4eaa034d46cb773833bf51d1';functions=@('Test-7926CompletedRebase')}
+  'landed-integration-r3.test.ps1'=@{blob='a90ea0223b1e984134555c0107e410a321f341c1';functions=@('Test-TimedFixtureUnderFleetLoadMeasuresLoad')}
+}
+function Assert-RetainedFleetObservation([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'retained observation source parse failed'
+  $helpers=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Write-7963FleetLoadObservation'},$true))
+  Assert-Ci ($helpers.Count-eq1) 'retained observation helper missing/duplicated'
+  . ([scriptblock]::Create($helpers[0].Extent.Text))
+  $hook="if(`$LoadBound-and`$Carrier-ceq'retained'){Write-7963FleetLoadObservation (`$bypass.resultPath.Replace('.result.json','.pair.json')) `$fleetContainer}"
+  Assert-Ci ($Source.Contains("Save (`$bypass.resultPath.Replace('.result.json','.pair.json')) `$pair"+"`n    "+$hook)) 'retained observation must read the actual just-saved pair only in its load-bound arm'
+  $path=Join-Path ([IO.Path]::GetTempPath()) ('r3-fleet-observation-'+[guid]::NewGuid().ToString('N')+'.pair.json')
+  $container=Join-Path ([IO.Path]::GetTempPath()) 'synthetic-runner-workspace'
+  $ownerPath=Join-Path $container '.orchestrator/verify-lock.d/owner.json'
+  $previous=[Console]::Out;$capture=[IO.StringWriter]::new()
+  try {
+    [Console]::SetOut($capture)
+    foreach($reason in @('absent','live')){
+      $pair=@{fleetLoad=@{start=@{reason=$reason;ownerPath=$ownerPath};end=@{reason=$reason;ownerPath=$ownerPath}};unexpectedSecret='synthetic-token-never-valid'}
+      [IO.File]::WriteAllText($path,($pair|ConvertTo-Json -Depth 5 -Compress))
+      $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+      [void]$capture.GetStringBuilder().Clear()
+      Write-7963FleetLoadObservation $path $container
+      $line=$capture.ToString().TrimEnd("`r","`n")
+      Assert-Ci ($line-ceq"OBSERVATION 7963 retained fleetLoad reason=$reason endReason=$reason ownerPath=$($ownerPath|ConvertTo-Json -Compress) pair=$hash") 'retained observation lost actual pair values or SHA256 binding'
+      Assert-Ci ($line.Length-le2048-and$line-cnotmatch'[\r\n]'-and-not$line.Contains('synthetic-token-never-valid')) 'retained observation leaked unowned content or exceeded single-line bound'
+    }
+    foreach($invalid in @('reason','ownerPath','oversize')){
+      if($invalid-ceq'reason'){$pair.fleetLoad.start.reason='synthetic-token-never-valid'}
+      if($invalid-ceq'ownerPath'){$pair.fleetLoad.start.reason='absent';$pair.fleetLoad.start.ownerPath='synthetic-token-never-valid'}
+      if($invalid-ceq'oversize'){$container='x'*2100;$pair.fleetLoad.start.ownerPath=Join-Path $container '.orchestrator/verify-lock.d/owner.json';$pair.fleetLoad.end.ownerPath=$pair.fleetLoad.start.ownerPath}
+      [IO.File]::WriteAllText($path,($pair|ConvertTo-Json -Depth 5 -Compress))
+      [void]$capture.GetStringBuilder().Clear()
+      Write-7963FleetLoadObservation $path $container
+      Assert-Ci ($capture.ToString().Trim()-ceq'OBSERVATION 7963 retained fleetLoad unavailable') 'retained observation validation must be closed and outcome-neutral'
+    }
+    [IO.File]::Delete($path);[void]$capture.GetStringBuilder().Clear()
+    Write-7963FleetLoadObservation $path $container
+    Assert-Ci ($capture.ToString().Trim()-ceq'OBSERVATION 7963 retained fleetLoad unavailable') 'retained observation read failure must not change pass/fail semantics'
+  } finally { [Console]::SetOut($previous);$capture.Dispose();[IO.File]::Delete($path) }
+}
+$retainedSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')).Replace("`r`n","`n")
+Assert-RetainedFleetObservation $retainedSource
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('reason=$($start.reason)','reason=absent')) }
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('pair=$hash','pair=unbound')) }
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('if($LoadBound-and$Carrier-ceq''retained'')','if($LoadBound)')) }
+Write-Output 'PASS retained fleet observation: actual pair reason/runner ownerPath/SHA256; bounded closed fields and read failures outcome-neutral; constant-reason, unbound-hash and wrong-arm negatives refused'
+foreach($leaf in $aggregateSources.Keys){
+  $entry=$aggregateSources[$leaf]
+  Assert-Ci ((ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('rev-parse',"${aggregateBase}:.orchestrator/$leaf"))).Trim()-ceq$entry.blob) "aggregate baseline blob mismatch: $leaf"
+  $before=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$entry.blob))
+  $after=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf)).Replace("`r`n","`n")
+  foreach($name in $entry.functions){
+    $count=Assert-R3AggregateOrder $after $before $name
+    # Swap each distinct adjacent pair in the projected trace to exercise every
+    # assertion position, without running the underlying heavy function.
+    $trace=@(Get-R3AggregateOrder $after $name)
+    $baselineTrace=@(Get-R3AggregateOrder $before $name)
+    for($i=1;$i-lt$trace.Count;$i++){
+      if($trace[$i]-ceq$trace[$i-1]){continue}
+      $mutant=@($trace);$mutant[$i-1]=$trace[$i];$mutant[$i]=$trace[$i-1]
+      Refuses-Coverage { Assert-R3AggregateTrace $mutant $baselineTrace $name }
+    }
+    if($name-ceq'Test-9334OrdinaryCarrier'){
+      $anchor="      ValidPlan9334 `$f 'original ordinary fixture after independent destructive controls'"
+      $historical="      if (-not `$Part -or `$Part -ceq 'ordinary-historical') {"
+      Assert-Ci ($after.Contains($anchor)-and$after.Contains($historical)) 'aggregate early-assertion negative anchor missing'
+      $mutant=$after.Replace($anchor,'').Replace($historical,$anchor+"`n"+$historical)
+      Refuses-Coverage { Assert-R3AggregateOrder $mutant $before $name }
+    }
+    Write-Output "PASS r3 omitted-selector aggregate order: $name keys=$count baseline=$aggregateBase; order negatives refused"
+  }
+}
+
 # Exact pre-split blobs, including the previously repaired hosted controls.
 # A proof key includes the assertion text or the complete control/mutant body;
 # foreach inventories retain every dynamic case as well as the assertions.

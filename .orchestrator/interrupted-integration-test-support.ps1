@@ -70,6 +70,23 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
+function Write-7963FleetLoadObservation([string]$PairPath,[string]$Container) {
+  try {
+    $bytes=[IO.File]::ReadAllBytes($PairPath)
+    $pair=[Text.Encoding]::UTF8.GetString($bytes)|ConvertFrom-Json -Depth 30
+    $start=$pair.fleetLoad.start;$end=$pair.fleetLoad.end
+    $ownerPath=Join-Path $Container '.orchestrator/verify-lock.d/owner.json'
+    # Only the generated workspace path and closed reason values may cross this boundary.
+    if($ownerPath.Length-gt1024-or$ownerPath-cmatch '[\x00-\x1f\x7f]' -or
+      $start.ownerPath-cne$ownerPath-or$end.ownerPath-cne$ownerPath-or
+      $start.reason-cnotin @('absent','unparseable','stale','live')-or$end.reason-cnotin @('absent','unparseable','stale','live')){throw 'invalid observation'}
+    $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $line="OBSERVATION 7963 retained fleetLoad reason=$($start.reason) endReason=$($end.reason) ownerPath=$($start.ownerPath|ConvertTo-Json -Compress) pair=$hash"
+    if($line.Length-gt2048){throw 'observation exceeds bound'}
+    [Console]::Out.WriteLine($line)
+  } catch { [Console]::Out.WriteLine('OBSERVATION 7963 retained fleetLoad unavailable') }
+}
+
 function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='', [switch]$NoHistoricalArchive) {
   if ($Part -in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native')) { $Incident = '7906' }
   if ($Part -in @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) { $Incident = '7927' }
@@ -645,6 +662,7 @@ exit $LASTEXITCODE
     $window=$null
     if($LoadBound){$window=Get-FleetLoadWindow $loadBefore $loadAfter;$pair.fleetLoad=$window}
     Save ($bypass.resultPath.Replace('.result.json','.pair.json')) $pair
+    if($LoadBound-and$Carrier-ceq'retained'){Write-7963FleetLoadObservation ($bypass.resultPath.Replace('.result.json','.pair.json')) $fleetContainer}
     if($LoadBound-and$bypass.exit-ne0-and$bypass.stderr.Contains('INTEGRATION_RESUME_PRIOR_OWNER')-and$window.held){
       # #8102: the omitted-guard arm is refused by the prior-owner tree guard when
       # the prior root's teardown outlasts the arm's window. That is MEASURED_LOAD
@@ -1662,7 +1680,6 @@ exit $LASTEXITCODE
         $liveInput=$binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$liveInput.sources.watchdogSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($wpath));$liveInput.sources.conflictSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($f.capturePath));Save9334 $f.cfg.resumePath $liveInput
         Discriminator9334 $f 'exact-identity live ordinary root is not death' 'INTEGRATION_RESUME_PRIOR_OWNER: live root' $deathMutant
       }finally{[IO.File]::WriteAllBytes($wpath,$originalWatchdog);[IO.File]::WriteAllBytes($f.capturePath,$originalCapture);Save9334 $f.cfg.resumePath $binding}
-      ValidPlan9334 $f 'original ordinary fixture after independent destructive controls'
       }
       if (-not $Part -or $Part -ceq 'ordinary-historical') {
       $replayMutant=Mutant9334 'ordinary-native-proof' 'landed-integration-evidence.psm1' '    Assert-InterruptedIntegrationReplay $o $firstStop # ORDINARY_RESUME_GUARD_NATIVE_REPLAY' '    # Synthetic omission: independent ordinary native replay.'
@@ -1693,6 +1710,9 @@ exit $LASTEXITCODE
         $contradictionInput=$historicalBinding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$contradictionInput.sources.transcriptSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($transcriptPath));Save9334 $historical.cfg.resumePath $contradictionInput
         Refusal9334 $historical 'later native movement in the transcript contradicts a preserved first stop' 'INTEGRATION_RESUME_SOURCE: contradictory later movement'
       }finally{[IO.File]::WriteAllBytes($transcriptPath,$transcriptBytes);Save9334 $historical.cfg.resumePath $historicalBinding}
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-sources') {
+      ValidPlan9334 $f 'original ordinary fixture after independent destructive controls'
       }
       if (-not $Part -or $Part -ceq 'ordinary-publication') {
       if ($Part) { $f=Fixture9334 'dispatch';$binding=Bind9334 $f }
