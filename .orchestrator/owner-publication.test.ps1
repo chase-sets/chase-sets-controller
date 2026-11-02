@@ -455,7 +455,7 @@ function Invoke-ReaderInventory {
     'landed-integration-dispatch.test.ps1'=@(540)
     'interrupted-integration-test-support.ps1'=@(988)
     'landed-integration-evidence-test-support.ps1'=@(245)
-    'landed-integration-r3.test.ps1'=@(51)
+    'landed-integration-r3.test.ps1'=@(52)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(396,455,509,548)
