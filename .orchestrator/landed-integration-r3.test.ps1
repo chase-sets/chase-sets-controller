@@ -12,6 +12,7 @@ $logger=Join-Path $PSScriptRoot 'log-event.ps1'
 $failures=[Collections.Generic.List[string]]::new()
 . (Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1')
+. (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 . (Join-Path $PSScriptRoot 'product-census-integration-test-support.ps1')
 $r3Subject=Initialize-R3CensusSubject (Join-Path $fixtureRoot 'subject') $CensusLatencyMs -PreserveRepositorySelector
 $producer=Join-Path $r3Subject 'landed-integration-dispatch.ps1'
@@ -522,8 +523,6 @@ try{
     Write-Output "ARTIFACT 7926 retained synthetic Git, native reflogs, subprocess logs and exits: $resolved"
   } else { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue }
 }
-
-. (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
 
 # ---- #8102: fleet load and the retained-retry discriminator ----
 # Every leg runs the retained carrier from a committed copy of this checkout's
