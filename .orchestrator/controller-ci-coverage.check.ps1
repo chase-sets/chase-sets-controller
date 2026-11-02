@@ -146,6 +146,7 @@ foreach($section in @('portable-census','portable-reducer','portable-carrier')){
   Assert-Ci (([regex]::Matches($ownershipSource,[regex]::Escape("if (& `$runSection '$section') {"))).Count -eq 1) "dispatch ownership hosted section is not gated exactly once: $section"
 }
 Assert-Ci ($ownershipSource.Contains("if (`$Part -ceq 'local-smoke')") -and $ownershipSource.Contains('Invoke-DispatchOwnershipLocalSmoke')) 'dispatch ownership local-smoke guard missing'
+Assert-Ci ($ownershipSource.Contains("if (`$ProductCensusOnly -or `$Part -ceq 'portable-census') { return }") -and $ownershipSource.Contains('if ($Part -ceq ''portable-carrier'') {'+"`n"+'    $carrierRootResolved = [IO.Path]::GetFullPath($root)')) 'dispatch ownership hosted part root cleanup missing'
 Assert-Ci ($ownershipSource.Contains('poisoned-default-runtime') -and $ownershipSource.Contains('hosted ownership census reads only the synthetic runtime')) 'dispatch ownership hosted source guard missing'
 function Get-OwnershipConservation([string]$Source) {
   $tokens=$null;$errors=$null

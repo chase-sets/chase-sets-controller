@@ -46,7 +46,8 @@ Invoke-DeterministicBudget {
   Test-CensusGitWaitSchedule
 }
 }
-if ($ProductCensusOnly) { return }
+# The census part allocates no ownership root; return before one exists.
+if ($ProductCensusOnly -or $Part -ceq 'portable-census') { return }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("dispatch-ownership-test-" + [guid]::NewGuid())
 $runtime = Join-Path $root "runtime"
@@ -1031,6 +1032,7 @@ if (-not $Part) {
 }
 
 if (& $runSection 'portable-carrier') {
+try {
 # #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
 $ordinaryState = [ordered]@{branch='synthetic/9334';originalHead=('1'*40);onto=('2'*40);stoppedHead=('2'*40);stoppedCommit=('3'*40);oldBase=('4'*40);metadataSha256=('a'*64);indexSha256=('b'*64);stagesSha256=('c'*64);dirtySha256=('d'*64);stagedSha256=('e'*64);unstagedSha256=('f'*64)}
 $ordinaryBinding = [ordered]@{schemaVersion='interrupted-canonical-integration/v2'
@@ -1108,5 +1110,17 @@ try {
   $env:CHASE_SETS_ROUTING_DATA_ROOT = $ambientRouting.root
   $env:CHASE_SETS_ROUTING_LKG_PATH = $ambientRouting.lkg
   Remove-Item -LiteralPath $staleRoutingRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+} finally {
+  # The reducer section removes the root on its own path; the carrier part, which skips it, removes it here.
+  if ($Part -ceq 'portable-carrier') {
+    $carrierRootResolved = [IO.Path]::GetFullPath($root)
+    $carrierTempResolved = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
+    if ((Split-Path -Parent $carrierRootResolved).TrimEnd("\", "/") -ne $carrierTempResolved -or
+        (Split-Path -Leaf $carrierRootResolved) -notlike "dispatch-ownership-test-*") {
+      throw "refusing unsafe test cleanup target: $carrierRootResolved"
+    }
+    Remove-Item -LiteralPath $carrierRootResolved -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 }
