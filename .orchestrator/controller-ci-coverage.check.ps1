@@ -537,6 +537,11 @@ $r3Item=$manifest.items|Where-Object identity -eq 'test:landed-integration-r3.te
 Assert-Ci ($null -ne $r3Item) 'r3 split mapping missing'
 Assert-CarrierPartContract $r3Path $r3Item @()
 $r3Source=[IO.File]::ReadAllText($r3Path)
+function Assert-R3WitnessOwner([string]$Source) {
+  Assert-Ci ($Source.Contains("if (& `$runPart 'three-native-controls') { Assert-SyntheticIntegrationWitnesses `$fixtureRoot }")) 'synthetic witnesses must run with their native-control producers'
+}
+Assert-R3WitnessOwner $r3Source
+Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("if (& `$runPart 'three-native-controls') { Assert-SyntheticIntegrationWitnesses", "if (& `$runPart 'three-completed-rebase') { Assert-SyntheticIntegrationWitnesses")) }
 foreach($part in @($r3Item.parts.name)){
   Assert-Ci ($r3Source.Contains("'$part'")) "r3 selector missing: $part"
   Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Where-Object{$_-cne$part}|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) "r3 dropped part survived: $part" }

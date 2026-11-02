@@ -511,7 +511,7 @@ try{
     if(-not (& $runPart $partName)){continue}
     try{& $controlCase.body;Write-Output "CONTROL $($controlCase.name) PASS"}catch{$failures.Add("$($controlCase.name): $($_.Exception.Message)");Write-Output "CONTROL $($controlCase.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
   }
-  if (& $runPart 'three-completed-rebase') { Assert-SyntheticIntegrationWitnesses $fixtureRoot }
+  if (& $runPart 'three-native-controls') { Assert-SyntheticIntegrationWitnesses $fixtureRoot }
   if($failures.Count-gt0){throw "R3 controls failed: $($failures -join ' | ')"}
   Write-Output 'PASS R3 branch-scoped ownership and acknowledgement-gated terminal integration controls including F15 bounded acknowledgement-only reconciliation'
 }finally{
