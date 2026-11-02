@@ -160,6 +160,32 @@ foreach($roleMutant in @(
 $ciTokens=$null;$ciErrors=$null
 $ciAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci.ps1'),[ref]$ciTokens,[ref]$ciErrors)
 Assert-Ci ($ciErrors.Count-eq0) 'controller-ci parse failed'
+function Assert-ShardParameterRange($Ast,$PlannerAst){
+  $planner=@($PlannerAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name-ceq'Get-CiShardCount'},$true))
+  Assert-Ci ($planner.Count-eq1) 'planner shard count function missing'
+  $ceilings=@($planner[0].FindAll({param($n) $n -is [Management.Automation.Language.BinaryExpressionAst] -and $n.Operator-eq'Ile' -and $n.Left.Extent.Text-ceq'$Plan.shardCount'},$true))
+  Assert-Ci ($ceilings.Count-eq1) 'planner shard count ceiling missing'
+  $maxCount=$ceilings[0].Right.SafeGetValue()
+  $parameter=@($Ast.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Shard'})
+  Assert-Ci ($parameter.Count-eq1) 'Shard parameter missing'
+  $range=@($parameter[0].Attributes|Where-Object{$_.TypeName.FullName-ceq'ValidateRange'})
+  Assert-Ci ($range.Count-eq1-and$range[0].PositionalArguments.Count-eq2) 'Shard ValidateRange missing'
+  Assert-Ci ($range[0].PositionalArguments[0].SafeGetValue()-eq0-and$range[0].PositionalArguments[1].SafeGetValue()-eq($maxCount-1)) "Shard ValidateRange must be 0..$($maxCount-1) for planner maximum shard count $maxCount"
+}
+$plannerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci-planning.ps1'),[ref]$ciTokens,[ref]$ciErrors)
+Assert-Ci ($ciErrors.Count-eq0) 'controller-ci-planning parse failed'
+Assert-ShardParameterRange $ciAst $plannerAst
+$shardRange=@($ciAst.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Shard'})[0].Attributes|Where-Object{$_.TypeName.FullName-ceq'ValidateRange'}
+$shardMax=[int]$shardRange.PositionalArguments[1].SafeGetValue()
+foreach($rangeMutant in @('',"[ValidateRange(1,$shardMax)]","[ValidateRange(0,$($shardMax-1))]","[ValidateRange(0,$($shardMax+1))]")){
+  $mutantAst=[Management.Automation.Language.Parser]::ParseInput($ciAst.Extent.Text.Replace($shardRange.Extent.Text,$rangeMutant),[ref]$ciTokens,[ref]$ciErrors)
+  Assert-Ci ($ciErrors.Count-eq0) 'Shard range mutant parse failed'
+  Refuses-Sharding {Assert-ShardParameterRange $mutantAst $plannerAst}
+}
+$plannerMutant=$plannerAst.Extent.Text.Replace('-le '+($shardMax+1),'-le '+($shardMax+2))
+Assert-Ci ($plannerMutant-cne$plannerAst.Extent.Text) 'planner ceiling mutant anchor missing'
+Refuses-Sharding {Assert-ShardParameterRange $ciAst ([Management.Automation.Language.Parser]::ParseInput($plannerMutant,[ref]$ciTokens,[ref]$ciErrors))}
+Write-Output "PASS Shard ValidateRange 0..$shardMax matches planner maximum shard count $($shardMax+1) minus one; missing/narrow/wide/nonzero range and planner-ceiling drift mutants refused"
 $workflowText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/controller-battery.yml')).Replace("`r`n","`n")
 function Assert-PlanBoundWired($Ast,[string]$Workflow){
   $roleParameter=@($Ast.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Role'})

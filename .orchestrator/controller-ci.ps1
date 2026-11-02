@@ -7,7 +7,7 @@ param(
   [ValidateSet('full','impact')][string]$Scope = 'full',
   [string]$PlanPath,
   [string]$OutputDirectory,
-  [ValidateRange(0,31)][int]$Shard = 0,
+  [ValidateRange(0,47)][int]$Shard = 0,
   [ValidateSet('candidate','baseline')][string]$Role = 'candidate'
 )
 $ErrorActionPreference = 'Stop'
