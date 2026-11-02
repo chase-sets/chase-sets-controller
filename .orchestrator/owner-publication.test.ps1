@@ -502,6 +502,7 @@ function Invoke-ReaderInventory {
     '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
     '.orchestrator/fixtures/historical-aa62899/.orchestrator/dispatch-ownership.ps1'=@(514)
     '.orchestrator/fixtures/historical-aa62899/.orchestrator/landed-integration-evidence.psm1'=@(993)
+    '.orchestrator/fixtures/historical-aa62899/.orchestrator/invoke-heavy-verifier.ps1'=@(1009,1012,1333,1383)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/dispatch-ownership.ps1'=@(278)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/invoke-heavy-verifier.ps1'=@(693,696,1017,1067)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/landed-integration-evidence.psm1'=@(924)
