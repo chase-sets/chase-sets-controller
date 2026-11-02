@@ -2,126 +2,37 @@
 
 Pinned to controller commit `8106d4e12c4b3329e3b59372366c5a57e8dfacc1`. Source bytes were read from the authorized product main checkout; no live object database is consulted by the fixture loader.
 
-The complete tracked `.orchestrator` tree is retained because the historical arm archives and executes this controller tree. Each entry is pinned to its raw Git blob; the `* -text` policy preserves those bytes.
+The 13 files below are the closed read set of `Test-7962NativeControls` in
+`integration-dispatch-test-support.ps1`. Its baseline-late-head control and
+`New-RetainedCase` execute the producer and launcher; the retained child calls
+`rebase-integration.ps1` with an invalid parameter to record the historical
+parameter stop. The producer imports ownership, review and rebase evidence,
+invokes the logger, and the launcher imports stream audit and fleet admission.
+The launcher also checks the preload/verifier paths and calls the consumer on
+exit; the consumer imports the same helpers. The logger imports the log lock,
+which `Set-ArchivedOrchestrationLogMutexName` reads and rewrites only in the
+copied runtime.
 
-- .orchestrator/admission-temp-cleanup.test.ps1 | blob `869ddcd6ff72f1ad86aebbbd2344796d969186c5`
-- .orchestrator/astra-selection.test.ps1 | blob `b647a703d506a07a780ae632d3f9daa807c4b7de`
-- .orchestrator/board-reconcile.ps1 | blob `12b3bab8e3a1b09ed12231dfd3a7d69e3faef50b`
-- .orchestrator/board-reconcile.test.ps1 | blob `39441a9166b0551887a842268a8da5c728ab8ea4`
-- .orchestrator/board-set.ps1 | blob `81cbced1c1f824367a006f52c79906ec4834b4d8`
-- .orchestrator/board-set.test.ps1 | blob `f14ad1ce9c2019e563035d8aedc585150ec608af`
-- .orchestrator/check-controller-skill-freshness.ps1 | blob `2b29ec22e37edaa69e3811f3e0199ee4dca6db31`
-- .orchestrator/check-controller-skill-freshness.test.ps1 | blob `bcfd489aaa1fd704de168a4c81a1f8ce14d20bce`
-- .orchestrator/cleanup-orphan-worktree-dirs.ps1 | blob `d084ce85346823a0521e53142efedd3e6f8087cf`
-- .orchestrator/cleanup-orphan-worktree-dirs.test.ps1 | blob `5df31f7b0656a123c45d543428714cc22840177e`
-- .orchestrator/codex-launch-boundary.psm1 | blob `4923299cec241c726941b9f57a58a318a3f7e49b`
-- .orchestrator/codex-launch-boundary.test.ps1 | blob `70eb7ebcc1920b75a1d3477cd42721c33f3f9d03`
-- .orchestrator/contract-enforcement.test.ps1 | blob `4ebf75210fc1cde2583ea2b7960e66ee801146a4`
-- .orchestrator/contracts/landed-integration-evidence-v1.md | blob `94a92199fc5760506fa45eeedb0ea66b8b554288`
-- .orchestrator/contracts/planning-repair-v1.md | blob `e026ccf1f5711320d634d84dabfa669f80b0bf3a`
-- .orchestrator/contracts/premise-freshness-v1.md | blob `41291e3e72062f4198bc567e37b172a87369bb66`
-- .orchestrator/contracts/quality-v2.md | blob `651cabfaf39bdc98085e78b7dee1cef4db575797`
-- .orchestrator/contracts/review-v2.md | blob `bd095c5aa7d22d24859062a940197186198ba820`
-- .orchestrator/controller-install-lock.psm1 | blob `5a227a8fc5da2229415aed551f16b0f0dd903cae`
-- .orchestrator/controller-release-battery.ps1 | blob `550b7464e687557b11b26e6aed881191f2a3a3cc`
-- .orchestrator/controller-release-battery.test.ps1 | blob `d3ea2a28366ce885df56268532028d9d15931e4d`
-- .orchestrator/controller-review-consumer-inventory.json | blob `027fe5ca5c809127f8dcfa5b9adad0819e36b3e6`
-- .orchestrator/controller-skills/milestone-orchestrator/agents/openai.yaml | blob `69ce1d9d29978516b9130d85628329620b896827`
-- .orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md | blob `2e6294f6a4cb7591d32ab1474234c6184b64e109`
-- .orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1 | blob `3d04caee6f8c22d2f55708abef6e584adc534c5d`
-- .orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.test.ps1 | blob `3b2b226e39dbe289606fa56dd105b3f9b62ecc13`
-- .orchestrator/controller-skills/milestone-orchestrator/SKILL.md | blob `4d21c3069ac4470892f83ab66dccd0f6da8a1aab`
-- .orchestrator/controller-skills/model-routing/agents/openai.yaml | blob `3ef1bd591d0aad59bb0780093e3a4ad4c093c81e`
-- .orchestrator/controller-skills/model-routing/capability-matrix.json | blob `935077c0230e187734618a846a8525074c1186cf`
-- .orchestrator/controller-skills/model-routing/references/capability-recalibration.md | blob `759ffd641ff829e539dd02f1bb99b34656f14ac5`
-- .orchestrator/controller-skills/model-routing/references/experiments.md | blob `ec80bab36585f935fa1d512f275d8f94001dddd7`
-- .orchestrator/controller-skills/model-routing/SKILL.md | blob `a5716583dc743f5a233e14bcf88e6e7d497e180a`
-- .orchestrator/cost-harvest.ps1 | blob `e9531067cfb142cfc13699f2e7f326edf8742ca3`
-- .orchestrator/cost-harvest.test.ps1 | blob `048c3698f20b45254947c5b2d78e9d89a5abb773`
-- .orchestrator/digest-publish.ps1 | blob `1d6574f08473912c47f96e19d321d46a1c4a352d`
-- .orchestrator/digest-publish.test.ps1 | blob `efc65181b75db3087a0144e28ac8b5173d50a79c`
+All baseline launches are implementation lanes with a PowerShell test child:
+review/planning contracts and Node/heavy-verifier execution dependencies are
+not read. Board synchronization is disabled by the caller's `-NoBoard` and
+explicit history path. Tests, skills, unrelated fixtures and controller tools
+are not part of this read set.
+
+Each entry is pinned to its raw Git blob; the `* -text` policy preserves those
+bytes. The fixture loader and historical-fixture-manifest.check.ps1 verify the
+exact file inventory and every blob before use; no candidate file fills a gap.
+
 - .orchestrator/dispatch-claude-stream-audit.ps1 | blob `74815c670fddbec4c3e5d3c8b4707579003cd46d`
 - .orchestrator/dispatch-lane.ps1 | blob `42479c82d595b3da1b1188a605b1ce4dfd717b81`
-- .orchestrator/dispatch-lane.test.ps1 | blob `c68f9bd5b1f9558ff247a964d33f41711086c2d6`
 - .orchestrator/dispatch-ownership.ps1 | blob `3609a61bd730b12122434268bc9a4192f1794cc8`
-- .orchestrator/dispatch-ownership.test.ps1 | blob `c72f914944dc78408b1e2ebaa35d250f23782196`
-- .orchestrator/fail-closed-guard-evidence-aggregate.ps1 | blob `d8c14a87cf3211442ac6fc63acf99f3323429cea`
-- .orchestrator/fail-closed-guard-evidence-aggregate.test.ps1 | blob `e71f2f18dd9187c1b8438307173db7fd5b321e26`
-- .orchestrator/fail-closed-guard-evidence.ps1 | blob `1f3f09f61fcc48bae57a8b8fed19e2d2568a837d`
-- .orchestrator/fail-closed-guard-evidence.schema.json | blob `6d50424ae772992e5beaf503fe3be164a0d186a3`
-- .orchestrator/fail-closed-guard-evidence.test.ps1 | blob `adda00e2d0d50e77ff9bcb72b20d8b48d5424a09`
-- .orchestrator/fail-closed-guard-suite-result.schema.json | blob `2dc14590f7186a66b386ab7ee1dce146a7fb1ac4`
-- .orchestrator/fixtures/codex-launch-boundary-surface-v1.txt | blob `e76aec5e36c0924c33e9feae029e22abfa7d8704`
-- .orchestrator/fixtures/lane-admission-collected-input.valid.json | blob `325096dcadc93bc7dc5e7aecdc0c15e919875ef5`
-- .orchestrator/fixtures/lane-selection-input.valid.json | blob `c9f14491e0d0e4eeac45d9f966dedff3505b53f7`
-- .orchestrator/fixtures/legacy-non-pr-review-history.jsonl | blob `423b8114f4332513a158cd0917bcd395200d5b73`
 - .orchestrator/fleet-exclusive-admission.psm1 | blob `887172f0e7d27ac429ccccf9a3534a26e267407d`
-- .orchestrator/fleet-exclusive-admission.test.ps1 | blob `bfdc8dbfc1a6db8b1d8f1bf14c9ddb86ac93c019`
-- .orchestrator/frontier-bounded-snapshot.ps1 | blob `c8e43869c4ee1089c030efa9871818fa26598067`
-- .orchestrator/frontier-bounded-snapshot.test.ps1 | blob `a5cfbdecb8b2d4dfe5b1aa9646b8e4d3ede91f28`
-- .orchestrator/heavy-admission-holder-launcher.cjs | blob `c488c959dc96ced92f691e265e3e7fff45ed6f4b`
 - .orchestrator/heavy-admission-preload.cjs | blob `7cb9585f3cfb5a5da66dee417a9da306a9d441cb`
-- .orchestrator/heavy-admission-preload.test.ps1 | blob `7e64c8a066a0089a0099ee38abd2b802963128d6`
-- .orchestrator/heavy-nested-client.cjs | blob `a3f0bd5b33db43dbd7198579d114f834bda90e8d`
-- .orchestrator/heavy-nested-owner.cs | blob `75acb6778ab3af5b475a1e6cc57de7c3cde18947`
-- .orchestrator/heavy-slot.cjs | blob `31f2e5ef5c4cda26a4b06ad3980bc3dc1581aac0`
-- .orchestrator/heavy-slot.test.ps1 | blob `01f051aab63e0196793af629d757946c774bb759`
-- .orchestrator/host-trial-opus5-guardrails.md | blob `77ca75d1fb1adcb7ba45dd9664babfadb84476c7`
-- .orchestrator/install-controller-skills.ps1 | blob `4f5ad528261355e802535b1d2e5a511ffc0d2394`
-- .orchestrator/install-controller-skills.test.ps1 | blob `eb5c5fea6629874ea364aa36f0b20f6c25159072`
-- .orchestrator/invoke-fleet-exclusive-gate.ps1 | blob `045577645ed7087968ef3d3f8a80b3b8e7e45a1e`
-- .orchestrator/invoke-fleet-exclusive-gate.test.ps1 | blob `0357fd74de3895562e1881b976089ce61c05b4ad`
 - .orchestrator/invoke-heavy-verifier.ps1 | blob `823380e4b421fe8ac7cdb47c4aabf18e96e147d7`
-- .orchestrator/invoke-heavy-verifier.test.ps1 | blob `c2e15726f824b736cbe77211c8c2861f1d818180`
-- .orchestrator/issue-6254-discriminator.ps1 | blob `de1bacf95a43b7a85ae568228e1c1e1e38f06019`
-- .orchestrator/issue-6254-fail-closed-guard-evidence.test.ps1 | blob `d40b8b5a5cbe3f693e491e9cff50772e1efabaa1`
-- .orchestrator/issue-6254-live-readonly-proof.ps1 | blob `eb1a3e06d5f0433409d1d93ab68485c866cb2720`
-- .orchestrator/issue-6289-bounded-probe-discriminator.ps1 | blob `95817f099ade267448be82bd6c78806e30521c9a`
-- .orchestrator/issue-6289-discriminator.ps1 | blob `1bc6b2a8cb409b8c2b1c3b94980f580884a61f23`
-- .orchestrator/issue-6289-live-readonly-proof.ps1 | blob `23f9a67a848892c0570b7ab42241be62de6083da`
-- .orchestrator/issue-6292-boundedness-child.ps1 | blob `d963d21e4288dfb5d39255e5bb53ab4d09465455`
-- .orchestrator/issue-6292-live-readonly-proof.ps1 | blob `d54d627e2b83843f49505bed072fd9e438bf45fd`
-- .orchestrator/issue-6997-autonomy-policy.test.ps1 | blob `12d9701efed81f70f949b830eb2c1dcf64c784c6`
-- .orchestrator/issue-7880-agent-outcome-policy.test.ps1 | blob `2a31cb1b9fa896e0bc6a12f812ed4ec05b617b83`
 - .orchestrator/landed-integration-consume.ps1 | blob `2ff5c7239854b78d8adeb9e23880a61d884d2097`
 - .orchestrator/landed-integration-dispatch.ps1 | blob `0f30ef7bdc62b1eb9cc9e80adfe56a33df3c3269`
-- .orchestrator/landed-integration-dispatch.test.ps1 | blob `7ecfb44923113520d7aa48319c27833a3bdafcf7`
-- .orchestrator/landed-integration-evidence-test-support.ps1 | blob `ac9c2c34a635825d02cbb153f7512f80a574f0c7`
 - .orchestrator/landed-integration-evidence.psm1 | blob `98649ea7323d73748be2ee1a9a9378b052f4ebc5`
-- .orchestrator/landed-integration-r3.test.ps1 | blob `058b5f6f27492659fd3c67f71d488629f3d8bcbb`
-- .orchestrator/landing-preflight.fixture.json | blob `c0c3d3841240ebe60101c770870c7ba088cb66c2`
-- .orchestrator/landing-preflight.ps1 | blob `3cf2824ca386245b5309f6981b75b245ec979175`
-- .orchestrator/landing-preflight.test.ps1 | blob `b1d6643de42b4d7034fc19f6110ebded7bfca252`
-- .orchestrator/lane-admission-collected-input-v1.schema.json | blob `622ed4102bb1e7927b4e25eba1e75e2da4d10136`
-- .orchestrator/lane-admission-v1.schema.json | blob `f16cf8b826b90ebab3fb72542035c2dbd2079406`
-- .orchestrator/lane-admission.ps1 | blob `f63c5626109eb9a94bef5ce4d98381aa77d42b1d`
-- .orchestrator/lane-admission.test.ps1 | blob `4106630569820d409f1d8b0d7cdb1594bcec202e`
-- .orchestrator/lane-selection-input-v1.schema.json | blob `62e5621bf926aed4514bb555e534db7decf7a9ae`
-- .orchestrator/lane-selection-v1.schema.json | blob `9f38b107ba33ab9cc81fc88ad59f9072a5c8628c`
-- .orchestrator/lane-selection.ps1 | blob `18f4d5a2b7ac3e965b1a45e5541280e7a304d345`
-- .orchestrator/lane-selection.test.ps1 | blob `95e7845e0677da908508a5df40d56b7024f90c92`
-- .orchestrator/lane-stall-watchdog.ps1 | blob `bd6d4258f7025d6650a53ab6cc55215777b3e1a5`
-- .orchestrator/lane-stall-watchdog.sh | blob `389bda13fb532af906059d4e6ed202e004c0c15c`
-- .orchestrator/lane-stall-watchdog.test.ps1 | blob `86f49f1bf0bbd08742b5f70062d8931972d06e2e`
-- .orchestrator/lease-contract.psm1 | blob `6b06f2e7938df355f201d5be0b6ca9f5d295cdd1`
-- .orchestrator/lease-contract.test.ps1 | blob `88071488aeaf39ffba0e311de853f1e5114d9439`
-- .orchestrator/lease.ps1 | blob `226d4b336c2ddc1dccf4f7402f33ae4146b9d34f`
 - .orchestrator/log-event.ps1 | blob `2594d74ce81bad319e9014dc79c65299baeee7ab`
-- .orchestrator/log-event.test.ps1 | blob `8176311122bf0802230ef3104c8d5c9be06dfa02`
-- .orchestrator/matrix-refresh.ps1 | blob `e905474cb99492dea58492293a193b75eabd7686`
-- .orchestrator/matrix-refresh.test.ps1 | blob `8ee86831f31137cc1b2c9000520328c1d4f1c405`
 - .orchestrator/orchestration-log-lock.psm1 | blob `893c53ff42a7c9181e5a29b6462b9853e8841e7e`
-- .orchestrator/orchestration-log-lock.test.ps1 | blob `3d172f8eead9f7097c37e9b7daadbc14101d1e49`
-- .orchestrator/premise-freshness.ps1 | blob `8820af02c98ab818467e1b626e0d8275852482d8`
-- .orchestrator/premise-freshness.test.ps1 | blob `bd5d9dc89a8b13697f01aa29652e657027aad222`
 - .orchestrator/rebase-integration.ps1 | blob `503c4192b11f193d28b8d777359b64eb0d66ccf4`
-- .orchestrator/rebase-integration.test.ps1 | blob `6019db3471f9f11dc7cb617a90120f32c4204436`
 - .orchestrator/review-head-contract.psm1 | blob `c79b0288e1d76db88c139727501f1545114dbd11`
-- .orchestrator/review-head-reducer.ps1 | blob `0d15b88f300fb1cfcbc99974ab44a0e340ea3ea9`
-- .orchestrator/review-head-reducer.test.ps1 | blob `0e3c254b857a0eb4b35fad9972a46136ba62aac4`
-- .orchestrator/review-queue-health.fixture.json | blob `42e6751d7fc22250bb5a8bacc91cd9c6cd7363b1`
-- .orchestrator/review-queue-health.ps1 | blob `3896eb6e9f4b90576f355195f35bb66e0de474b0`
-- .orchestrator/review-queue-health.test.ps1 | blob `36ba2d0cd0fe7a21b47a12623b863d89fc28c50c`
-- .orchestrator/run-main-sync.ps1 | blob `a1658512752456d0dff2503d519336bded1c6a90`
-- .orchestrator/run-main-sync.vbs | blob `67ca7be491c9463f468a81fe9458683c9a27867a`
-- .orchestrator/start-host-trial.ps1 | blob `2c5c122aeddaecebf7788ae0dcc11ea9400dbffa`

@@ -66,6 +66,9 @@ function New-TempCopy([string]$Source, [string]$TempRoot, [string]$Name) {
 
 $controllerRoot = [IO.Path]::GetFullPath($ControllerRoot)
 $fixtureRoot = Join-Path $controllerRoot '.orchestrator/fixtures'
+$fixtureTests = @(Get-ChildItem -LiteralPath $fixtureRoot -Filter '*.test.ps1' -File -Recurse)
+Assert-Fixture ($fixtureTests.Count -eq 0) 'fixtures must not contain battery-discoverable test files'
+Write-Output 'PASS all fixtures battery-discoverable test files=0'
 $fixtureNames = @('historical-b3b4ac2', 'historical-aa62899', 'historical-8106d4e1', 'historical-4ef3fc35', 'historical-177f2d55', 'historical-6e9156f8')
 $validated = [ordered]@{}
 foreach ($name in $fixtureNames) {
