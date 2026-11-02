@@ -109,6 +109,109 @@ Manifests from different processes that disagree on a module's digest refuse
 the run.
 The Job Object still supplies descendant cleanup on Windows.
 
+## Manifest Replay
+
+The separate `ManifestReplay` parameter set admits only the case-sensitive
+`10808-ac3-replay` name. It uses the ordinary product heavy slot, queue, census,
+caller-role policy and clean exact-head checks, not Diagnostic admission.
+Its authority is the released `diagnostic-declarations.json` entry in
+`manifestReplays`, with kind `manifest-replay`, a logs-relative bindings path,
+SHA-256 and 540-second maximum. The shipped entry is disabled and unpopulated.
+Product must supply a reviewed package before an activation release. Neither
+the caller's digest nor inert controller tests authorize product content.
+Standalone Diagnostic declarations and their budgets remain unchanged; neither
+route accepts the other's declaration kind.
+
+```powershell
+pwsh -NoProfile -File <installed-container>/.orchestrator/invoke-heavy-verifier.ps1 `
+  -ManifestReplay 10808-ac3-replay -ReplayPhase base `
+  -ReplayRunId <32-lowercase-hex> -ReplayManifestPath <absolute-bindings-path> `
+  -ReplayManifestSha256 <released-bindings-sha256> -ReplayBudgetSeconds 540 `
+  -Worktree <canonical-seat> -Lane <lane> -Branch <branch> -ClaimedHead <exact-head>
+```
+
+Detached seats instead use `-ImmutableHead <exact-head>` without Branch or
+ClaimedHead. Repaired is a second foreground call with `-ReplayPhase repaired`
+and required `-ReplayBaseReceiptSha256`, copied from base's post-commit stdout.
+No caller command, arguments, environment, transport or fixture switches are
+accepted. Malformed replay values refuse in-body with exit 73.
+
+`manifest-replay-bindings.schema.json` owns
+`host-heavy-manifest-replay-bindings/v1` and its `definitions.phaseResult`
+owns `host-heavy-replay-phase-result/v1`. Bindings pin the original manifest,
+exactly four provenance artifacts, both phases' wrapper/spec/capture/preflight
+and at most 64 dependencies per phase. All sources live under the seat's
+`.orchestrator/logs/`, total at most 32 MiB; bindings are at most 256 KiB.
+Imports, sibling modules and prepared corpus belong in those reviewed pins;
+the replay installs nothing. Plain local paths only: no UNC, ADS, traversal,
+reparse points, short aliases, hard links or ambiguous names. Source handles
+retain FileShare.Read and hashes are rechecked before and after execution.
+
+The sole reconstructed command is `pwsh -NoProfile -File <wrapper> -Spec <spec>`;
+its sole bound invocation is `node <capture> step3`. Arrays are compared as
+decoded arguments, never shell-evaluated. The strict
+`host-heavy-replay-spec/v1` object has exactly schema/runId/phase/head/worktree/
+budgetSeconds/laneMode/invocation/resultPath/stdoutPath/stderrPath. Budget is
+540, laneMode is false, identity matches bindings and all three output paths
+are the fixed phase files in the evidence directory. The reviewed wrapper
+streams the capture's full stdout/stderr and returns its native exit. It must
+not redirect to the host-owned stream files itself. The launch environment is
+allowlisted; only the canonical preload/configuration and fresh slot token are
+injected. There is no Diagnostic configuration/admitted flag and no nested
+descriptor, initialization or arming. Ordinary Git and unclassified capture
+work; classified descendants refuse with 73 before creating any holder.
+
+Replay uses its own inline Windows CreateProcessW helper. STARTUPINFOEX Job-list
+membership and CREATE_SUSPENDED are atomic. The kill-on-close Job handle is
+not inherited; only stdin/stdout/stderr handles are inherited, no breakaway.
+PID/start and durable start intent are published before resume. Cleanup uses
+the retained exact process/Job handles, never reopened PIDs. Unsupported Job
+assignment refuses; host death also kills a pre-resume child. Entry monotonic
+time bounds admission, probes, launch, streams, rechecks and publication:
+payload deadline is min(resume + 540 seconds, entry + 590 seconds), with the
+final 10 seconds reserved for cleanup. No background continuation or retry.
+
+Evidence is `<seat>/.orchestrator/artifacts/manifest-replay-<runId>/`:
+`<phase>.claim.json`, `.start.json`, `.result.json`, `.stdout.log`, `.stderr.log`,
+`.receipt.json`, `.complete.json`. Claims exclusively create a nonce-bound
+owner/identity/package record. Only proven prelaunch, unchanged owned claims
+can roll back after exact release; start intent permanently forbids relaunch,
+including child 73 and unknown interruption. Completion commits the claim,
+start-intent and immutable receipt digests last. Release-before-publication
+and receipt-before-completion gaps are incomplete, never resumable attempts.
+Repaired requires base's expected-red receipt, the externally supplied digest,
+its completion commitment, and identical head/seat/lane/package. Non-identity
+receipt tampering invalidates that digest too. Duplicates/races never overwrite.
+
+Phase results are UTF-8 at most 64 KiB, with exactly schema/runId/phase/head/
+nativeExit/status/checks. At most 64 ordered checks have stage/status/code/message
+(stage and code 1..128 characters, message at most 2048). First failure is the
+first failed check's exact decoded stage/code/message, without normalization.
+Base must observe the bound nonzero failed result excluding 73/124. Repaired
+must observe native zero, passed, all checks passed, including `identity` and
+`content`. Legacy text/PRECOMMIT-only, missing, truncated, contradictory,
+unknown-key and duplicate-key results cannot qualify. Full streams are capped
+at 8 MiB each; overflow kills the Job and is incomplete, never accepted truncation.
+
+`manifest-replay-receipt.schema.json` owns `host-heavy-manifest-replay/v1`.
+It records exact identity, declaration/bindings/controller/source pins, actual
+argv, child PID/start, slot, native and route exits, first failure, timings,
+result/log hashes, recorder EOF/flush, survivors, cleanup/release and pair proof.
+The host proves these rather than copying wrapper booleans. Receipt cap is
+1 MiB. Timeout is 124/timed-out; otherwise drift/result/recorder/cleanup/release/
+publication error is 1/incomplete; otherwise child73 is 73/not-executed; valid
+base is 0/expected-failure and valid pair is 0/passed. Native73 is always
+unconsumed even when physically started; other resumed attempts are consumed;
+unknown resume has null execution/consumption. Child73 plus cleanup failure is
+1/incomplete, native73, unconsumed. Unknown cleanup retains the owner. Invalid
+paths/IDs receive bounded sanitized stderr only, never evidence in foreign paths.
+
+Declaration and either schema delta is heavy for installation; all three are
+required runtime files. Live or unknown retained owners block activation,
+rollback and reclamation remains exact-identity only. Inert fixture success
+does not close the real product acceptance criterion for
+[#245 Admit an exact-head host-heavy replay route for manifest-bound product AC replays](https://github.com/chase-sets/chase-sets-controller/issues/245).
+
 ## Local E2E
 
 E2E is not hosted-only. The closed local invocation is:

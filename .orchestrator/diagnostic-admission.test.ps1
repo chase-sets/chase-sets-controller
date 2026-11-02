@@ -57,6 +57,9 @@ $censusRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-run
 Assert-True ((Test-Path -LiteralPath $censusRunnerSource -PathType Leaf) -and
   [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($censusRunnerSource))).ToLowerInvariant() -ceq $censusDeclaration.sha256) 'committed diagnostics/10761-json-census-runner.mjs hashes to the declared json-census-five-run sha256'
 Write-Output 'PASS release declaration json-census-five-run committed-runner sha256=declared'
+$replayDeclaration = $releaseDeclarations.manifestReplays.'10808-ac3-replay'
+Assert-True ($replayDeclaration.enabled -eq $false -and $replayDeclaration.kind -ceq 'manifest-replay' -and
+  $replayDeclaration.path -ceq '' -and $replayDeclaration.sha256 -ceq '' -and $replayDeclaration.maxBudgetSeconds -eq 540) 'manifest replay ships disabled without invented product pins'
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }

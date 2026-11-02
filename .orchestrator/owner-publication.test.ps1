@@ -443,10 +443,10 @@ function Invoke-ReaderInventory {
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
-    'install-controller-skills.test.ps1'=@(208,225,230,319,340,354)
+    'install-controller-skills.test.ps1'=@(209,226,231,262,363,384,398)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(422,742,1307,1354,1366,1415,1419,1430,1455,1537,1551,1759,2154,2234,2244,2258,2553,2558,2577,2583,2810,2817,2829,2832,2842,2853,2875,2880,2892,2897,2914,2928)
+    'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
     'long-product-gate.test.ps1'=@(208,215,231,871)
     'host-heavy-verifier.test.ps1'=@(1277)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
@@ -572,6 +572,10 @@ function Invoke-ReaderInventory {
     $claimSite=@{site=$claimSite;api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
     $ownershipSite=@{site=$ownershipSite;api='ReadAllText(RecordPath, UTF8)';shareBefore='unchanged';shareAfter='unchanged';decoder='ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record reader, not heavy owner publication'}
   }
+  $replayClaimExpression='[IO.File]::Open(' + '$' + 'claimPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)'
+  Assert-Owner ($invokeSource.Contains($replayClaimExpression)) 'replay immutable phase claim opener has its exact source site'
+  $replayClaimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($replayClaimExpression,[StringComparison]::Ordinal)),"`n").Count))"
+  $productionSites[$replayClaimSite]=@{site=$replayClaimSite;api='File.Open(replay claim, Open, Read, Read)';shareBefore='new';shareAfter=1;decoder='none';callers='Invoke-ManifestReplay';owner='immutable nonce-bound replay phase claim, never the replaceable heavy owner'}
   $boundWriterExpression='[ChaseSets.HeavyAdmission.OwnerRename]::OpenDestination(' + $ownerVariable + ')'
   Assert-Owner ($invokeSource.Contains($boundWriterExpression)) 'handle-bound owner publication is classified'
   $boundWriterLine=1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($boundWriterExpression,[StringComparison]::Ordinal)),"`n").Count

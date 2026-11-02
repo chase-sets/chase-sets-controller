@@ -915,7 +915,8 @@
           ],
           "replacement": [
             "  [string]$GuardRevision = \"\", [string]$Part = '',",
-            "  [switch]$HostHeavyVerifierOnly"
+            "  [switch]$HostHeavyVerifierOnly,",
+            "  [ValidateSet('missing','review','planning','implementation')][string[]]$RoleAdmissionRoles = @()"
           ]
         },
         {
@@ -1284,7 +1285,16 @@
           "remove": 0,
           "original": [],
           "replacement": [
-            "  $modes.ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}"
+            "  $modes.ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}",
+            "  $modes.ManifestReplay=@{ManifestReplay='10808-ac3-replay';ReplayPhase='base';ReplayRunId=('a'*32);ReplayManifestPath=(Join-Path $nativeTree '.orchestrator/logs/absent-bindings.json');ReplayManifestSha256=('a'*64);ReplayBudgetSeconds='540'}"
+          ]
+        },
+        {
+          "offset": 1401,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  if ($RoleAdmissionRoles.Count) { $roles=@($roles | Where-Object { $_ -cin $RoleAdmissionRoles }) }"
           ]
         },
         {
@@ -1294,7 +1304,7 @@
             "      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence')) {"
           ],
           "replacement": [
-            "      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence','ControllerHostHeavyVerifier')) {"
+            "      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence','ControllerHostHeavyVerifier') + @('ManifestReplay')) {"
           ]
         },
         {

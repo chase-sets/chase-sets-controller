@@ -46,6 +46,7 @@ try {
     "landing-preflight.ps1", "review-queue-health.ps1", "log-event.ps1", "harvest-observed-lanes.ps1",
     "cost-harvest.ps1", "matrix-refresh.ps1", "check-controller-skill-freshness.ps1",
     "controller-release-battery.ps1", "invoke-heavy-verifier.ps1", "native-db-admission.py",
+    "diagnostic-declarations.json", "manifest-replay-bindings.schema.json", "manifest-replay-receipt.schema.json",
     "heavy-slot.cjs", "heavy-nested-client.cjs", "heavy-nested-owner.cs", "fail-closed-guard-evidence.ps1",
     "fail-closed-guard-evidence.schema.json", "fail-closed-guard-suite-result.schema.json",
     "fail-closed-guard-evidence-aggregate.ps1"
@@ -237,6 +238,49 @@ landing-preflight/v1
     [void](Assert-Refused "controller-v1.2" 'retained verifier owner')
   }
   [IO.File]::WriteAllBytes($identityPath, $identityBytes)
+
+  # Each new replay authority file is independently heavy, even when it is
+  # the candidate's only change. Both live replay and unknown owners retain it.
+  $replayOwnerStart=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+  $replayOwner=[ordered]@{
+    schemaVersion=[long]4;lockId=('9'*32);owner='replay@test';lane='replay-install';branch=$null
+    pid=$PID;processStartUtc=$replayOwnerStart;startedUtc=$replayOwnerStart;gate='manifest-replay';commandIdentity=('8'*64)
+    worktree=(Resolve-Path $container).Path;head=$v12;identityMode='immutable-head';state='launching';childPid=$null;childProcessStartUtc=$null
+  }
+  $replayFileNumber=10
+  foreach ($authority in @('diagnostic-declarations.json','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json')) {
+    $beforeReplay=Get-ContainerHead
+    $tag="controller-v1.2.$replayFileNumber"; $replayFileNumber++
+    $candidatePath=Join-Path $publisher ".orchestrator/$authority"
+    [void](Publish-Release $tag { Add-Content -LiteralPath $candidatePath -Value 'inert authority revision' })
+    foreach ($retained in @($replayOwner, @{unknown=$true})) {
+      [void][IO.Directory]::CreateDirectory($nativeLock)
+      $retainedRaw=$retained|ConvertTo-Json -Compress
+      [IO.File]::WriteAllText($ownerPath,$retainedRaw)
+      $refusal=Assert-Refused $tag 'retained verifier owner'
+      Assert-True ($refusal.Output -match 'heavy classification: heavy') "$authority-only delta is heavy"
+      Assert-True ([IO.File]::ReadAllText($ownerPath) -ceq $retainedRaw -and (Get-ContainerHead) -ceq $beforeReplay) "$authority refusal preserves owner bytes and installed head"
+      & git -C $container diff --quiet $beforeReplay -- .orchestrator
+      Assert-True ($LASTEXITCODE -eq 0) "$authority refusal restores all installed bytes"
+    }
+    Remove-Item -LiteralPath $ownerPath -Force; Remove-Item -LiteralPath $nativeLock -Force
+    $admittedReplay=Invoke-Installer $tag
+    Assert-True ($admittedReplay.ExitCode -eq 0) "unoccupied authority-only release installs: $($admittedReplay.Output)"
+    $savedAuthority=[IO.File]::ReadAllBytes($candidatePath)
+    [IO.File]::Delete($candidatePath)
+    $missingTag="controller-v1.2.$replayFileNumber"; $replayFileNumber++
+    [void](Publish-Release $missingTag {})
+    [void](Assert-Refused $missingTag "canonical controller runtime missing:")
+    Assert-True ((Get-ContainerHead) -cne (& git -C $publisher rev-parse HEAD).Trim()) 'nonempty release missing required replay runtime never remains installed'
+    [IO.File]::WriteAllBytes($candidatePath,$savedAuthority)
+    [void](Publish-Release "controller-v1.2.$replayFileNumber" {}); $replayFileNumber++
+  }
+  # A valid dead replay owner is reclaimed using exactly the ordinary protocol.
+  $deadReplay=$replayOwner.Clone(); $deadReplay.pid=2147483647; $deadReplay.processStartUtc='2020-01-01T00:00:00Z'
+  [void][IO.Directory]::CreateDirectory($nativeLock); [IO.File]::WriteAllText($ownerPath,($deadReplay|ConvertTo-Json -Compress))
+  $deadReplayInstall=Invoke-Installer "controller-v1.2.$($replayFileNumber-1)"
+  Assert-True ($deadReplayInstall.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $nativeLock)) 'exact dead replay-owner reclaim admits restored release'
+  Write-Output 'PASS replay installer: each authority-only delta heavy; live/unknown owners preserve bytes; each missing runtime refused; dead replay owner reclaimed'
 
   $v13 = Publish-Release "controller-v1.3" { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'heavy helper revision' }
   $installerText = [IO.File]::ReadAllText((Join-Path $publisher '.orchestrator/install-controller-skills.ps1'))

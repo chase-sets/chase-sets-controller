@@ -15,7 +15,8 @@ param(
   # #9627 named bypass mutants of the ControllerFixtureEquivalence route.
   [ValidateSet('', 'arbitrary-phase', 'forward-baseline', 'unchecked-evidence', 'untracked-check', 'unbound-source-bytes', 'unchecked-ancestry', 'platform-slot', 'early-release', 'bypass-eligibility')][string]$FixtureMutant = '',
   [string]$GuardRevision = "", [string]$Part = '',
-  [switch]$HostHeavyVerifierOnly
+  [switch]$HostHeavyVerifierOnly,
+  [ValidateSet('missing','review','planning','implementation')][string[]]$RoleAdmissionRoles = @()
 )
 $ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); foreach($selector in @(Get-HeavySuitePartSelector $Part $PSBoundParameters)){Set-Variable -Name $selector -Value $true}
 $ErrorActionPreference = "Stop"
@@ -1573,6 +1574,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
     ControllerFixtureEquivalence=@{ControllerFixtureEquivalence=$true;ControllerFixtureEvidenceDirectory=(Join-Path $fixtureEvidenceRoot 'role-denied')}
   }
   $modes.ControllerHostHeavyVerifier=@{ControllerHostHeavyVerifier=$true}
+  $modes.ManifestReplay=@{ManifestReplay='10808-ac3-replay';ReplayPhase='base';ReplayRunId=('a'*32);ReplayManifestPath=(Join-Path $nativeTree '.orchestrator/logs/absent-bindings.json');ReplayManifestSha256=('a'*64);ReplayBudgetSeconds='540'}
   # Derive mode completeness from the production parameter declaration.
   $tokens=$null; $errors=$null
   $modeAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
@@ -1612,6 +1614,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   Invoke-FixtureRolePositive 'standalone-fixture'
   Write-Output 'PASS standalone-ControllerFixtureEquivalence exit=0 marker=1 fixed-command=1 receipt=1'
   $roles=if($EligibilityMutant -ceq 'role-spoof'){@('review','missing','planning','implementation')}else{@('missing','review','planning','implementation')}
+  if ($RoleAdmissionRoles.Count) { $roles=@($roles | Where-Object { $_ -cin $RoleAdmissionRoles }) }
   foreach ($role in $roles) {
     $record.laneRole=$role
     $record.reviewIsolationRoot=if($role -cin @('review','planning')) { Join-Path ([IO.Path]::GetTempPath()) "chase-sets-$role-$launchId" } else { $null }
@@ -1629,7 +1632,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
           [IO.File]::WriteAllText($ownerFile,$ownerRaw); $foreign[$ownerFile]=$ownerRaw
         }
       }
-      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence','ControllerHostHeavyVerifier')) {
+      foreach($mode in @('GateFixture','Gate','WorkspaceTest','WorkspaceDbTest','NativeDb','Attach','ControllerBattery','ControllerPrecursor','ControllerFixtureEquivalence','ControllerHostHeavyVerifier') + @('ManifestReplay')) {
         $parameters=$base + $(if($mode -eq 'GateFixture'){$modes.Gate}else{$modes[$mode]})
         if($mode -eq 'GateFixture') {
           $parameters.CommandPath=Join-Path $PSHOME 'pwsh.exe'

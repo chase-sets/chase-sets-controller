@@ -22,35 +22,56 @@ verdict belongs to #9275.
 #>
 [CmdletBinding(DefaultParameterSetName = "Gate")]
 param(
-  [Parameter(Mandatory, ParameterSetName = "Gate")][ValidateSet("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record")][string]$Gate,
-  [Parameter(ParameterSetName = "Gate")][ValidatePattern('^[a-z][a-z0-9_]*$')][string]$E2eSuite,
-  [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][ValidateSet("@chase-sets/ordering")][string]$WorkspaceTest,
-  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][ValidateSet("@chase-sets/payments", IgnoreCase = $false)][string]$WorkspaceDbTest,
+  [Parameter(Mandatory, ParameterSetName = "ManifestReplay")][string]$ManifestReplay,
+  [string]$ReplayPhase,
+  [string]$ReplayRunId,
+  [string]$ReplayManifestPath,
+  [string]$ReplayManifestSha256,
+  [string]$ReplayBudgetSeconds,
+  [string]$ReplayBaseReceiptSha256,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "Gate")][string]$Gate,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(ParameterSetName = "Gate")][string]$E2eSuite,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "WorkspaceTest")][string]$WorkspaceTest,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][string]$WorkspaceDbTest,
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(ParameterSetName = "WorkspaceDbTest")][string]$WorkspaceDbTestFile,
-  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][double]$WorkspaceDbBudgetSeconds,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "WorkspaceDbTest")][object]$WorkspaceDbBudgetSeconds,
   # Host-declared standalone Node diagnostics are a closed, case-sensitive
   # name set. The declaration file supplies the repository-relative script,
   # source digest and maximum wall-clock budget.
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$Diagnostic,
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticScriptPath,
-  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][ValidatePattern("^[a-fA-F0-9]{64}$")][string]$DiagnosticSha256,
-  [Parameter(ParameterSetName = "Diagnostic")][double]$DiagnosticBudgetSeconds,
-  [Parameter(Mandatory, ParameterSetName = "NativeDb")][ValidateSet("reconciliation-pg16/v1", IgnoreCase = $false)][string]$NativeDbProfile,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "Diagnostic")][string]$DiagnosticSha256,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(ParameterSetName = "Diagnostic")][object]$DiagnosticBudgetSeconds,
+  [Parameter(ParameterSetName = "ManifestReplay")]
+  [Parameter(Mandatory, ParameterSetName = "NativeDb")][string]$NativeDbProfile,
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "NativeDb")][string]$NativeRequestPath,
   [Parameter(Mandatory)][string]$Worktree,
-  [Parameter(Mandatory)][ValidatePattern("^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")][string]$Lane,
+  [Parameter(Mandatory)][string]$Lane,
   [string]$Branch,
-  [ValidatePattern("^[a-fA-F0-9]{40}$")][string]$ClaimedHead,
-  [ValidatePattern("^[a-fA-F0-9]{40}$")][string]$ImmutableHead,
+  [string]$ClaimedHead,
+  [string]$ImmutableHead,
   # Test seams retain the same process/argument execution path, but production
   # resolution always invokes pnpm with the enumerated gate above.
   [Parameter(ParameterSetName = "Gate", DontShow)]
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)]
   [Parameter(ParameterSetName = "Attach", DontShow)]
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [string]$CommandPath,
   [Parameter(ParameterSetName = "Gate", DontShow)]
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)]
   [Parameter(ParameterSetName = "Attach", DontShow)]
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [string[]]$CommandArgumentList,
   [Parameter(DontShow)][string]$ContainerRoot,
   [Parameter(DontShow)][ValidatePattern('^[a-f0-9]{64}$')][string]$QuarantineQueue,
@@ -66,6 +87,7 @@ param(
   # The canonical controller release battery uses the same exact-owner lock
   # implementation, but its command and arguments are fixed here rather than
   # exposed as an arbitrary production command surface.
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [Parameter(Mandatory, ParameterSetName = "ControllerBattery", DontShow)][switch]$ControllerBattery,
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryEvidenceReceiptPath = "",
   [Parameter(ParameterSetName = "ControllerBattery", DontShow)][string]$ControllerBatteryResultPath = "",
@@ -89,25 +111,31 @@ param(
   # Guard-evidence precursor producers are a closed production surface. The
   # selected value resolves to one tracked script and one fixed grammar below.
   [Parameter(Mandatory, ParameterSetName = "ControllerPrecursor")]
-  [ValidateSet("fail-closed-guard-evidence", "issue-6254-fail-closed-guard-evidence")]
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [string]$ControllerPrecursor,
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "ControllerPrecursor")][string]$ControllerPrecursorArtifactPath,
   [Parameter(ParameterSetName = "ControllerPrecursor")]
   [ValidateSet("ReceiptClaims")]
   [string]$ControllerPrecursorScenario,
   # The full fixture-equivalence check is one closed route: a tracked script,
   # fixed -Phase fixture and one validated evidence directory (#9627).
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][switch]$ControllerFixtureEquivalence,
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "ControllerFixtureEquivalence")][string]$ControllerFixtureEvidenceDirectory,
   # The complete default host-heavy-verifier file is a controller-slot member.
   # Its target and grammar are closed below; no command or payload is accepted.
+  [Parameter(ParameterSetName = "ManifestReplay")]
   [Parameter(Mandatory, ParameterSetName = "ControllerHostHeavyVerifier")][switch]$ControllerHostHeavyVerifier,
   # The lane-injected Node preload pauses a classified heavy process before its
   # command body and starts this same lock owner in attached mode.
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)]
-  [ValidateSet("repository-gate", "playwright", "vitest-full", "script-battery", "build")]
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [string]$AdmissionKind,
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)][ValidateRange(1, [int]::MaxValue)][int]$GuardedPid,
+  [Parameter(ParameterSetName = "ManifestReplay", DontShow)]
   [Parameter(ParameterSetName = "Attach", DontShow)][string]$GuardedProcessStartUtc,
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)][ValidatePattern("^[a-f0-9]{32}$")][string]$AdmissionNonce,
   [Parameter(Mandatory, ParameterSetName = "Attach", DontShow)][string]$AdmissionResultPath,
@@ -115,6 +143,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$isManifestReplay = $PSCmdlet.ParameterSetName -ceq 'ManifestReplay'
+$script:replayEntryWatch = [Diagnostics.Stopwatch]::StartNew()
+$script:replayExecutionStarted = $false
 $script:heavyAdmissionBudget = @{ watch=[Diagnostics.Stopwatch]::StartNew(); deadline=210000; observations=0; fences=0 }
 $script:heavyAdmissionPriorityRaised = $false
 $script:heavyAdmissionPriorityClass = $null
@@ -131,6 +162,20 @@ $isWorkspaceTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceTest"
 $isWorkspaceDbTest = $PSCmdlet.ParameterSetName -ceq "WorkspaceDbTest"
 $isNativeDb = $PSCmdlet.ParameterSetName -ceq "NativeDb"
 $isDiagnostic = $PSCmdlet.ParameterSetName -ceq "Diagnostic"
+if (-not $isManifestReplay) {
+  # Keep the old accepted values while deferring crossed replay inputs to the
+  # replay refusal body rather than PowerShell's parameter-binding exit.
+  if (($PSBoundParameters.ContainsKey('Gate') -and $Gate -notin @('verify:static','check:static','test:scripts','verify:test','test','test:fast','build','verify','verify:build','verify:test-db','test:e2e:suite','test:canonical-record')) -or
+      ($PSBoundParameters.ContainsKey('E2eSuite') -and $E2eSuite -notmatch '^[a-z][a-z0-9_]*$') -or
+      ($PSBoundParameters.ContainsKey('WorkspaceTest') -and $WorkspaceTest -ine '@chase-sets/ordering') -or
+      ($PSBoundParameters.ContainsKey('WorkspaceDbTest') -and $WorkspaceDbTest -cne '@chase-sets/payments') -or
+      ($PSBoundParameters.ContainsKey('NativeDbProfile') -and $NativeDbProfile -cne 'reconciliation-pg16/v1') -or
+      ($PSBoundParameters.ContainsKey('ControllerPrecursor') -and $ControllerPrecursor -notin @('fail-closed-guard-evidence','issue-6254-fail-closed-guard-evidence')) -or
+      ($PSBoundParameters.ContainsKey('AdmissionKind') -and $AdmissionKind -notin @('repository-gate','playwright','vitest-full','script-battery','build')) -or
+      ($PSBoundParameters.ContainsKey('DiagnosticSha256') -and $DiagnosticSha256 -notmatch '^[a-fA-F0-9]{64}$')) { throw 'heavy-verifier: invalid closed route value' }
+  $WorkspaceDbBudgetSeconds=[double]$WorkspaceDbBudgetSeconds
+  $DiagnosticBudgetSeconds=[double]$DiagnosticBudgetSeconds
+}
 $isProductSlot = -not ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier)
 $isControllerSlot = $isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier
 $isQueueSlot = $isProductSlot -or $isControllerSlot
@@ -172,7 +217,7 @@ $nativeCleanupProof = $null
 if ($isWorkspaceTest) { $WorkspaceTest = "@chase-sets/ordering" }
 # This closed command shape selects production command resolution. Caller
 # authority is determined independently by the native census below.
-$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest", "WorkspaceDbTest", "Diagnostic")) -and -not $CommandPath
+$isHostVerifier = ($PSCmdlet.ParameterSetName -cin @("Gate", "WorkspaceTest", "WorkspaceDbTest", "Diagnostic", "ManifestReplay")) -and -not $CommandPath
 $admissionResultFull = $null
 $script:admissionPendingSequence = 0
 $admissionRoot = $null
@@ -302,6 +347,10 @@ function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $nul
 }
 
 trap {
+  if ($isManifestReplay) {
+    [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
+    exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
+  }
   if ($isNativeDb) {
     if ($nativeRequest -and -not $nativeReplyWritten) {
       Write-NativeReply $(if ($ownedRaw) { 'unknown' } else { 'refused' }) $_.Exception.Message
@@ -361,9 +410,601 @@ if ($isAttachedAdmission) {
   }
 }
 
+# Replay alone uses atomic Job-list membership. No payload instruction can run
+# outside the kill-on-close Job, even if this host dies before owner publication.
+function Initialize-ReplayJob {
+  if ('ManifestReplayJob' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Win32.SafeHandles;
+public sealed class ManifestReplayJob : IDisposable {
+  public sealed class LaunchFailure : IOException {
+    public bool DeathProven { get; private set; }
+    public LaunchFailure(string message,bool proven) : base(message) { DeathProven=proven; }
+  }
+  [StructLayout(LayoutKind.Sequential)] struct SA { public int size; public IntPtr descriptor; public int inherit; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct SI {
+    public int cb; public string reserved, desktop, title;
+    public int x,y,xSize,ySize,xChars,yChars,fill,flags;
+    public short show, reservedSize; public IntPtr reservedBytes, input, output, error;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct SIX { public SI si; public IntPtr attributes; }
+  [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr process, thread; public int pid, tid; }
+  [StructLayout(LayoutKind.Sequential)] struct BASIC {
+    public long user, kernel; public uint flags; public UIntPtr min, max;
+    public uint active; public UIntPtr affinity; public uint priority, scheduling;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct IOCOUNTERS { public ulong a,b,c,d,e,f; }
+  [StructLayout(LayoutKind.Sequential)] struct LIMIT { public BASIC basic; public IOCOUNTERS io; public UIntPtr process, job, peakProcess, peakJob; }
+  [StructLayout(LayoutKind.Sequential)] struct ACCOUNT { public long a,b,c,d; public uint faults,total,active,terminated; }
+  [StructLayout(LayoutKind.Sequential)] struct STANDARD { public long allocated, size; public uint links; public byte pending, directory; }
+  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateJobObjectW(IntPtr sa,IntPtr name);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int kind,ref LIMIT info,int size);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job,int kind,out ACCOUNT info,int size,IntPtr returned);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr job,uint code);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,ref SA sa,int size);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetHandleInformation(IntPtr handle,uint mask,uint flags);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,int flags,ref IntPtr size);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
+  [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string exe,StringBuilder command,IntPtr psa,IntPtr tsa,bool inherit,uint flags,IntPtr environment,string directory,ref SIX startup,out PI process);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint ms);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long creation,out long exit,out long kernel,out long user);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle file,StringBuilder path,uint size,uint flags);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle file,int kind,out STANDARD info,uint size);
+  IntPtr job, process, thread;
+  Task stdout, stderr;
+  volatile bool overflow;
+  public int Pid { get; private set; }
+  public string StartUtc { get; private set; }
+  public bool Resumed { get; private set; }
+  public bool Overflow { get { return overflow; } }
+  public bool StreamsComplete { get { return stdout != null && stderr != null && stdout.Status == TaskStatus.RanToCompletion && stderr.Status == TaskStatus.RanToCompletion; } }
+  public bool StreamsFaulted { get { return (stdout != null && stdout.IsFaulted) || (stderr != null && stderr.IsFaulted); } }
+  static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+  static void Close(ref IntPtr h) { if(h!=IntPtr.Zero) { CloseHandle(h); h=IntPtr.Zero; } }
+  public static void PlainFile(FileStream file,string expected) {
+    var name=new StringBuilder(32768);
+    uint n=GetFinalPathNameByHandleW(file.SafeFileHandle,name,(uint)name.Capacity,0);
+    if(n==0 || n>=name.Capacity) throw new IOException("replay final path unavailable");
+    string actual=name.ToString();
+    if(actual.StartsWith(@"\\?\")) actual=actual.Substring(4);
+    STANDARD info;
+    Check(GetFileInformationByHandleEx(file.SafeFileHandle,1,out info,(uint)Marshal.SizeOf<STANDARD>()));
+    if(!String.Equals(actual,expected,StringComparison.OrdinalIgnoreCase) || info.links!=1 || info.directory!=0)
+      throw new IOException("replay alias or non-plain file");
+  }
+  public static string Quote(string value) {
+    if(value.IndexOf('\0')>=0) throw new ArgumentException("NUL argument");
+    var b=new StringBuilder("\""); int slashes=0;
+    foreach(char c in value) {
+      if(c=='\\') { slashes++; continue; }
+      if(c=='\"') b.Append('\\',slashes*2+1); else b.Append('\\',slashes);
+      slashes=0; b.Append(c);
+    }
+    return b.Append('\\',slashes*2).Append('"').ToString();
+  }
+  public static Task<string> ReadBounded(StreamReader reader,int maximum) {
+    return Task.Run(async ()=> {
+      var text=new StringBuilder(); var buffer=new char[4096]; int n;
+      while((n=await reader.ReadAsync(buffer,0,buffer.Length))!=0) {
+        if(text.Length+n>maximum) throw new IOException("replay probe output exceeds bound");
+        text.Append(buffer,0,n);
+      }
+      return text.ToString();
+    });
+  }
+  Task Drain(IntPtr handle,string path,int limit) {
+    var stream=new FileStream(new SafeFileHandle(handle,true),FileAccess.Read,4096,false);
+    var output=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.Read);
+    return Task.Run(()=> {
+      try {
+        byte[] buffer=new byte[16384]; int n,total=0;
+        while((n=stream.Read(buffer,0,buffer.Length))!=0) {
+          if(total+n>limit) { overflow=true; Kill(); throw new IOException("replay stream overflow"); }
+          output.Write(buffer,0,n); total+=n;
+        }
+        output.Flush(true);
+      } finally { stream.Dispose(); output.Dispose(); }
+    });
+  }
+  public static ManifestReplayJob Launch(string exe,string[] argv,string directory,IDictionary environment,string outPath,string errPath,int limit) {
+    var result=new ManifestReplayJob();
+    IntPtr attrs=IntPtr.Zero,jobs=IntPtr.Zero,handles=IntPtr.Zero,env=IntPtr.Zero;
+    IntPtr outRead=IntPtr.Zero,outWrite=IntPtr.Zero,errRead=IntPtr.Zero,errWrite=IntPtr.Zero,inRead=IntPtr.Zero,inWrite=IntPtr.Zero;
+    bool initialized=false;
+    try {
+      result.job=CreateJobObjectW(IntPtr.Zero,IntPtr.Zero); Check(result.job!=IntPtr.Zero);
+      var limits=new LIMIT(); limits.basic.flags=0x2000;
+      Check(SetInformationJobObject(result.job,9,ref limits,Marshal.SizeOf<LIMIT>()));
+      var sa=new SA { size=Marshal.SizeOf<SA>(),inherit=1 };
+      Check(CreatePipe(out outRead,out outWrite,ref sa,0)); Check(SetHandleInformation(outRead,1,0));
+      Check(CreatePipe(out errRead,out errWrite,ref sa,0)); Check(SetHandleInformation(errRead,1,0));
+      Check(CreatePipe(out inRead,out inWrite,ref sa,0)); Check(SetHandleInformation(inWrite,1,0));
+      IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,2,0,ref size);
+      attrs=Marshal.AllocHGlobal(size); Check(InitializeProcThreadAttributeList(attrs,2,0,ref size)); initialized=true;
+      jobs=Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobs,result.job);
+      Check(UpdateProcThreadAttribute(attrs,0,(IntPtr)0x2000D,jobs,(IntPtr)IntPtr.Size,IntPtr.Zero,IntPtr.Zero));
+      handles=Marshal.AllocHGlobal(3*IntPtr.Size);
+      Marshal.WriteIntPtr(handles,0,inRead); Marshal.WriteIntPtr(handles,IntPtr.Size,outWrite); Marshal.WriteIntPtr(handles,2*IntPtr.Size,errWrite);
+      Check(UpdateProcThreadAttribute(attrs,0,(IntPtr)0x20002,handles,(IntPtr)(3*IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
+      var variables=new SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+      foreach(DictionaryEntry entry in environment) variables.Add(entry.Key.ToString(),entry.Value.ToString());
+      var block=new StringBuilder(); foreach(var entry in variables) block.Append(entry.Key).Append('=').Append(entry.Value).Append('\0'); block.Append('\0');
+      env=Marshal.StringToHGlobalUni(block.ToString());
+      var si=new SIX(); si.si.cb=Marshal.SizeOf<SIX>(); si.si.flags=0x101; si.si.show=0;
+      si.si.input=inRead; si.si.output=outWrite; si.si.error=errWrite; si.attributes=attrs;
+      var command=new StringBuilder(Quote(exe)); foreach(string arg in argv) command.Append(' ').Append(Quote(arg));
+      PI pi;
+      Check(CreateProcessW(exe,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref si,out pi));
+      result.process=pi.process; result.thread=pi.thread; result.Pid=pi.pid;
+      long creation,exit,kernel,user; Check(GetProcessTimes(pi.process,out creation,out exit,out kernel,out user));
+      result.StartUtc=DateTime.FromFileTimeUtc(creation).ToString("o");
+      Close(ref outWrite); Close(ref errWrite); Close(ref inRead); Close(ref inWrite);
+      result.stdout=result.Drain(outRead,outPath,limit); outRead=IntPtr.Zero;
+      result.stderr=result.Drain(errRead,errPath,limit); errRead=IntPtr.Zero;
+      return result;
+    } catch(Exception error) {
+      bool dead=false;
+      try {
+        if(result.job!=IntPtr.Zero) {
+          result.Kill(); var watch=System.Diagnostics.Stopwatch.StartNew();
+          while((result.Active!=0 || (result.process!=IntPtr.Zero && !result.Exited)) && watch.ElapsedMilliseconds<2000) Thread.Sleep(10);
+          dead=result.Active==0 && (result.process==IntPtr.Zero || result.Exited);
+        } else dead=result.process==IntPtr.Zero;
+      } catch { dead=false; }
+      result.Dispose(); throw new LaunchFailure(error.Message,dead);
+    }
+    finally {
+      if(initialized) DeleteProcThreadAttributeList(attrs);
+      if(attrs!=IntPtr.Zero) Marshal.FreeHGlobal(attrs);
+      if(jobs!=IntPtr.Zero) Marshal.FreeHGlobal(jobs);
+      if(handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
+      if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
+      Close(ref outRead); Close(ref outWrite); Close(ref errRead); Close(ref errWrite); Close(ref inRead); Close(ref inWrite);
+    }
+  }
+  public void Resume() { if(Resumed || ResumeThread(thread)!=1) throw new IOException("replay resume ambiguous"); Resumed=true; Close(ref thread); }
+  public bool Exited { get { return process!=IntPtr.Zero && WaitForSingleObject(process,0)==0; } }
+  public int ExitCode { get { uint code; if(!Exited) throw new IOException("replay process live"); Check(GetExitCodeProcess(process,out code)); return unchecked((int)code); } }
+  public uint Active { get { ACCOUNT info; Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero)); return info.active; } }
+  public void Kill() { if(job!=IntPtr.Zero) Check(TerminateJobObject(job,1)); }
+  public bool WaitStreams(int ms) {
+    if(stdout==null || stderr==null) return false;
+    try { return Task.WaitAll(new[]{stdout,stderr},ms); } catch(AggregateException) { return false; }
+  }
+  public void Dispose() {
+    Close(ref job); // kill-on-close includes suspended children and all descendants
+    if(process!=IntPtr.Zero) WaitForSingleObject(process,1000);
+    Close(ref thread); Close(ref process);
+    WaitStreams(1000);
+  }
+}
+'@ -ErrorAction Stop
+}
+function Get-ReplayRemaining([int]$Maximum = 5000) {
+  $remaining = 590000 - $script:replayEntryWatch.ElapsedMilliseconds
+  if ($remaining -le 0) { throw 'heavy-verifier: replay foreground deadline' }
+  return [int][Math]::Min($Maximum, $remaining)
+}
+function Assert-ReplayPath([string]$Path) {
+  if ($Path -cnotmatch '^[A-Za-z]:[\\/]' -or $Path -match '[\x00-\x1f]' -or
+      $Path.Substring(2).Contains(':') -or $Path.Contains('~')) { throw 'heavy-verifier: replay requires a plain local absolute path' }
+  foreach ($part in $Path.Substring(3).Replace('\','/').Split('/')) {
+    if (-not $part -or $part -in @('.','..') -or $part.EndsWith('.') -or $part.EndsWith(' ') -or
+        $part -imatch '^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)') { throw 'heavy-verifier: replay path alias or traversal' }
+  }
+  Assert-DiagnosticPathNoReparse $Path 'replay path'
+}
+function Read-ReplayJson([string]$Raw, [int]$Maximum = 262144) {
+  if ([Text.Encoding]::UTF8.GetByteCount($Raw) -gt $Maximum) { throw 'heavy-verifier: replay JSON exceeds bound' }
+  $options = [Text.Json.JsonDocumentOptions]::new(); $options.MaxDepth = 24
+  $document = [Text.Json.JsonDocument]::Parse($Raw, $options)
+  try {
+    $walk = {
+      param($Element)
+      if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
+        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in $Element.EnumerateObject()) {
+          if (-not $names.Add($property.Name)) { throw 'heavy-verifier: replay duplicate JSON key' }
+          & $walk $property.Value
+        }
+      } elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
+        foreach ($item in $Element.EnumerateArray()) { & $walk $item }
+      }
+    }
+    & $walk $document.RootElement
+  } finally { $document.Dispose() }
+  return ConvertFrom-Json -InputObject $Raw -AsHashtable -DateKind String -Depth 24
+}
+function Get-ReplayHash([byte[]]$Bytes) { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant() }
+function Open-ReplayPin([string]$Path, [string]$Expected, [int]$Maximum = 33554432) {
+  Assert-ReplayPath $Path
+  if ($script:replaySources.Contains($Path)) {
+    if ($script:replaySources[$Path].sha256 -cne $Expected) { throw 'heavy-verifier: conflicting replay pins' }
+    return $script:replaySources[$Path]
+  }
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    [ManifestReplayJob]::PlainFile($stream, $Path)
+    if ($stream.Length -gt $Maximum -or $script:replaySourceBytes + $stream.Length -gt 33554432) { throw 'heavy-verifier: replay source bound exceeded' }
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+    if ($Expected -and $hash -cne $Expected) { throw 'heavy-verifier: replay pin mismatch' }
+    $script:replaySourceBytes += $stream.Length
+    $record = @{stream=$stream;sha256=$hash;path=$Path}
+    $script:replaySources[$Path] = $record
+    return $record
+  } catch { $stream.Dispose(); throw }
+}
+function Read-ReplaySource($Pin, [int]$Maximum = 262144) {
+  $stream = $Pin.stream
+  if ($stream.Length -gt $Maximum) { throw 'heavy-verifier: replay input exceeds bound' }
+  $stream.Position=0; $bytes=[byte[]]::new([int]$stream.Length); $stream.ReadExactly($bytes)
+  return [Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+}
+function Assert-ReplayPins {
+  foreach ($pin in $script:replaySources.Values) {
+    [void](Get-ReplayRemaining)
+    Assert-ReplayPath $pin.path
+    [ManifestReplayJob]::PlainFile($pin.stream, $pin.path)
+    $pin.stream.Position=0
+    if ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($pin.stream)).ToLowerInvariant() -cne $pin.sha256) { throw 'heavy-verifier: replay source drift' }
+  }
+}
+function Resolve-ReplaySource($Pin) {
+  $relative = [string]$Pin.path
+  if ($relative -cnotmatch '^\.orchestrator/logs/[A-Za-z0-9._/-]+$') { throw 'heavy-verifier: replay sources must be logs-relative' }
+  $path = Join-Path $worktreeFull $relative
+  Assert-ReplayPath $path
+  [void](Open-ReplayPin $path $Pin.sha256)
+  return $path
+}
+function Assert-ReplayObject($Value, [string[]]$Keys) {
+  if ($Value -isnot [Collections.IDictionary] -or $Value.Count -ne $Keys.Count -or
+      @($Keys | Where-Object { -not $Value.Contains($_) }).Count) { throw 'heavy-verifier: replay missing or unknown key' }
+}
+function Write-ReplayNew([string]$Path, $Value, [int]$Maximum = 1048576) {
+  Assert-ReplayPath $Path
+  $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 24 -Compress))
+  if ($bytes.Length -gt $Maximum) { throw 'heavy-verifier: replay evidence exceeds bound' }
+  $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+  try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+  return Get-ReplayHash $bytes
+}
+function Invoke-ReplayGit([string[]]$Arguments) {
+  $start=[Diagnostics.ProcessStartInfo]::new('git'); $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+  $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+  foreach ($arg in @('-C',$worktreeFull)+$Arguments) { $start.ArgumentList.Add($arg) }
+  $probe=[Diagnostics.Process]::Start($start)
+  try {
+    $output=[ManifestReplayJob]::ReadBounded($probe.StandardOutput,1048576); $errors=[ManifestReplayJob]::ReadBounded($probe.StandardError,65536)
+    if (-not $probe.WaitForExit((Get-ReplayRemaining 5000))) { $probe.Kill($true); [void]$probe.WaitForExit(1000); throw 'heavy-verifier: replay Git deadline' }
+    if (-not $output.Wait((Get-ReplayRemaining 1000)) -or -not $errors.Wait((Get-ReplayRemaining 1000)) -or $probe.ExitCode -ne 0) { throw 'heavy-verifier: replay Git probe failed' }
+    $text=$output.GetAwaiter().GetResult()
+    if ($text.Length -gt 1048576) { throw 'heavy-verifier: replay Git output exceeds bound' }
+    return $text.Trim()
+  } finally { $probe.Dispose() }
+}
+function Assert-ReplayPackage {
+  $script:replaySources=[ordered]@{}; $script:replaySourceBytes=0
+  Assert-ReplayPath $container; Assert-ReplayPath $worktreeFull
+  $declarationPath=Join-Path $PSScriptRoot 'diagnostic-declarations.json'
+  $declarationPin=Open-ReplayPin $declarationPath '' 262144
+  $declarations=Read-ReplayJson (Read-ReplaySource $declarationPin)
+  Assert-ReplayObject $declarations @('schema','diagnostics','manifestReplays')
+  if ($declarations.schema -cne 'host-heavy-diagnostic-declarations/v1') { throw 'heavy-verifier: invalid replay declaration schema' }
+  Assert-ReplayObject $declarations.manifestReplays @('10808-ac3-replay')
+  $definition=$declarations.manifestReplays[$ManifestReplay]
+  Assert-ReplayObject $definition @('enabled','kind','path','sha256','maxBudgetSeconds')
+  if ($definition.enabled -isnot [bool] -or -not $definition.enabled -or $definition.kind -cne 'manifest-replay' -or
+      $definition.maxBudgetSeconds -isnot [long] -or $definition.maxBudgetSeconds -ne 540 -or $definition.sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'heavy-verifier: replay declaration disabled, unpopulated or wrong kind' }
+  $bindingsPath=Resolve-ReplaySource $definition
+  Assert-ReplayPath $ReplayManifestPath
+  if ($ReplayManifestPath -cne $bindingsPath -or $ReplayManifestSha256 -cne $definition.sha256) { throw 'heavy-verifier: replay bindings differ from released declaration' }
+  $bindingsRaw=Read-ReplaySource $script:replaySources[$bindingsPath]
+  $script:replayBindings=Read-ReplayJson $bindingsRaw
+  $script:replayControllerPins=[ordered]@{}
+  foreach ($name in @('invoke-heavy-verifier.ps1','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','heavy-admission-preload.cjs','heavy-slot.cjs','dispatch-ownership.ps1')) {
+    $path=Join-Path $PSScriptRoot $name
+    $pin=Open-ReplayPin $path ''
+    $script:replayControllerPins[$name]=$pin.sha256
+  }
+  $schema=Read-ReplaySource $script:replaySources[(Join-Path $PSScriptRoot 'manifest-replay-bindings.schema.json')]
+  if (-not (Test-Json -Json $bindingsRaw -Schema $schema -ErrorAction SilentlyContinue)) { throw 'heavy-verifier: invalid replay bindings schema' }
+  $binding=$script:replayBindings
+  if ($binding.runId -cne $ReplayRunId -or $binding.head -cne $acquiredGitIdentity.Head -or $binding.worktree -cne $worktreeFull) { throw 'heavy-verifier: replay binding identity mismatch' }
+  $script:replayEvidence=Join-Path $worktreeFull ".orchestrator/artifacts/manifest-replay-$ReplayRunId"
+  Assert-ReplayPath $script:replayEvidence
+  [void](Resolve-ReplaySource $binding.provenance.manifest)
+  $provenancePaths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  foreach ($artifact in $binding.provenance.artifacts) {
+    if (-not $provenancePaths.Add($artifact.path)) { throw 'heavy-verifier: replay provenance aliases' }
+    [void](Resolve-ReplaySource $artifact)
+  }
+  $script:replayPhasePaths=@{}
+  foreach ($phase in @('base','repaired')) {
+    $definition=$binding.phases[$phase]; $paths=@{}
+    foreach ($role in @('wrapper','spec','capture','preflight')) { $paths[$role]=Resolve-ReplaySource $definition[$role] }
+    if ($paths.wrapper -cnotmatch '\.ps1$' -or $paths.spec -cnotmatch '\.json$' -or $paths.capture -cnotmatch '\.mjs$') { throw 'heavy-verifier: invalid replay source extensions' }
+    foreach ($dependency in $definition.dependencies) { [void](Resolve-ReplaySource $dependency) }
+    $expectedCommand=@('-NoProfile','-File',$paths.wrapper,'-Spec',$paths.spec)
+    if (($definition.command.arguments | ConvertTo-Json -Compress) -cne ($expectedCommand | ConvertTo-Json -Compress) -or
+        ($definition.invocation.arguments | ConvertTo-Json -Compress) -cne (@($paths.capture,'step3') | ConvertTo-Json -Compress)) { throw 'heavy-verifier: replay command grammar mismatch' }
+    $resultPath=Join-Path $script:replayEvidence "$phase.result.json"
+    $specRaw=Read-ReplaySource $script:replaySources[$paths.spec]
+    $spec=Read-ReplayJson $specRaw
+    Assert-ReplayObject $spec @('schema','runId','phase','head','worktree','budgetSeconds','laneMode','invocation','resultPath','stdoutPath','stderrPath')
+    Assert-ReplayObject $spec.invocation @('executable','arguments')
+    if ($spec.schema -cne 'host-heavy-replay-spec/v1' -or $spec.runId -cne $ReplayRunId -or $spec.phase -cne $phase -or
+        $spec.head -cne $binding.head -or $spec.worktree -cne $worktreeFull -or $spec.budgetSeconds -ne 540 -or
+        $spec.laneMode -isnot [bool] -or $spec.laneMode -or $spec.resultPath -cne $resultPath -or $definition.resultPath -cne $resultPath -or
+        $spec.stdoutPath -cne (Join-Path $script:replayEvidence "$phase.stdout.log") -or $spec.stderrPath -cne (Join-Path $script:replayEvidence "$phase.stderr.log") -or
+        $spec.invocation.executable -cne 'node' -or ($spec.invocation.arguments | ConvertTo-Json -Compress) -cne (@($paths.capture,'step3') | ConvertTo-Json -Compress)) { throw 'heavy-verifier: replay spec identity, outputs or invocation mismatch' }
+    $expected=$definition.expected
+    if (($phase -ceq 'base' -and ($expected.nativeExit -in @(0,73,124) -or $null -eq $expected.firstFailure)) -or
+        ($phase -ceq 'repaired' -and ($expected.nativeExit -ne 0 -or $null -ne $expected.firstFailure))) { throw 'heavy-verifier: contradictory replay phase expectations' }
+    $script:replayPhasePaths[$phase]=$paths
+  }
+  $sourcePins=[ordered]@{}
+  foreach ($entry in $script:replaySources.GetEnumerator()) {
+    if ($entry.Key.StartsWith($worktreeFull + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {
+      $sourcePins[$entry.Key.Substring($worktreeFull.Length+1).Replace('\','/')]=$entry.Value.sha256
+    }
+  }
+  $script:replayPackage=[ordered]@{declarationSha256=$declarationPin.sha256;bindingsSha256=$ReplayManifestSha256;controllerPins=$script:replayControllerPins;pins=$sourcePins}
+  $script:replayBaseReceipt=$null
+  if ($ReplayPhase -ceq 'repaired') { Assert-ReplayBaseReceipt }
+  foreach ($suffix in @('claim.json','start.json','result.json','stdout.log','stderr.log','receipt.json','complete.json')) {
+    if (Test-Path -LiteralPath (Join-Path $script:replayEvidence "$ReplayPhase.$suffix")) { throw 'heavy-verifier: replay phase already claimed or evidence exists; no relaunch' }
+  }
+  Assert-ReplayPins
+}
+function Read-ReplayEvidence([string]$Path, [int]$Maximum=1048576) {
+  Assert-ReplayPath $Path
+  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  try {
+    [ManifestReplayJob]::PlainFile($stream,$Path)
+    if ($stream.Length -gt $Maximum) { throw 'heavy-verifier: replay evidence exceeds bound' }
+    $bytes=[byte[]]::new([int]$stream.Length); $stream.ReadExactly($bytes)
+    $raw=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+    return @{value=(Read-ReplayJson $raw $Maximum);raw=$raw;sha256=(Get-ReplayHash $bytes)}
+  } finally { $stream.Dispose() }
+}
+function Assert-ReplayBaseReceipt {
+  $base=Read-ReplayEvidence (Join-Path $script:replayEvidence 'base.receipt.json')
+  $completion=Read-ReplayEvidence (Join-Path $script:replayEvidence 'base.complete.json') 65536
+  $claim=Read-ReplayEvidence (Join-Path $script:replayEvidence 'base.claim.json')
+  $intent=Read-ReplayEvidence (Join-Path $script:replayEvidence 'base.start.json') 65536
+  Assert-ReplayObject $completion.value @('schema','runId','phase','nonce','claimSha256','startIntentSha256','receiptSha256')
+  if ($completion.value.schema -cne 'host-heavy-replay-completion/v1' -or $completion.value.runId -cne $ReplayRunId -or $completion.value.phase -cne 'base' -or
+      $base.sha256 -cne $ReplayBaseReceiptSha256 -or $completion.value.receiptSha256 -cne $ReplayBaseReceiptSha256 -or
+      $completion.value.claimSha256 -cne $claim.sha256 -or $completion.value.startIntentSha256 -cne $intent.sha256 -or
+      $claim.value.nonce -cne $completion.value.nonce -or $intent.value.nonce -cne $completion.value.nonce) { throw 'heavy-verifier: replay base completion or external digest mismatch' }
+  $schema=Read-ReplaySource $script:replaySources[(Join-Path $PSScriptRoot 'manifest-replay-receipt.schema.json')]
+  if (-not (Test-Json -Json $base.raw -Schema $schema -ErrorAction SilentlyContinue)) { throw 'heavy-verifier: replay base receipt schema mismatch' }
+  $receipt=$base.value
+  if ($receipt.runId -cne $ReplayRunId -or $receipt.phase -cne 'base' -or $receipt.head -cne $acquiredGitIdentity.Head -or
+      $receipt.lane -cne $Lane -or $receipt.worktree -cne $worktreeFull -or $receipt.identityMode -cne $identityMode -or $receipt.branch -cne $(if($identityMode -ceq 'branch'){$acquiredGitIdentity.Branch}else{$null}) -or
+      ($receipt.package | ConvertTo-Json -Depth 16 -Compress) -cne ($script:replayPackage | ConvertTo-Json -Depth 16 -Compress) -or
+      $receipt.outcome -cne 'expected-failure' -or -not $receipt.recorderComplete -or -not $receipt.cleanupComplete -or -not $receipt.released) { throw 'heavy-verifier: replay base identity, pins or completion mismatch' }
+  Assert-ReplayObservedResult $receipt.result 'base' $receipt.nativeExit
+  $script:replayBaseReceipt=$receipt
+}
+function Assert-ReplayObservedResult($Result, [string]$Phase, [int]$NativeExit) {
+  $schemaDocument=Read-ReplayJson (Read-ReplaySource $script:replaySources[(Join-Path $PSScriptRoot 'manifest-replay-bindings.schema.json')])
+  $resultSchema=@{'$schema'='http://json-schema.org/draft-07/schema#';'$ref'='#/definitions/phaseResult';definitions=$schemaDocument.definitions} | ConvertTo-Json -Depth 24
+  if (-not (Test-Json -Json ($Result | ConvertTo-Json -Depth 16) -Schema $resultSchema -ErrorAction SilentlyContinue) -or
+      $Result.runId -cne $ReplayRunId -or $Result.phase -cne $Phase -or $Result.head -cne $acquiredGitIdentity.Head -or $Result.nativeExit -ne $NativeExit) { throw 'heavy-verifier: replay result schema or observed identity/exit mismatch' }
+  $failed=@($Result.checks | Where-Object status -CEQ 'failed')
+  $first=if ($failed.Count) { [ordered]@{stage=$failed[0].stage;code=$failed[0].code;message=$failed[0].message} } else { $null }
+  $expected=$script:replayBindings.phases[$Phase].expected
+  $firstMatches=($null -eq $first -and $null -eq $expected.firstFailure) -or
+    ($null -ne $first -and $null -ne $expected.firstFailure -and $first.stage -ceq $expected.firstFailure.stage -and
+     $first.code -ceq $expected.firstFailure.code -and $first.message -ceq $expected.firstFailure.message)
+  if ($NativeExit -ne $expected.nativeExit -or -not $firstMatches -or
+      ($Phase -ceq 'base' -and $Result.status -cne 'failed') -or ($Phase -ceq 'repaired' -and $Result.status -cne 'passed')) { throw 'heavy-verifier: replay observed first failure or status differs from expected' }
+  $script:replayFirstFailure=$first
+}
+function Invoke-ManifestReplay {
+  function Close-ReplaySources {
+    foreach ($pin in $script:replaySources.Values) { try { $pin.stream.Dispose() } catch {} }
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+  }
+  $job=$null; $claim=$null; $claimHash=$null; $intentHash=$null; $resumed=$false; $intentWritten=$false
+  $nativeExit=$null; $timedOut=$false; $failure=$null; $result=$null; $resultHash=$null; $recorder=$false
+  $survivors=$null; $afterCleanup=$null; $cleanup=$true; $released=$false; $releasedUtc=$null; $startUtc=$null
+  $logs=[ordered]@{stdout=$null;stderr=$null}; $receiptPath=Join-Path $script:replayEvidence "$ReplayPhase.receipt.json"
+  $claimPath=Join-Path $script:replayEvidence "$ReplayPhase.claim.json"
+  try {
+    $ownedRaw=Write-OwnerRecord $owner -CreateNew
+    if (-not (Test-ThisOwner)) { throw 'heavy-verifier: replay exact owner unavailable' }
+    Assert-LiveGitIdentityUnchanged; Assert-HostVerifierGitState; Assert-ReplayPins
+    $callerBinding=Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
+    Assert-ReplayPath $script:replayEvidence
+    [IO.Directory]::CreateDirectory($script:replayEvidence) | Out-Null
+    Assert-ReplayPath $script:replayEvidence
+    foreach ($suffix in @('claim.json','start.json','result.json','stdout.log','stderr.log','receipt.json','complete.json')) {
+      if (Test-Path -LiteralPath (Join-Path $script:replayEvidence "$ReplayPhase.$suffix")) { throw 'heavy-verifier: replay phase evidence exists; no relaunch' }
+    }
+    $claim=[ordered]@{schema='host-heavy-replay-claim/v1';nonce=[guid]::NewGuid().ToString('N');runId=$ReplayRunId;phase=$ReplayPhase;head=$acquiredGitIdentity.Head;lane=$Lane;worktree=$worktreeFull;owner=$owner;package=$script:replayPackage}
+    $claimHash=Write-ReplayNew $claimPath $claim
+    $claimGuard=[IO.File]::Open($claimPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $environment=[ordered]@{}
+    foreach ($key in @('SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','COMSPEC','NUMBER_OF_PROCESSORS','OS','PATHEXT')) {
+      $value=[Environment]::GetEnvironmentVariable($key)
+      if ($null -ne $value) { $environment[$key]=$value }
+    }
+    $replayGit=@(Get-Command git -CommandType Application -All | Where-Object { [IO.Path]::GetFileName($_.Source) -ieq 'git.exe' -and (Test-SafeFile $_.Source) }) | Select-Object -First 1 -ExpandProperty Source
+    if (-not $replayGit) { throw 'heavy-verifier: replay requires a plain Git executable' }
+    $environment['PATH']=(Split-Path -Parent $command)+';'+(Split-Path -Parent $hostNode)+';'+(Split-Path -Parent $replayGit)+';'+(Join-Path $env:SystemRoot 'System32')
+    $preload=Join-Path $PSScriptRoot 'heavy-admission-preload.cjs'
+    $nodeOptions='--require="'+$preload.Replace('\','/')+'"'
+    $environment['NODE_OPTIONS']=$nodeOptions; $environment['CHASE_SETS_HEAVY_SLOT_ID']=$lockId
+    $config=[ordered]@{schemaVersion=1;guardPath=$PSCommandPath;powershellPath=$process.Path;containerRoot=$container;worktree=$worktreeFull;lane=$Lane;retainAdmission=$true;originalNodeOptionsPresent=$true;originalNodeOptions=$nodeOptions;originalScriptShellPresent=$false;originalScriptShell=$null}
+    if ($identityMode -ceq 'branch') { $config.branch=$acquiredGitIdentity.Branch; $config.head=$acquiredGitIdentity.Head } else { $config.immutableHead=$acquiredGitIdentity.Head }
+    $environment['CHASE_SETS_HEAVY_ADMISSION_CONFIG']=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($config | ConvertTo-Json -Depth 6 -Compress)))
+    $environment['npm_config_script_shell']=$hostNode; $environment['CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL']='node-check-proxy'
+    $outPath=Join-Path $script:replayEvidence "$ReplayPhase.stdout.log"; $errPath=Join-Path $script:replayEvidence "$ReplayPhase.stderr.log"
+    Assert-ReplayPins; Assert-LiveGitIdentityUnchanged; Assert-HostVerifierGitState
+    [void](Get-ReplayRemaining)
+    $job=[ManifestReplayJob]::Launch($command,[string[]]$arguments,$worktreeFull,$environment,$outPath,$errPath,8388608)
+    $cleanup=$false
+    $owner.state='started'; $owner.childPid=$job.Pid; $owner.childProcessStartUtc=$job.StartUtc
+    $ownedRaw=Write-OwnerRecord $owner
+    if (-not (Test-ThisOwner)) { throw 'heavy-verifier: replay child owner publication mismatch' }
+    $intentHash=Write-ReplayNew (Join-Path $script:replayEvidence "$ReplayPhase.start.json") ([ordered]@{schema='host-heavy-replay-start/v1';nonce=$claim.nonce;runId=$ReplayRunId;phase=$ReplayPhase;childPid=$job.Pid;childProcessStartUtc=$job.StartUtc;lockId=$lockId}) 65536
+    $intentWritten=$true
+    $script:replayExecutionStarted=$null
+    $job.Resume()
+    $script:replayExecutionStarted=$true; $resumed=$true; $startUtc=[DateTime]::UtcNow.ToString('o')
+    $resumeMs=$script:replayEntryWatch.ElapsedMilliseconds
+    $deadlineMs=[Math]::Min($resumeMs+540000,590000)
+    $script:heavyAdmissionBudget.deadline=590000
+    while ($true) {
+      if ($job.Overflow) { throw 'heavy-verifier: replay stream overflow' }
+      if ($job.StreamsFaulted) { throw 'heavy-verifier: replay stream recorder failed' }
+      if ($job.Exited) {
+        $nativeExit=$job.ExitCode; $survivors=[int]$job.Active
+        if ($survivors -eq 0 -and $job.StreamsComplete) { break }
+      }
+      if ($script:replayEntryWatch.ElapsedMilliseconds -ge $deadlineMs) { $timedOut=$true; throw 'heavy-verifier: replay deadline expired' }
+      Start-Sleep -Milliseconds 20
+    }
+    $recorder=$job.StreamsComplete
+    if ($nativeExit -ne 73) {
+      $observed=Read-ReplayEvidence (Join-Path $script:replayEvidence "$ReplayPhase.result.json") 65536
+      $resultHash=$observed.sha256
+      Assert-ReplayObservedResult $observed.value $ReplayPhase $nativeExit
+      $result=$observed.value
+    }
+    Assert-LiveGitIdentityUnchanged -AfterExecution; Assert-HostVerifierGitState; Assert-ReplayPins
+    $callerBinding=Invoke-HeavyAdmissionCensus { Assert-HeavyCallerEligibility $callerBinding }
+  } catch {
+    $failure=$_.Exception.Message
+    if ($_.Exception.InnerException -is [ManifestReplayJob+LaunchFailure] -and -not $_.Exception.InnerException.DeathProven) {
+      $cleanup=$false
+    }
+  }
+  finally {
+    if ($job) {
+      try {
+        if ($null -eq $survivors) { $survivors=[int]$job.Active }
+        if ($job.Active -gt 0) { $job.Kill() }
+        $cleanupDeadline=[Math]::Min(599000,$script:replayEntryWatch.ElapsedMilliseconds+3000)
+        while (($job.Active -gt 0 -or -not $job.Exited) -and $script:replayEntryWatch.ElapsedMilliseconds -lt $cleanupDeadline) { Start-Sleep -Milliseconds 20 }
+        $afterCleanup=[int]$job.Active; $cleanup=$afterCleanup -eq 0 -and $job.Exited
+        if ($resumed -and $job.Exited -and $null -eq $nativeExit) { $nativeExit=$job.ExitCode }
+        if (-not $job.WaitStreams([int][Math]::Max(0,[Math]::Min(1000,599000-$script:replayEntryWatch.ElapsedMilliseconds)))) { $recorder=$false }
+        else { $recorder=$job.StreamsComplete -and -not $job.Overflow }
+      } catch { $cleanup=$false; $failure='replay cleanup unknown' }
+    } else { $afterCleanup=0 }
+    try {
+      if ($cleanup -and (Test-ThisOwner)) { $released=Release-ThisLock -RequireExact }
+      if ($released) { $releasedUtc=[DateTime]::UtcNow.ToString('o') }
+    } catch { $released=$false }
+    if ($job) { $job.Dispose() }
+    if ($claimGuard) { $claimGuard.Dispose() }
+  }
+  if (-not $resumed -and -not $intentWritten -and $cleanup -and $released) {
+    # Only unchanged nonce-owned prelaunch records are reusable. Anything after
+    # durable start intent is deliberately left incomplete, including a crash.
+    if ($claimHash) {
+      $current=Read-ReplayEvidence $claimPath
+      if ($current.sha256 -ceq $claimHash) { [IO.File]::Delete($claimPath) }
+    }
+    Close-ReplaySources
+    [Console]::Error.WriteLine('heavy-verifier: replay NOT_EXECUTED: '+$failure)
+    return 73
+  }
+  $exit=1; $outcome='incomplete'
+  if ($timedOut) { $exit=124; $outcome='timed-out' }
+  elseif ($failure -or -not $recorder -or -not $cleanup -or -not $released) { $exit=1 }
+  elseif ($nativeExit -eq 73) { $exit=73; $outcome='not-executed' }
+  elseif ($resumed -and $result) { $exit=0; $outcome=if ($ReplayPhase -ceq 'base') { 'expected-failure' } else { 'passed' } }
+  if (-not $claimHash) { Close-ReplaySources; [Console]::Error.WriteLine('heavy-verifier: replay NOT_EXECUTED: '+$failure); return $(if ($released) {73} else {1}) }
+  foreach ($streamName in @('stdout','stderr')) {
+    $path=Join-Path $script:replayEvidence "$ReplayPhase.$streamName.log"
+    if (Test-Path -LiteralPath $path) {
+      try {
+        Assert-ReplayPath $path
+        $bytes=[IO.File]::ReadAllBytes($path)
+        if ($bytes.Length -le 8388608) { $logs[$streamName]=@{path=$path;bytes=$bytes.Length;sha256=(Get-ReplayHash $bytes)} }
+      } catch { $recorder=$false; if (-not $timedOut) { $exit=1;$outcome='incomplete' } }
+    }
+  }
+  $receipt=[ordered]@{
+    schema='host-heavy-manifest-replay/v1';runId=$ReplayRunId;phase=$ReplayPhase;lane=$Lane;worktree=$worktreeFull;head=$acquiredGitIdentity.Head;identityMode=$identityMode;branch=$owner.branch
+    package=$script:replayPackage;executable=$command;arguments=@($arguments);child=$(if($job){@{pid=$owner.childPid;processStartUtc=$owner.childProcessStartUtc}}else{$null});slot=$lockDirectoryName;lockId=$lockId
+    executionStarted=$(if($resumed){$true}elseif($intentWritten){$null}else{$false});startedUtc=$startUtc;endedUtc=[DateTime]::UtcNow.ToString('o');elapsedMs=$script:replayEntryWatch.ElapsedMilliseconds;budgetSeconds=540;callBudgetSeconds=600
+    exit=$exit;nativeExit=$nativeExit;outcome=$outcome;reason=$(if($failure){$failure.Substring(0,[Math]::Min(2048,$failure.Length))}else{''});result=$result;resultSha256=$resultHash;firstFailure=$script:replayFirstFailure;logs=$logs
+    recorderComplete=$recorder;survivorsAtExit=$survivors;survivorsAfterCleanup=$afterCleanup;cleanupComplete=$cleanup;released=$released;releasedUtc=$releasedUtc;attemptConsumed=$(if($nativeExit -eq 73){$false}elseif($resumed){$true}elseif($intentWritten){$null}else{$false})
+    baseReceiptSha256=$(if($ReplayPhase -ceq 'repaired'){$ReplayBaseReceiptSha256}else{$null});results=@{base=$(if($ReplayPhase -ceq 'base'){$result}else{$script:replayBaseReceipt.result});repaired=$(if($ReplayPhase -ceq 'repaired'){$result}else{$null})};pairComplete=($outcome -ceq 'passed')
+  }
+  try {
+    [void](Get-ReplayRemaining)
+    $schema=Read-ReplaySource $script:replaySources[(Join-Path $PSScriptRoot 'manifest-replay-receipt.schema.json')]
+    if (-not (Test-Json -Json ($receipt | ConvertTo-Json -Depth 24) -Schema $schema -ErrorAction SilentlyContinue)) { throw 'replay receipt schema failed' }
+    $pending=Join-Path $script:replayEvidence "$ReplayPhase.receipt.pending.json"
+    $receiptHash=Write-ReplayNew $pending $receipt
+    [IO.File]::Move($pending,$receiptPath)
+    if ($released -and $intentWritten) {
+      [void](Write-ReplayNew (Join-Path $script:replayEvidence "$ReplayPhase.complete.json") ([ordered]@{schema='host-heavy-replay-completion/v1';runId=$ReplayRunId;phase=$ReplayPhase;nonce=$claim.nonce;claimSha256=$claimHash;startIntentSha256=$intentHash;receiptSha256=$receiptHash}) 65536)
+      [Console]::Out.WriteLine("manifest-replay receipt=$receiptPath sha256=$receiptHash outcome=$outcome exit=$exit")
+    } else { throw 'replay completion not committed' }
+  } catch {
+    [Console]::Error.WriteLine('heavy-verifier: replay incomplete publication: '+$_.Exception.Message)
+    return $(if($timedOut){124}else{1})
+  } finally {
+    Close-ReplaySources
+  }
+  if ($failure) { [Console]::Error.WriteLine('heavy-verifier: replay incomplete: '+$failure) }
+  return $exit
+}
+if ($Lane -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$' -or
+    ($PSBoundParameters.ContainsKey('ClaimedHead') -and $ClaimedHead -cnotmatch '^[a-fA-F0-9]{40}$') -or
+    ($PSBoundParameters.ContainsKey('ImmutableHead') -and $ImmutableHead -cnotmatch '^[a-fA-F0-9]{40}$')) {
+  throw 'heavy-verifier: invalid lane or exact head'
+}
+$replayKeys = @('ReplayPhase','ReplayRunId','ReplayManifestPath','ReplayManifestSha256','ReplayBudgetSeconds','ReplayBaseReceiptSha256')
+if (-not $isManifestReplay -and @($replayKeys | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count) {
+  throw 'heavy-verifier: replay parameters require ManifestReplay'
+}
+if ($isManifestReplay) {
+  $allowedReplayKeys = @('ManifestReplay','Worktree','Lane','Branch','ClaimedHead','ImmutableHead','ContainerRoot') + $replayKeys
+  if (@($PSBoundParameters.Keys | Where-Object { $_ -cnotin $allowedReplayKeys }).Count -or
+      $ManifestReplay -cne '10808-ac3-replay' -or $ReplayPhase -cnotin @('base','repaired') -or
+      $ReplayRunId -cnotmatch '^[a-f0-9]{32}$' -or $ReplayManifestSha256 -cnotmatch '^[a-f0-9]{64}$' -or
+      $ReplayBudgetSeconds -cne '540' -or
+      ($ReplayPhase -ceq 'base' -and $PSBoundParameters.ContainsKey('ReplayBaseReceiptSha256')) -or
+      ($ReplayPhase -ceq 'repaired' -and $ReplayBaseReceiptSha256 -cnotmatch '^[a-f0-9]{64}$')) {
+    throw 'heavy-verifier: invalid manifest replay CLI'
+  }
+  if (-not $IsWindows) { throw 'heavy-verifier: manifest replay requires Windows atomic Job support' }
+  Initialize-ReplayJob
+  # Replay-local CIM bounds apply also to the reused queue/reclamation readers.
+  function Get-CimInstance {
+    param([Parameter(Position=0)][string]$ClassName, [string]$Filter, [string[]]$Property, [uint32]$OperationTimeoutSec)
+    $remaining=Get-ReplayRemaining 2000
+    $parameters=@{ClassName=$ClassName;OperationTimeoutSec=[uint32][Math]::Max(1,[Math]::Ceiling($remaining/1000));ErrorAction='Stop'}
+    if ($Filter) { $parameters.Filter=$Filter }; if ($Property) { $parameters.Property=$Property }
+    CimCmdlets\Get-CimInstance @parameters
+    [void](Get-ReplayRemaining)
+  }
+}
 $container = [IO.Path]::GetFullPath($(if ($ContainerRoot) { $ContainerRoot } else { Split-Path -Parent $PSScriptRoot })).TrimEnd('\','/')
 $worktreeFull = [IO.Path]::GetFullPath($Worktree).TrimEnd('\','/')
-if ($CommandPath -or $CommandArgumentList -or $TestQueueFixture -or ($isDiagnostic -and $PSBoundParameters.ContainsKey('ContainerRoot'))) {
+if ($CommandPath -or $CommandArgumentList -or $TestQueueFixture -or (($isDiagnostic -or $isManifestReplay) -and $PSBoundParameters.ContainsKey('ContainerRoot'))) {
   $fixtureTemp = if ($IsWindows) {
     [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp')).TrimEnd('\','/')
   } else { [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') }
@@ -384,6 +1025,7 @@ if ($worktreeFull -eq $container -or -not $worktreeFull.StartsWith($container + 
 }
 
 function Invoke-GitIdentityProbe([string[]]$Arguments, [string]$Description) {
+  if ($isManifestReplay) { return Invoke-ReplayGit $Arguments }
   $output = @(& git -C $worktreeFull @Arguments 2>$null)
   if ($LASTEXITCODE -ne 0) {
     throw "heavy-verifier: unable to resolve live Git $Description in the supplied worktree"
@@ -1767,6 +2409,7 @@ if ($isControllerHostHeavyVerifier) {
   Assert-ControllerHostHeavyGitState
 }
 
+if ($isManifestReplay) { Assert-ReplayPackage }
 # Controller release batteries and precursors own a separate slot (Todd ruling
 # 2026-09-10): they never wait on, and never block, the platform heavy verifier.
 # The fixture-equivalence route shares that controller slot.
@@ -1795,7 +2438,7 @@ if ($isHostVerifier) {
     $candidate = Join-Path (Split-Path -Parent $entry.Source) "node_modules/pnpm/bin/pnpm.cjs"
     if (Test-PrecursorSafeFile $candidate) { $pnpmScript = [IO.Path]::GetFullPath($candidate); break }
   }
-  if (-not $hostNode -or -not $pnpmScript) {
+  if (-not $hostNode -or (-not $isManifestReplay -and -not $pnpmScript)) {
     throw "heavy-verifier: invoke-heavy-verifier.ps1 requires a plain Node executable and Node-hosted pnpm distribution; no unguarded fallback"
   }
 }
@@ -1804,6 +2447,8 @@ function Get-CanonicalRecordPinnedLaunch {
 }
 $command = if ($isAttachedAdmission) {
   $guarded.Path
+} elseif ($isManifestReplay) {
+  (Get-Process -Id $PID -ErrorAction Stop).Path
 } elseif ($isNativeDb) {
   'C:\Windows\System32\wsl.exe'
 } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) {
@@ -1818,6 +2463,8 @@ $command = if ($isAttachedAdmission) {
 if (-not (Test-Path -LiteralPath $command -PathType Leaf)) { throw "heavy-verifier: command executable was not found" }
 $arguments = if ($isAttachedAdmission) {
   @($AdmissionCommand)
+} elseif ($isManifestReplay) {
+  @('-NoProfile','-File',$script:replayPhasePaths[$ReplayPhase].wrapper,'-Spec',$script:replayPhasePaths[$ReplayPhase].spec)
 } elseif ($isNativeDb) {
   @('-d','Ubuntu','--exec','/usr/bin/env','-i','PATH=/usr/bin:/bin','HOME=<R>','LANG=C',
     '/usr/bin/python3','/opt/chase-sets-native-db/admission.py','launch','<R>')
@@ -1882,7 +2529,7 @@ $arguments = if ($isAttachedAdmission) {
   elseif ($Gate -ceq 'test:canonical-record') { Get-CanonicalRecordPinnedLaunch }
   else { @($pnpmScript, "run", $Gate) }
 }
-$ownerGate = if ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
+$ownerGate = if ($isManifestReplay) { 'manifest-replay' } elseif ($isNativeDb) { 'verify:test-db' } elseif ($isAttachedAdmission) { $AdmissionKind } elseif ($isControllerBattery -or $isControllerPrecursor -or $isControllerFixture -or $isControllerHostHeavyVerifier) { "script-battery" } elseif ($isWorkspaceDbTest) { 'verify:test-db' } elseif ($isWorkspaceTest) { "test" } elseif ($isDiagnostic) { "diagnostic" } else { $Gate }
 $identityInput = "$ownerGate`n$command`n$($arguments -join "`n")"
 $commandIdentity = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identityInput))).ToLowerInvariant()
 $lockId = [guid]::NewGuid().ToString("N")
@@ -2058,7 +2705,7 @@ function Test-OwnerShape($Record) {
   if ("$($Record.lockId)" -cnotmatch "^[a-f0-9]{32}$" -or
       "$($Record.commandIdentity)" -cnotmatch "^[a-f0-9]{64}$" -or
       "$($Record.lane)" -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" -or
-      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record", "repository-gate", "playwright", "vitest-full", "script-battery", "diagnostic") -or
+      $Record.gate -cnotin @("verify:static", "check:static", "test:scripts", "verify:test", "test", "test:fast", "build", "verify", "verify:build", "verify:test-db", "test:e2e:suite", "test:canonical-record", "repository-gate", "playwright", "vitest-full", "script-battery", "diagnostic", "manifest-replay") -or
       -not (Test-PositivePid $Record.pid) -or
       -not (Test-UtcIdentity ([string]$Record.processStartUtc)) -or
       -not (Test-UtcIdentity ([string]$Record.startedUtc))) {
@@ -2855,9 +3502,9 @@ function Test-ThisOwner {
     (Test-OwnerShape $snapshot.Record) -and
     (Get-ProcessIdentityState $snapshot.Record.pid ([string]$snapshot.Record.processStartUtc)) -ceq "live"
 }
-function Release-ThisLock {
+function Release-ThisLock([switch]$RequireExact) {
   if (-not (Test-ThisOwner)) {
-    if ($owner.schemaVersion -eq 6) { return $false }
+    if ($RequireExact -or $owner.schemaVersion -eq 6) { return $false }
     return -not (Test-Path -LiteralPath $lockPath)
   }
   $claimPath = Join-Path $lockPath ("owner.cleanup." + $lockId + ".json")
@@ -2999,7 +3646,7 @@ function Invoke-NativeLaunch {
 # per-child PowerShell host probe. Controller batteries and precursors keep
 # their own continuation on the controller slot and never publish a product
 # descriptor. Non-Windows hosts are unchanged.
-$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isControllerHostHeavyVerifier -and -not $isNativeDb -and -not $isDiagnostic
+$nestedOwnerEligible = $IsWindows -and -not $isControllerBattery -and -not $isControllerPrecursor -and -not $isControllerFixture -and -not $isControllerHostHeavyVerifier -and -not $isNativeDb -and -not $isDiagnostic -and -not $isManifestReplay
 $nestedOwner = $null
 $nestedBinding = $null
 $script:nestedTransport = $null
@@ -3220,6 +3867,7 @@ Invoke-HeavyAdmissionCensus {
   }
 }
 if ($script:heavyAdmissionQuitAfterQuarantine) { return }
+if ($isManifestReplay) { exit (Invoke-ManifestReplay) }
 
 $exitCode = 1
 $releaseMismatch = $false

@@ -1,5 +1,14 @@
 {
   "schema": "host-heavy-diagnostic-declarations/v1",
+  "manifestReplays": {
+    "10808-ac3-replay": {
+      "enabled": false,
+      "kind": "manifest-replay",
+      "path": "",
+      "sha256": "",
+      "maxBudgetSeconds": 540
+    }
+  },
   "diagnostics": {
     "worst13-no-fit": {
       "enabled": true,
