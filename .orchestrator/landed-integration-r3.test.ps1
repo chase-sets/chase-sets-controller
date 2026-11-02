@@ -387,6 +387,7 @@ function Test-7926F1TerminalCleanup {
   foreach($name in @('landed-integration-dispatch.ps1','log-event.ps1','orchestration-log-lock.psm1')) {
     Copy-Item -LiteralPath (Join-Path $beforeHistoricalRuntime $name) -Destination (Join-Path $beforeRoot $name) -Force
   }
+  $beforeProducer=Join-Path $beforeRoot 'landed-integration-dispatch.ps1'
   [void](Set-ArchivedOrchestrationLogMutexName $beforeRoot)
   foreach($arm in @('candidate','before')){
     $container=Join-Path $fixtureRoot "synthetic-f1-$arm";$runtime=Join-Path $container 'runtime'
