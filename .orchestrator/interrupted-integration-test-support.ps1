@@ -96,7 +96,8 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $candidateTag = $candidateHead.Substring(0,8)+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
   # #8102: the platform slot of the container holding this checkout is observed
   # (never taken) around each timed fixture window.
-  $fleetContainer=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+  $fleetContainerOverride=[string]$env:CHASE_SETS_TEST_FLEET_CONTAINER
+  $fleetContainer=if($fleetContainerOverride){[IO.Path]::GetFullPath($fleetContainerOverride)}else{Split-Path -Parent (Split-Path -Parent $PSScriptRoot)}
   # Retained proof never samples the live controller/product fleet. Classifier
   # copies keep their explicit 8102-* container and its synthetic holder.
   if($Carrier-ceq'retained'-and(Split-Path -Leaf $fleetContainer)-notlike'8102-*'){$fleetContainer=$root}

@@ -1,5 +1,12 @@
+[CmdletBinding()]
+param(
+  [ValidateSet('portable','local-smoke')][string]$Part = ''
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('portable','local-smoke') $PSBoundParameters @()
 
 function Assert-True {
   param([Parameter(Mandatory)][bool]$Condition, [Parameter(Mandatory)][string]$Message)
@@ -114,26 +121,50 @@ try {
   $modulePath = Join-Path $PSScriptRoot "codex-launch-boundary.psm1"
   $module = Import-Module $modulePath -Force -PassThru
   $contract = & $module { $script:CodexBoundaryContract }
+  $pinnedHarnessPath = [string]$contract.harnessPath
+  if ($Part -ceq 'portable') {
+    # Poison the module's native path before any portable code can resolve it.
+    # This makes an accidental live resolver call fail closed instead of
+    # launching an installed executable on a hosted runner.
+    $portableMissingHarness = Join-Path $testRoot "portable-installed-codex-must-not-be-used.exe"
+    & $module {
+      param($Path)
+      $script:CodexBoundaryContract.harnessPath = $Path
+    } $portableMissingHarness
+  }
+  $exportedRevalidation = Get-Command Test-CodexLaunchBoundaryStillValid -CommandType Function
+  foreach ($forbiddenParameter in @('HarnessResolver', 'SurfaceValidator')) {
+    if ($exportedRevalidation.Parameters.ContainsKey($forbiddenParameter)) {
+      throw "ASSERTION FAILED: exported revalidation exposes forbidden parameter $forbiddenParameter"
+    }
+  }
 
-  # Live identity: the canonical path is pinned; digest, length, and version are
-  # observed for exact construction-to-launch closure, not release admission.
-  $identity = Resolve-CodexBoundaryHarness
-  Assert-True ([IO.Path]::IsPathFullyQualified($identity.path)) "harness path is absolute"
-  Assert-True ($identity.path -ceq $contract.harnessPath) "harness path is the pinned native executable"
-  Assert-True ($identity.sha256 -ceq (Get-FileHash -LiteralPath $identity.path -Algorithm SHA256).Hash.ToLowerInvariant()) "harness SHA-256 is observed"
-  Assert-True ($identity.length -eq (Get-Item -LiteralPath $identity.path).Length) "harness byte length is observed"
-  Assert-True ($identity.version -cmatch '^codex-cli [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') "harness reported version is observed and well formed"
-  Write-Output "PASS codex boundary resolves the canonical live native harness and observes its identity"
+  $identity = $null
+  if (-not $Part -or $Part -ceq 'local-smoke') {
+    # Live identity: the canonical path is pinned; digest, length, and version are
+    # observed for exact construction-to-launch closure, not release admission.
+    $identity = Resolve-CodexBoundaryHarness
+    Assert-True ([IO.Path]::IsPathFullyQualified($identity.path)) "harness path is absolute"
+    Assert-True ($identity.path -ceq $contract.harnessPath) "harness path is the pinned native executable"
+    Assert-True ($identity.sha256 -ceq (Get-FileHash -LiteralPath $identity.path -Algorithm SHA256).Hash.ToLowerInvariant()) "harness SHA-256 is observed"
+    Assert-True ($identity.length -eq (Get-Item -LiteralPath $identity.path).Length) "harness byte length is observed"
+    Assert-True ($identity.version -cmatch '^codex-cli [0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') "harness reported version is observed and well formed"
+    Write-Output "PASS codex boundary resolves the canonical live native harness and observes its identity"
+  }
 
   # All pre-version path/kind refusals prove that no version child was created.
   $versionReads = [pscustomobject]@{ count = 0 }
   $versionReader = { param($Path) $versionReads.count++; return "codex-cli 999.1.2" }.GetNewClosure()
   $absent = Join-Path $testRoot "absent\codex.exe"
   $code = Get-RefusalCode {
-    & $module {
-      param($Path, $Reader)
-      Resolve-CodexBoundaryHarnessInternal -ExecutablePath $Path -VersionReader $Reader
-    } $absent $versionReader
+    if ($Part -ceq 'portable') {
+      Resolve-CodexBoundaryHarness
+    } else {
+      & $module {
+        param($Path, $Reader)
+        Resolve-CodexBoundaryHarnessInternal -ExecutablePath $Path -VersionReader $Reader
+      } $absent $versionReader
+    }
   }
   Assert-True ($code -ceq "codex-boundary-harness-absent" -and $versionReads.count -eq 0) "absent harness refuses before child creation"
 
@@ -175,6 +206,7 @@ try {
   Assert-True ($observedA.sha256 -cne $observedB.sha256 -and $observedA.length -eq $observedB.length) "one changed executable byte changes only the observed digest"
   Assert-True ($observedB.sha256 -cne $observedC.sha256 -and $observedC.length -eq ($observedB.length + 1)) "one appended executable byte changes only the observed digest and length"
   Assert-True ($observedA.version -ceq "codex-cli 999.1.2" -and $observedB.version -ceq $observedA.version -and $observedC.version -ceq $observedA.version) "well-formed version changes are observational"
+  if ($null -eq $identity) { $identity = $observedC }
 
   $malformedVersionReads = [pscustomobject]@{ count = 0 }
   $malformedVersionReader = { param($Path) $malformedVersionReads.count++; return "not-a-codex-version" }.GetNewClosure()
@@ -193,23 +225,42 @@ try {
   Assert-True (($minimalKeys -join "`n") -ceq ($expectedMinimalKeys -join "`n")) "behavioral child environment is an explicit closed set with no credential aliases"
   Write-Output "PASS codex boundary makes build identity observational while path/kind/version-shape discriminators fail closed"
 
-  $decoyDirectory = Join-Path $testRoot "decoy-path"
-  [void][IO.Directory]::CreateDirectory($decoyDirectory)
-  [IO.File]::WriteAllText((Join-Path $decoyDirectory "codex.exe"), "not a PE", [Text.UTF8Encoding]::new($false))
-  $oldPath = $env:PATH
-  try {
-    $env:PATH = "$decoyDirectory;$oldPath"
-    $decoyResult = Resolve-CodexBoundaryHarness
-    Assert-True ($decoyResult.path -ceq $contract.harnessPath) "earlier PATH decoy cannot change the pinned path"
-  } finally {
-    $env:PATH = $oldPath
+  if (-not $Part -or $Part -ceq 'local-smoke') {
+    $decoyDirectory = Join-Path $testRoot "decoy-path"
+    [void][IO.Directory]::CreateDirectory($decoyDirectory)
+    [IO.File]::WriteAllText((Join-Path $decoyDirectory "codex.exe"), "not a PE", [Text.UTF8Encoding]::new($false))
+    $oldPath = $env:PATH
+    try {
+      $env:PATH = "$decoyDirectory;$oldPath"
+      $decoyResult = Resolve-CodexBoundaryHarness
+      Assert-True ($decoyResult.path -ceq $pinnedHarnessPath) "earlier PATH decoy cannot change the pinned path"
+    } finally {
+      $env:PATH = $oldPath
+    }
+    Write-Output "PASS codex boundary resolution never consults PATH order or shims"
   }
-  Write-Output "PASS codex boundary resolution never consults PATH order or shims"
 
   # Retain the historical evidence bytes, but admit the live build from its
   # closed behavioral/capability surface rather than byte equality.
   $fixturePath = Join-Path $PSScriptRoot "fixtures\codex-launch-boundary-surface-v1.txt"
-  $surfaceSha = & $module { param($Harness) Assert-CodexBoundarySurface -Harness $Harness } $identity
+  $surfaceSha = if ($Part -ceq 'portable') {
+    $portableSurfaceReader = {
+      param($Harness)
+      $portableSurfaceText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($fixturePath))
+      $portableSemanticText = [regex]::Replace(
+        $portableSurfaceText,
+        '(?ms)^command: codex\.exe --version\n.*?^end-command\n',
+        ''
+      )
+      return [Text.UTF8Encoding]::new($false).GetBytes($portableSemanticText)
+    }.GetNewClosure()
+    & $module {
+      param($Harness, $Path, $Expected, $Reader)
+      Assert-CodexBoundarySurfaceInternal -Harness $Harness -FixturePath $Path -ExpectedSha256 $Expected -LiveSurfaceReader $Reader
+    } $identity $fixturePath $contract.surfaceFixtureSha256 $portableSurfaceReader
+  } else {
+    & $module { param($Harness) Assert-CodexBoundarySurface -Harness $Harness } $identity
+  }
   Assert-True ($surfaceSha -ceq $contract.surfaceFixtureSha256) "historical surface evidence retains its provenance digest"
   $surfaceText = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($fixturePath))
   Assert-True ($surfaceText.Contains("command: codex.exe exec --help", [StringComparison]::Ordinal)) "surface includes exec --help"
@@ -365,16 +416,40 @@ try {
   $boundary = ($profile | ConvertTo-Json -Depth 100) | ConvertFrom-Json -Depth 100 -DateKind String
   Move-Item -LiteralPath $ordinaryRoot -Destination (Join-Path $testRoot "ordinary\old-child")
   [void][IO.Directory]::CreateDirectory($ordinaryRoot)
-  $code = Get-RefusalCode { Test-CodexLaunchBoundaryStillValid -Boundary $boundary }
+  if ($Part -ceq 'portable') {
+    $portableHarnessResolver = { $identity }.GetNewClosure()
+    $portableSurfaceValidator = {
+      param($Harness)
+      & $module {
+        param($Bytes)
+        Assert-CodexBoundarySurfaceRequirements -Bytes $Bytes
+      } (& $portableSurfaceReader $Harness)
+      return $contract.surfaceFixtureSha256
+    }.GetNewClosure()
+  }
+  $code = Get-RefusalCode {
+    if ($Part -ceq 'portable') {
+      & $module {
+        param($Boundary, $HarnessResolver, $SurfaceValidator)
+        Test-CodexLaunchBoundaryStillValidInternal `
+          -Boundary $Boundary `
+          -HarnessResolver $HarnessResolver `
+          -SurfaceValidator $SurfaceValidator
+      } $boundary $portableHarnessResolver $portableSurfaceValidator
+    } else {
+      Test-CodexLaunchBoundaryStillValid -Boundary $boundary
+    }
+  }
   Assert-True ($code -ceq "codex-boundary-revalidation-drift") "same path with changed filesystem identity refuses revalidation"
   Write-Output "PASS codex boundary revalidation detects construction-to-launch root drift"
 
-  # Exact credential-bearing source control: the sandbox actor reports only
-  # a byte count. It never prints or copies source content.
-  $containerRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
-  $credentialBearingSource = Join-Path $containerRoot "main\deployables\marketplace\e2e\support\seed-contract.ts"
-  $actor = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-  $probeScript = @'
+  if (-not $Part -or $Part -ceq 'local-smoke') {
+    # Exact credential-bearing source control: the sandbox actor reports only
+    # a byte count. It never prints or copies source content.
+    $containerRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    $credentialBearingSource = Join-Path $containerRoot "main\deployables\marketplace\e2e\support\seed-contract.ts"
+    $actor = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $probeScript = @'
 $bytesRead = 0
 try {
   $stream = [IO.File]::OpenRead('__SOURCE__')
@@ -382,19 +457,20 @@ try {
 } catch {}
 Write-Output $bytesRead
 '@.Replace("__SOURCE__", $credentialBearingSource.Replace("'", "''"))
-  $probeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
-  $probeEnvironment = & $module { param($Root) Get-CodexBoundaryMinimalEnvironment -FixtureRoot $Root } $testRoot
-  [IO.File]::WriteAllBytes((Join-Path $probeEnvironment.CODEX_HOME "config.toml"), $configBytes)
-  $probeResult = & $module {
-    param($HarnessPath, $ActorPath, $Encoded, $Root)
-    Invoke-CodexBoundaryNativeProcess -ExecutablePath $HarnessPath -Arguments @(
-      "sandbox", "-P", "chase_sets_boundary", "--sandbox-state-disable-network", "--",
-      $ActorPath, "-NoProfile", "-NonInteractive", "-EncodedCommand", $Encoded
-    ) -FixtureRoot $Root
-  } $identity.path $actor $probeEncoded $testRoot
-  $reportedBytes = [Text.UTF8Encoding]::new($false, $true).GetString($probeResult.stdoutBytes).Trim()
-  Assert-True ($reportedBytes -ceq "0") "exact credential-bearing source yields zero bytes with no content output"
-  Write-Output "PASS P1 exact-source control obtains zero bytes without printing or copying content"
+    $probeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
+    $probeEnvironment = & $module { param($Root) Get-CodexBoundaryMinimalEnvironment -FixtureRoot $Root } $testRoot
+    [IO.File]::WriteAllBytes((Join-Path $probeEnvironment.CODEX_HOME "config.toml"), $configBytes)
+    $probeResult = & $module {
+      param($HarnessPath, $ActorPath, $Encoded, $Root)
+      Invoke-CodexBoundaryNativeProcess -ExecutablePath $HarnessPath -Arguments @(
+        "sandbox", "-P", "chase_sets_boundary", "--sandbox-state-disable-network", "--",
+        $ActorPath, "-NoProfile", "-NonInteractive", "-EncodedCommand", $Encoded
+      ) -FixtureRoot $Root
+    } $identity.path $actor $probeEncoded $testRoot
+    $reportedBytes = [Text.UTF8Encoding]::new($false, $true).GetString($probeResult.stdoutBytes).Trim()
+    Assert-True ($reportedBytes -ceq "0") "exact credential-bearing source yields zero bytes with no content output"
+    Write-Output "PASS P1 exact-source control obtains zero bytes without printing or copying content"
+  }
 
   # Controller-owned job-object control: kill-on-close terminates the assigned
   # child, and no breakaway flag is enabled in the bound profile.

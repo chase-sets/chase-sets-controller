@@ -600,6 +600,63 @@
           "successor-dispatch", "successor-completion", "successor-depth"
         ]
       }
+    },
+    {
+      "identity": "test:dispatch-ownership.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "portable-census", "weight": 1 },
+        { "name": "portable-reducer", "weight": 1 },
+        { "name": "portable-carrier", "weight": 1 },
+        {
+          "name": "local-smoke",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Default-source live ownership census smoke; hosted execution is bounded to synthetic runtime records and own-process identities.",
+            "notHermetic": true
+          }
+        }
+      ],
+      "ownership": {
+        "parts": ["portable-census", "portable-reducer", "portable-carrier", "local-smoke"]
+      }
+    },
+    {
+      "identity": "test:codex-launch-boundary.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "portable", "weight": 1 },
+        {
+          "name": "local-smoke",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited."
+          }
+        }
+      ],
+      "ownership": {
+        "parts": ["portable", "local-smoke"]
+      }
+    },
+    {
+      "identity": "test:dispatch-lane-installed-claude.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "portable", "weight": 1 },
+        {
+          "name": "local-smoke",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Installed Claude CLI --help drift probe; hosted runners use the pinned help fixture and never launch a model or session."
+          }
+        }
+      ],
+      "ownership": {
+        "parts": ["portable", "local-smoke"]
+      }
     }
   ],
   "baselineHead": "e671d823b96d45a3b71d7b81cf05a24d173df73a",

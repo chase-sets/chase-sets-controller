@@ -97,12 +97,92 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     Assert-Ci ((Get-CiSourceDigest (Join-Path $root ('.orchestrator/'+$name)))-ceq$newTestPins[$name]) 'new proof test source drifted'
   }
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq11-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1','test:dispatch-ownership.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq14-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
 Assert-Conservation $manifest
 function Refuses-Coverage([scriptblock]$Body){$refused=$false;try{&$Body}catch{$refused=$true};Assert-Ci $refused 'coverage bypass survived'}
+
+$codexPath=Join-Path $PSScriptRoot 'codex-launch-boundary.test.ps1'
+$codexItem=$manifest.items|Where-Object identity -eq 'test:codex-launch-boundary.test.ps1'
+Assert-Ci ($null -ne $codexItem) 'codex launch boundary split mapping missing'
+Assert-Ci ((@($codexItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable') 'codex launch boundary part census changed'
+Assert-Ci ((Get-SuiteExpectedParts $codexPath|Sort-Object)-join',' -ceq 'local-smoke,portable') 'codex launch boundary selector census changed'
+foreach($name in @($codexItem.parts.name)){
+  Refuses-Coverage { Assert-Ci ((@($codexItem.parts.name|Where-Object{$_-cne$name}|Sort-Object)-join',') -ceq ((Get-SuiteExpectedParts $codexPath|Sort-Object)-join',')) "codex launch boundary dropped part survived: $name" }
+}
+Write-Output 'PASS codex launch boundary part ownership: portable and local-smoke selectors are complete and dropped-part mutants refuse'
+
+$claudePath=Join-Path $PSScriptRoot 'dispatch-lane-installed-claude.test.ps1'
+$claudeItem=$manifest.items|Where-Object identity -eq 'test:dispatch-lane-installed-claude.test.ps1'
+Assert-Ci ($null -ne $claudeItem) 'installed Claude split mapping missing'
+Assert-Ci ((@($claudeItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable') 'installed Claude part census changed'
+Assert-Ci ((Get-SuiteExpectedParts $claudePath|Sort-Object)-join',' -ceq 'local-smoke,portable') 'installed Claude selector census changed'
+$claudeLocal=$claudeItem.parts|Where-Object name -ceq 'local-smoke'
+Assert-Ci ($claudeLocal.restriction.classification -ceq 'LOCAL_ONLY') 'installed Claude local-smoke restriction missing'
+foreach($name in @($claudeItem.parts.name)){
+  Refuses-Coverage { Assert-Ci ((@($claudeItem.parts.name|Where-Object{$_-cne$name}|Sort-Object)-join',') -ceq ((Get-SuiteExpectedParts $claudePath|Sort-Object)-join',')) "installed Claude dropped part survived: $name" }
+}
+$claudeSource=[IO.File]::ReadAllText($claudePath)
+$claudePathAnchor='$env:PATH = "$(Split-Path -Parent $gitExe);$PSHOME;$testRoot"'
+Assert-Ci ($claudeSource.Contains("[ValidateSet('portable','local-smoke')][string]`$Part")) 'installed Claude selector source missing'
+Assert-Ci ($claudeSource.Contains("if (-not `$Part -or `$Part -ceq 'portable')") -and $claudeSource.Contains("if (-not `$Part -or `$Part -ceq 'local-smoke')")) 'installed Claude part guards missing'
+Assert-Ci ($claudeSource.Contains("Get-Command claude -CommandType Application") -and $claudeSource.Contains($claudePathAnchor)) 'installed Claude native lookup guard drifted'
+Assert-Ci ($claudeSource.Contains("if (`$ValidatorOnly)")) 'installed Claude ValidatorOnly mode missing'
+Write-Output 'PASS installed Claude part ownership: portable fixture/argv proof and explicit local-smoke selector are complete and hosted native lookup is poisoned'
+
+$ownershipPath=Join-Path $PSScriptRoot 'dispatch-ownership.test.ps1'
+$ownershipItem=$manifest.items|Where-Object identity -eq 'test:dispatch-ownership.test.ps1'
+Assert-Ci ($null -ne $ownershipItem) 'dispatch ownership split mapping missing'
+Assert-Ci ((@($ownershipItem.parts.name|Sort-Object)-join',') -ceq 'local-smoke,portable-carrier,portable-census,portable-reducer') 'dispatch ownership part census changed'
+Assert-Ci ((Get-SuiteExpectedParts $ownershipPath|Sort-Object)-join',' -ceq 'local-smoke,portable-carrier,portable-census,portable-reducer') 'dispatch ownership selector census changed'
+$ownershipLocal=$ownershipItem.parts|Where-Object name -ceq 'local-smoke'
+Assert-Ci ($ownershipLocal.restriction.classification -ceq 'LOCAL_ONLY' -and $ownershipLocal.restriction.notHermetic) 'dispatch ownership local-smoke restriction missing'
+$ownershipSource=[IO.File]::ReadAllText($ownershipPath).Replace("`r`n","`n")
+Assert-Ci ($ownershipSource.Contains("[ValidateSet('portable-census','portable-reducer','portable-carrier','local-smoke')][string]`$Part = ''")) 'dispatch ownership selector source missing'
+Assert-Ci ($ownershipSource.Contains('$runSection = { param([string]$Name) -not $Part -or $Part -ceq $Name }')) 'dispatch ownership section gate missing'
+foreach($section in @('portable-census','portable-reducer','portable-carrier')){
+  Assert-Ci (([regex]::Matches($ownershipSource,[regex]::Escape("if (& `$runSection '$section') {"))).Count -eq 1) "dispatch ownership hosted section is not gated exactly once: $section"
+}
+Assert-Ci ($ownershipSource.Contains("if (`$Part -ceq 'local-smoke')") -and $ownershipSource.Contains('Invoke-DispatchOwnershipLocalSmoke')) 'dispatch ownership local-smoke guard missing'
+Assert-Ci ($ownershipSource.Contains("if (`$ProductCensusOnly -or `$Part -ceq 'portable-census') { return }") -and $ownershipSource.Contains('if ($Part -ceq ''portable-carrier'') {'+"`n"+'    $carrierRootResolved = [IO.Path]::GetFullPath($root)')) 'dispatch ownership hosted part root cleanup missing'
+Assert-Ci ($ownershipSource.Contains('poisoned-default-runtime') -and $ownershipSource.Contains('hosted ownership census reads only the synthetic runtime')) 'dispatch ownership hosted source guard missing'
+function Get-OwnershipConservation([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'dispatch ownership conservation source parse failed'
+  $keys=@{}
+  foreach($node in $ast.FindAll({param($n)
+    $n-is[Management.Automation.Language.CommandAst]-or
+    $n-is[Management.Automation.Language.BinaryExpressionAst]-or
+    $n-is[Management.Automation.Language.UnaryExpressionAst]-or
+    $n-is[Management.Automation.Language.HashtableAst]-or
+    $n-is[Management.Automation.Language.ThrowStatementAst]
+  },$true)){$key=$node.GetType().Name+':'+$node.Extent.Text;$keys[$key]++}
+  return $keys
+}
+$ownershipBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-ownership.test.ps1"))).Replace("`r`n","`n")
+$ownershipBefore=Get-OwnershipConservation $ownershipBaseline
+$ownershipAfter=Get-OwnershipConservation $ownershipSource
+# The pinned controller-ci baseline predates the already-landed decision-lane
+# isolation extension. Retire only those two exact pre-split fixture literals;
+# every other baseline command, predicate, throw and mutant remains required.
+$ownershipRetirements=@($ownershipBefore.Keys|Where-Object {
+  $_ -match '\$LaneRole -in @\("review", "planning"\)'
+})
+foreach($key in $ownershipBefore.Keys){
+  if($ownershipRetirements -contains $key){continue}
+  Assert-Ci ([int]$ownershipAfter[$key] -ge [int]$ownershipBefore[$key]) "dispatch ownership baseline proof lost: $key"
+}
+Assert-Ci ($ownershipRetirements.Count -eq 2) 'dispatch ownership conservation retirement census changed'
+Assert-Ci ($ownershipSource.Contains('$guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container') -and
+  $ownershipSource.Contains('$poisonedDefaultRuntime')) 'dispatch ownership synthetic source invocation drifted'
+foreach($name in @($ownershipItem.parts.name)){
+  Refuses-Coverage { Assert-Ci ((@($ownershipItem.parts.name|Where-Object{$_-cne$name}|Sort-Object)-join',') -ceq ((Get-SuiteExpectedParts $ownershipPath|Sort-Object)-join',')) "dispatch ownership dropped part survived: $name" }
+}
+Write-Output 'PASS dispatch ownership part ownership: synthetic portable census, poisoned-source guard, exact baseline proof census, and local-smoke restriction are complete'
 
 function Get-DispatchCoverageKeys([string]$Source) {
   $tokens=$null;$errors=$null
@@ -452,7 +532,6 @@ Assert-Ci (([IO.File]::ReadAllText($watchdogPath).Contains("if(-not `$Part){")))
 Refuses-Coverage { Assert-CarrierPartContract $rebasePath ([pscustomobject]@{parts=@($rebaseItem.parts|Where-Object name -cne 'rebase-amend');identity=$rebaseItem.identity}) @() }
 Refuses-Coverage { Assert-CarrierPartContract $watchdogPath ([pscustomobject]@{parts=@($watchdogItem.parts|Where-Object name -cne 'watchdog-historical');identity=$watchdogItem.identity}) @() }
 Write-Output 'PASS historical carrier part ownership: rebase and watchdog selectors, carrier arms, legacy whole-run guard, and dropped-part mutants refused'
-
 $r3Path=Join-Path $PSScriptRoot 'landed-integration-r3.test.ps1'
 $r3Item=$manifest.items|Where-Object identity -eq 'test:landed-integration-r3.test.ps1'
 Assert-Ci ($null -ne $r3Item) 'r3 split mapping missing'
@@ -465,6 +544,14 @@ foreach($part in @($r3Item.parts.name)){
 Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Select-Object -Skip 1|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) 'r3 first-part omission survived' }
 Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name)+@('r3-duplicate')|Sort-Object)-join',' -eq (@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) 'r3 duplicate part survived' }
 Write-Output 'PASS r3 named part ownership: selector map is complete and dropped/duplicate part mutants refuse'
+# The fixture manifest check runs inside this existing timed identity rather than
+# as a new required hosted identity: a new identity has no duration record, and
+# enforced candidate plans refuse fallback estimates.
+$fixtureCheck=Join-Path $PSScriptRoot 'historical-fixture-manifest.check.ps1'
+Assert-Ci (Test-Path -LiteralPath $fixtureCheck -PathType Leaf) 'historical fixture manifest check missing'
+$fixtureOutput=@(& (Get-Process -Id $PID).Path -NoProfile -File $fixtureCheck 2>&1)
+Assert-Ci ($LASTEXITCODE -eq 0 -and (@($fixtureOutput | Where-Object { "$_" -clike 'PASS historical fixture manifest validation:*' }).Count -eq 1)) "historical fixture manifest check failed: $(($fixtureOutput | Select-Object -Last 3) -join ' | ')"
+Write-Output 'PASS historical fixture manifests: delegated check passed inside check:controller-ci-coverage'
 function Get-CarrierProofCensus([string]$Source){
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)

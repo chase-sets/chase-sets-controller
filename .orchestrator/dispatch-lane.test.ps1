@@ -1676,7 +1676,7 @@ Start-Sleep -Seconds 16
   Assert-True (Test-Path -LiteralPath $claudeHelpFixtureReadme) 'hosted Claude help fixture provenance exists'
   $claudeHelpFixtureBytes = [IO.File]::ReadAllBytes($claudeHelpFixture)
   $claudeHelpFixtureHash = ([Security.Cryptography.SHA256]::Create().ComputeHash($claudeHelpFixtureBytes) | ForEach-Object ToString x2) -join ''
-  Assert-True ($claudeHelpFixtureHash -ceq '6a68777b1133bc483e126238b9f15f50e23c903deb3455ecae67c09eea01cd3c') 'hosted Claude help fixture bytes are pinned'
+  Assert-True ($claudeHelpFixtureHash -ceq 'e4e96a98537475df1a47f43edf9b04352f27bcdf4ba34191ab9d622983444c86') 'hosted Claude help fixture bytes are pinned'
   Assert-True (([Text.Encoding]::UTF8.GetString($claudeHelpFixtureBytes)) -match '(?m)^--disallowedTools$') 'hosted Claude help fixture covers the configured option'
   Write-Output "PASS hosted Claude help fixture $claudeHelpFixtureHash"
   $sonnetPlanning = & $launcher -Harness claude -Model claude-sonnet-5-5 -Effort medium -Placement override-Todd `

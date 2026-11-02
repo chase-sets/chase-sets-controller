@@ -1,2 +1,8 @@
 Claude Code pinned hosted help fixture
+--model
+--effort
+--print
+--output-format
+--verbose
+--dangerously-skip-permissions
 --disallowedTools

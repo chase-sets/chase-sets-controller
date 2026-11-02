@@ -439,7 +439,7 @@ function Invoke-ReaderInventory {
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
     'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
-    'heavy-slot.test.ps1'=@(95,98,121,1892,2218,2395)
+    'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -447,7 +447,8 @@ function Invoke-ReaderInventory {
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(422,742,1307,1354,1366,1415,1419,1430,1455,1537,1551,1759,2154,2234,2244,2258,2553,2558,2577,2583,2810,2817,2829,2832,2842,2853,2875,2880,2892,2897,2914,2928)
-    'long-product-gate.test.ps1'=@(154,161,177,797)
+    'long-product-gate.test.ps1'=@(208,215,231,871)
+    'host-heavy-verifier.test.ps1'=@(1277)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
@@ -457,7 +458,7 @@ function Invoke-ReaderInventory {
     'landed-integration-r3.test.ps1'=@(49)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
-    'product-census-budget.test.ps1'=@(243,308,347)
+    'product-census-budget.test.ps1'=@(396,455,509,548)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
@@ -561,9 +562,13 @@ function Invoke-ReaderInventory {
   $claimExpression='[IO.File]::Open(' + $claimVariable + ', [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
   $writerSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($writerExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $claimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($claimExpression,[StringComparison]::Ordinal)),"`n").Count))"
+  $ownershipSource=Read-Source 'dispatch-ownership.ps1'
+  $ownershipExpression='[IO.File]::ReadAllText(' + '$' + 'RecordPath, [Text.Encoding]::UTF8)'
+  $ownershipSite="dispatch-ownership.ps1:$((1+[regex]::Matches($ownershipSource.Substring(0,$ownershipSource.IndexOf($ownershipExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $productionSites=@{
     $writerSite=@{site=$writerSite;api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
     $claimSite=@{site=$claimSite;api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
+    $ownershipSite=@{site=$ownershipSite;api='ReadAllText(RecordPath, UTF8)';shareBefore='unchanged';shareAfter='unchanged';decoder='ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record reader, not heavy owner publication'}
   }
   $boundWriterExpression='[ChaseSets.HeavyAdmission.OwnerRename]::OpenDestination(' + $ownerVariable + ')'
   Assert-Owner ($invokeSource.Contains($boundWriterExpression)) 'handle-bound owner publication is classified'

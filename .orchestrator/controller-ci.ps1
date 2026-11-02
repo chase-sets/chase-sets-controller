@@ -39,14 +39,14 @@ function Get-CiSourceHead([string]$Root, [string]$CheckoutHead) {
 
 function Get-CiRestriction([string]$Identity, [string]$Root) {
   # Exclusions describe host resources, never a failing assertion or timing.
-  if ($Identity -ceq 'test:codex-launch-boundary.test.ps1') {
+  if ($Identity -ceq 'test:codex-launch-boundary.test.ps1#local-smoke') {
     return @{ classification='LOCAL_ONLY'; reason='Pinned installed Codex native sandbox executable and host boundary profile; model CLI execution prohibited.' }
   }
-  if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture.' }
+  if ($Identity -ceq 'test:dispatch-lane-installed-claude.test.ps1#local-smoke') {
+    return @{ classification='LOCAL_ONLY'; reason='Installed Claude CLI --help probe; hosted runners use the pinned help fixture and never launch a model or session.' }
   }
-  if ($Identity -ceq 'test:dispatch-ownership.test.ps1') {
-    return @{ classification='LOCAL_ONLY'; reason='Native ownership carrier reads the live ownership census via interrupted-integration-test-support.ps1:983.'; notHermetic=$true }
+  if ($Identity -ceq 'test:dispatch-ownership.test.ps1#local-smoke') {
+    return @{ classification='LOCAL_ONLY'; reason='Default-source live ownership census smoke; hosted execution is bounded to synthetic runtime records and own-process identities.'; notHermetic=$true }
   }
   $history = @{
     'discriminator:issue-6289' = @('50e3695074960ed988996860ff9bf8a45d6b8bea','e396120d26a766e467e0d01052939d6abf945e21')
@@ -179,7 +179,7 @@ if ($Mode -ceq 'Plan') {
   Write-CiJson $plan (Join-Path $OutputDirectory 'plan.json')
   $matrix = @{include=@(0..($shardCount-1) | ForEach-Object { @{shard=$_} })} | ConvertTo-Json -Compress -Depth 5
   Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "matrix=$matrix`ncheckout_head=$checkoutHead"
-  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($selected | Where-Object restriction).Count) shards=$shardCount role=$($bound.role) boundEnforced=$($bound.enforced) maxEstimatedMs=$((($planShards | Measure-Object estimatedMs -Maximum).Maximum))"
+  Write-Output "PLAN required=$($inventory.Count) selected=$($selected.Count) localOnly=$(@($executionItems | Where-Object restriction).Count) shards=$shardCount role=$($bound.role) boundEnforced=$($bound.enforced) maxEstimatedMs=$((($planShards | Measure-Object estimatedMs -Maximum).Maximum))"
   return
 }
 
@@ -233,11 +233,12 @@ $parts = @(Get-ChildItem -LiteralPath $OutputDirectory -Filter shard.json -Recur
   Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 40 -DateKind String
 })
 $results = Merge-CiResults $plan $parts
-$localOnly = @($plan.selected | Where-Object restriction | ForEach-Object { @{identity=$_.identity;reason=$_.restriction.reason} })
-$notHermetic = @($plan.selected | Where-Object { $_.restriction.notHermetic } | ForEach-Object identity)
+$executionItems = if ($null -ne $plan.executionItems) { @($plan.executionItems) } else { @($plan.selected) }
+$localOnly = @($executionItems | Where-Object restriction | ForEach-Object { @{identity=$_.identity;reason=$_.restriction.reason} })
+$notHermetic = @($executionItems | Where-Object { $_.restriction.notHermetic } | ForEach-Object identity)
 $notRun = @($plan.inventory | Where-Object { $_.identity -cnotin @($plan.selected.identity) } | ForEach-Object identity)
 $outcome = if (@($results | Where-Object result -CEQ 'FAIL').Count) { 'FAIL' }
-  elseif ($localOnly.Count -or $notRun.Count) { 'INCOMPLETE_CI' } else { 'PASS' }
+  elseif ($localOnly.Count -or $notRun.Count -or @($results | Where-Object result -CEQ 'LOCAL_ONLY').Count) { 'INCOMPLETE_CI' } else { 'PASS' }
 $raw = @($results | ForEach-Object { "RESULT identity=$($_.identity) exitCode=$($_.exitCode) result=$($_.result) fleetLoad=none startedUtc=$($_.startedUtc) finishedUtc=$($_.finishedUtc) elapsedMs=$($_.elapsedMs)" }) -join "`n"
 $rawPath = Join-Path $OutputDirectory 'controller-ci.log'
 [IO.File]::WriteAllText($rawPath,$raw + "`n",[Text.UTF8Encoding]::new($false))

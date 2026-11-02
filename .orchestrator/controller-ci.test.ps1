@@ -1,21 +1,25 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'controller-ci.ps1') -Mode Library
 $controllerRoot=Split-Path -Parent $PSScriptRoot
+Assert-Ci (([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-ci-coverage.check.ps1')).Contains("'historical-fixture-manifest.check.ps1'")) -and
+  (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'historical-fixture-manifest.check.ps1') -PathType Leaf)) 'historical fixture manifest check is not registered'
 foreach($identity in @('test:rebase-integration.test.ps1','test:lane-stall-watchdog.test.ps1')){
   Assert-Ci ($null -eq (Get-CiRestriction $identity $controllerRoot)) "historical carrier remains restricted: $identity"
 }
-foreach($identity in @('test:dispatch-ownership.test.ps1')){
+Assert-Ci ($null -eq (Get-CiRestriction 'test:codex-launch-boundary.test.ps1' $controllerRoot)) 'codex portable identity remains hosted'
+$codexSmoke=Get-CiRestriction 'test:codex-launch-boundary.test.ps1#local-smoke' $controllerRoot
+Assert-Ci ($codexSmoke.classification -ceq 'LOCAL_ONLY' -and $codexSmoke.reason.Contains('installed Codex native sandbox executable')) 'codex installed smoke restriction drift'
+Assert-Ci ($null -eq (Get-CiRestriction 'test:dispatch-lane-installed-claude.test.ps1' $controllerRoot)) 'Claude portable identity remains hosted'
+$claudeSmoke=Get-CiRestriction 'test:dispatch-lane-installed-claude.test.ps1#local-smoke' $controllerRoot
+Assert-Ci ($claudeSmoke.classification -ceq 'LOCAL_ONLY' -and $claudeSmoke.reason.Contains('Installed Claude CLI --help probe')) 'Claude installed smoke restriction drift'
+Assert-Ci ($null -eq (Get-CiRestriction 'test:dispatch-ownership.test.ps1' $controllerRoot)) 'dispatch ownership portable identity remains hosted'
+$ownershipSmoke=Get-CiRestriction 'test:dispatch-ownership.test.ps1#local-smoke' $controllerRoot
+Assert-Ci ($ownershipSmoke.classification -ceq 'LOCAL_ONLY' -and $ownershipSmoke.notHermetic -and $ownershipSmoke.reason.Contains('Default-source live ownership census smoke')) 'dispatch ownership local-smoke restriction drift'
+foreach($identity in @('test:landed-integration-r3.test.ps1')){
   $restriction=Get-CiRestriction $identity $controllerRoot
-  Assert-Ci ($restriction.classification -ceq 'LOCAL_ONLY' -and $restriction.notHermetic -and -not $restriction.reason.Contains('b3b4ac2')) "remaining carrier restriction drift: $identity"
-  $reference=[regex]::Match($restriction.reason,'interrupted-integration-test-support.ps1:([0-9,]+)')
-  Assert-Ci $reference.Success 'remaining carrier restriction needs candidate file:line references'
-  $lines=[IO.File]::ReadAllLines((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1'))
-  foreach($number in $reference.Groups[1].Value.Split(',')){
-    $line=$lines[[int]$number-1]
-    Assert-Ci ($line -cmatch 'Get-(LiveDispatchOwnership|FleetLoadObservation|FleetLoadWindow)') "stale carrier restriction reference: $identity line $number"
-  }
+  Assert-Ci ($null -eq $restriction) "r3 restriction remains: $identity"
 }
-Write-Output 'PASS historical carrier restrictions lifted; remaining ownership and retained-fleet restrictions cite candidate reads'
+Write-Output 'PASS historical carrier restrictions lifted; r3 and portable identities remain hosted'
 function Refuses([scriptblock]$Body) {
   $refused=$false
   try { & $Body | Out-Null } catch { $refused=$true }
