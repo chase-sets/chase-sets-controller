@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "lane-selection-input/v1",
+  "receiptId": "receipt-fixture-6309",
+  "cycleId": "cycle-fixture-6309",
+  "selectionAt": "2026-07-31T05:03:00Z",
+  "capturedAt": "2026-07-31T05:02:00Z",
+  "validUntil": "2026-07-31T05:10:00Z",
+  "authorityRevision": "host-judgments-r1",
+  "finalAuthorityRevision": "host-judgments-r1",
+  "complete": true,
+  "ambiguous": false,
+  "waveOrder": ["milestone-wave-1", "milestone-wave-2"],
+  "executableWaveMilestoneId": "milestone-wave-1",
+  "judgments": [
+    {
+      "candidate": 101,
+      "candidateRevision": "candidate-101-r1",
+      "milestoneNodeId": "milestone-wave-2",
+      "milestoneRevision": "milestone-wave-2-r1",
+      "explicitPriority": true,
+      "launchSpine": false,
+      "gatedTrack": { "member": false, "open": null },
+      "hardeningCloseout": false,
+      "milestoneExitGateSatisfied": true,
+      "complete": true,
+      "ambiguous": false,
+      "operator": {
+        "dependencyExists": false,
+        "windowOpen": null,
+        "complete": true,
+        "ambiguous": false,
+        "capturedAt": "2026-07-31T05:02:00Z",
+        "validUntil": "2026-07-31T05:10:00Z",
+        "revision": "operator-101-r1",
+        "finalRevision": "operator-101-r1"
+      }
+    },
+    {
+      "candidate": 102,
+      "candidateRevision": "candidate-102-r1",
+      "milestoneNodeId": "milestone-wave-1",
+      "milestoneRevision": "milestone-wave-1-r1",
+      "explicitPriority": false,
+      "launchSpine": false,
+      "gatedTrack": { "member": false, "open": null },
+      "hardeningCloseout": false,
+      "milestoneExitGateSatisfied": true,
+      "complete": true,
+      "ambiguous": false,
+      "operator": {
+        "dependencyExists": false,
+        "windowOpen": null,
+        "complete": true,
+        "ambiguous": false,
+        "capturedAt": "2026-07-31T05:02:00Z",
+        "validUntil": "2026-07-31T05:10:00Z",
+        "revision": "operator-102-r1",
+        "finalRevision": "operator-102-r1"
+      }
+    },
+    {
+      "candidate": 103,
+      "candidateRevision": "candidate-103-r1",
+      "milestoneNodeId": "milestone-wave-1",
+      "milestoneRevision": "milestone-wave-1-r1",
+      "explicitPriority": false,
+      "launchSpine": false,
+      "gatedTrack": { "member": false, "open": null },
+      "hardeningCloseout": false,
+      "milestoneExitGateSatisfied": true,
+      "complete": true,
+      "ambiguous": false,
+      "operator": {
+        "dependencyExists": true,
+        "windowOpen": false,
+        "complete": true,
+        "ambiguous": false,
+        "capturedAt": "2026-07-31T05:02:00Z",
+        "validUntil": "2026-07-31T05:10:00Z",
+        "revision": "operator-103-r1",
+        "finalRevision": "operator-103-r1"
+      }
+    },
+    {
+      "candidate": 104,
+      "candidateRevision": "candidate-104-r1",
+      "milestoneNodeId": "milestone-wave-1",
+      "milestoneRevision": "milestone-wave-1-r1",
+      "explicitPriority": false,
+      "launchSpine": false,
+      "gatedTrack": { "member": false, "open": null },
+      "hardeningCloseout": false,
+      "milestoneExitGateSatisfied": true,
+      "complete": true,
+      "ambiguous": false,
+      "operator": {
+        "dependencyExists": false,
+        "windowOpen": null,
+        "complete": true,
+        "ambiguous": false,
+        "capturedAt": "2026-07-31T05:02:00Z",
+        "validUntil": "2026-07-31T05:10:00Z",
+        "revision": "operator-104-r1",
+        "finalRevision": "operator-104-r1"
+      }
+    }
+  ]
+}

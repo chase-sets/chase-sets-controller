@@ -124,11 +124,7 @@ function Test-7962NativeControls([string]$RepositoryRoot=(Split-Path -Parent $PS
   $caseRoot=Join-Path $fixtureRoot 'synthetic-7962';New-Item -ItemType Directory $caseRoot|Out-Null
   $nativeFailures=[Collections.Generic.List[string]]::new()
   $pwsh=(Get-Command pwsh -CommandType Application|Select-Object -First 1 -ExpandProperty Source)
-  $baseline='8106d4e12c4b3329e3b59372366c5a57e8dfacc1';$candidateRoot=$RepositoryRoot
-  & git -C $candidateRoot cat-file -e "$baseline^{commit}";if($LASTEXITCODE-ne0){throw 'baseline missing'}
-  $zip=Join-Path $caseRoot 'baseline.zip'; & git -C $candidateRoot archive --format=zip "--output=$zip" $baseline .orchestrator
-  if($LASTEXITCODE-ne0){throw 'baseline archive failed'}
-  Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $caseRoot 'baseline');$baselineRuntime=Join-Path $caseRoot 'baseline/.orchestrator';[void](Set-ArchivedOrchestrationLogMutexName $baselineRuntime)
+  $baselineRuntime=New-HistoricalDispatchFixture '8106d4e1' (Join-Path $caseRoot 'baseline');[void](Set-ArchivedOrchestrationLogMutexName $baselineRuntime)
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   . (Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1')
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking

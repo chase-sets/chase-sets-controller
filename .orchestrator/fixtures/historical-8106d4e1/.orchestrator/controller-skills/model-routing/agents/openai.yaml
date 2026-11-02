@@ -1,0 +1,4 @@
+interface:
+  display_name: "Model Routing"
+  short_description: "Route tasks to the right model + reasoning effort"
+  default_prompt: "Use $model-routing to pick the exact model version and reasoning effort for each task you dispatch: cheapest configuration (one exact model at one exact effort, chosen together, never separately) that clears the quality bar per the routing table, never transfer evidence or vetoes across versions or between effort levels, keep deprecated Opus 4.8 out of every selection, and log the row number that justified each dispatch."

@@ -30,7 +30,7 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
-function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5','8106d4e1','4ef3fc35','177f2d55','6e9156f8')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
   if($UseArchive){
     if($Name-cnotin @('b3b4ac2','aa62899')){throw "HISTORICAL_FIXTURE: archive source is only supported for b3b4ac2 or aa62899, got $Name"}
     $sourceRoot=Split-Path -Parent $PSScriptRoot;$archive=Join-Path $Destination "historical-$Name.tar"
@@ -57,7 +57,7 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
   foreach($entry in $entries){
     $source=Join-Path $fixtureRoot $entry.path
     $bytes=[IO.File]::ReadAllBytes($source)
-    if($Name -cnotin @('b3b4ac2','aa62899')){$bytes=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($bytes).Replace("`r`n","`n"))}
+    if($Name -cnotin @('b3b4ac2','aa62899','8106d4e1','4ef3fc35','177f2d55','6e9156f8')){$bytes=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($bytes).Replace("`r`n","`n"))}
     $blobHash=[Security.Cryptography.IncrementalHash]::CreateHash('SHA1'); $blobHash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")); $blobHash.AppendData($bytes); $actual=[Convert]::ToHexString($blobHash.GetHashAndReset()).ToLowerInvariant(); $blobHash.Dispose() # b3b4ac2 and aa62899 use raw Git blob bytes; older fixtures retain their established newline policy.
     if($actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
     $target=Join-Path $Destination $entry.path
@@ -1567,10 +1567,8 @@ exit $LASTEXITCODE
       $events=Events9334 $f $f.seedLabel
       Proof9334 ($events.Count-eq1-and$events[0].item.exit_code-eq2-and$events[0].item.command.Contains('-NoPush *> .codex/integration.log; $code=$LASTEXITCODE; Get-Content .codex/integration.log -Tail 30; exit $code')-and$events[0].item.command.Contains('../runtime/rebase-integration.ps1')) 'actual wrapper/relative-helper/logging/NoPush ordinary first-stop transcript'
       # Baseline arm: the installed controller refuses the actual ordinary stop (F2) and knows no ordinary grammar or obligation (F1).
-      $baseline=Join-Path $f.case 'baseline';[IO.Directory]::CreateDirectory($baseline)|Out-Null
-      $archive=Join-Path $f.case 'baseline.zip';[void](Git9334 (Split-Path -Parent $PSScriptRoot) @('archive','--format=zip','-o',$archive,$baselineHead,'.orchestrator'))
-      [IO.Compression.ZipFile]::ExtractToDirectory($archive,$baseline)
-      $baselineModule=Import-Module (Join-Path $baseline '.orchestrator/landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
+      $baselineRuntime=New-HistoricalDispatchFixture '4ef3fc35' (Join-Path $f.case 'baseline')
+      $baselineModule=Import-Module (Join-Path $baselineRuntime 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
       try {
         $baselineState=$null;try{Get-InterruptedIntegrationState $f.repo|Out-Null;$baselineState='UNEXPECTED SUCCESS'}catch{$baselineState=$_.Exception.Message}
         $baselineCommand=& $baselineModule {param($c,$o,$r) Test-InterruptedIntegrationCommand $c '' $o $r (Join-Path $r 'rebase-integration.ps1')} ([string]$events[0].item.command) $f.obligation $f.runtime
@@ -1579,7 +1577,7 @@ exit $LASTEXITCODE
       Proof9334 ($baselineState-ceq'INTEGRATION_RESUME_OPERATION: todo/done history mismatch'-and$null-eq$baselineCommand-and$baselineSources.Contains('OWED_REBASE_PROOF_INVALID')) "baseline $($baselineHead.Substring(0,8)) reproduces F2 (todo/done mismatch on the merge graph) and F1 (no ordinary grammar/obligation): state='$baselineState' command=null sources='$baselineSources'"
       $binding=Bind9334 $f
       Proof9334 ($binding.schemaVersion-ceq'interrupted-canonical-integration/v2'-and$binding.sources.conflictSha256-ceq(Get-RebaseHash ([IO.File]::ReadAllBytes($f.capturePath)))-and$null-eq$binding.sources.checkpointSha256-and$binding.sources.attemptId-ceq$f.prior.attemptId-and$binding.state.stoppedCommit-ceq$f.plan[0]-and$binding.state.oldBase-ceq$f.oldBase-and(Test-DispatchInterruptedBindingShape (Read-RebaseJson $f.cfg.resumePath))) 'ordinary v2 binding: capture hash, semantic attempt, first pick stopped, closed shape accepted by ownership'
-      $f.cfg.dispatch=Join-Path $baseline '.orchestrator/dispatch-lane.ps1'
+      $f.cfg.dispatch=Join-Path $baselineRuntime 'dispatch-lane.ps1'
       Refusal9334 $f 'immutable baseline launcher refuses the ordinary v2 binding' 'INTEGRATION_RESUME_BINDING'
       $f.cfg.dispatch=Join-Path $PSScriptRoot 'dispatch-lane.ps1'
       ValidPlan9334 $f 'ordinary dead first stop admitted'

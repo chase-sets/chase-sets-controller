@@ -382,18 +382,10 @@ function Test-7926F1TerminalCleanup {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $beforeRoot
   }
   Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$beforeRoot})
-  $beforeRevision='6e9156f8393de4b8f54519ece506d3b488adcd75'
-  $beforeSource=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/landed-integration-dispatch.ps1")
-  Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed producer available'
-  $beforeProducer=Join-Path $beforeRoot 'landed-integration-dispatch.ps1'
-  [IO.File]::WriteAllText($beforeProducer,($beforeSource-join"`n"))
-  $beforeLogger=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/log-event.ps1")
-  Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed logger available'
-  [IO.File]::WriteAllText((Join-Path $beforeRoot 'log-event.ps1'),($beforeLogger-join"`n"))
-  # #122: the reviewed logger takes the lock without -Root; give it its own lock module, keyed to this root.
-  $beforeLock=@(& git -C (Split-Path -Parent $PSScriptRoot) show "${beforeRevision}:.orchestrator/orchestration-log-lock.psm1")
-  Assert-True ($LASTEXITCODE-eq0) 'F1 immutable reviewed logger lock available'
-  [IO.File]::WriteAllText((Join-Path $beforeRoot 'orchestration-log-lock.psm1'),($beforeLock-join"`n"))
+  $beforeHistoricalRuntime=New-HistoricalDispatchFixture '6e9156f8' (Join-Path $beforeRoot 'historical-6e9156f8')
+  foreach($name in @('landed-integration-dispatch.ps1','log-event.ps1','orchestration-log-lock.psm1')) {
+    Copy-Item -LiteralPath (Join-Path $beforeHistoricalRuntime $name) -Destination (Join-Path $beforeRoot $name) -Force
+  }
   [void](Set-ArchivedOrchestrationLogMutexName $beforeRoot)
   foreach($arm in @('candidate','before')){
     $container=Join-Path $fixtureRoot "synthetic-f1-$arm";$runtime=Join-Path $container 'runtime'

@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chase-sets.local/contracts/lane-admission-v1.schema.json",
+  "title": "Selection-free lane admission machine receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "cycleId",
+    "generatedAt",
+    "status",
+    "reasonCodes",
+    "coverage",
+    "structurallyEligibleCandidates",
+    "activeLaneFacts",
+    "exclusions",
+    "orderingFacts",
+    "conflictGraph",
+    "capacityFacts",
+    "overrides",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "lane-admission/v1" },
+    "receiptId": { "$ref": "#/$defs/identifier" },
+    "cycleId": { "$ref": "#/$defs/identifier" },
+    "generatedAt": { "$ref": "#/$defs/instant" },
+    "status": { "enum": ["complete", "closed"] },
+    "reasonCodes": { "$ref": "#/$defs/admissionReasons" },
+    "coverage": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "set",
+          "status",
+          "pages",
+          "collected",
+          "total",
+          "providerCap",
+          "hasNextPage",
+          "unexamined",
+          "revision",
+          "finalRevision",
+          "revisionStable"
+        ],
+        "properties": {
+          "set": {
+            "enum": ["candidate-issues", "labels", "milestones", "open-prs", "active-lanes"]
+          },
+          "status": { "enum": ["complete", "unknown"] },
+          "pages": { "$ref": "#/$defs/count" },
+          "collected": { "$ref": "#/$defs/count" },
+          "total": { "$ref": "#/$defs/count" },
+          "providerCap": { "$ref": "#/$defs/count" },
+          "hasNextPage": { "type": "boolean" },
+          "unexamined": { "$ref": "#/$defs/count" },
+          "revision": { "$ref": "#/$defs/identifier" },
+          "finalRevision": { "$ref": "#/$defs/identifier" },
+          "revisionStable": { "type": "boolean" }
+        }
+      }
+    },
+    "structurallyEligibleCandidates": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "activeLaneFacts": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["owner", "revision", "footprint"],
+        "properties": {
+          "owner": { "$ref": "#/$defs/identifier" },
+          "revision": { "$ref": "#/$defs/identifier" },
+          "footprint": { "$ref": "#/$defs/footprint" }
+        }
+      }
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate", "reasonCodes"],
+        "properties": {
+          "candidate": { "$ref": "#/$defs/issueNumber" },
+          "reasonCodes": { "$ref": "#/$defs/admissionReasons" }
+        }
+      }
+    },
+    "orderingFacts": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate",
+          "dispatchTier",
+          "dispatchRank",
+          "priority",
+          "topologyOrder",
+          "issueNumber"
+        ],
+        "properties": {
+          "candidate": { "$ref": "#/$defs/issueNumber" },
+          "dispatchTier": { "enum": ["ranked", "unranked"] },
+          "dispatchRank": {
+            "oneOf": [
+              { "type": "integer", "minimum": 0, "maximum": 1000000 },
+              { "type": "null" }
+            ]
+          },
+          "priority": { "enum": ["p0", "p1", "p2", "p3"] },
+          "topologyOrder": { "$ref": "#/$defs/count" },
+          "issueNumber": { "$ref": "#/$defs/issueNumber" }
+        }
+      }
+    },
+    "conflictGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateEdges", "activeLaneEdges"],
+      "properties": {
+        "candidateEdges": {
+          "type": "array",
+          "maxItems": 1000000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["left", "right", "paths"],
+            "properties": {
+              "left": { "$ref": "#/$defs/issueNumber" },
+              "right": { "$ref": "#/$defs/issueNumber" },
+              "paths": { "$ref": "#/$defs/paths" }
+            }
+          }
+        },
+        "activeLaneEdges": {
+          "type": "array",
+          "maxItems": 1000000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["candidate", "owner", "paths"],
+            "properties": {
+              "candidate": { "$ref": "#/$defs/issueNumber" },
+              "owner": { "$ref": "#/$defs/identifier" },
+              "paths": { "$ref": "#/$defs/paths" }
+            }
+          }
+        }
+      }
+    },
+    "capacityFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "queueAndDeployHealthy", "hostCapacity", "ownership"],
+      "properties": {
+        "decision": { "enum": ["option-1", "unknown"] },
+        "queueAndDeployHealthy": { "type": ["boolean", "null"] },
+        "hostCapacity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "memorySafe",
+            "heavyVerifierSafe",
+            "complete",
+            "authorityId",
+            "capturedAt",
+            "validUntil",
+            "revision",
+            "finalRevision"
+          ],
+          "properties": {
+            "memorySafe": { "type": ["boolean", "null"] },
+            "heavyVerifierSafe": { "type": ["boolean", "null"] },
+            "complete": { "type": "boolean" },
+            "authorityId": { "$ref": "#/$defs/identifier" },
+            "capturedAt": { "$ref": "#/$defs/instant" },
+            "validUntil": { "$ref": "#/$defs/instant" },
+            "revision": { "$ref": "#/$defs/identifier" },
+            "finalRevision": { "$ref": "#/$defs/identifier" }
+          }
+        },
+        "ownership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "safe",
+            "complete",
+            "currentPool",
+            "active",
+            "authorizedMax",
+            "revision",
+            "finalRevision"
+          ],
+          "properties": {
+            "safe": { "type": ["boolean", "null"] },
+            "complete": { "type": "boolean" },
+            "currentPool": { "$ref": "#/$defs/count" },
+            "active": { "$ref": "#/$defs/count" },
+            "authorizedMax": { "$ref": "#/$defs/count" },
+            "revision": { "$ref": "#/$defs/identifier" },
+            "finalRevision": { "$ref": "#/$defs/identifier" }
+          }
+        }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "who",
+          "fact",
+          "reason",
+          "expiresAt",
+          "receiptId",
+          "accepted",
+          "reasonCode"
+        ],
+        "properties": {
+          "who": { "$ref": "#/$defs/identifier" },
+          "fact": { "$ref": "#/$defs/identifier" },
+          "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "expiresAt": { "$ref": "#/$defs/instant" },
+          "receiptId": { "$ref": "#/$defs/identifier" },
+          "accepted": { "const": false },
+          "reasonCode": { "const": "OVERRIDE_CANNOT_SATISFY_UNKNOWN" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputSchema",
+        "collector",
+        "collectorVersion",
+        "repository",
+        "subjectHead",
+        "collectedAt",
+        "finalRebindAt"
+      ],
+      "properties": {
+        "inputSchema": { "const": "lane-admission-collected-input/v1" },
+        "collector": { "$ref": "#/$defs/identifier" },
+        "collectorVersion": { "$ref": "#/$defs/identifier" },
+        "repository": { "$ref": "#/$defs/identifier" },
+        "subjectHead": { "$ref": "#/$defs/identifier" },
+        "collectedAt": { "$ref": "#/$defs/instant" },
+        "finalRebindAt": { "$ref": "#/$defs/instant" }
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+\\-]*$"
+    },
+    "instant": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T.+(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "issueNumber": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+    "path": { "type": "string", "minLength": 1, "maxLength": 1025 },
+    "paths": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "admissionReasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 32,
+      "items": {
+        "enum": [
+          "GLOBAL_AUTHORITY_MISSING",
+          "GLOBAL_AUTHORITY_DUPLICATE",
+          "GLOBAL_AUTHORITY_INCOMPLETE",
+          "GLOBAL_AUTHORITY_MOVED",
+          "GLOBAL_AUTHORITY_CAP_MISMATCH",
+          "CANDIDATE_AUTHORITY_UNKNOWN",
+          "CANDIDATE_AUTHORITY_MOVED",
+          "CANDIDATE_PATH_UNKNOWN",
+          "ACTIVE_LANE_AUTHORITY_UNKNOWN",
+          "ORDERING_UNKNOWN",
+          "DEPENDENCY_BLOCKED",
+          "DEPENDENCY_CYCLE",
+          "READINESS_UNKNOWN",
+          "LIFECYCLE_INELIGIBLE",
+          "MILESTONE_UNKNOWN",
+          "OVERRIDE_CANNOT_SATISFY_UNKNOWN"
+        ]
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "nodeId",
+        "revision",
+        "state",
+        "issueType",
+        "milestone",
+        "readiness",
+        "priority",
+        "dispatchRank",
+        "dependencies",
+        "topologyOrder",
+        "operatorLabel",
+        "footprint",
+        "lifecycle"
+      ],
+      "properties": {
+        "number": { "$ref": "#/$defs/issueNumber" },
+        "nodeId": { "$ref": "#/$defs/identifier" },
+        "revision": { "$ref": "#/$defs/identifier" },
+        "state": { "const": "open" },
+        "issueType": { "const": "Slice" },
+        "milestone": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodeId", "number", "state", "revision"],
+          "properties": {
+            "nodeId": { "$ref": "#/$defs/identifier" },
+            "number": { "$ref": "#/$defs/issueNumber" },
+            "state": { "const": "open" },
+            "revision": { "$ref": "#/$defs/identifier" }
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "subjectRevision",
+            "authorityComplete",
+            "revisionStable",
+            "checkerSha"
+          ],
+          "properties": {
+            "status": { "const": "ready" },
+            "subjectRevision": { "$ref": "#/$defs/identifier" },
+            "authorityComplete": { "const": true },
+            "revisionStable": { "const": true },
+            "checkerSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        },
+        "priority": { "enum": ["p0", "p1", "p2", "p3"] },
+        "dispatchRank": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 1000000 },
+            { "type": "null" }
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["number", "state", "revision"],
+            "properties": {
+              "number": { "$ref": "#/$defs/issueNumber" },
+              "state": { "enum": ["open", "closed"] },
+              "revision": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        },
+        "topologyOrder": { "$ref": "#/$defs/count" },
+        "operatorLabel": { "type": "boolean" },
+        "footprint": { "$ref": "#/$defs/footprint" },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["refined", "executable"],
+          "properties": {
+            "refined": { "const": true },
+            "executable": { "const": true }
+          }
+        }
+      }
+    },
+    "footprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declared", "observed", "combined"],
+      "properties": {
+        "declared": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "observed": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        },
+        "combined": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    }
+  }
+}

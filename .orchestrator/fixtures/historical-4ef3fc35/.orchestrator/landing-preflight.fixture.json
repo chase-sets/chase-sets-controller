@@ -1,0 +1,186 @@
+{
+  "schema": "landing-preflight-fixture/v1",
+  "scenarios": {
+    "eligible": {
+      "observations": [
+        {
+          "complete": true,
+          "reason": "OBSERVATION_COMPLETE",
+          "pr": {
+            "id": "PR_fixture_6254",
+            "number": 6254,
+            "state": "OPEN",
+            "isDraft": false,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "baseRefName": "main",
+            "mergeQueueEntryId": null,
+            "branchProtectionObserved": true,
+            "requiresStatusChecks": true,
+            "requiredContexts": ["PR Required"],
+            "statusRollupState": "SUCCESS",
+            "checks": [{"name": "PR Required", "outcome": "success"}],
+            "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+          },
+          "deploy": {"complete": true, "status": "completed", "conclusion": "success", "runId": 1001, "headSha": "9999999999999999999999999999999999999999"},
+          "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY", "open": []}
+        },
+        {
+          "complete": true,
+          "reason": "OBSERVATION_COMPLETE",
+          "pr": {
+            "id": "PR_fixture_6254",
+            "number": 6254,
+            "state": "OPEN",
+            "isDraft": false,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "baseRefName": "main",
+            "mergeQueueEntryId": null,
+            "branchProtectionObserved": true,
+            "requiresStatusChecks": true,
+            "requiredContexts": ["PR Required"],
+            "statusRollupState": "SUCCESS",
+            "checks": [{"name": "PR Required", "outcome": "success"}],
+            "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+          },
+          "deploy": {"complete": true, "status": "completed", "conclusion": "success", "runId": 1001, "headSha": "9999999999999999999999999999999999999999"},
+          "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY", "open": []}
+        }
+      ],
+      "mutation": {"complete": true, "entryId": "MQE_fixture_6254"}
+    },
+    "head-movement": {
+      "observations": [
+        {
+          "complete": true,
+          "reason": "OBSERVATION_COMPLETE",
+          "pr": {
+            "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+            "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+            "branchProtectionObserved": true, "requiresStatusChecks": true,
+            "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+            "checks": [{"name": "PR Required", "outcome": "success"}],
+            "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+          },
+          "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+          "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+        },
+        {
+          "complete": true,
+          "reason": "OBSERVATION_COMPLETE",
+          "pr": {
+            "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+            "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "baseRefName": "main", "mergeQueueEntryId": null,
+            "branchProtectionObserved": true, "requiresStatusChecks": true,
+            "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+            "checks": [{"name": "PR Required", "outcome": "success"}],
+            "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+          },
+          "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+          "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+        }
+      ],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "pagination-failure": {
+      "observations": [{"complete": false, "reason": "ISSUE_DEPENDENCY_PAGINATION_INCOMPLETE", "pr": null, "deploy": null, "breaker": null}],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "draft": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": true,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+          "checks": [{"name": "PR Required", "outcome": "success"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+        "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "red-required-check": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "FAILURE",
+          "checks": [{"name": "PR Required", "outcome": "failure"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+        "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "native-blocker": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+          "checks": [{"name": "PR Required", "outcome": "success"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": [{"number": 6200, "state": "OPEN"}]}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+        "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "unhealthy-breaker": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+          "checks": [{"name": "PR Required", "outcome": "success"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+        "breaker": {"complete": true, "healthy": false, "reason": "PIPELINE_BREAKER_OPEN", "open": ["6254/6254"]},
+        "admission": {"complete": false, "reason": "AUTHORITY_RECORD_ABSENT"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "unhealthy-deploy": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": null,
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+          "checks": [{"name": "PR Required", "outcome": "success"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "failure"},
+        "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    },
+    "already-enqueued": {
+      "observations": [{
+        "complete": true, "reason": "OBSERVATION_COMPLETE",
+        "pr": {
+          "id": "PR_fixture_6254", "number": 6254, "state": "OPEN", "isDraft": false,
+          "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "baseRefName": "main", "mergeQueueEntryId": "MQE_existing",
+          "branchProtectionObserved": true, "requiresStatusChecks": true,
+          "requiredContexts": ["PR Required"], "statusRollupState": "SUCCESS",
+          "checks": [{"name": "PR Required", "outcome": "success"}],
+          "closingIssues": [{"number": 6254, "state": "OPEN", "blockersComplete": true, "blockers": []}]
+        },
+        "deploy": {"complete": true, "status": "completed", "conclusion": "success"},
+        "breaker": {"complete": true, "healthy": true, "reason": "BREAKER_HEALTHY"}
+      }],
+      "mutation": {"complete": true, "entryId": "MUST_NOT_BE_USED"}
+    }
+  }
+}
