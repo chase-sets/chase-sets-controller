@@ -666,9 +666,38 @@ $carrierOwnerCounts=@{
     'watchdog-policy-pos'=12;'watchdog-policy-mutants-admission'=8;'watchdog-policy-mutants-lineage'=4
     'watchdog-policy-mutants-envelope'=4;'watchdog-policy-mutants-history'=4;'watchdog-policy-mutants-binding'=9;'watchdog-policy-mutants-joins'=6}
 }
+function Assert-NativeFailureDiagnostics([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'native failure diagnostics source parse failed'
+  $diagnostic=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains('NATIVE_FAILURE_CONTEXT')},$true))
+  Assert-Ci ($diagnostic.Count-eq1) 'native failure diagnostics missing or duplicated'
+  $previous=$script:ordinary9334LastResult;$previousError=[Console]::Error
+  $capture=[IO.StringWriter]::new()
+  try {
+    $Carrier='synthetic-diagnostic'
+    $script:ordinary9334LastResult=[pscustomobject]@{exit=1;stdout="synthetic output`nwith quotes: `"x`"";stderr='synthetic native refusal';resultPath='synthetic.result.json'}
+    [Console]::SetError($capture)
+    & ([scriptblock]::Create($diagnostic[0].Extent.Text))
+    $prefix="NATIVE_FAILURE_CONTEXT $Carrier "
+    $line=$capture.ToString().TrimEnd("`r","`n")
+    Assert-Ci ($line.StartsWith($prefix,[StringComparison]::Ordinal)) 'native failure context prefix missing'
+    $retained=$line.Substring($prefix.Length)|ConvertFrom-Json
+    Assert-Ci ($retained.exit-eq1-and$retained.stdout-ceq$script:ordinary9334LastResult.stdout-and$retained.stderr-ceq$script:ordinary9334LastResult.stderr-and$retained.resultPath-ceq$script:ordinary9334LastResult.resultPath) 'native failure context lost exit, streams or artifact path'
+    [void]$capture.GetStringBuilder().Clear();$script:ordinary9334LastResult=$null
+    & ([scriptblock]::Create($diagnostic[0].Extent.Text))
+    Assert-Ci ($capture.ToString()-ceq'') 'native failure context must stay silent without a native result'
+  } finally {
+    [Console]::SetError($previousError);$capture.Dispose();$script:ordinary9334LastResult=$previous
+  }
+}
 foreach($leaf in $carrierBaselineBlobs.Keys){
   $baseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$carrierBaselineBlobs[$leaf]))
   $candidate=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf))
+  if($leaf-ceq'interrupted-integration-test-support.ps1'){
+    Assert-NativeFailureDiagnostics $candidate
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace('NATIVE_FAILURE_CONTEXT','REMOVED_NATIVE_CONTEXT')) }
+  }
   Assert-CarrierProofCensus $candidate $baseline
   if($leaf -cne 'interrupted-integration-test-support.ps1'){
     $suite=if($leaf -ceq 'rebase-integration.test.ps1'){'rebase'}else{'watchdog'}

@@ -1136,6 +1136,7 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
   $script:ordinary9334Counter = 0
+  $script:ordinary9334LastResult = $null
   $candidateHead = (@(& git.exe -C (Split-Path -Parent $PSScriptRoot) rev-parse HEAD) -join '').Trim()
   if ($LASTEXITCODE -ne 0 -or $candidateHead -cnotmatch '^[a-f0-9]{40}$') { throw '9334 exact test candidate unavailable' }
   $baselineHead = '4ef3fc35d82153f7751cf28a9a740d365f972688'
@@ -1167,7 +1168,8 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
       $stdout=$out.GetAwaiter().GetResult();$stderr=$err.GetAwaiter().GetResult()
       [IO.File]::WriteAllText("$stem.stdout.txt",$stdout);[IO.File]::WriteAllText("$stem.stderr.txt",$stderr)
       Save9334 "$stem.result.json" ([ordered]@{pid=$p.Id;startIdentity=$start;exitCode=$p.ExitCode;script=$Script;arguments=$Arguments;stdoutPath="$stem.stdout.txt";stderrPath="$stem.stderr.txt"})
-      return [pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      $script:ordinary9334LastResult=[pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      return $script:ordinary9334LastResult
     } finally { $p.Dispose() }
   }
   $harness=Join-Path $root 'synthetic-ordinary-harness.ps1'
@@ -2089,6 +2091,9 @@ exit $LASTEXITCODE
       return
     }
   } catch {
+    if($null-ne$script:ordinary9334LastResult){
+      [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $Carrier $($script:ordinary9334LastResult|ConvertTo-Json -Depth 5 -Compress)")
+    }
     Write-Output "EXCEPTION $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier $($_.Exception.Message) STACK $($_.ScriptStackTrace -replace "`r?`n",' | ')"
     throw
   } finally {
