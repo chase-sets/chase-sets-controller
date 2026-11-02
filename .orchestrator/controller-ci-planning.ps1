@@ -130,12 +130,12 @@ function New-CiExecutionItems([object[]]$Inventory, $Manifest, $Profile, [string
 function Get-CiShardCount($Plan) {
   if ($null -eq $Plan.shardCount) { return 10 }
   Assert-Ci (($Plan.shardCount -is [int] -or $Plan.shardCount -is [long]) -and
-    $Plan.shardCount -ge 16 -and $Plan.shardCount -le 32) 'unsupported shard count'
+    $Plan.shardCount -ge 16 -and $Plan.shardCount -le 48) 'unsupported shard count'
   return [int]$Plan.shardCount
 }
 
 function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
-  Assert-Ci ($ShardCount -eq 10 -or ($ShardCount -ge 16 -and $ShardCount -le 32)) 'unsupported shard count'
+  Assert-Ci ($ShardCount -eq 10 -or ($ShardCount -ge 16 -and $ShardCount -le 48)) 'unsupported shard count'
   # Ordinal identity breaks equal-duration ties independently of locale and input order.
   $order = [Collections.Generic.List[object]]::new()
   foreach ($task in $Tasks) { $order.Add($task) }

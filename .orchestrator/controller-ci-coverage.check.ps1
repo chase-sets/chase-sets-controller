@@ -96,8 +96,9 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
     Assert-Ci ($mapping.Count-eq1-and$mapping[0].identity.Substring(5)-ceq$name) 'new proof test mapping missing/drifted'
     Assert-Ci ((Get-CiSourceDigest (Join-Path $root ('.orchestrator/'+$name)))-ceq$newTestPins[$name]) 'new proof test source drifted'
   }
-  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1','test:dispatch-ownership.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq13-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1')
+  $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1','test:dispatch-ownership.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq14-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
@@ -466,6 +467,12 @@ Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guard
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-b3b4ac2') -Destination (Join-Path $controlFixtures 'historical-b3b4ac2') -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-aa62899') -Destination (Join-Path $controlFixtures 'historical-aa62899') -Recurse
     $successorModuleRoot=New-HistoricalDispatchFixture 'aa62899' (Join-Path $fixtureControlRoot 'out-successor') $controlFixtures
+    $successorLauncher=Join-Path $successorModuleRoot 'dispatch-lane.ps1'
+    Assert-Ci (Test-Path -LiteralPath $successorLauncher -PathType Leaf) 'successor baseline launcher read set missing'
+    [IO.File]::Delete((Join-Path $controlFixtures 'historical-aa62899/.orchestrator/dispatch-lane.ps1'))
+    $successorLauncherRefused=$false
+    try { [void](New-HistoricalDispatchFixture 'aa62899' (Join-Path $fixtureControlRoot 'out-successor-missing-launcher') $controlFixtures) } catch { $successorLauncherRefused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: read set changed for aa62899') }
+    Assert-Ci $successorLauncherRefused 'missing successor baseline launcher must refuse before fixture use'
     $successorModule=Import-Module (Join-Path $successorModuleRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
     Remove-Module $successorModule -Force
     $target=Join-Path $controlFixtures 'historical-b3b4ac2/.orchestrator/dispatch-lane.ps1'
@@ -494,7 +501,7 @@ Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guard
   }
 }
 Write-Output 'PASS historical fixture pins: raw Git blob ids accept pinned LF bytes; missing-file, line-ending and one-byte mutations refused'
-Write-Output 'PASS successor fixture pins: four aa62899 raw Git blobs materialize and import without the private object database'
+Write-Output 'PASS successor fixture pins: nine aa62899 raw Git blobs materialize and import without the private object database'
 function Assert-CarrierPartContract([string]$Path,$Item,[string[]]$CarrierCalls) {
   $source=[IO.File]::ReadAllText($Path).Replace("`r`n","`n")
   $expected=@($Item.parts.name)
@@ -531,28 +538,330 @@ Assert-Ci (([IO.File]::ReadAllText($watchdogPath).Contains("if(-not `$Part){")))
 Refuses-Coverage { Assert-CarrierPartContract $rebasePath ([pscustomobject]@{parts=@($rebaseItem.parts|Where-Object name -cne 'rebase-amend');identity=$rebaseItem.identity}) @() }
 Refuses-Coverage { Assert-CarrierPartContract $watchdogPath ([pscustomobject]@{parts=@($watchdogItem.parts|Where-Object name -cne 'watchdog-historical');identity=$watchdogItem.identity}) @() }
 Write-Output 'PASS historical carrier part ownership: rebase and watchdog selectors, carrier arms, legacy whole-run guard, and dropped-part mutants refused'
-function Assert-HistoricalSelectorContract([string]$Path, [string[]]$Parts, [string[]]$LegacySelectors) {
-  $source = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
-  Assert-Ci ($source.Contains("if(`$Part -ceq 'all'){`$Part=''")) "aggregate all selector normalization missing: $Path"
-  Assert-Ci ($source.Contains('if(-not $Part){') -or $source.Contains('if(-not$Part){')) "aggregate whole-run guard missing: $Path"
-  $names = @('all') + @($Parts)
-  $bound = @{}
-  Assert-SuiteSelection 'all' $names $bound $LegacySelectors
-  function Refuses-Selector([scriptblock]$Body) {
-    $refused = $false
-    try { & $Body } catch { $refused = $true }
-    Assert-Ci $refused 'suite selector refusal control survived'
+$r3Path=Join-Path $PSScriptRoot 'landed-integration-r3.test.ps1'
+$r3Item=$manifest.items|Where-Object identity -eq 'test:landed-integration-r3.test.ps1'
+Assert-Ci ($null -ne $r3Item) 'r3 split mapping missing'
+Assert-CarrierPartContract $r3Path $r3Item @()
+$r3Source=[IO.File]::ReadAllText($r3Path)
+function Assert-R3WitnessOwner([string]$Source) {
+  Assert-Ci ($Source.Contains("if (& `$runPart 'three-native-source') { Assert-SyntheticIntegrationWitnesses `$fixtureRoot }")) 'synthetic source scan and real-repository negative must have one owner'
+  Assert-Ci ($Source.Contains("if(`$Part -cin @('three-native-boundaries','three-native-retained','three-native-watchdog')) { Assert-SyntheticIntegrationWitnessFiles `$fixtureRoot }")) 'each disjoint native fixture must validate its own witnesses'
+}
+Assert-R3WitnessOwner $r3Source
+Assert-Ci ($r3Source.Contains("`$nativePart=if(`$Part -cin `$nativeParts){`$Part}else{''}") -and
+  $r3Source.Contains('Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot) -Part $nativePart')) 'r3 native part selection must reach its controls'
+Assert-Ci ($r3Source.Contains("if (& `$runPart `$ordinaryPart) { Invoke-9334OrdinaryCarriers @('ordinary-dispatch') -Part `$ordinaryPart }")) 'r3 ordinary part selection must reach its carrier'
+Refuses-Coverage { Assert-Ci (($r3Source.Replace('-Part $nativePart','')).Contains('Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot) -Part $nativePart')) 'native part forwarding removed' }
+Refuses-Coverage { Assert-Ci (($r3Source.Replace('-Part $ordinaryPart','')).Contains("Invoke-9334OrdinaryCarriers @('ordinary-dispatch') -Part `$ordinaryPart")) 'ordinary part forwarding removed' }
+Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("if (& `$runPart 'three-native-source') { Assert-SyntheticIntegrationWitnesses", "if (& `$runPart 'three-completed-rebase') { Assert-SyntheticIntegrationWitnesses")) }
+Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("'three-native-boundaries','three-native-retained','three-native-watchdog'","'three-native-boundaries','three-native-watchdog'")) }
+Assert-Ci ('ordinary-dispatch' -cnotin @($r3Item.parts.name) -and 'three-native-controls' -cnotin @($r3Item.parts.name) -and 'three-completed-rebase' -cnotin @($r3Item.parts.name)) 'oversized r3 part identities still registered'
+function Assert-R3LoadArmOwnership([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'r3 classifier selector source parse failed'
+  $functions=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Test-TimedFixtureUnderFleetLoadMeasuresLoad'},$true))
+  Assert-Ci ($functions.Count-eq1) 'r3 classifier function missing or duplicated'
+  $statements=@($functions[0].Body.EndBlock.Statements)
+  $flags=@('$runHeld','$runVacant','$runMutant')
+  for($i=0;$i-lt$flags.Count;$i++){
+    Assert-Ci ($statements[$i+1]-is[Management.Automation.Language.AssignmentStatementAst]-and$statements[$i+1].Left.Extent.Text-ceq$flags[$i]) 'r3 classifier selector prefix changed'
+    $arms=@($functions[0].Body.FindAll({param($n) $n-is[Management.Automation.Language.IfStatementAst]-and$n.Clauses[0].Item1.Extent.Text-ceq$flags[$i]},$true))
+    Assert-Ci ($arms.Count-eq1-and$arms[0].Extent.Text.Contains('Invoke-8102RetainedLeg')) 'r3 classifier flag must gate exactly one real leg'
   }
-  Refuses-Selector { Assert-SuiteSelection 'unknown-part' $names @{ Part = 'unknown-part' } $LegacySelectors }
-  if ($LegacySelectors.Count -gt 0) {
-    $conflicting = @{ Part = $Parts[0] }
-    $conflicting[$LegacySelectors[0]] = $true
-    Refuses-Selector { Assert-SuiteSelection $Parts[0] $names $conflicting $LegacySelectors }
+  Assert-Ci ($statements[4]-is[Management.Automation.Language.IfStatementAst]-and$statements[4].Extent.Text.Contains('R3_LOAD_PART_NO_ARM')) 'r3 classifier no-arm guard must precede fixtures and impact returns'
+  # Execute only the real selector assignments and guard, never the test body.
+  $select=[scriptblock]::Create('param([string]$Part)'+"`n"+(($statements[1..4]|ForEach-Object {$_.Extent.Text})-join"`n")+"`n"+'@($runHeld,$runVacant,$runMutant)')
+  $parts=@('three-load-held','three-load-vacant','three-load-mutant')
+  Assert-Ci ((@($r3Item.parts.name|Where-Object {$_-clike'three-load-*'}|Sort-Object)-join',')-ceq(@($parts|Sort-Object)-join',')) 'r3 classifier manifest arms changed'
+  for($i=0;$i-lt$parts.Count;$i++){
+    $selected=@(& $select $parts[$i])
+    Assert-Ci ($selected.Count-eq3-and@($selected|Where-Object {$_}).Count-eq1-and$selected[$i]) "r3 classifier part selects no arm or the wrong arm: $($parts[$i])"
+  }
+  Assert-Ci ((@(& $select ''|Where-Object {$_})).Count-eq3) 'r3 omitted selector must retain all classifier arms'
+  foreach($invalid in @('8102-held','8102-vacant','8102-mutant','three-load-unknown')){
+    $failure=$null;try{& $select $invalid|Out-Null}catch{$failure=$_.Exception.Message}
+    Assert-Ci ($failure-ceq'R3_LOAD_PART_NO_ARM: selected part owns no classifier arm') 'r3 unknown/stale selector must trip the executable no-arm guard'
   }
 }
-Assert-HistoricalSelectorContract $rebasePath @($rebaseItem.parts.name) @()
-Assert-HistoricalSelectorContract $watchdogPath @($watchdogItem.parts.name) @('CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','Named8098Control','Named8186Control','HostHoldControl')
-Write-Output 'PASS historical selector contract: omitted/all keeps aggregate guards; unknown and conflicting selectors refuse'
+Assert-R3LoadArmOwnership $r3Source
+foreach($arm in @('held','vacant','mutant')){
+  Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace("`$Part -ceq 'three-load-$arm'","`$Part -ceq '8102-$arm'")) }
+}
+Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace("if(`$Part -and -not(`$runHeld -or `$runVacant -or `$runMutant)){throw 'R3_LOAD_PART_NO_ARM: selected part owns no classifier arm'}",'')) }
+Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace('if($runHeld){','if($runVacant){')) }
+Write-Output 'PASS r3 classifier arm ownership: each manifest part selects one real leg, omitted selector selects all; stale names trip no-arm guard; stale-selector, removed-guard and misgated-arm negatives refused'
+# Keep the full proof/helper source immutable: only entrypoint routing changes.
+$completedBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','1238d8ae56ba7142013a2c0076a7349b1d569266'))
+$completedSupport=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1'))
+$completedOwners=[ordered]@{
+  'three-completed-rebase-prospective'='prospective'
+  'three-completed-rebase-platform'='platform'
+  'three-completed-rebase-platform-complete'='platform-complete'
+  'three-completed-rebase-platform-complete-recheck'='platform-complete-recheck'
+  'three-completed-rebase-late-owed'='late-owed'
+  'three-completed-rebase-legacy'='legacy'
+  'three-completed-rebase-skip-release'='skip-release'
+  'three-completed-rebase-review'='review'
+  'three-completed-rebase-planning'='planning'
+  'three-completed-rebase-foreign-release'='foreign-release'
+}
+function Assert-R3CompletedRebaseOwnership([string]$Source,[string]$Support) {
+  Assert-Ci ($Support.Replace("`r`n","`n") -ceq $completedBaseline.Replace("`r`n","`n")) 'completed-rebase assertion/control/mutant/fixture source changed'
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'completed-rebase entrypoint parse failed'
+  $maps=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$completedRebaseModes'},$true))
+  Assert-Ci ($maps.Count -eq 1) 'completed-rebase mode map missing or duplicated'
+  $tables=@($maps[0].Right.FindAll({param($n) $n -is [Management.Automation.Language.HashtableAst]},$true))
+  Assert-Ci ($tables.Count -eq 1) 'completed-rebase literal mode ownership missing'
+  $entries=@($tables[0].KeyValuePairs | ForEach-Object { [pscustomobject]@{Key=$_.Item1.SafeGetValue();Value=$_.Item2.SafeGetValue()} })
+  Assert-Ci ($entries.Count -eq $completedOwners.Count) 'completed-rebase mode ownership cardinality changed'
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($entry in $entries){
+    Assert-Ci ($completedOwners.Contains($entry.Key) -and $completedOwners[$entry.Key] -ceq $entry.Value -and $seen.Add([string]$entry.Value)) 'completed-rebase mode missing/duplicated/misowned'
+  }
+  $defaults=@(($ast.ParamBlock.Parameters | Where-Object {$_.Name.VariablePath.UserPath -ceq 'Modes'}).DefaultValue.SafeGetValue())
+  Assert-Ci (($defaults -join ',') -ceq (@($completedOwners.Values) -join ',')) 'completed-rebase default modes changed'
+  Assert-Ci ((@($r3Item.parts.name | Where-Object {$_ -clike 'three-completed-rebase*'} | Sort-Object) -join ',') -ceq (@($completedOwners.Keys | Sort-Object) -join ',')) 'completed-rebase manifest ownership changed'
+  foreach($wire in @(
+    "`$completedRebasePart=if(`$Part -cin @(`$completedRebaseModes.Keys)){`$Part}else{'three-completed-rebase-prospective'}"
+    "`$completedModes=if(`$Part -cin @(`$completedRebaseModes.Keys)){@(`$completedRebaseModes[`$Part])}else{`$Modes}"
+    "'7926' {`$completedRebasePart;break}"
+    "name='7926';body={Test-7926CompletedRebase -Modes `$completedModes -CensusLatencyMs `$CensusLatencyMs}"
+    'if(-not (& $runPart $partName)){continue}'
+  )){
+    Assert-Ci (([regex]::Matches($Source,[regex]::Escape($wire))).Count -eq 1) 'completed-rebase selected modes/part guard must reach exactly one control'
+  }
+}
+Assert-R3CompletedRebaseOwnership $r3Source $completedSupport
+$modeEntry="    'three-completed-rebase-platform'='platform'"
+Assert-Ci ($r3Source.Contains($modeEntry)) 'completed-rebase negative seam missing'
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,'')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,$modeEntry+"`n"+$modeEntry)) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,"    'three-completed-rebase-platform'='prospective'")) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('-Modes $completedModes','-Modes $Modes')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('if(-not (& $runPart $partName)){continue}','')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport.Replace('Proof ($consumerReplay.exit -eq 0','Proof ($true -or $consumerReplay.exit -eq 0')) }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport+"`n"+$completedSupport) }
+Write-Output 'PASS r3 completed-rebase exact mode ownership: ten independent modes; immutable proofs, controls, mutants and fixtures; dropped/duplicate/misowned/forwarding/guard/weakened-proof negatives refused'
+foreach($part in @($r3Item.parts.name)){
+  Assert-Ci ($r3Source.Contains("'$part'")) "r3 selector missing: $part"
+  Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Where-Object{$_-cne$part}|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) "r3 dropped part survived: $part" }
+}
+Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Select-Object -Skip 1|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) 'r3 first-part omission survived' }
+Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name)+@('r3-duplicate')|Sort-Object)-join',' -eq (@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) 'r3 duplicate part survived' }
+Write-Output 'PASS r3 named part ownership: selector map is complete and dropped/duplicate part mutants refuse'
+
+# Compare ordered assertion/control traces, not multisets. Only selector-only
+# conditions are evaluated; no fixture, test body, native child or fleet read runs.
+function Get-R3AggregateOrder([string]$Source,[string]$FunctionName) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'aggregate-order source parse failed'
+  $functions=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq$FunctionName},$true))
+  Assert-Ci ($functions.Count-eq1) "aggregate-order function missing/duplicated: $FunctionName"
+  foreach($node in $functions[0].Body.FindAll({param($n)
+    $n-is[Management.Automation.Language.CommandAst]-and($n.GetCommandName()-clike'Assert-*'-or$n.GetCommandName()-clike'Proof*'-or
+      $n.GetCommandName()-cin @('Check','Control','ValidPlan9334','Refusal9334','Discriminator9334','Mutant9334','New-Subject','Invoke-8102RetainedLeg','Test-9334OrdinaryCarrier'))
+  },$true)){
+    $included=$true
+    for($parent=$node.Parent;$parent-and$parent-ne$functions[0];$parent=$parent.Parent){
+      if($parent-isnot[Management.Automation.Language.IfStatementAst]){continue}
+      $conditions=@($parent.Clauses|ForEach-Object{$_.Item1})
+      $variables=@($conditions|ForEach-Object{$_.FindAll({param($n) $n-is[Management.Automation.Language.VariableExpressionAst]},$true)})
+      if($variables.Count-eq0-or@($variables|Where-Object{$_.VariablePath.UserPath-cne'Part'}).Count){continue}
+      Assert-Ci (@($conditions|ForEach-Object{$_.FindAll({param($n) $n-is[Management.Automation.Language.CommandAst]-or$n-is[Management.Automation.Language.InvokeMemberExpressionAst]},$true)}).Count-eq0) 'aggregate selector condition must be expression-only'
+      $selected=$parent.ElseClause
+      foreach($clause in $parent.Clauses){
+        if(& ([scriptblock]::Create('param($Part) '+$clause.Item1.Extent.Text)) ''){$selected=$clause.Item2;break}
+      }
+      if($null-eq$selected-or$node.Extent.StartOffset-lt$selected.Extent.StartOffset-or$node.Extent.EndOffset-gt$selected.Extent.EndOffset){$included=$false;break}
+    }
+    if($included){$node.GetCommandName()+':'+$node.Extent.Text}
+  }
+}
+function Assert-R3AggregateTrace([string[]]$Actual,[string[]]$Expected,[string]$FunctionName) {
+  Assert-Ci ($Expected.Count-gt0-and$Actual.Count-eq$Expected.Count) "aggregate assertion/control count changed: $FunctionName"
+  for($i=0;$i-lt$Expected.Count;$i++){
+    Assert-Ci ($Actual[$i]-ceq$Expected[$i]) "aggregate assertion/control order changed: $FunctionName index=$i"
+  }
+}
+function Assert-R3AggregateOrder([string]$Source,[string]$Baseline,[string]$FunctionName) {
+  $expected=@(Get-R3AggregateOrder $Baseline $FunctionName)
+  $actual=@(Get-R3AggregateOrder $Source $FunctionName)
+  Assert-R3AggregateTrace $actual $expected $FunctionName
+  return $actual.Count
+}
+$aggregateBase='67ecf1ff740ad8a65aa27689eb49e345854e2e68'
+$aggregateSources=@{
+  'interrupted-integration-test-support.ps1'=@{blob='d727ffd657698017569d7ae4dcf3d9823238f368';functions=@('Test-9334OrdinaryCarrier','Test-7963ResumeCarrier','Invoke-9334OrdinaryCarriers')}
+  'integration-dispatch-test-support.ps1'=@{blob='1d7a8fa8695478f02896f171bb74037d4a2e00af';functions=@('Test-7962NativeControls')}
+  'landed-integration-evidence-test-support.ps1'=@{blob='8e36cbefe749fbdd4eaa034d46cb773833bf51d1';functions=@('Test-7926CompletedRebase')}
+  'landed-integration-r3.test.ps1'=@{blob='a90ea0223b1e984134555c0107e410a321f341c1';functions=@('Test-TimedFixtureUnderFleetLoadMeasuresLoad')}
+}
+function Assert-RetainedFleetObservation([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'retained observation source parse failed'
+  $helpers=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Write-7963FleetLoadObservation'},$true))
+  Assert-Ci ($helpers.Count-eq1) 'retained observation helper missing/duplicated'
+  . ([scriptblock]::Create($helpers[0].Extent.Text))
+  $hook="if(`$LoadBound-and`$Carrier-ceq'retained'){Write-7963FleetLoadObservation (`$bypass.resultPath.Replace('.result.json','.pair.json')) `$fleetContainer}"
+  Assert-Ci ($Source.Contains("Save (`$bypass.resultPath.Replace('.result.json','.pair.json')) `$pair"+"`n    "+$hook)) 'retained observation must read the actual just-saved pair only in its load-bound arm'
+  $path=Join-Path ([IO.Path]::GetTempPath()) ('r3-fleet-observation-'+[guid]::NewGuid().ToString('N')+'.pair.json')
+  $container=Join-Path ([IO.Path]::GetTempPath()) 'synthetic-runner-workspace'
+  $ownerPath=Join-Path $container '.orchestrator/verify-lock.d/owner.json'
+  $previous=[Console]::Out;$capture=[IO.StringWriter]::new()
+  try {
+    [Console]::SetOut($capture)
+    foreach($reason in @('absent','live')){
+      $pair=@{fleetLoad=@{start=@{reason=$reason;ownerPath=$ownerPath};end=@{reason=$reason;ownerPath=$ownerPath}};unexpectedSecret='synthetic-token-never-valid'}
+      [IO.File]::WriteAllText($path,($pair|ConvertTo-Json -Depth 5 -Compress))
+      $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+      [void]$capture.GetStringBuilder().Clear()
+      Write-7963FleetLoadObservation $path $container
+      $line=$capture.ToString().TrimEnd("`r","`n")
+      Assert-Ci ($line-ceq"OBSERVATION 7963 retained fleetLoad reason=$reason endReason=$reason ownerPath=$($ownerPath|ConvertTo-Json -Compress) pair=$hash") 'retained observation lost actual pair values or SHA256 binding'
+      Assert-Ci ($line.Length-le2048-and$line-cnotmatch'[\r\n]'-and-not$line.Contains('synthetic-token-never-valid')) 'retained observation leaked unowned content or exceeded single-line bound'
+    }
+    foreach($invalid in @('reason','ownerPath','oversize')){
+      if($invalid-ceq'reason'){$pair.fleetLoad.start.reason='synthetic-token-never-valid'}
+      if($invalid-ceq'ownerPath'){$pair.fleetLoad.start.reason='absent';$pair.fleetLoad.start.ownerPath='synthetic-token-never-valid'}
+      if($invalid-ceq'oversize'){$container='x'*2100;$pair.fleetLoad.start.ownerPath=Join-Path $container '.orchestrator/verify-lock.d/owner.json';$pair.fleetLoad.end.ownerPath=$pair.fleetLoad.start.ownerPath}
+      [IO.File]::WriteAllText($path,($pair|ConvertTo-Json -Depth 5 -Compress))
+      [void]$capture.GetStringBuilder().Clear()
+      Write-7963FleetLoadObservation $path $container
+      Assert-Ci ($capture.ToString().Trim()-ceq'OBSERVATION 7963 retained fleetLoad unavailable') 'retained observation validation must be closed and outcome-neutral'
+    }
+    [IO.File]::Delete($path);[void]$capture.GetStringBuilder().Clear()
+    Write-7963FleetLoadObservation $path $container
+    Assert-Ci ($capture.ToString().Trim()-ceq'OBSERVATION 7963 retained fleetLoad unavailable') 'retained observation read failure must not change pass/fail semantics'
+  } finally { [Console]::SetOut($previous);$capture.Dispose();[IO.File]::Delete($path) }
+}
+$retainedSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')).Replace("`r`n","`n")
+Assert-RetainedFleetObservation $retainedSource
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('reason=$($start.reason)','reason=absent')) }
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('pair=$hash','pair=unbound')) }
+Refuses-Coverage { Assert-RetainedFleetObservation ($retainedSource.Replace('if($LoadBound-and$Carrier-ceq''retained'')','if($LoadBound)')) }
+Write-Output 'PASS retained fleet observation: actual pair reason/runner ownerPath/SHA256; bounded closed fields and read failures outcome-neutral; constant-reason, unbound-hash and wrong-arm negatives refused'
+foreach($leaf in $aggregateSources.Keys){
+  $entry=$aggregateSources[$leaf]
+  Assert-Ci ((ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('rev-parse',"${aggregateBase}:.orchestrator/$leaf"))).Trim()-ceq$entry.blob) "aggregate baseline blob mismatch: $leaf"
+  $before=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$entry.blob))
+  $after=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf)).Replace("`r`n","`n")
+  foreach($name in $entry.functions){
+    $count=Assert-R3AggregateOrder $after $before $name
+    # Swap each distinct adjacent pair in the projected trace to exercise every
+    # assertion position, without running the underlying heavy function.
+    $trace=@(Get-R3AggregateOrder $after $name)
+    $baselineTrace=@(Get-R3AggregateOrder $before $name)
+    for($i=1;$i-lt$trace.Count;$i++){
+      if($trace[$i]-ceq$trace[$i-1]){continue}
+      $mutant=@($trace);$mutant[$i-1]=$trace[$i];$mutant[$i]=$trace[$i-1]
+      Refuses-Coverage { Assert-R3AggregateTrace $mutant $baselineTrace $name }
+    }
+    if($name-ceq'Test-9334OrdinaryCarrier'){
+      $anchor="      ValidPlan9334 `$f 'original ordinary fixture after independent destructive controls'"
+      $historical="      if (-not `$Part -or `$Part -ceq 'ordinary-historical') {"
+      Assert-Ci ($after.Contains($anchor)-and$after.Contains($historical)) 'aggregate early-assertion negative anchor missing'
+      $mutant=$after.Replace($anchor,'').Replace($historical,$anchor+"`n"+$historical)
+      Refuses-Coverage { Assert-R3AggregateOrder $mutant $before $name }
+    }
+    Write-Output "PASS r3 omitted-selector aggregate order: $name keys=$count baseline=$aggregateBase; order negatives refused"
+  }
+}
+
+# Exact pre-split blobs, including the previously repaired hosted controls.
+# A proof key includes the assertion text or the complete control/mutant body;
+# foreach inventories retain every dynamic case as well as the assertions.
+function Get-R3SplitProofs([string]$Source,[ValidateSet('ordinary','native')][string]$Kind,[switch]$Baseline) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source.Replace("`r`n","`n"),[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'r3 split proof source parse failed'
+  $scope=if($Kind -ceq 'ordinary'){
+    @($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -ceq "`$Carrier -ceq 'ordinary-dispatch'"},$true))[0].Clauses[0].Item2
+  }else{
+    @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-7962NativeControls'},$true))[0].Body.EndBlock
+  }
+  Assert-Ci ($null -ne $scope) 'r3 split proof scope missing'
+  $entries=[Collections.Generic.List[object]]::new()
+  $owner=''
+  foreach($statement in $scope.Statements){
+    if($statement -is [Management.Automation.Language.FunctionDefinitionAst]){continue}
+    $text=$statement.Extent.Text
+    if($Baseline){
+      if($Kind -ceq 'ordinary'){
+        if($text.StartsWith("`$f=Fixture9334 'dispatch'")){$owner='ordinary-admission'}
+        if($text.StartsWith("`$stateMutant=Mutant9334")){$owner='ordinary-state'}
+        if($text.StartsWith("`$sourceMutant=Mutant9334")){$owner='ordinary-sources'}
+        if($text.StartsWith("`$replayMutant=Mutant9334")){$owner='ordinary-historical'}
+        if($text.StartsWith('ValidPlan9334 $f ''original ordinary')){
+          $owner='ordinary-sources'
+        }
+        if($text.StartsWith('$entryState=Get-InterruptedIntegrationState')){$owner='ordinary-publication'}
+        if($text.StartsWith("foreach(`$violation in")){$owner='ordinary-scope'}
+        if($text.StartsWith("`$unpublished=Fixture9334")){$owner='ordinary-publication-refusals'}
+      }else{
+        if($text.StartsWith("Control 'baseline-late-head-and-Terra'")){$owner='three-native-source'}
+        if($text.StartsWith("foreach(`$field in")){$owner='three-native-boundaries'}
+        if($text.StartsWith("Control 'retained-exited0-parameter-stop-double-replay'")){$owner='three-native-retained'}
+        if($text.StartsWith("Control 'native-probe-exit-candidate-and-bypass'")){$owner='three-native-boundaries'}
+        if($text.StartsWith("Control 'fresh-v3-request-reader-and-unavailable-executable'")){$owner='three-native-watchdog'}
+      }
+    }else{
+      $owner=''
+      if($statement -is [Management.Automation.Language.IfStatementAst] -and
+        $statement.Clauses[0].Item1.Extent.Text -cmatch '^\-not \$Part -or \$Part -ceq ''([^'']+)''$'){
+        $owner=$Matches[1]
+      }
+    }
+    foreach($node in $statement.FindAll({param($n)
+      ($n -is [Management.Automation.Language.CommandAst] -and
+        ($n.GetCommandName() -cin @('Proof9334','Check','Control','ValidPlan9334','Refusal9334','Discriminator9334','Mutant9334','New-Subject'))) -or
+      $n -is [Management.Automation.Language.ForEachStatementAst]
+    },$true)){
+      $key=if($node -is [Management.Automation.Language.ForEachStatementAst]){'cases:'+$node.Condition.Extent.Text}else{$node.GetCommandName()+':'+$node.Extent.Text}
+      $entries.Add([pscustomobject]@{key=$key;owner=$owner})
+    }
+  }
+  return $entries.ToArray()
+}
+function Assert-R3SplitProofs([string]$Source,[string]$Baseline,[string]$Kind,[string[]]$Parts) {
+  $expected=@(Get-R3SplitProofs $Baseline $Kind -Baseline)
+  $actual=@(Get-R3SplitProofs $Source $Kind)
+  Assert-Ci ($expected.Count -gt 0 -and $actual.Count -eq $expected.Count) "r3 $Kind assertion/control/mutant/case cardinality changed"
+  $counts=@{}
+  foreach($entry in $expected){
+    Assert-Ci ($entry.owner -cin $Parts) "r3 $Kind baseline proof unowned: $($entry.key)"
+    $key=$entry.owner+':'+$entry.key;$counts[$key]++
+  }
+  foreach($entry in $actual){
+    $key=$entry.owner+':'+$entry.key
+    Assert-Ci ($entry.owner -cin $Parts -and $counts[$key] -gt 0) "r3 $Kind assertion/control/mutant/case unowned, duplicated or misowned: $($entry.key)"
+    $counts[$key]--
+  }
+  Assert-Ci (@($counts.Values|Where-Object{$_ -ne 0}).Count -eq 0) "r3 $Kind proof lost"
+  foreach($part in $Parts){Assert-Ci (@($actual|Where-Object owner -ceq $part).Count -gt 0) "r3 empty part: $part"}
+  return $actual.Count
+}
+$r3SplitBlobs=@{ordinary='20019bb182df52486ec46f0aa364f7ca895a57cf';native='bf82671ac0325f81047ef6575b946a87512ca11e'}
+foreach($kind in @('ordinary','native')){
+  $leaf=if($kind -ceq 'ordinary'){'interrupted-integration-test-support.ps1'}else{'integration-dispatch-test-support.ps1'}
+  $before=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$r3SplitBlobs[$kind]))
+  $after=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf)).Replace("`r`n","`n")
+  $parts=@($r3Item.parts.name|Where-Object{if($kind -ceq 'ordinary'){$_ -clike 'ordinary-*'}else{$_ -clike 'three-native-*'}})
+  $count=Assert-R3SplitProofs $after $before $kind $parts
+  $commandName=if($kind -ceq 'ordinary'){'Proof9334'}else{'Control'}
+  $proof=@(Get-R3SplitProofs $after $kind|Where-Object key -clike ($commandName+':*'))[0].key.Substring($commandName.Length+1)
+  Refuses-Coverage { Assert-R3SplitProofs ($after.Replace($proof,'Write-Output ''removed proof''')) $before $kind $parts }
+  Refuses-Coverage { Assert-R3SplitProofs ($after.Replace($proof,$proof+"`n"+$proof)) $before $kind $parts }
+  $guard="-not `$Part -or `$Part -ceq '$($parts[0])'"
+  Assert-Ci ($after.Contains($guard)) 'r3 unowned mutant guard missing'
+  Refuses-Coverage { Assert-R3SplitProofs ($after.Replace($guard,'$true')) $before $kind $parts }
+  Refuses-Coverage { Assert-R3SplitProofs ($after.Replace($guard,"-not `$Part -or `$Part -ceq '$($parts[1])'")) $before $kind $parts }
+  Write-Output "PASS r3 $kind exact proof ownership: $count assertion/control/mutant/case keys; dropped, duplicated, unowned and misowned negatives refused"
+}
 # The fixture manifest check runs inside this existing timed identity rather than
 # as a new required hosted identity: a new identity has no duration record, and
 # enforced candidate plans refuse fallback estimates.
@@ -644,6 +953,11 @@ function Assert-CarrierOwnerMap([object[]]$Entries,$Expected,[string[]]$Parts){
       $entry.Value -ceq $Expected[$entry.Key] -and $entry.Value -cin $Parts) "historical suite proof key missing/duplicated/misowned: $($entry.Key)"
   }
 }
+$nativeSplitBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$r3SplitBlobs.native))
+$nativeSplitSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'integration-dispatch-test-support.ps1'))
+Assert-CarrierProofCensus $nativeSplitSource $nativeSplitBaseline
+Refuses-Coverage { Assert-CarrierProofCensus ($nativeSplitSource.Replace("throw 'synthetic authority/request/call witnesses missing'",'Write-Output ''removed witness guard''')) $nativeSplitBaseline }
+Write-Output 'PASS r3 native full-source conservation: shared fixture/helper/witness assertions, predicates and mutant tables retained; removed witness guard refused'
 # These blobs are the issue's dispatch baseline, not private product history.
 # Keep the older six-suite conservation base above unchanged.
 # The watchdog baseline includes the reviewed AC5 host-hold cases from facc7e7.
@@ -664,9 +978,67 @@ $carrierOwnerCounts=@{
     'watchdog-policy-pos'=12;'watchdog-policy-mutants-admission'=8;'watchdog-policy-mutants-lineage'=4
     'watchdog-policy-mutants-envelope'=4;'watchdog-policy-mutants-history'=4;'watchdog-policy-mutants-binding'=9;'watchdog-policy-mutants-joins'=6}
 }
+function Assert-NativeFailureDiagnostics([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'native failure diagnostics source parse failed'
+  $diagnostic=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains('NATIVE_FAILURE_CONTEXT')},$true))
+  Assert-Ci ($diagnostic.Count-eq1) 'native failure diagnostics missing or duplicated'
+  $helpers=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Protect-NativeFailureContext'},$true))
+  Assert-Ci ($helpers.Count-eq1) 'native failure context redaction helper missing or duplicated'
+  . ([scriptblock]::Create($helpers[0].Extent.Text))
+  $catch=$diagnostic[0].Parent
+  while($catch-and$catch-isnot[Management.Automation.Language.CatchClauseAst]){$catch=$catch.Parent}
+  Assert-Ci ($null-ne$catch) 'native failure diagnostics must be failure-only'
+  $propagate=[scriptblock]::Create("try { throw 'synthetic original native failure' } catch { "+$catch.Body.Extent.Text.TrimStart('{').TrimEnd('}')+' }')
+  $previous=$script:ordinary9334LastResult;$previousError=[Console]::Error;$previousExit=$LASTEXITCODE
+  $capture=[IO.StringWriter]::new()
+  $childErrorPath=Join-Path ([IO.Path]::GetTempPath()) ('r3-native-diagnostic-'+[guid]::NewGuid().ToString('N')+'.err.log')
+  try {
+    $Carrier='synthetic-diagnostic'
+    $markers=@('synthetic-bearer-never-valid','synthetic-password-never-valid','synthetic-token-never-valid')
+    $credentials="Authorization: Bearer $($markers[0])`npassword=$($markers[1])`n{`"token`":`"$($markers[2])`"}"
+    $childError=$credentials+('x'*16384)
+    [IO.File]::WriteAllText($childErrorPath,$childError)
+    $script:ordinary9334LastResult=[pscustomobject]@{exit=19;stdout=$childError;stderr=$credentials;resultPath=$credentials;childStderrPath=$childErrorPath;unexpectedSecret=$credentials}
+    $LASTEXITCODE=19
+    [Console]::SetError($capture)
+    $failure=$null;try{& $propagate|Out-Null}catch{$failure=$_.Exception.Message}
+    Assert-Ci ($failure-ceq'synthetic original native failure'-and$LASTEXITCODE-eq19) 'native diagnostic changed original throw or exit code'
+    $prefix='NATIVE_FAILURE_CONTEXT '
+    $line=$capture.ToString().TrimEnd("`r","`n")
+    Assert-Ci ($line.StartsWith($prefix,[StringComparison]::Ordinal)) 'native failure context prefix missing'
+    Assert-Ci ($line.Length-le($prefix.Length+2048)) 'native failure context exceeds emitted size bound'
+    foreach($marker in $markers){Assert-Ci (-not$line.Contains($marker)) 'native failure context leaked synthetic credential'}
+    $retained=$line.Substring($prefix.Length)|ConvertFrom-Json
+    Assert-Ci ($retained.exit-eq19-and$retained.stdout-ceq'[redacted]'-and$retained.stderr-ceq'[redacted]'-and$retained.resultPath-ceq'[redacted]') 'native failure context lost exit or redaction boundary'
+    Assert-Ci ($retained.stdoutChars-eq$childError.Length-and$retained.stderrChars-eq$credentials.Length-and$retained.childStderr-ceq'[redacted]'-and$retained.childStderrBytes-eq([IO.FileInfo]$childErrorPath).Length-and$null-eq$retained.childStdout) 'native failure context lost stream lengths or invented absent output'
+    Assert-Ci ($null-eq$retained.PSObject.Properties['unexpectedSecret']) 'native failure context copied unowned native fields'
+    [void]$capture.GetStringBuilder().Clear()
+    & {
+      function Protect-NativeFailureContext { throw 'synthetic redaction failure' }
+      $failure=$null;try{& $propagate|Out-Null}catch{$failure=$_.Exception.Message}
+      Assert-Ci ($failure-ceq'synthetic original native failure'-and$LASTEXITCODE-eq19) 'redaction failure replaced original throw or exit code'
+    }
+    Assert-Ci ($capture.ToString().Trim()-ceq'NATIVE_FAILURE_CONTEXT_UNAVAILABLE') 'redaction failure did not fail closed'
+    [void]$capture.GetStringBuilder().Clear();$script:ordinary9334LastResult=$null
+    & ([scriptblock]::Create($diagnostic[0].Extent.Text))
+    Assert-Ci ($capture.ToString()-ceq'') 'native failure context must stay silent without a native result'
+  } finally {
+    [Console]::SetError($previousError);$capture.Dispose();$script:ordinary9334LastResult=$previous;$LASTEXITCODE=$previousExit
+    [IO.File]::Delete($childErrorPath)
+  }
+}
 foreach($leaf in $carrierBaselineBlobs.Keys){
   $baseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',$carrierBaselineBlobs[$leaf]))
   $candidate=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $leaf))
+  if($leaf-ceq'interrupted-integration-test-support.ps1'){
+    Assert-NativeFailureDiagnostics $candidate
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace('NATIVE_FAILURE_CONTEXT','REMOVED_NATIVE_CONTEXT')) }
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace("`$safe[`$stream]='[redacted]'",' $safe[$stream]=$Result.$stream')) }
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace('    throw'+"`r`n"+'  } finally {','    return'+"`r`n"+'  } finally {').Replace('    throw'+"`n"+'  } finally {','    return'+"`n"+'  } finally {')) }
+    Write-Output 'PASS native failure diagnostics: bounded closed fields redact bearer/password/token content and unknown fields; original exit/throw retained even if redaction fails; unredacted-stream and swallowed-throw negatives refused'
+  }
   Assert-CarrierProofCensus $candidate $baseline
   if($leaf -cne 'interrupted-integration-test-support.ps1'){
     $suite=if($leaf -ceq 'rebase-integration.test.ps1'){'rebase'}else{'watchdog'}
@@ -758,3 +1130,20 @@ $conservationRetirements=$savedRetirements
 if($EvidenceDirectory){Write-CiJson @{baselineHead=$BaselineHead;baselineBlobs=$pins;routing=$routing;parts=@($manifest.items|Select-Object identity,ownership)
   repeatedWitnesses='Mutant children run their original -Case without -Part. Landed per-part synthetic-witness checks cover each disjoint retained fixture set; setup and unchanged summary lines may repeat.'} (Join-Path $EvidenceDirectory 'source-coverage.json')}
 Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, six board parts with required ten-item split, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate and missing/unused-retirement controls refused'
+
+$splitInventory=@($manifest.items|ForEach-Object{[pscustomobject]@{
+  identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));command='synthetic';arguments=@();restriction=$null}})
+$expectedIdentities=@($manifest.items|ForEach-Object{
+  $requiredIdentity=$_.identity;foreach($part in $_.parts){"$requiredIdentity#$($part.name)"}
+}|Sort-Object)
+foreach($count in 16..48){
+  Assert-Ci ((Get-CiShardCount @{shardCount=$count})-eq$count) 'supported coverage shard count refused'
+  $splitTasks=New-CiAssignments $splitInventory '' $manifest -ShardCount $count
+  Assert-Ci ((@($splitTasks.identity|Sort-Object)-join',')-ceq($expectedIdentities-join',')) 'shard count changed execution identity coverage'
+  Assert-Ci (@($splitTasks|Where-Object{$_.shard-lt0-or$_.shard-ge$count}).Count-eq0) 'part assigned outside supported shard range'
+}
+foreach($badCount in @(15,49)){
+  Refuses-Coverage {Get-CiShardCount @{shardCount=$badCount}}
+  Refuses-Coverage {New-CiAssignments $splitInventory '' $manifest -ShardCount $badCount}
+}
+Write-Output 'PASS full manifest execution coverage preserved at every shard count 16..48; 15/49 refused'

@@ -297,10 +297,11 @@ exit $LASTEXITCODE
       # runtime dependencies, solely against this case's synthetic roots.
       Copy-Item -Path (Join-Path $PSScriptRoot '*') -Destination $baseline -Recurse -Exclude 'controller-skills','artifacts','logs'
       Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$baseline}) $CensusLatencyMs
-      foreach($name in $(if($mode -eq 'legacy'){@('dispatch-lane.ps1','rebase-integration.ps1','landed-integration-consume.ps1')}else{@()})) {
-        $bytes=@(& git -C (Split-Path -Parent $PSScriptRoot) show "177f2d55176d122b267444c3de240927f98285ff:.orchestrator/$name")
-        if($LASTEXITCODE -ne 0){throw 'immutable baseline unavailable'}
-        [IO.File]::WriteAllText((Join-Path $baseline $name),($bytes -join "`n"))
+      if($mode -eq 'legacy') {
+        $historicalRuntime=New-HistoricalDispatchFixture '177f2d55' (Join-Path $case 'historical-177f2d55')
+        foreach($name in @('dispatch-lane.ps1','rebase-integration.ps1','landed-integration-consume.ps1')) {
+          Copy-Item -LiteralPath (Join-Path $historicalRuntime $name) -Destination (Join-Path $baseline $name) -Force
+        }
       }
       $dispatch=Join-Path $baseline 'dispatch-lane.ps1';$rebase=Join-Path $baseline 'rebase-integration.ps1'
       if($mode -eq 'skip-release') {
