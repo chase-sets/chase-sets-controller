@@ -411,7 +411,7 @@ function Invoke-ReaderInventory {
     @('invoke-heavy-verifier.ps1','Get-OwnerSnapshot','ReadAllText + ReadAllBytes','1','BOM-aware UTF8; schema6 strict UTF8, no BOM, 16384 bytes','Test-ThisOwner; release; reclaim'),
     @('controller-release-battery.ps1','Get-BatteryFleetLoad','Get-Content -Raw','3','BOM-aware UTF8 / ConvertFrom-Json','battery item runner'),
     @('controller-release-battery.ps1','Assert-BatteryAdmission','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-Json','battery admission poll'),
-    @('landed-integration-evidence.psm1','Get-FleetLoadObservation','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-RebaseJson','interrupted-integration-test-support.ps1:161,255,557,559'),
+    @('landed-integration-evidence.psm1','Get-FleetLoadObservation','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-RebaseJson','interrupted-integration-test-support.ps1:248,340,655,657'),
     @('host-heavy-verifier.test.ps1','Wait-NativeOwner','Get-Content -Raw','3','BOM-aware UTF8 / ConvertFrom-Json','native fixture wait'),
     @('controller-install-lock.psm1','Get-ControllerInstallOwnerSnapshot','FileStream / MemoryStream','7','strict UTF8, no BOM / ConvertFrom-Json','installer dead-owner reclaim')
   )) {
@@ -453,14 +453,15 @@ function Invoke-ReaderInventory {
     'lane-priority.test.ps1'=@(41)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(988)
+    'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)
-    'landed-integration-r3.test.ps1'=@(49)
+    'landed-integration-r3.test.ps1'=@(52)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(396,455,509,548)
-    # CI coverage reads the dispatch-ownership test source text, not an owner record.
-    'controller-ci-coverage.check.ps1'=@(142)
+    # Source-conservation checker reads a synthetic ownership path for its
+    # static contract; it is not a production owner publication reader.
+    'controller-ci-coverage.check.ps1'=@(143)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
@@ -501,6 +502,7 @@ function Invoke-ReaderInventory {
     '.orchestrator/fixtures/historical-0b6e67e8/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
     '.orchestrator/fixtures/historical-aa62899/.orchestrator/dispatch-ownership.ps1'=@(514)
     '.orchestrator/fixtures/historical-aa62899/.orchestrator/landed-integration-evidence.psm1'=@(993)
+    '.orchestrator/fixtures/historical-aa62899/.orchestrator/invoke-heavy-verifier.ps1'=@(1009,1012,1333,1383)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/dispatch-ownership.ps1'=@(278)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/invoke-heavy-verifier.ps1'=@(693,696,1017,1067)
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/landed-integration-evidence.psm1'=@(924)
@@ -576,7 +578,7 @@ function Invoke-ReaderInventory {
   Assert-Owner ($invokeSource.Contains($boundWriterExpression)) 'handle-bound owner publication is classified'
   $boundWriterLine=1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($boundWriterExpression,[StringComparison]::Ordinal)),"`n").Count
   $table.Add(@{site="invoke-heavy-verifier.ps1:$boundWriterLine";api='OwnerRename.OpenDestination / CreateFileW(FILE_READ_ATTRIBUTES, share 7)';shareBefore='File.Replace';shareAfter=7;decoder='none';callers='Write-OwnerRecord non-create';owner='bound rename writer and replaced-file unlink proof, not a snapshot reader'})
-  foreach($relative in @(& git -C $root ls-files '.orchestrator/*.ps1' '.orchestrator/*.psm1' '.orchestrator/*.cs' '.orchestrator/*.cjs' '.orchestrator/*.py' '.orchestrator/*.mjs' '.orchestrator/*.js')) {
+  foreach($relative in @(& git -C $root ls-files '.orchestrator/*.ps1' '.orchestrator/*.psm1' '.orchestrator/*.cs' '.orchestrator/*.cjs' '.orchestrator/*.py' '.orchestrator/*.mjs' '.orchestrator/*.js' | Where-Object { $_ -notlike '.orchestrator/fixtures/historical-*' })) {
     $name=[IO.Path]::GetFileName($relative); $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
     for($index=0;$index-lt$lines.Length;$index++) {
       $text=$lines[$index]

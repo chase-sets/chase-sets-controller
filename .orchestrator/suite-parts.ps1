@@ -96,6 +96,49 @@ function Get-LaneWatchdogPartMap {
   }
 }
 
+function Get-LandedIntegrationR3PartMap {
+  [ordered]@{
+    'three-signal' = 'three-signal'
+    'three-prior-teardown' = 'three-prior-teardown'
+    'three-census' = 'three-census'
+    'auth' = 'auth'
+    'three-native-source' = 'three-native-source'
+    'three-native-boundaries' = 'three-native-boundaries'
+    'three-native-retained' = 'three-native-retained'
+    'three-native-watchdog' = 'three-native-watchdog'
+    'three-f-two' = 'three-f-two'
+    'three-reused-parent' = 'three-reused-parent'
+    'three-f-one' = 'three-f-one'
+    'f-thirteen' = 'f-thirteen'
+    'f-fourteen' = 'f-fourteen'
+    'f-fifteen' = 'f-fifteen'
+    'three-completed-rebase-prospective' = 'three-completed-rebase-prospective'
+    'three-completed-rebase-platform' = 'three-completed-rebase-platform'
+    'three-completed-rebase-platform-complete' = 'three-completed-rebase-platform-complete'
+    'three-completed-rebase-platform-complete-recheck' = 'three-completed-rebase-platform-complete-recheck'
+    'three-completed-rebase-late-owed' = 'three-completed-rebase-late-owed'
+    'three-completed-rebase-legacy' = 'three-completed-rebase-legacy'
+    'three-completed-rebase-skip-release' = 'three-completed-rebase-skip-release'
+    'three-completed-rebase-review' = 'three-completed-rebase-review'
+    'three-completed-rebase-planning' = 'three-completed-rebase-planning'
+    'three-completed-rebase-foreign-release' = 'three-completed-rebase-foreign-release'
+    'three-load-held' = 'three-load-held'
+    'three-load-vacant' = 'three-load-vacant'
+    'three-load-mutant' = 'three-load-mutant'
+    'three-retained' = 'three-retained'
+    'ordinary-admission' = 'ordinary-admission'
+    'ordinary-state' = 'ordinary-state'
+    'ordinary-sources' = 'ordinary-sources'
+    'ordinary-historical' = 'ordinary-historical'
+    'ordinary-publication' = 'ordinary-publication'
+    'ordinary-scope' = 'ordinary-scope'
+    'ordinary-publication-refusals' = 'ordinary-publication-refusals'
+    'successor-dispatch' = 'successor-dispatch'
+    'successor-completion' = 'successor-completion'
+    'successor-depth' = 'successor-depth'
+  }
+}
+
 function Get-CodexLaunchBoundaryPartMap {
   [ordered]@{
     'portable'='portable'
@@ -103,14 +146,14 @@ function Get-CodexLaunchBoundaryPartMap {
   }
 }
 
-function Get-DispatchLaneInstalledClaudePartMap {
+ function Get-DispatchLaneInstalledClaudePartMap {
   [ordered]@{
     'portable'='portable'
     'local-smoke'='local-smoke'
   }
 }
 
-function Get-DispatchOwnershipPartMap {
+ function Get-DispatchOwnershipPartMap {
   [ordered]@{
     'portable-census'='portable-census'
     'portable-reducer'='portable-reducer'
@@ -245,6 +288,7 @@ function Get-SuiteExpectedParts([string]$Path) {
   if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'rebase-integration.test.ps1'){return @((Get-RebaseIntegrationPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'lane-stall-watchdog.test.ps1'){return @((Get-LaneWatchdogPartMap).Keys)}
+  if((Split-Path -Leaf $Path)-ceq'landed-integration-r3.test.ps1'){return @((Get-LandedIntegrationR3PartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'codex-launch-boundary.test.ps1'){return @((Get-CodexLaunchBoundaryPartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'dispatch-lane-installed-claude.test.ps1'){return @((Get-DispatchLaneInstalledClaudePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'dispatch-ownership.test.ps1'){return @((Get-DispatchOwnershipPartMap).Keys)}

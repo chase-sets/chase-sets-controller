@@ -7,7 +7,7 @@ function Copy-Sharding($Value){return ($Value|ConvertTo-Json -Depth 50|ConvertFr
 $inventory=@(0..3|ForEach-Object{[pscustomobject]@{identity="test:synthetic-$_";path='synthetic.ps1';command='synthetic';arguments=@();restriction=$null}})
 $manifest=@{schemaVersion='controller-ci-parts/v1';items=@(@{identity=$inventory[0].identity;selector='-Part';parts=@(@{name='left';weight=1},@{name='right';weight=1});ownership=@{parts=@('left','right')}})}
 $receipts=[Collections.Generic.List[object]]::new()
-foreach($count in @(@(10)+@(16..32))){
+foreach($count in @(@(10)+@(16..48))){
   $tasks=New-CiAssignments $inventory '' $manifest -ShardCount $count
   $plan=@{controllerHead=('a'*40);checkoutHead=('b'*40);productSha=('c'*40);planSha256=('d'*64);selected=$inventory;executionItems=$tasks}
   if($count-ne10){$plan.shardCount=$count}
@@ -28,7 +28,28 @@ foreach($count in @(@(10)+@(16..32))){
   Refuses-Sharding {Merge-CiResults $plan $parts}
   $receipts.Add(@{count=$count;tasks=$tasks.Count;emptyShards=$count-$tasks.Count;outcome='PASS'})
 }
-foreach($badCount in @(0,10,15,33,16.5,'16',$true)){Refuses-Sharding {Get-CiShardCount @{shardCount=$badCount}}}
+foreach($badCount in @(0,10,15,49,16.5,'16',$true)){Refuses-Sharding {Get-CiShardCount @{shardCount=$badCount}}}
+foreach($badCount in @(15,49)){
+  Refuses-Sharding {Set-CiBalancedShards @() $badCount}
+  Refuses-Sharding {New-CiAssignments $inventory '' $manifest -ShardCount $badCount}
+  $badPlan=Copy-Sharding $plan;$badPlan.shardCount=$badCount
+  Refuses-Sharding {Merge-CiResults $badPlan $parts}
+}
+foreach($functionName in @('Get-CiShardCount','Set-CiBalancedShards')){
+  $rangeDefinition=(Get-Command $functionName).Definition
+  foreach($rangeMutant in @(@('-ge 16','-ge 15',15),@('-le 48','-le 49',49))){
+    Assert-Ci ($rangeDefinition.Contains($rangeMutant[0])) 'shard range mutant anchor missing'
+    & {
+      . ([scriptblock]::Create("function $functionName {`n$($rangeDefinition.Replace($rangeMutant[0],$rangeMutant[1]))`n}"))
+      $accepted=$true
+      try{
+        if($functionName-ceq'Get-CiShardCount'){[void](Get-CiShardCount @{shardCount=$rangeMutant[2]})}
+        else{[void](Set-CiBalancedShards @() $rangeMutant[2])}
+      }catch{$accepted=$false}
+      Assert-Ci $accepted "range mutant did not admit $($rangeMutant[2]): $functionName"
+    }
+  }
+}
 foreach($kind in @('unknown','duplicate','missing','extra','duplicate-part','selector','owned-duplicate')){
   $bad=Copy-Sharding $manifest
   switch($kind){
@@ -139,6 +160,32 @@ foreach($roleMutant in @(
 $ciTokens=$null;$ciErrors=$null
 $ciAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci.ps1'),[ref]$ciTokens,[ref]$ciErrors)
 Assert-Ci ($ciErrors.Count-eq0) 'controller-ci parse failed'
+function Assert-ShardParameterRange($Ast,$PlannerAst){
+  $planner=@($PlannerAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name-ceq'Get-CiShardCount'},$true))
+  Assert-Ci ($planner.Count-eq1) 'planner shard count function missing'
+  $ceilings=@($planner[0].FindAll({param($n) $n -is [Management.Automation.Language.BinaryExpressionAst] -and $n.Operator-eq'Ile' -and $n.Left.Extent.Text-ceq'$Plan.shardCount'},$true))
+  Assert-Ci ($ceilings.Count-eq1) 'planner shard count ceiling missing'
+  $maxCount=$ceilings[0].Right.SafeGetValue()
+  $parameter=@($Ast.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Shard'})
+  Assert-Ci ($parameter.Count-eq1) 'Shard parameter missing'
+  $range=@($parameter[0].Attributes|Where-Object{$_.TypeName.FullName-ceq'ValidateRange'})
+  Assert-Ci ($range.Count-eq1-and$range[0].PositionalArguments.Count-eq2) 'Shard ValidateRange missing'
+  Assert-Ci ($range[0].PositionalArguments[0].SafeGetValue()-eq0-and$range[0].PositionalArguments[1].SafeGetValue()-eq($maxCount-1)) "Shard ValidateRange must be 0..$($maxCount-1) for planner maximum shard count $maxCount"
+}
+$plannerAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'controller-ci-planning.ps1'),[ref]$ciTokens,[ref]$ciErrors)
+Assert-Ci ($ciErrors.Count-eq0) 'controller-ci-planning parse failed'
+Assert-ShardParameterRange $ciAst $plannerAst
+$shardRange=@($ciAst.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Shard'})[0].Attributes|Where-Object{$_.TypeName.FullName-ceq'ValidateRange'}
+$shardMax=[int]$shardRange.PositionalArguments[1].SafeGetValue()
+foreach($rangeMutant in @('',"[ValidateRange(1,$shardMax)]","[ValidateRange(0,$($shardMax-1))]","[ValidateRange(0,$($shardMax+1))]")){
+  $mutantAst=[Management.Automation.Language.Parser]::ParseInput($ciAst.Extent.Text.Replace($shardRange.Extent.Text,$rangeMutant),[ref]$ciTokens,[ref]$ciErrors)
+  Assert-Ci ($ciErrors.Count-eq0) 'Shard range mutant parse failed'
+  Refuses-Sharding {Assert-ShardParameterRange $mutantAst $plannerAst}
+}
+$plannerMutant=$plannerAst.Extent.Text.Replace('-le '+($shardMax+1),'-le '+($shardMax+2))
+Assert-Ci ($plannerMutant-cne$plannerAst.Extent.Text) 'planner ceiling mutant anchor missing'
+Refuses-Sharding {Assert-ShardParameterRange $ciAst ([Management.Automation.Language.Parser]::ParseInput($plannerMutant,[ref]$ciTokens,[ref]$ciErrors))}
+Write-Output "PASS Shard ValidateRange 0..$shardMax matches planner maximum shard count $($shardMax+1) minus one; missing/narrow/wide/nonzero range and planner-ceiling drift mutants refused"
 $workflowText=[IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/controller-battery.yml')).Replace("`r`n","`n")
 function Assert-PlanBoundWired($Ast,[string]$Workflow){
   $roleParameter=@($Ast.ParamBlock.Parameters|Where-Object{$_.Name.VariablePath.UserPath-ceq'Role'})
@@ -219,4 +266,4 @@ foreach($entry in (Get-HeavySuitePartMap).GetEnumerator()){
 }
 Refuses-Sharding {Get-HeavySuitePartSelector 'legacy' @{Part='legacy';PrecursorOnly=$true}}
 if($EvidenceDirectory){Write-CiJson $receipts (Join-Path $EvidenceDirectory 'sharding-controls.json')}
-Write-Output 'PASS plan-bound 16..32, role-keyed plan-mode 300 s bound, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'
+Write-Output 'PASS plan-bound 16..48, 15/49 refused with range mutants red, role-keyed plan-mode 300 s bound, legacy-ten, stale part observations over equal-weight split (mutant red), exact/empty receipt replay, deterministic ties/fallback and count/mapping/selector/exclusion bypass controls'

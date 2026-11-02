@@ -30,7 +30,7 @@ function Test-8076LauncherReuse($Observation) {
   @($Observation.roots|Where-Object{$_.role-ceq'launcher'-and$_.state-ceq'reuse-or-ambiguous'}).Count-gt0
 }
 
-function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
+function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e8','f67fc96a','20228cf4f2d3e5e0e31a65fac1b0f3b2d4f5f1a5','8106d4e1','4ef3fc35','177f2d55','6e9156f8')][string]$Name,[string]$Destination,[string]$FixturesRoot=(Join-Path $PSScriptRoot 'fixtures'),[switch]$UseArchive) {
   if($UseArchive){
     if($Name-cnotin @('b3b4ac2','aa62899')){throw "HISTORICAL_FIXTURE: archive source is only supported for b3b4ac2 or aa62899, got $Name"}
     $sourceRoot=Split-Path -Parent $PSScriptRoot;$archive=Join-Path $Destination "historical-$Name.tar"
@@ -57,7 +57,7 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
   foreach($entry in $entries){
     $source=Join-Path $fixtureRoot $entry.path
     $bytes=[IO.File]::ReadAllBytes($source)
-    if($Name -cnotin @('b3b4ac2','aa62899')){$bytes=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($bytes).Replace("`r`n","`n"))}
+    if($Name -cnotin @('b3b4ac2','aa62899','8106d4e1','4ef3fc35','177f2d55','6e9156f8')){$bytes=[Text.Encoding]::Latin1.GetBytes([Text.Encoding]::Latin1.GetString($bytes).Replace("`r`n","`n"))}
     $blobHash=[Security.Cryptography.IncrementalHash]::CreateHash('SHA1'); $blobHash.AppendData([Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")); $blobHash.AppendData($bytes); $actual=[Convert]::ToHexString($blobHash.GetHashAndReset()).ToLowerInvariant(); $blobHash.Dispose() # b3b4ac2 and aa62899 use raw Git blob bytes; older fixtures retain their established newline policy.
     if($actual-cne$entry.blob){throw "HISTORICAL_FIXTURE: blob mismatch $Name/$($entry.path) expected=$($entry.blob) actual=$actual"}
     $target=Join-Path $Destination $entry.path
@@ -70,7 +70,24 @@ function New-HistoricalDispatchFixture([ValidateSet('b3b4ac2','aa62899','0b6e67e
 # Native controls run from their existing registered carriers, both focused
 # and in the controller battery. Incident paths/stage shapes are read-only provenance;
 # all Git repositories, commits, contents and process trees below are synthetic.
-function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='') {
+function Write-7963FleetLoadObservation([string]$PairPath,[string]$Container) {
+  try {
+    $bytes=[IO.File]::ReadAllBytes($PairPath)
+    $pair=[Text.Encoding]::UTF8.GetString($bytes)|ConvertFrom-Json -Depth 30
+    $start=$pair.fleetLoad.start;$end=$pair.fleetLoad.end
+    $ownerPath=Join-Path $Container '.orchestrator/verify-lock.d/owner.json'
+    # Only the generated workspace path and closed reason values may cross this boundary.
+    if($ownerPath.Length-gt1024-or$ownerPath-cmatch '[\x00-\x1f\x7f]' -or
+      $start.ownerPath-cne$ownerPath-or$end.ownerPath-cne$ownerPath-or
+      $start.reason-cnotin @('absent','unparseable','stale','live')-or$end.reason-cnotin @('absent','unparseable','stale','live')){throw 'invalid observation'}
+    $hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $line="OBSERVATION 7963 retained fleetLoad reason=$($start.reason) endReason=$($end.reason) ownerPath=$($start.ownerPath|ConvertTo-Json -Compress) pair=$hash"
+    if($line.Length-gt2048){throw 'observation exceeds bound'}
+    [Console]::Out.WriteLine($line)
+  } catch { [Console]::Out.WriteLine('OBSERVATION 7963 retained fleetLoad unavailable') }
+}
+
+function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','watchdog','retained','native-branch')][string]$Carrier, [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [ValidateSet('','7906','7927')][string]$Incident='', [switch]$NoHistoricalArchive) {
   if ($Part -in @('dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native')) { $Incident = '7906' }
   if ($Part -in @('dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native')) { $Incident = '7927' }
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
@@ -84,7 +101,7 @@ function Test-7963ResumeCarrier([ValidateSet('dispatch','ownership','rebase','wa
   $historicalSource=[string]$env:CHASE_SETS_TEST_HISTORICAL_SOURCE
   if([string]::IsNullOrWhiteSpace($historicalSource)){$historicalSource='fixture'}
   if($historicalSource-cnotin @('fixture','archive')){throw "HISTORICAL_FIXTURE: unknown test source '$historicalSource'"}
-  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive')); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
+  [void](New-HistoricalDispatchFixture 'b3b4ac2' $historicalRoot -UseArchive:($historicalSource-ceq'archive' -and -not $NoHistoricalArchive)); [void](Set-ArchivedOrchestrationLogMutexName (Join-Path $historicalRoot '.orchestrator'))
   $historicalDispatcher = Join-Path $historicalRoot '.orchestrator/dispatch-lane.ps1'
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
@@ -645,6 +662,7 @@ exit $LASTEXITCODE
     $window=$null
     if($LoadBound){$window=Get-FleetLoadWindow $loadBefore $loadAfter;$pair.fleetLoad=$window}
     Save ($bypass.resultPath.Replace('.result.json','.pair.json')) $pair
+    if($LoadBound-and$Carrier-ceq'retained'){Write-7963FleetLoadObservation ($bypass.resultPath.Replace('.result.json','.pair.json')) $fleetContainer}
     if($LoadBound-and$bypass.exit-ne0-and$bypass.stderr.Contains('INTEGRATION_RESUME_PRIOR_OWNER')-and$window.held){
       # #8102: the omitted-guard arm is refused by the prior-owner tree guard when
       # the prior root's teardown outlasts the arm's window. That is MEASURED_LOAD
@@ -1111,9 +1129,9 @@ exit 0
 # MEASURED_LOAD ends the test process with exit 75 and one standalone
 # MEASURED_LOAD line (holder identity and elapsed time), never PASS or FAIL.
 # Every other failure propagates unchanged (exit 1).
-function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='') {
+function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','7927')][string]$Incident='', [ValidateSet('','dispatch-incident-a-route','dispatch-incident-a-binding','dispatch-incident-a-source-native','dispatch-incident-b-route-baseline','dispatch-incident-b-route-matrix','dispatch-incident-b-binding-structure','dispatch-incident-b-binding-mutants','dispatch-incident-b-source-binding','dispatch-incident-b-source-remote','dispatch-incident-b-native','native-branch-scope','native-branch-resume')][string]$Part='', [switch]$NoHistoricalArchive) {
   foreach ($carrier in $Carriers) {
-    try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part }
+    try { Test-7963ResumeCarrier $carrier -Incident $Incident -Part $Part -NoHistoricalArchive:$NoHistoricalArchive }
     catch {
       if ($_.Exception.Message -clike 'MEASURED_LOAD *') { Write-Output $_.Exception.Message; exit 75 }
       throw
@@ -1128,7 +1146,27 @@ function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','
 # The merge graph reproduces the 9285 first-stop shape: a first-parent chain and
 # an older side history joined by a merge, so the raw reverse list (six commits
 # including the merge) differs from the sequencer's five-pick plan.
-function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-rebase','ordinary-watchdog','successor-rebase','successor-publication','successor-amend','successor-dispatch','successor-completion','successor-depth','successor-watchdog')][string]$Carrier,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry')][string]$Part='') {
+function Protect-NativeFailureContext($Result) {
+  # Native streams and paths are untrusted, including unlabeled credentials.
+  # Publish only closed numeric metadata, never credential-shaped-text guesses.
+  $safe=[ordered]@{exit=[int]$Result.exit}
+  foreach($stream in @('stdout','stderr')){
+    $safe[$stream]='[redacted]'
+    $safe["${stream}Chars"]=([string]$Result.$stream).Length
+  }
+  foreach($stream in @('childStdout','childStderr')){
+    $path=$Result."${stream}Path"
+    $safe[$stream]=$null
+    if($path-and(Test-Path -LiteralPath $path -PathType Leaf)){
+      $safe[$stream]='[redacted]'
+      $safe["${stream}Bytes"]=(Get-Item -LiteralPath $path).Length
+    }
+  }
+  $safe.resultPath='[redacted]'
+  $safe|ConvertTo-Json -Depth 3 -Compress
+}
+
+function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-rebase','ordinary-watchdog','successor-rebase','successor-publication','successor-amend','successor-dispatch','successor-completion','successor-depth','successor-watchdog')][string]$Carrier,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry','ordinary-admission','ordinary-state','ordinary-sources','ordinary-historical','ordinary-publication','ordinary-scope','ordinary-publication-refusals')][string]$Part='') {
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
   $root = Join-Path ([IO.Path]::GetTempPath()) ('integration-9334-'+$Carrier+'-'+[guid]::NewGuid().ToString('N'))
@@ -1136,6 +1174,7 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
   $artifacts = Join-Path $PSScriptRoot 'artifacts'
   [IO.Directory]::CreateDirectory($artifacts) | Out-Null
   $script:ordinary9334Counter = 0
+  $script:ordinary9334LastResult = $null
   $candidateHead = (@(& git.exe -C (Split-Path -Parent $PSScriptRoot) rev-parse HEAD) -join '').Trim()
   if ($LASTEXITCODE -ne 0 -or $candidateHead -cnotmatch '^[a-f0-9]{40}$') { throw '9334 exact test candidate unavailable' }
   $baselineHead = '4ef3fc35d82153f7751cf28a9a740d365f972688'
@@ -1167,7 +1206,13 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
       $stdout=$out.GetAwaiter().GetResult();$stderr=$err.GetAwaiter().GetResult()
       [IO.File]::WriteAllText("$stem.stdout.txt",$stdout);[IO.File]::WriteAllText("$stem.stderr.txt",$stderr)
       Save9334 "$stem.result.json" ([ordered]@{pid=$p.Id;startIdentity=$start;exitCode=$p.ExitCode;script=$Script;arguments=$Arguments;stdoutPath="$stem.stdout.txt";stderrPath="$stem.stderr.txt"})
-      return [pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      $script:ordinary9334LastResult=[pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      $nativeConfig=if($configIndex-ge0-and$configIndex+1-lt$Arguments.Count){Read-RebaseJson $Arguments[$configIndex+1]}else{$null}
+      if($null-ne$nativeConfig){
+        $script:ordinary9334LastResult|Add-Member childStdoutPath (Join-Path $nativeConfig.runtime "$($nativeConfig.label).jsonl")
+        $script:ordinary9334LastResult|Add-Member childStderrPath (Join-Path $nativeConfig.runtime "$($nativeConfig.label).err.log")
+      }
+      return $script:ordinary9334LastResult
     } finally { $p.Dispose() }
   }
   $harness=Join-Path $root 'synthetic-ordinary-harness.ps1'
@@ -1557,6 +1602,7 @@ exit $LASTEXITCODE
   }
   try {
     if ($Carrier -ceq 'ordinary-dispatch') {
+      if (-not $Part -or $Part -ceq 'ordinary-admission') {
       $f=Fixture9334 'dispatch'
       Proof9334 ($f.raw.Count-eq6-and$f.plan.Count-eq5-and$f.raw[5]-ceq$f.original-and($f.plan -join ',')-cne(($f.raw[0..4]) -join ',')) 'F2 graph: raw reverse history is six commits including the merge; the sequencer plan is five picks in a different order'
       $done=@([IO.File]::ReadAllText((Join-Path $f.repo '.git/rebase-merge/done')) -split "`r?`n"|Where-Object{$_-and-not$_.StartsWith('#')});$todo=@([IO.File]::ReadAllText((Join-Path $f.repo '.git/rebase-merge/git-rebase-todo')) -split "`r?`n"|Where-Object{$_-and-not$_.StartsWith('#')})
@@ -1567,10 +1613,8 @@ exit $LASTEXITCODE
       $events=Events9334 $f $f.seedLabel
       Proof9334 ($events.Count-eq1-and$events[0].item.exit_code-eq2-and$events[0].item.command.Contains('-NoPush *> .codex/integration.log; $code=$LASTEXITCODE; Get-Content .codex/integration.log -Tail 30; exit $code')-and$events[0].item.command.Contains('../runtime/rebase-integration.ps1')) 'actual wrapper/relative-helper/logging/NoPush ordinary first-stop transcript'
       # Baseline arm: the installed controller refuses the actual ordinary stop (F2) and knows no ordinary grammar or obligation (F1).
-      $baseline=Join-Path $f.case 'baseline';[IO.Directory]::CreateDirectory($baseline)|Out-Null
-      $archive=Join-Path $f.case 'baseline.zip';[void](Git9334 (Split-Path -Parent $PSScriptRoot) @('archive','--format=zip','-o',$archive,$baselineHead,'.orchestrator'))
-      [IO.Compression.ZipFile]::ExtractToDirectory($archive,$baseline)
-      $baselineModule=Import-Module (Join-Path $baseline '.orchestrator/landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
+      $baselineRuntime=New-HistoricalDispatchFixture '4ef3fc35' (Join-Path $f.case 'baseline')
+      $baselineModule=Import-Module (Join-Path $baselineRuntime 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
       try {
         $baselineState=$null;try{Get-InterruptedIntegrationState $f.repo|Out-Null;$baselineState='UNEXPECTED SUCCESS'}catch{$baselineState=$_.Exception.Message}
         $baselineCommand=& $baselineModule {param($c,$o,$r) Test-InterruptedIntegrationCommand $c '' $o $r (Join-Path $r 'rebase-integration.ps1')} ([string]$events[0].item.command) $f.obligation $f.runtime
@@ -1579,7 +1623,7 @@ exit $LASTEXITCODE
       Proof9334 ($baselineState-ceq'INTEGRATION_RESUME_OPERATION: todo/done history mismatch'-and$null-eq$baselineCommand-and$baselineSources.Contains('OWED_REBASE_PROOF_INVALID')) "baseline $($baselineHead.Substring(0,8)) reproduces F2 (todo/done mismatch on the merge graph) and F1 (no ordinary grammar/obligation): state='$baselineState' command=null sources='$baselineSources'"
       $binding=Bind9334 $f
       Proof9334 ($binding.schemaVersion-ceq'interrupted-canonical-integration/v2'-and$binding.sources.conflictSha256-ceq(Get-RebaseHash ([IO.File]::ReadAllBytes($f.capturePath)))-and$null-eq$binding.sources.checkpointSha256-and$binding.sources.attemptId-ceq$f.prior.attemptId-and$binding.state.stoppedCommit-ceq$f.plan[0]-and$binding.state.oldBase-ceq$f.oldBase-and(Test-DispatchInterruptedBindingShape (Read-RebaseJson $f.cfg.resumePath))) 'ordinary v2 binding: capture hash, semantic attempt, first pick stopped, closed shape accepted by ownership'
-      $f.cfg.dispatch=Join-Path $baseline '.orchestrator/dispatch-lane.ps1'
+      $f.cfg.dispatch=Join-Path $baselineRuntime 'dispatch-lane.ps1'
       Refusal9334 $f 'immutable baseline launcher refuses the ordinary v2 binding' 'INTEGRATION_RESUME_BINDING'
       $f.cfg.dispatch=Join-Path $PSScriptRoot 'dispatch-lane.ps1'
       ValidPlan9334 $f 'ordinary dead first stop admitted'
@@ -1598,12 +1642,18 @@ exit $LASTEXITCODE
         Refusal9334 $f "closed nested $section" 'INTEGRATION_RESUME_BINDING'
       }
       Save9334 $f.cfg.resumePath $binding
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-state') {
+      if ($Part) { $f=Fixture9334 'dispatch';$binding=Bind9334 $f }
       $stateMutant=Mutant9334 'ordinary-fingerprint' 'landed-integration-evidence.psm1' (GuardLine9334 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_STATE: ordinary input bytes stale or unrelated') '  # Synthetic omission: exact ordinary input fingerprint comparison.'
       foreach($field in @('metadataSha256','indexSha256','stagesSha256','dirtySha256','stagedSha256','unstagedSha256','stoppedCommit')){
         $bad=$binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.state.$field=$(if($field-ceq'stoppedCommit'){'b'*40}else{'b'*64});Save9334 $f.cfg.resumePath $bad
         Discriminator9334 $f "ordinary $field binding" 'INTEGRATION_RESUME_STATE' $stateMutant
       }
       Save9334 $f.cfg.resumePath $binding
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-sources') {
+      if ($Part) { $f=Fixture9334 'dispatch';$binding=Bind9334 $f }
       $sourceMutant=Mutant9334 'ordinary-source-binding' 'landed-integration-evidence.psm1' (GuardLine9334 'landed-integration-evidence.psm1' 'INTEGRATION_RESUME_SOURCE: ordinary binding changed') '  # Synthetic omission: ordinary source bytes comparison.'
       foreach($field in @('watchdogSha256','promptSha256','transcriptSha256','routingIdentity','conflictSha256')){
         $bad=$binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$bad.sources.$field='b'*64;Save9334 $f.cfg.resumePath $bad
@@ -1630,6 +1680,8 @@ exit $LASTEXITCODE
         $liveInput=$binding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$liveInput.sources.watchdogSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($wpath));$liveInput.sources.conflictSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($f.capturePath));Save9334 $f.cfg.resumePath $liveInput
         Discriminator9334 $f 'exact-identity live ordinary root is not death' 'INTEGRATION_RESUME_PRIOR_OWNER: live root' $deathMutant
       }finally{[IO.File]::WriteAllBytes($wpath,$originalWatchdog);[IO.File]::WriteAllBytes($f.capturePath,$originalCapture);Save9334 $f.cfg.resumePath $binding}
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-historical') {
       $replayMutant=Mutant9334 'ordinary-native-proof' 'landed-integration-evidence.psm1' '    Assert-InterruptedIntegrationReplay $o $firstStop # ORDINARY_RESUME_GUARD_NATIVE_REPLAY' '    # Synthetic omission: independent ordinary native replay.'
       $staged=Fixture9334 'staged'
       Remove-Item -LiteralPath $staged.capturePath -Force # historical variant: no helper capture, transcript proves the first stop
@@ -1658,7 +1710,12 @@ exit $LASTEXITCODE
         $contradictionInput=$historicalBinding|ConvertTo-Json -Depth 15|ConvertFrom-Json -DateKind String;$contradictionInput.sources.transcriptSha256=Get-RebaseHash ([IO.File]::ReadAllBytes($transcriptPath));Save9334 $historical.cfg.resumePath $contradictionInput
         Refusal9334 $historical 'later native movement in the transcript contradicts a preserved first stop' 'INTEGRATION_RESUME_SOURCE: contradictory later movement'
       }finally{[IO.File]::WriteAllBytes($transcriptPath,$transcriptBytes);Save9334 $historical.cfg.resumePath $historicalBinding}
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-sources') {
       ValidPlan9334 $f 'original ordinary fixture after independent destructive controls'
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-publication') {
+      if ($Part) { $f=Fixture9334 'dispatch';$binding=Bind9334 $f }
       # Actual resumed owner: early publication refused, finish R under -NoPush, bare R refused, one repair/test commit, leased publication P, duplicate refused.
       $entryState=Get-InterruptedIntegrationState $f.repo
       $f.cfg.earlyPublish=$true;$f.cfg.barePublish=$true;$f.cfg.duplicatePublish=$true
@@ -1677,12 +1734,16 @@ exit $LASTEXITCODE
       Proof9334 ($finish.pushed-eq$false-and$finish.bindingIdentity-ceq(Get-RebaseRecordIdentity (Read-RebaseJson $f.cfg.resumePath))-and$publication.finishHead-ceq$finish.resultHead-and$publication.leaseExpectedHead-ceq$f.original-and$publication.commitCount-eq1-and(@($publication.changedPaths) -join ',')-ceq'synthetic-repair.test.txt,synthetic-repair.txt') 'finish R and publication P records bind the exact binding, lease and plain-commit movement'
       $completion=Completion9334 $f 'resume' 'ordinary resumed'
       Proof9334 ($completion.movementProof.publicationIdentity-ceq(Get-RebaseRecordIdentity $publication)-and$completion.movementProof.finishIdentity-ceq(Get-RebaseRecordIdentity $finish)) 'completion binds the finish and publication identities'
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-scope') {
       # Single-variable negatives, each on its own stopped repository.
       foreach($violation in @('outside','edit-then-revert','unicode-alias')){
         $scoped=Fixture9334 $violation;[void](Bind9334 $scoped);$scoped.cfg.scopeViolation=$violation;$scoped.cfg.expectRefusal='INTEGRATION_RESUME_SCOPE: commit outside FINAL grant'
         $run=Launch9334 $scoped
         Proof9334 ($run.exit-ne0-and$run.stderr.Contains('finished unpublished')-and(Git9334 $scoped.remote @('rev-parse',"refs/heads/$($scoped.branch)"))-ceq$scoped.original-and$null-eq(Read-RebaseCompletion $scoped.obligation $scoped.runtime)) "FINAL scope ${violation}: publication refused before push; remote unchanged; no completion raw=$($run.resultPath)"
       }
+      }
+      if (-not $Part -or $Part -ceq 'ordinary-publication-refusals') {
       $unpublished=Fixture9334 'unpublished';[void](Bind9334 $unpublished);$unpublished.cfg.finishOnly=$true
       $run=Launch9334 $unpublished
       $unpublishedWatchdog=Read-RebaseJson (Join-Path $unpublished.runtime "watchdog-lane-$($unpublished.cfg.label).json")
@@ -1698,6 +1759,7 @@ exit $LASTEXITCODE
       $foreign=Fixture9334 'foreign';[void](Bind9334 $foreign);$foreign.cfg.movement='reset';$foreign.cfg.expectRefusal='INTEGRATION_RESUME_PUBLICATION: unrelated movement after finish'
       $run=Launch9334 $foreign
       Proof9334 ($run.exit-ne0-and$run.stderr.Contains('finished unpublished')-and(Git9334 $foreign.remote @('rev-parse',"refs/heads/$($foreign.branch)"))-ceq$foreign.original-and$null-eq(Read-RebaseCompletion $foreign.obligation $foreign.runtime)) "foreign movement (reset/rewrite): publication refused, remote at original head, no completion raw=$($run.resultPath)"
+      }
       $finished=$true
       return
     }
@@ -2091,13 +2153,22 @@ exit $LASTEXITCODE
       return
     }
   } catch {
+    if($null-ne$script:ordinary9334LastResult){
+      try{
+        $failureContext=Protect-NativeFailureContext $script:ordinary9334LastResult
+        if($failureContext.Length-gt2048){throw 'native diagnostic size bound exceeded'}
+        [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $failureContext")
+      }catch{
+        [Console]::Error.WriteLine('NATIVE_FAILURE_CONTEXT_UNAVAILABLE')
+      }
+    }
     Write-Output "EXCEPTION $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier $($_.Exception.Message) STACK $($_.ScriptStackTrace -replace "`r?`n",' | ')"
     throw
   } finally {
     Write-Output "RETAINED $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier native objects, records, entry snapshots and source evidence: $root; finished=$finished"
   }
 }
-function Invoke-9334OrdinaryCarriers([string[]]$Carriers,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry')][string]$Part='') {
+function Invoke-9334OrdinaryCarriers([string[]]$Carriers,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry','ordinary-admission','ordinary-state','ordinary-sources','ordinary-historical','ordinary-publication','ordinary-scope','ordinary-publication-refusals')][string]$Part='') {
   foreach ($carrier in $Carriers) { Test-9334OrdinaryCarrier $carrier -Part $Part }
 }
 
@@ -2433,7 +2504,7 @@ function New-8102FixtureCopy([string]$Label,[hashtable]$Replacements=@{}) {
 # the copy so every fixture probe observes the copy's container.
 function Invoke-8102CarrierCopy($Copy,[string]$Carrier) {
   $runner=Join-Path $Copy.container "run-$Carrier.ps1"
-  [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier')`n",[Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($runner,"`$ErrorActionPreference='Stop'`n. '$($Copy.runtime)\interrupted-integration-test-support.ps1'`nInvoke-7963ResumeCarriers @('$Carrier') -NoHistoricalArchive`n",[Text.UTF8Encoding]::new($false))
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=(Join-Path $PSHOME 'pwsh.exe');$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.WorkingDirectory=$Copy.root
   foreach($argument in @('-NoProfile','-NonInteractive','-File',$runner)){[void]$psi.ArgumentList.Add($argument)}
   # A classifier leg proves its whole carrier; proof-arm relevance never applies inside it.

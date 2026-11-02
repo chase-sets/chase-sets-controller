@@ -5,7 +5,7 @@ The public repository is https://github.com/chase-sets/chase-sets-controller.
 `main` only. There are no PR triggers. Actions are SHA-pinned, tokens are
 read-only, checkout credentials are not persisted, and no repository secrets
 are required. A calibrated plan raises the shard count from 16 until the LPT
-predicted maximum is at most 200000 ms, capped at 32. When no count meets that
+predicted maximum is at most 200000 ms, capped at 48. When no count meets that
 target, the cap is used if its predicted maximum is at most 300000 ms. Each
 execution shard must finish within 300000 ms. The workflow input `role`
 (`candidate`, the default, or `baseline`) is passed to Plan mode and decides
@@ -23,6 +23,14 @@ appended; a dispatch without `role` stays `candidate`
 ([#225 [controller] Hosted battery push runs on main plan as enforced candidates and refuse stale records](https://github.com/chase-sets/chase-sets-controller/issues/225)).
 Legacy plans without `shardCount` still use exactly ten receipts. Tests within
 a shard run serially with PowerShell 7.6.5, Node 24.15.0 and pnpm 11.21.0.
+
+The r3 full-inventory expansion supports 16..48 shards. Its controller decision
+selects the smallest count with a packed maximum at most 270000 ms (10% below
+the unchanged 300000 ms bound), using current duration records and unchanged
+LPT packing, weights and history. The profile's count is metadata: set it with
+the prediction writer's `Add-Member shardCount <N> -Force; Write-CiJson` path,
+not by editing duration records. The default prediction target above remains
+200000 ms; recording with `-Append` preserves the selected count.
 
 ## Trigger and collect
 
@@ -100,7 +108,7 @@ minimum sample. Baseline, re-probe, calibration and gate records retain their
 original run/head/plan provenance; they are not relabeled as new executions.
 
 Run `controller-ci-prediction.ps1 -EvidenceDirectory <evidence> -CalibrationPlanPath
-<plan> -WriteProfile` to replay N=16..32 and record the chosen N (above). No
+<plan> -WriteProfile` to replay N=16..48 and record the chosen N (above). No
 count within 300000 ms means stop for decomposition. Every estimate must be a
 hosted observation of that exact execution identity: `recorded`,
 `recorded-part`, `stale-recorded-part` or `local-only`. A whole item must
