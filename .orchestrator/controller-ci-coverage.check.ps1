@@ -555,7 +555,61 @@ Refuses-Coverage { Assert-Ci (($r3Source.Replace('-Part $nativePart','')).Contai
 Refuses-Coverage { Assert-Ci (($r3Source.Replace('-Part $ordinaryPart','')).Contains("Invoke-9334OrdinaryCarriers @('ordinary-dispatch') -Part `$ordinaryPart")) 'ordinary part forwarding removed' }
 Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("if (& `$runPart 'three-native-source') { Assert-SyntheticIntegrationWitnesses", "if (& `$runPart 'three-completed-rebase') { Assert-SyntheticIntegrationWitnesses")) }
 Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("'three-native-boundaries','three-native-retained','three-native-watchdog'","'three-native-boundaries','three-native-watchdog'")) }
-Assert-Ci ('ordinary-dispatch' -cnotin @($r3Item.parts.name) -and 'three-native-controls' -cnotin @($r3Item.parts.name)) 'oversized r3 part identities still registered'
+Assert-Ci ('ordinary-dispatch' -cnotin @($r3Item.parts.name) -and 'three-native-controls' -cnotin @($r3Item.parts.name) -and 'three-completed-rebase' -cnotin @($r3Item.parts.name)) 'oversized r3 part identities still registered'
+# Keep the full proof/helper source immutable: only entrypoint routing changes.
+$completedBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','1238d8ae56ba7142013a2c0076a7349b1d569266'))
+$completedSupport=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1'))
+$completedOwners=[ordered]@{
+  'three-completed-rebase-prospective'='prospective'
+  'three-completed-rebase-platform'='platform'
+  'three-completed-rebase-platform-complete'='platform-complete'
+  'three-completed-rebase-platform-complete-recheck'='platform-complete-recheck'
+  'three-completed-rebase-late-owed'='late-owed'
+  'three-completed-rebase-legacy'='legacy'
+  'three-completed-rebase-skip-release'='skip-release'
+  'three-completed-rebase-review'='review'
+  'three-completed-rebase-planning'='planning'
+  'three-completed-rebase-foreign-release'='foreign-release'
+}
+function Assert-R3CompletedRebaseOwnership([string]$Source,[string]$Support) {
+  Assert-Ci ($Support.Replace("`r`n","`n") -ceq $completedBaseline.Replace("`r`n","`n")) 'completed-rebase assertion/control/mutant/fixture source changed'
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count -eq 0) 'completed-rebase entrypoint parse failed'
+  $maps=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$completedRebaseModes'},$true))
+  Assert-Ci ($maps.Count -eq 1) 'completed-rebase mode map missing or duplicated'
+  $tables=@($maps[0].Right.FindAll({param($n) $n -is [Management.Automation.Language.HashtableAst]},$true))
+  Assert-Ci ($tables.Count -eq 1) 'completed-rebase literal mode ownership missing'
+  $entries=@($tables[0].KeyValuePairs | ForEach-Object { [pscustomobject]@{Key=$_.Item1.SafeGetValue();Value=$_.Item2.SafeGetValue()} })
+  Assert-Ci ($entries.Count -eq $completedOwners.Count) 'completed-rebase mode ownership cardinality changed'
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($entry in $entries){
+    Assert-Ci ($completedOwners.Contains($entry.Key) -and $completedOwners[$entry.Key] -ceq $entry.Value -and $seen.Add([string]$entry.Value)) 'completed-rebase mode missing/duplicated/misowned'
+  }
+  $defaults=@(($ast.ParamBlock.Parameters | Where-Object {$_.Name.VariablePath.UserPath -ceq 'Modes'}).DefaultValue.SafeGetValue())
+  Assert-Ci (($defaults -join ',') -ceq (@($completedOwners.Values) -join ',')) 'completed-rebase default modes changed'
+  Assert-Ci ((@($r3Item.parts.name | Where-Object {$_ -clike 'three-completed-rebase*'} | Sort-Object) -join ',') -ceq (@($completedOwners.Keys | Sort-Object) -join ',')) 'completed-rebase manifest ownership changed'
+  foreach($wire in @(
+    "`$completedRebasePart=if(`$Part -cin @(`$completedRebaseModes.Keys)){`$Part}else{'three-completed-rebase-prospective'}"
+    "`$completedModes=if(`$Part -cin @(`$completedRebaseModes.Keys)){@(`$completedRebaseModes[`$Part])}else{`$Modes}"
+    "'7926' {`$completedRebasePart;break}"
+    "name='7926';body={Test-7926CompletedRebase -Modes `$completedModes -CensusLatencyMs `$CensusLatencyMs}"
+    'if(-not (& $runPart $partName)){continue}'
+  )){
+    Assert-Ci (([regex]::Matches($Source,[regex]::Escape($wire))).Count -eq 1) 'completed-rebase selected modes/part guard must reach exactly one control'
+  }
+}
+Assert-R3CompletedRebaseOwnership $r3Source $completedSupport
+$modeEntry="    'three-completed-rebase-platform'='platform'"
+Assert-Ci ($r3Source.Contains($modeEntry)) 'completed-rebase negative seam missing'
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,'')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,$modeEntry+"`n"+$modeEntry)) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace($modeEntry,"    'three-completed-rebase-platform'='prospective'")) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('-Modes $completedModes','-Modes $Modes')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('if(-not (& $runPart $partName)){continue}','')) $completedSupport }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport.Replace('Proof ($consumerReplay.exit -eq 0','Proof ($true -or $consumerReplay.exit -eq 0')) }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport+"`n"+$completedSupport) }
+Write-Output 'PASS r3 completed-rebase exact mode ownership: ten independent modes; immutable proofs, controls, mutants and fixtures; dropped/duplicate/misowned/forwarding/guard/weakened-proof negatives refused'
 foreach($part in @($r3Item.parts.name)){
   Assert-Ci ($r3Source.Contains("'$part'")) "r3 selector missing: $part"
   Refuses-Coverage { Assert-Ci ((@($r3Item.parts.name|Where-Object{$_-cne$part}|Sort-Object)-join',')-ceq(@((Get-SuiteExpectedParts $r3Path)|Sort-Object)-join',')) "r3 dropped part survived: $part" }

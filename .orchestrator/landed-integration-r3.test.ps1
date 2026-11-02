@@ -499,7 +499,21 @@ try{
   if (& $runPart 'auth') { Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs }
   $nativeParts=@('three-native-source','three-native-boundaries','three-native-retained','three-native-watchdog')
   $nativePart=if($Part -cin $nativeParts){$Part}else{''}
-  foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot) -Part $nativePart}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
+  $completedRebaseModes=[ordered]@{
+    'three-completed-rebase-prospective'='prospective'
+    'three-completed-rebase-platform'='platform'
+    'three-completed-rebase-platform-complete'='platform-complete'
+    'three-completed-rebase-platform-complete-recheck'='platform-complete-recheck'
+    'three-completed-rebase-late-owed'='late-owed'
+    'three-completed-rebase-legacy'='legacy'
+    'three-completed-rebase-skip-release'='skip-release'
+    'three-completed-rebase-review'='review'
+    'three-completed-rebase-planning'='planning'
+    'three-completed-rebase-foreign-release'='foreign-release'
+  }
+  $completedRebasePart=if($Part -cin @($completedRebaseModes.Keys)){$Part}else{'three-completed-rebase-prospective'}
+  $completedModes=if($Part -cin @($completedRebaseModes.Keys)){@($completedRebaseModes[$Part])}else{$Modes}
+  foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot) -Part $nativePart}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $completedModes -CensusLatencyMs $CensusLatencyMs}})){
     $partName = switch($controlCase.name){
       '7962-native' {if($nativePart){$nativePart}else{'three-native-source'};break}
       '7926-F2' {'three-f-two';break}
@@ -508,7 +522,7 @@ try{
       'F13' {'f-thirteen';break}
       'F14' {'f-fourteen';break}
       'F15' {'f-fifteen';break}
-      '7926' {'three-completed-rebase';break}
+      '7926' {$completedRebasePart;break}
     }
     if(-not (& $runPart $partName)){continue}
     try{& $controlCase.body;Write-Output "CONTROL $($controlCase.name) PASS"}catch{$failures.Add("$($controlCase.name): $($_.Exception.Message)");Write-Output "CONTROL $($controlCase.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
