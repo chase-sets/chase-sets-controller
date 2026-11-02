@@ -1169,6 +1169,11 @@ function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-reb
       [IO.File]::WriteAllText("$stem.stdout.txt",$stdout);[IO.File]::WriteAllText("$stem.stderr.txt",$stderr)
       Save9334 "$stem.result.json" ([ordered]@{pid=$p.Id;startIdentity=$start;exitCode=$p.ExitCode;script=$Script;arguments=$Arguments;stdoutPath="$stem.stdout.txt";stderrPath="$stem.stderr.txt"})
       $script:ordinary9334LastResult=[pscustomobject]@{exit=$p.ExitCode;stdout=$stdout;stderr=$stderr;resultPath="$stem.result.json"}
+      $nativeConfig=if($configIndex-ge0-and$configIndex+1-lt$Arguments.Count){Read-RebaseJson $Arguments[$configIndex+1]}else{$null}
+      if($null-ne$nativeConfig){
+        $script:ordinary9334LastResult|Add-Member childStdoutPath (Join-Path $nativeConfig.runtime "$($nativeConfig.label).jsonl")
+        $script:ordinary9334LastResult|Add-Member childStderrPath (Join-Path $nativeConfig.runtime "$($nativeConfig.label).err.log")
+      }
       return $script:ordinary9334LastResult
     } finally { $p.Dispose() }
   }
@@ -2092,7 +2097,14 @@ exit $LASTEXITCODE
     }
   } catch {
     if($null-ne$script:ordinary9334LastResult){
-      [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $Carrier $($script:ordinary9334LastResult|ConvertTo-Json -Depth 5 -Compress)")
+      $failureContext=$script:ordinary9334LastResult|Select-Object *
+      foreach($stream in @('childStdout','childStderr')){
+        $path=$failureContext."${stream}Path"
+        try{
+          if($path-and(Test-Path -LiteralPath $path -PathType Leaf)){$failureContext|Add-Member $stream ([IO.File]::ReadAllText($path))}
+        }catch{$failureContext|Add-Member "${stream}ReadError" $_.Exception.Message}
+      }
+      [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $Carrier $($failureContext|ConvertTo-Json -Depth 5 -Compress)")
     }
     Write-Output "EXCEPTION $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier $($_.Exception.Message) STACK $($_.ScriptStackTrace -replace "`r?`n",' | ')"
     throw

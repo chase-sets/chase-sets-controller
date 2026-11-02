@@ -501,7 +501,7 @@ Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guard
   }
 }
 Write-Output 'PASS historical fixture pins: raw Git blob ids accept pinned LF bytes; missing-file, line-ending and one-byte mutations refused'
-Write-Output 'PASS successor fixture pins: four aa62899 raw Git blobs materialize and import without the private object database'
+Write-Output 'PASS successor fixture pins: nine aa62899 raw Git blobs materialize and import without the private object database'
 function Assert-CarrierPartContract([string]$Path,$Item,[string[]]$CarrierCalls) {
   $source=[IO.File]::ReadAllText($Path).Replace("`r`n","`n")
   $expected=@($Item.parts.name)
@@ -674,9 +674,12 @@ function Assert-NativeFailureDiagnostics([string]$Source) {
   Assert-Ci ($diagnostic.Count-eq1) 'native failure diagnostics missing or duplicated'
   $previous=$script:ordinary9334LastResult;$previousError=[Console]::Error
   $capture=[IO.StringWriter]::new()
+  $childErrorPath=Join-Path ([IO.Path]::GetTempPath()) ('r3-native-diagnostic-'+[guid]::NewGuid().ToString('N')+'.err.log')
   try {
     $Carrier='synthetic-diagnostic'
-    $script:ordinary9334LastResult=[pscustomobject]@{exit=1;stdout="synthetic output`nwith quotes: `"x`"";stderr='synthetic native refusal';resultPath='synthetic.result.json'}
+    $childError="synthetic helper error`nwith quotes: `"y`""
+    [IO.File]::WriteAllText($childErrorPath,$childError)
+    $script:ordinary9334LastResult=[pscustomobject]@{exit=1;stdout="synthetic output`nwith quotes: `"x`"";stderr='synthetic native refusal';resultPath='synthetic.result.json';childStderrPath=$childErrorPath}
     [Console]::SetError($capture)
     & ([scriptblock]::Create($diagnostic[0].Extent.Text))
     $prefix="NATIVE_FAILURE_CONTEXT $Carrier "
@@ -684,11 +687,13 @@ function Assert-NativeFailureDiagnostics([string]$Source) {
     Assert-Ci ($line.StartsWith($prefix,[StringComparison]::Ordinal)) 'native failure context prefix missing'
     $retained=$line.Substring($prefix.Length)|ConvertFrom-Json
     Assert-Ci ($retained.exit-eq1-and$retained.stdout-ceq$script:ordinary9334LastResult.stdout-and$retained.stderr-ceq$script:ordinary9334LastResult.stderr-and$retained.resultPath-ceq$script:ordinary9334LastResult.resultPath) 'native failure context lost exit, streams or artifact path'
+    Assert-Ci ($retained.childStderr-ceq$childError-and$null-eq$retained.childStdout) 'native failure context lost the child helper error or invented absent output'
     [void]$capture.GetStringBuilder().Clear();$script:ordinary9334LastResult=$null
     & ([scriptblock]::Create($diagnostic[0].Extent.Text))
     Assert-Ci ($capture.ToString()-ceq'') 'native failure context must stay silent without a native result'
   } finally {
     [Console]::SetError($previousError);$capture.Dispose();$script:ordinary9334LastResult=$previous
+    [IO.File]::Delete($childErrorPath)
   }
 }
 foreach($leaf in $carrierBaselineBlobs.Keys){
