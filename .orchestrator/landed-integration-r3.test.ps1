@@ -497,9 +497,11 @@ try{
   if (& $runPart 'three-prior-teardown') { Test-R3PriorTeardown }
   if (& $runPart 'three-census') { Test-R3CensusLatency }
   if (& $runPart 'auth') { Test-8185AuthPartition -CensusLatencyMs $CensusLatencyMs }
-  foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot)}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
+  $nativeParts=@('three-native-source','three-native-boundaries','three-native-retained','three-native-watchdog')
+  $nativePart=if($Part -cin $nativeParts){$Part}else{''}
+  foreach($controlCase in @([pscustomobject]@{name='7962-native';body={Test-7962NativeControls -RepositoryRoot (Split-Path -Parent $PSScriptRoot) -Part $nativePart}},[pscustomobject]@{name='7926-F2';body={Test-7926F2ProtectedBoundary}},[pscustomobject]@{name='reused-parent-ends-chain';body={Test-8103ReusedParentEndsChain}},[pscustomobject]@{name='7926-F1';body={Test-7926F1TerminalCleanup}},[pscustomobject]@{name='F13';body={Test-F13BranchScopedOwners}},[pscustomobject]@{name='F14';body={Test-F14AcknowledgedCompletion}},[pscustomobject]@{name='F15';body={Test-F15AcknowledgementOnlyReconciliation}},[pscustomobject]@{name='7926';body={Test-7926CompletedRebase -Modes $Modes -CensusLatencyMs $CensusLatencyMs}})){
     $partName = switch($controlCase.name){
-      '7962-native' {'three-native-controls';break}
+      '7962-native' {if($nativePart){$nativePart}else{'three-native-source'};break}
       '7926-F2' {'three-f-two';break}
       'reused-parent-ends-chain' {'three-reused-parent';break}
       '7926-F1' {'three-f-one';break}
@@ -511,7 +513,8 @@ try{
     if(-not (& $runPart $partName)){continue}
     try{& $controlCase.body;Write-Output "CONTROL $($controlCase.name) PASS"}catch{$failures.Add("$($controlCase.name): $($_.Exception.Message)");Write-Output "CONTROL $($controlCase.name) FAIL $($_.Exception.Message) $($_.ScriptStackTrace)"}
   }
-  if (& $runPart 'three-native-controls') { Assert-SyntheticIntegrationWitnesses $fixtureRoot }
+  if (& $runPart 'three-native-source') { Assert-SyntheticIntegrationWitnesses $fixtureRoot }
+  if($Part -cin @('three-native-boundaries','three-native-retained','three-native-watchdog')) { Assert-SyntheticIntegrationWitnessFiles $fixtureRoot }
   if($failures.Count-gt0){throw "R3 controls failed: $($failures -join ' | ')"}
   Write-Output 'PASS R3 branch-scoped ownership and acknowledgement-gated terminal integration controls including F15 bounded acknowledgement-only reconciliation'
 }finally{
@@ -607,7 +610,10 @@ function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
 if(-not $Part) {
   Invoke-9334OrdinaryCarriers @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')
 } else {
-  foreach($carrier in @('ordinary-dispatch','successor-dispatch','successor-completion','successor-depth')) {
+  foreach($ordinaryPart in @('ordinary-admission','ordinary-state','ordinary-sources','ordinary-historical','ordinary-publication','ordinary-scope','ordinary-publication-refusals')) {
+    if (& $runPart $ordinaryPart) { Invoke-9334OrdinaryCarriers @('ordinary-dispatch') -Part $ordinaryPart }
+  }
+  foreach($carrier in @('successor-dispatch','successor-completion','successor-depth')) {
     if (& $runPart $carrier) { Invoke-9334OrdinaryCarriers @($carrier) }
   }
 }

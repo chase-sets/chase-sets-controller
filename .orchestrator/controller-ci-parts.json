@@ -575,7 +575,10 @@
         { "name": "three-prior-teardown", "weight": 1 },
         { "name": "three-census", "weight": 1 },
         { "name": "auth", "weight": 1 },
-        { "name": "three-native-controls", "weight": 1 },
+        { "name": "three-native-source", "weight": 1 },
+        { "name": "three-native-boundaries", "weight": 1 },
+        { "name": "three-native-retained", "weight": 1 },
+        { "name": "three-native-watchdog", "weight": 1 },
         { "name": "three-f-two", "weight": 1 },
         { "name": "three-reused-parent", "weight": 1 },
         { "name": "three-f-one", "weight": 1 },
@@ -587,16 +590,25 @@
         { "name": "three-load-vacant", "weight": 1 },
         { "name": "three-load-mutant", "weight": 1 },
         { "name": "three-retained", "weight": 1 },
-        { "name": "ordinary-dispatch", "weight": 1 },
+        { "name": "ordinary-admission", "weight": 1 },
+        { "name": "ordinary-state", "weight": 1 },
+        { "name": "ordinary-sources", "weight": 1 },
+        { "name": "ordinary-historical", "weight": 1 },
+        { "name": "ordinary-publication", "weight": 1 },
+        { "name": "ordinary-scope", "weight": 1 },
+        { "name": "ordinary-publication-refusals", "weight": 1 },
         { "name": "successor-dispatch", "weight": 1 },
         { "name": "successor-completion", "weight": 1 },
         { "name": "successor-depth", "weight": 1 }
       ],
       "ownership": {
         "parts": [
-          "three-signal", "three-prior-teardown", "three-census", "auth", "three-native-controls",
+          "three-signal", "three-prior-teardown", "three-census", "auth",
+          "three-native-source", "three-native-boundaries", "three-native-retained", "three-native-watchdog",
           "three-f-two", "three-reused-parent", "three-f-one", "f-thirteen", "f-fourteen", "f-fifteen", "three-completed-rebase",
-          "three-load-held", "three-load-vacant", "three-load-mutant", "three-retained", "ordinary-dispatch",
+          "three-load-held", "three-load-vacant", "three-load-mutant", "three-retained",
+          "ordinary-admission", "ordinary-state", "ordinary-sources", "ordinary-historical",
+          "ordinary-publication", "ordinary-scope", "ordinary-publication-refusals",
           "successor-dispatch", "successor-completion", "successor-depth"
         ]
       }

@@ -56,7 +56,7 @@ function Assert-SyntheticIntegrationRepository([string]$Repository) {
   if ($Repository -ceq 'chase-sets/chase-sets' -or $Repository -cne $SyntheticIntegrationRepository) { throw 'SYNTHETIC_REPOSITORY_REQUIRED' }
 }
 
-function Assert-SyntheticIntegrationWitnesses([string]$Root) {
+function Assert-SyntheticIntegrationWitnessFiles([string]$Root) {
   $count=0
   foreach($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File | Where-Object{$_.Name -like 'authority*.json' -or $_.Name -like 'integration-request-*.json' -or $_.Name -like '*.call.json'})) {
     $value=Get-Content -LiteralPath $file.FullName -Raw|ConvertFrom-Json -DateKind String
@@ -66,6 +66,10 @@ function Assert-SyntheticIntegrationWitnesses([string]$Root) {
     $count++
   }
   if($count-eq0){throw 'synthetic authority/request/call witnesses missing'}
+  Write-Output "CONTROL 7962/F1-synthetic-authority-request-call-witnesses count=$count"
+}
+function Assert-SyntheticIntegrationWitnesses([string]$Root) {
+  Assert-SyntheticIntegrationWitnessFiles $Root
   # Direct and native-array fixture callers must explicitly bind the same identity.
   foreach($name in @('landed-integration-dispatch.test.ps1','landed-integration-r3.test.ps1','landed-integration-evidence-test-support.ps1','integration-dispatch-test-support.ps1')){
     foreach($line in Get-Content -LiteralPath (Join-Path $PSScriptRoot $name)){
@@ -76,7 +80,7 @@ function Assert-SyntheticIntegrationWitnesses([string]$Root) {
   }
   $rejected=$false;try{Assert-SyntheticIntegrationRepository 'chase-sets/chase-sets'}catch{$rejected=$_.Exception.Message-ceq'SYNTHETIC_REPOSITORY_REQUIRED'}
   if(-not$rejected){throw 'real external repository accepted as synthetic'}
-  Write-Output "CONTROL 7962/F1-synthetic-authority-request-call-witnesses count=$count realRepository=REJECTED"
+  Write-Output 'CONTROL 7962/F1-synthetic-real-repository realRepository=REJECTED'
 }
 
 function Write-SyntheticIntegrationAuthority([string]$Path, $Nodes, [string]$Base, [string]$Repository=$SyntheticIntegrationRepository) {
@@ -120,7 +124,7 @@ function Set-ArchivedOrchestrationLogMutexName([string]$Runtime) {
 }
 
 # Executed by the existing R3 carrier, focused or inside the canonical battery.
-function Test-7962NativeControls([string]$RepositoryRoot=(Split-Path -Parent $PSScriptRoot)) {
+function Test-7962NativeControls([string]$RepositoryRoot=(Split-Path -Parent $PSScriptRoot),[ValidateSet('','three-native-source','three-native-boundaries','three-native-retained','three-native-watchdog')][string]$Part='') {
   $caseRoot=Join-Path $fixtureRoot 'synthetic-7962';New-Item -ItemType Directory $caseRoot|Out-Null
   $nativeFailures=[Collections.Generic.List[string]]::new()
   $pwsh=(Get-Command pwsh -CommandType Application|Select-Object -First 1 -ExpandProperty Source)
@@ -236,6 +240,7 @@ exit $LASTEXITCODE
 '@
     [IO.File]::WriteAllText($wrapper,$text.Replace('__CONFIG__',$config.Replace("'","''")).Replace('__CHILD__',$child.Replace("'","''")));return $wrapper
   }
+  if (-not $Part -or $Part -ceq 'three-native-source') {
   Control 'baseline-late-head-and-Terra' {
     $c=New-Case 'baseline-late-head';[IO.File]::WriteAllText((Join-Path $c.repo 'local.txt'),'unpublished');[void](N $c.repo @('add','.'));[void](N $c.repo @('commit','-qm','local unpublished'));$local=N $c.repo @('rev-parse','HEAD')
     $wrapper=New-Wrapper $c (Join-Path $baselineRuntime 'dispatch-lane.ps1');$r=Run-Native (Join-Path $baselineRuntime 'landed-integration-dispatch.ps1') (Producer-Args $c $wrapper -Old) (Join-Path $c.root 'baseline')
@@ -308,6 +313,8 @@ exit $LASTEXITCODE
     Check ($newHead-cne$c.head-and$remote.StartsWith($newHead)-and$reduction.state-ceq'authorized'-and$reduction.latest.continuationHops-eq2-and$reduction.latest.reviewedHead-ceq$sourceHead-and[IO.File]::ReadAllText((Join-Path $c.root 'body.txt.helper.log')).Contains('CONTINUATION_LOGGED')) 'qualified source second-hop/publication result'
     J (Join-Path $c.root 'source-head-oracle.json') @{mode=$mode;sourceIdentity=$sourceIdentity;sourceHead=$sourceHead;reviewedHead=$c.head;newHead=$newHead;arguments=$a;continuationHops=$reduction.latest.continuationHops;remote=$remote}
   }}
+  }
+  if (-not $Part -or $Part -ceq 'three-native-boundaries') {
   foreach($field in @('harness','model','effort','row','placement')){Control "route-$field-candidate-and-bypass" {
     $c=New-Case "route-$field";$req=Request $c;$tuple=@('codex','gpt-6.1-sol','high',7,'provisional')
     # The retained Astra author and Todd placement are the nearest refused model
@@ -374,6 +381,7 @@ exit $LASTEXITCODE
     $bypass=Run-Native $bypassHelper @($a|Select-Object -Skip 4) (Join-Path $c.root 'single-guard-bypass')
     Check (Test-Path $marker) "mandatory bypass did not enter actual helper body $parameterName $($bypass.stderr)"
   }}
+  }
   function New-RetainedCase([string]$Name){
     $c=New-Case $Name
     [IO.File]::WriteAllText((Join-Path $c.repo 'local.txt'),'unpublished retained start');[void](N $c.repo @('add','.'));[void](N $c.repo @('commit','-qm','retained local'))
@@ -415,6 +423,7 @@ exit 0
     $ackPath=$currentAckPath
     return @{c=$c;ackPath=$ackPath;ack=$ack;specPath=$specPath;spec=$spec;wrapper=$wrapper}
   }
+  if (-not $Part -or $Part -ceq 'three-native-retained') {
   Control 'retained-exited0-parameter-stop-double-replay' {
     $f=New-RetainedCase 'retained-positive';$c=$f.c;$sources=@($f.ackPath,$f.specPath,$f.spec.partialReportPath,$f.spec.originalPromptPath,$c.history)
     $later=$c.node|ConvertTo-Json -Depth 5|ConvertFrom-Json -DateKind String
@@ -462,6 +471,8 @@ exit 0
     $r=Run-Native (Join-Path (Split-Path -Parent $mutant) 'landed-integration-dispatch.ps1') (Producer-Args $c $f.wrapper) (Join-Path $c.root 'bypass')
     Check ($r.exit-eq0-and$r.stdout.Contains('EXITED_START_MISMATCH')) "transcript bypass did not expose unsupported observation $($r.stdout) $($r.stderr)"
   }
+  }
+  if (-not $Part -or $Part -ceq 'three-native-boundaries') {
   Control 'native-probe-exit-candidate-and-bypass' {
     $dir=Join-Path $caseRoot 'native-exit';New-Item -ItemType Directory $dir|Out-Null
     $runner=Join-Path $dir 'candidate.ps1';$contract=Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1'
@@ -473,6 +484,8 @@ exit 0
     [IO.File]::WriteAllText($runner,$body.Replace($contract.Replace("'","''"),$mutant.Replace("'","''")))
     $r=Run-Native $runner @() (Join-Path $dir 'bypass');Check ($r.exit-eq0-and$r.stdout.Trim()-ceq'plausible') 'native exit bypass did not discriminate'
   }
+  }
+  if (-not $Part -or $Part -ceq 'three-native-watchdog') {
   Control 'fresh-v3-request-reader-and-unavailable-executable' {
     $c=New-Case 'fresh-v3-reader';$req=Request $c
     $runner=Launcher-Runner $c $req (Join-Path $PSScriptRoot 'dispatch-lane.ps1') @('codex','gpt-6.1-sol','high',7,'provisional') @('ExecutablePath',(Join-Path $c.root 'unavailable-author.exe'))
@@ -561,6 +574,7 @@ exit 0
       $runner=Launcher-Runner $c $req $mutant;$r=Run-Native $runner @() (Join-Path $c.root 'bypass')
       Check ($r.exit-eq0-and(Test-Path (Join-Path $c.root 'body.txt'))-and-not$owner.p.HasExited) "owner bypass did not expose concurrent body $($r.stderr)"
     }finally{[IO.File]::WriteAllText($release,'release');$ownerResult=End-Native $owner;Check ($ownerResult.exit-eq0) 'native owner release'}
+  }
   }
   Write-Output "ARTIFACT 7962 retained native Git/bare remotes/process stdout/stderr/numeric exits: $caseRoot"
   if($nativeFailures.Count){throw "7962 native controls failed: $($nativeFailures-join' | ')"}
