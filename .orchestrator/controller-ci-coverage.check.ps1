@@ -467,6 +467,12 @@ Write-Output 'PASS dispatch carrier shape: whole-run base sequence and two guard
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-b3b4ac2') -Destination (Join-Path $controlFixtures 'historical-b3b4ac2') -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures/historical-aa62899') -Destination (Join-Path $controlFixtures 'historical-aa62899') -Recurse
     $successorModuleRoot=New-HistoricalDispatchFixture 'aa62899' (Join-Path $fixtureControlRoot 'out-successor') $controlFixtures
+    $successorLauncher=Join-Path $successorModuleRoot 'dispatch-lane.ps1'
+    Assert-Ci (Test-Path -LiteralPath $successorLauncher -PathType Leaf) 'successor baseline launcher read set missing'
+    [IO.File]::Delete((Join-Path $controlFixtures 'historical-aa62899/.orchestrator/dispatch-lane.ps1'))
+    $successorLauncherRefused=$false
+    try { [void](New-HistoricalDispatchFixture 'aa62899' (Join-Path $fixtureControlRoot 'out-successor-missing-launcher') $controlFixtures) } catch { $successorLauncherRefused=$_.Exception.Message.Contains('HISTORICAL_FIXTURE: read set changed for aa62899') }
+    Assert-Ci $successorLauncherRefused 'missing successor baseline launcher must refuse before fixture use'
     $successorModule=Import-Module (Join-Path $successorModuleRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
     Remove-Module $successorModule -Force
     $target=Join-Path $controlFixtures 'historical-b3b4ac2/.orchestrator/dispatch-lane.ps1'
