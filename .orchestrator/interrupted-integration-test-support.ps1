@@ -1128,6 +1128,26 @@ function Invoke-7963ResumeCarriers([string[]]$Carriers, [ValidateSet('','7906','
 # The merge graph reproduces the 9285 first-stop shape: a first-parent chain and
 # an older side history joined by a merge, so the raw reverse list (six commits
 # including the merge) differs from the sequencer's five-pick plan.
+function Protect-NativeFailureContext($Result) {
+  # Native streams and paths are untrusted, including unlabeled credentials.
+  # Publish only closed numeric metadata, never credential-shaped-text guesses.
+  $safe=[ordered]@{exit=[int]$Result.exit}
+  foreach($stream in @('stdout','stderr')){
+    $safe[$stream]='[redacted]'
+    $safe["${stream}Chars"]=([string]$Result.$stream).Length
+  }
+  foreach($stream in @('childStdout','childStderr')){
+    $path=$Result."${stream}Path"
+    $safe[$stream]=$null
+    if($path-and(Test-Path -LiteralPath $path -PathType Leaf)){
+      $safe[$stream]='[redacted]'
+      $safe["${stream}Bytes"]=(Get-Item -LiteralPath $path).Length
+    }
+  }
+  $safe.resultPath='[redacted]'
+  $safe|ConvertTo-Json -Depth 3 -Compress
+}
+
 function Test-9334OrdinaryCarrier([ValidateSet('ordinary-dispatch','ordinary-rebase','ordinary-watchdog','successor-rebase','successor-publication','successor-amend','successor-dispatch','successor-completion','successor-depth','successor-watchdog')][string]$Carrier,[ValidateSet('','ordinary-rebase-live','ordinary-rebase-retry','ordinary-admission','ordinary-state','ordinary-sources','ordinary-historical','ordinary-publication','ordinary-scope','ordinary-publication-refusals')][string]$Part='') {
   Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
   . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
@@ -2114,14 +2134,13 @@ exit $LASTEXITCODE
     }
   } catch {
     if($null-ne$script:ordinary9334LastResult){
-      $failureContext=$script:ordinary9334LastResult|Select-Object *
-      foreach($stream in @('childStdout','childStderr')){
-        $path=$failureContext."${stream}Path"
-        try{
-          if($path-and(Test-Path -LiteralPath $path -PathType Leaf)){$failureContext|Add-Member $stream ([IO.File]::ReadAllText($path))}
-        }catch{$failureContext|Add-Member "${stream}ReadError" $_.Exception.Message}
+      try{
+        $failureContext=Protect-NativeFailureContext $script:ordinary9334LastResult
+        if($failureContext.Length-gt2048){throw 'native diagnostic size bound exceeded'}
+        [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $failureContext")
+      }catch{
+        [Console]::Error.WriteLine('NATIVE_FAILURE_CONTEXT_UNAVAILABLE')
       }
-      [Console]::Error.WriteLine("NATIVE_FAILURE_CONTEXT $Carrier $($failureContext|ConvertTo-Json -Depth 5 -Compress)")
     }
     Write-Output "EXCEPTION $(if($Carrier -like 'successor-*'){'9411'}else{'9334'}) $Carrier $($_.Exception.Message) STACK $($_.ScriptStackTrace -replace "`r?`n",' | ')"
     throw

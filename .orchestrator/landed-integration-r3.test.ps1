@@ -586,9 +586,10 @@ function Assert-8102([bool]$Condition,[string]$Test,[string]$Name,$Leg) {
 # the unmodified carrier passes.
 function Test-TimedFixtureUnderFleetLoadMeasuresLoad {
   $test='timed-fixture-under-fleet-load-measures-load'
-  $runHeld = -not $Part -or $Part -ceq '8102-held'
-  $runVacant = -not $Part -or $Part -ceq '8102-vacant'
-  $runMutant = -not $Part -or $Part -ceq '8102-mutant'
+  $runHeld = -not $Part -or $Part -ceq 'three-load-held'
+  $runVacant = -not $Part -or $Part -ceq 'three-load-vacant'
+  $runMutant = -not $Part -or $Part -ceq 'three-load-mutant'
+  if($Part -and -not($runHeld -or $runVacant -or $runMutant)){throw 'R3_LOAD_PART_NO_ARM: selected part owns no classifier arm'}
   # Classifier legs are proof arms (Test-BatteryProofRelevant); the unmodified
   # retained carrier always runs.
   if(-not(Test-BatteryProofRelevant @('landed-integration-evidence.psm1','landed-integration-r3.test.ps1'))){

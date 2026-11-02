@@ -556,6 +556,41 @@ Refuses-Coverage { Assert-Ci (($r3Source.Replace('-Part $ordinaryPart','')).Cont
 Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("if (& `$runPart 'three-native-source') { Assert-SyntheticIntegrationWitnesses", "if (& `$runPart 'three-completed-rebase') { Assert-SyntheticIntegrationWitnesses")) }
 Refuses-Coverage { Assert-R3WitnessOwner ($r3Source.Replace("'three-native-boundaries','three-native-retained','three-native-watchdog'","'three-native-boundaries','three-native-watchdog'")) }
 Assert-Ci ('ordinary-dispatch' -cnotin @($r3Item.parts.name) -and 'three-native-controls' -cnotin @($r3Item.parts.name) -and 'three-completed-rebase' -cnotin @($r3Item.parts.name)) 'oversized r3 part identities still registered'
+function Assert-R3LoadArmOwnership([string]$Source) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'r3 classifier selector source parse failed'
+  $functions=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Test-TimedFixtureUnderFleetLoadMeasuresLoad'},$true))
+  Assert-Ci ($functions.Count-eq1) 'r3 classifier function missing or duplicated'
+  $statements=@($functions[0].Body.EndBlock.Statements)
+  $flags=@('$runHeld','$runVacant','$runMutant')
+  for($i=0;$i-lt$flags.Count;$i++){
+    Assert-Ci ($statements[$i+1]-is[Management.Automation.Language.AssignmentStatementAst]-and$statements[$i+1].Left.Extent.Text-ceq$flags[$i]) 'r3 classifier selector prefix changed'
+    $arms=@($functions[0].Body.FindAll({param($n) $n-is[Management.Automation.Language.IfStatementAst]-and$n.Clauses[0].Item1.Extent.Text-ceq$flags[$i]},$true))
+    Assert-Ci ($arms.Count-eq1-and$arms[0].Extent.Text.Contains('Invoke-8102RetainedLeg')) 'r3 classifier flag must gate exactly one real leg'
+  }
+  Assert-Ci ($statements[4]-is[Management.Automation.Language.IfStatementAst]-and$statements[4].Extent.Text.Contains('R3_LOAD_PART_NO_ARM')) 'r3 classifier no-arm guard must precede fixtures and impact returns'
+  # Execute only the real selector assignments and guard, never the test body.
+  $select=[scriptblock]::Create('param([string]$Part)'+"`n"+(($statements[1..4]|ForEach-Object {$_.Extent.Text})-join"`n")+"`n"+'@($runHeld,$runVacant,$runMutant)')
+  $parts=@('three-load-held','three-load-vacant','three-load-mutant')
+  Assert-Ci ((@($r3Item.parts.name|Where-Object {$_-clike'three-load-*'}|Sort-Object)-join',')-ceq(@($parts|Sort-Object)-join',')) 'r3 classifier manifest arms changed'
+  for($i=0;$i-lt$parts.Count;$i++){
+    $selected=@(& $select $parts[$i])
+    Assert-Ci ($selected.Count-eq3-and@($selected|Where-Object {$_}).Count-eq1-and$selected[$i]) "r3 classifier part selects no arm or the wrong arm: $($parts[$i])"
+  }
+  Assert-Ci ((@(& $select ''|Where-Object {$_})).Count-eq3) 'r3 omitted selector must retain all classifier arms'
+  foreach($invalid in @('8102-held','8102-vacant','8102-mutant','three-load-unknown')){
+    $failure=$null;try{& $select $invalid|Out-Null}catch{$failure=$_.Exception.Message}
+    Assert-Ci ($failure-ceq'R3_LOAD_PART_NO_ARM: selected part owns no classifier arm') 'r3 unknown/stale selector must trip the executable no-arm guard'
+  }
+}
+Assert-R3LoadArmOwnership $r3Source
+foreach($arm in @('held','vacant','mutant')){
+  Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace("`$Part -ceq 'three-load-$arm'","`$Part -ceq '8102-$arm'")) }
+}
+Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace("if(`$Part -and -not(`$runHeld -or `$runVacant -or `$runMutant)){throw 'R3_LOAD_PART_NO_ARM: selected part owns no classifier arm'}",'')) }
+Refuses-Coverage { Assert-R3LoadArmOwnership ($r3Source.Replace('if($runHeld){','if($runVacant){')) }
+Write-Output 'PASS r3 classifier arm ownership: each manifest part selects one real leg, omitted selector selects all; stale names trip no-arm guard; stale-selector, removed-guard and misgated-arm negatives refused'
 # Keep the full proof/helper source immutable: only entrypoint routing changes.
 $completedBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','1238d8ae56ba7142013a2c0076a7349b1d569266'))
 $completedSupport=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1'))
@@ -830,27 +865,48 @@ function Assert-NativeFailureDiagnostics([string]$Source) {
   Assert-Ci ($errors.Count-eq0) 'native failure diagnostics source parse failed'
   $diagnostic=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.IfStatementAst]-and$n.Extent.Text.Contains('NATIVE_FAILURE_CONTEXT')},$true))
   Assert-Ci ($diagnostic.Count-eq1) 'native failure diagnostics missing or duplicated'
-  $previous=$script:ordinary9334LastResult;$previousError=[Console]::Error
+  $helpers=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Protect-NativeFailureContext'},$true))
+  Assert-Ci ($helpers.Count-eq1) 'native failure context redaction helper missing or duplicated'
+  . ([scriptblock]::Create($helpers[0].Extent.Text))
+  $catch=$diagnostic[0].Parent
+  while($catch-and$catch-isnot[Management.Automation.Language.CatchClauseAst]){$catch=$catch.Parent}
+  Assert-Ci ($null-ne$catch) 'native failure diagnostics must be failure-only'
+  $propagate=[scriptblock]::Create("try { throw 'synthetic original native failure' } catch { "+$catch.Body.Extent.Text.TrimStart('{').TrimEnd('}')+' }')
+  $previous=$script:ordinary9334LastResult;$previousError=[Console]::Error;$previousExit=$LASTEXITCODE
   $capture=[IO.StringWriter]::new()
   $childErrorPath=Join-Path ([IO.Path]::GetTempPath()) ('r3-native-diagnostic-'+[guid]::NewGuid().ToString('N')+'.err.log')
   try {
     $Carrier='synthetic-diagnostic'
-    $childError="synthetic helper error`nwith quotes: `"y`""
+    $markers=@('synthetic-bearer-never-valid','synthetic-password-never-valid','synthetic-token-never-valid')
+    $credentials="Authorization: Bearer $($markers[0])`npassword=$($markers[1])`n{`"token`":`"$($markers[2])`"}"
+    $childError=$credentials+('x'*16384)
     [IO.File]::WriteAllText($childErrorPath,$childError)
-    $script:ordinary9334LastResult=[pscustomobject]@{exit=1;stdout="synthetic output`nwith quotes: `"x`"";stderr='synthetic native refusal';resultPath='synthetic.result.json';childStderrPath=$childErrorPath}
+    $script:ordinary9334LastResult=[pscustomobject]@{exit=19;stdout=$childError;stderr=$credentials;resultPath=$credentials;childStderrPath=$childErrorPath;unexpectedSecret=$credentials}
+    $LASTEXITCODE=19
     [Console]::SetError($capture)
-    & ([scriptblock]::Create($diagnostic[0].Extent.Text))
-    $prefix="NATIVE_FAILURE_CONTEXT $Carrier "
+    $failure=$null;try{& $propagate|Out-Null}catch{$failure=$_.Exception.Message}
+    Assert-Ci ($failure-ceq'synthetic original native failure'-and$LASTEXITCODE-eq19) 'native diagnostic changed original throw or exit code'
+    $prefix='NATIVE_FAILURE_CONTEXT '
     $line=$capture.ToString().TrimEnd("`r","`n")
     Assert-Ci ($line.StartsWith($prefix,[StringComparison]::Ordinal)) 'native failure context prefix missing'
+    Assert-Ci ($line.Length-le($prefix.Length+2048)) 'native failure context exceeds emitted size bound'
+    foreach($marker in $markers){Assert-Ci (-not$line.Contains($marker)) 'native failure context leaked synthetic credential'}
     $retained=$line.Substring($prefix.Length)|ConvertFrom-Json
-    Assert-Ci ($retained.exit-eq1-and$retained.stdout-ceq$script:ordinary9334LastResult.stdout-and$retained.stderr-ceq$script:ordinary9334LastResult.stderr-and$retained.resultPath-ceq$script:ordinary9334LastResult.resultPath) 'native failure context lost exit, streams or artifact path'
-    Assert-Ci ($retained.childStderr-ceq$childError-and$null-eq$retained.childStdout) 'native failure context lost the child helper error or invented absent output'
+    Assert-Ci ($retained.exit-eq19-and$retained.stdout-ceq'[redacted]'-and$retained.stderr-ceq'[redacted]'-and$retained.resultPath-ceq'[redacted]') 'native failure context lost exit or redaction boundary'
+    Assert-Ci ($retained.stdoutChars-eq$childError.Length-and$retained.stderrChars-eq$credentials.Length-and$retained.childStderr-ceq'[redacted]'-and$retained.childStderrBytes-eq([IO.FileInfo]$childErrorPath).Length-and$null-eq$retained.childStdout) 'native failure context lost stream lengths or invented absent output'
+    Assert-Ci ($null-eq$retained.PSObject.Properties['unexpectedSecret']) 'native failure context copied unowned native fields'
+    [void]$capture.GetStringBuilder().Clear()
+    & {
+      function Protect-NativeFailureContext { throw 'synthetic redaction failure' }
+      $failure=$null;try{& $propagate|Out-Null}catch{$failure=$_.Exception.Message}
+      Assert-Ci ($failure-ceq'synthetic original native failure'-and$LASTEXITCODE-eq19) 'redaction failure replaced original throw or exit code'
+    }
+    Assert-Ci ($capture.ToString().Trim()-ceq'NATIVE_FAILURE_CONTEXT_UNAVAILABLE') 'redaction failure did not fail closed'
     [void]$capture.GetStringBuilder().Clear();$script:ordinary9334LastResult=$null
     & ([scriptblock]::Create($diagnostic[0].Extent.Text))
     Assert-Ci ($capture.ToString()-ceq'') 'native failure context must stay silent without a native result'
   } finally {
-    [Console]::SetError($previousError);$capture.Dispose();$script:ordinary9334LastResult=$previous
+    [Console]::SetError($previousError);$capture.Dispose();$script:ordinary9334LastResult=$previous;$LASTEXITCODE=$previousExit
     [IO.File]::Delete($childErrorPath)
   }
 }
@@ -860,6 +916,9 @@ foreach($leaf in $carrierBaselineBlobs.Keys){
   if($leaf-ceq'interrupted-integration-test-support.ps1'){
     Assert-NativeFailureDiagnostics $candidate
     Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace('NATIVE_FAILURE_CONTEXT','REMOVED_NATIVE_CONTEXT')) }
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace("`$safe[`$stream]='[redacted]'",' $safe[$stream]=$Result.$stream')) }
+    Refuses-Coverage { Assert-NativeFailureDiagnostics ($candidate.Replace('    throw'+"`r`n"+'  } finally {','    return'+"`r`n"+'  } finally {').Replace('    throw'+"`n"+'  } finally {','    return'+"`n"+'  } finally {')) }
+    Write-Output 'PASS native failure diagnostics: bounded closed fields redact bearer/password/token content and unknown fields; original exit/throw retained even if redaction fails; unredacted-stream and swallowed-throw negatives refused'
   }
   Assert-CarrierProofCensus $candidate $baseline
   if($leaf -cne 'interrupted-integration-test-support.ps1'){
