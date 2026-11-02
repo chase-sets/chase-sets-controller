@@ -17,7 +17,7 @@ $root=Split-Path -Parent $PSScriptRoot
 # (stale-recorded-part), because a never-recorded part would otherwise get an
 # equal-weight share of the whole suite.
 $observed=@('recorded','recorded-part','stale-recorded-part','local-only')
-$targetMs=200000L;$boundMs=300000L;$maxShards=32
+$targetMs=200000L;$boundMs=300000L;$maxShards=48
 $replays=@(foreach($count in 16..$maxShards){
   $tasks=New-CiAssignments $calibration.inventory '' $manifest $profile $root -ShardCount $count
   $invalid=@($tasks|Where-Object{$_.timingSource-cnotin$observed})
@@ -29,7 +29,7 @@ $replays=@(foreach($count in 16..$maxShards){
     largestItems=@($tasks|Sort-Object estimatedMs -Descending|Select-Object -First 5|ForEach-Object{@{identity=$_.identity;estimatedMs=$_.estimatedMs;shard=$_.shard}})
     timingSources=@($tasks|Group-Object timingSource|ForEach-Object{@{source=$_.Name;count=$_.Count}});executionItems=$tasks}
 })
-# Raise N until the predicted maximum shard meets the target, capped at 32.
+# Raise N until the predicted maximum shard meets the target, capped at 48.
 $feasible=@($replays|Where-Object feasible)
 $capped=$replays[-1]
 $chosen=if($feasible.Count){$feasible[0].shardCount}elseif($capped.withinBound){$capped.shardCount}else{$null}

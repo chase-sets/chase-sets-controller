@@ -1130,3 +1130,20 @@ $conservationRetirements=$savedRetirements
 if($EvidenceDirectory){Write-CiJson @{baselineHead=$BaselineHead;baselineBlobs=$pins;routing=$routing;parts=@($manifest.items|Select-Object identity,ownership)
   repeatedWitnesses='Mutant children run their original -Case without -Part. Landed per-part synthetic-witness checks cover each disjoint retained fixture set; setup and unchanged summary lines may repeat.'} (Join-Path $EvidenceDirectory 'source-coverage.json')}
 Write-Output 'PASS source conservation: pinned full blobs, 18 routing cases, 8 routing mutants, 36 capacity mutants, six board parts with required ten-item split, unchanged board/cleanup proof; dropped/duplicate/misowned/changed-predicate and missing/unused-retirement controls refused'
+
+$splitInventory=@($manifest.items|ForEach-Object{[pscustomobject]@{
+  identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));command='synthetic';arguments=@();restriction=$null}})
+$expectedIdentities=@($manifest.items|ForEach-Object{
+  $requiredIdentity=$_.identity;foreach($part in $_.parts){"$requiredIdentity#$($part.name)"}
+}|Sort-Object)
+foreach($count in 16..48){
+  Assert-Ci ((Get-CiShardCount @{shardCount=$count})-eq$count) 'supported coverage shard count refused'
+  $splitTasks=New-CiAssignments $splitInventory '' $manifest -ShardCount $count
+  Assert-Ci ((@($splitTasks.identity|Sort-Object)-join',')-ceq($expectedIdentities-join',')) 'shard count changed execution identity coverage'
+  Assert-Ci (@($splitTasks|Where-Object{$_.shard-lt0-or$_.shard-ge$count}).Count-eq0) 'part assigned outside supported shard range'
+}
+foreach($badCount in @(15,49)){
+  Refuses-Coverage {Get-CiShardCount @{shardCount=$badCount}}
+  Refuses-Coverage {New-CiAssignments $splitInventory '' $manifest -ShardCount $badCount}
+}
+Write-Output 'PASS full manifest execution coverage preserved at every shard count 16..48; 15/49 refused'
