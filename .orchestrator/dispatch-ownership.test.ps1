@@ -1,5 +1,30 @@
-param([switch]$ProductCensusOnly,[switch]$OrdinaryProofOnly)
+param(
+  [ValidateSet('portable-census','portable-reducer','portable-carrier','local-smoke')][string]$Part = '',
+  [switch]$ProductCensusOnly,
+  [switch]$OrdinaryProofOnly
+)
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('portable-census','portable-reducer','portable-carrier','local-smoke') $PSBoundParameters @('ProductCensusOnly','OrdinaryProofOnly')
+# Hosted parts each run one section; no -Part runs every section and the local smoke.
+$runSection = { param([string]$Name) -not $Part -or $Part -ceq $Name }
+
+function Invoke-DispatchOwnershipLocalSmoke {
+  . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
+  $liveRuntime = [IO.Path]::GetFullPath($PSScriptRoot)
+  $liveTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+  $liveContainer = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+  $census = Get-LiveDispatchOwnership $liveRuntime $liveTemp $liveContainer
+  if ($census.health.status -notin @('ok','partial')) {
+    throw "ASSERTION FAILED: default-source local ownership smoke returned health=$($census.health.status)"
+  }
+  Write-Output "PASS dispatch-ownership local-smoke default-source candidates=$($census.health.counts.candidates) status=$($census.health.status)"
+}
+
+if ($Part -ceq 'local-smoke') {
+  Invoke-DispatchOwnershipLocalSmoke
+  return
+}
 if ($OrdinaryProofOnly) {
   . (Join-Path $PSScriptRoot 'interrupted-integration-test-support.ps1')
   Test-9334OrdinaryProof
@@ -11,6 +36,7 @@ if ($OrdinaryProofOnly) {
 # #9619: census verdicts run under the deterministic budget meter, never elapsed
 # real time. The real-clock deadline keeps its own directional controls: the
 # -DeadlineMs 0 truncation control below and product-census-budget.test.ps1.
+if (& $runSection 'portable-census') {
 Invoke-DeterministicBudget {
   Test-ProductCensusProjection
   Test-ProductCensusProofMatrix
@@ -19,7 +45,9 @@ Invoke-DeterministicBudget {
   Test-CensusGitOutputBound
   Test-CensusGitWaitSchedule
 }
-if ($ProductCensusOnly) { return }
+}
+# The census part allocates no ownership root; return before one exists.
+if ($ProductCensusOnly -or $Part -ceq 'portable-census') { return }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ("dispatch-ownership-test-" + [guid]::NewGuid())
 $runtime = Join-Path $root "runtime"
@@ -203,6 +231,7 @@ function Get-BoundedAttemptProjection([scriptblock]$Projection, [string]$Mutatio
   }
 }
 
+if (& $runSection 'portable-reducer') {
 try {
   $currentStart = Get-DispatchProcessStartIdentity $PID
   $identityJson = [ordered]@{ childStartIdentity = $currentStart } |
@@ -291,6 +320,24 @@ try {
   )
   Invoke-TestGit $identityMain @("add", "seed.txt") | Out-Null
   Invoke-TestGit $identityMain @("commit", "-m", "fixture seed") | Out-Null
+
+  # Hosted proof must never silently fall back to a live controller runtime.
+  # The poisoned source has two valid records and the synthetic source has one;
+  # health and exact census counts make a source substitution fail closed.
+  $poisonedDefaultRuntime = New-ControlRuntime "poisoned-default-runtime"
+  $poisonedWorktree = Add-ControlWorktree $identityMain "lane-98" "control/poisoned-default"
+  New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000aa" | Out-Null
+  New-ReducerOwnershipRecord $poisonedDefaultRuntime $poisonedWorktree -LaunchId "00000000-0000-0000-0000-0000000000ab" | Out-Null
+  $guardRuntime = New-ControlRuntime "synthetic-census-guard-runtime"
+  $guardWorktree = Add-ControlWorktree $identityMain "lane-97" "control/census-guard"
+  $guardRecord = New-ReducerOwnershipRecord $guardRuntime $guardWorktree -LaunchId "00000000-0000-0000-0000-0000000000ac"
+  $guardOwners = Get-LiveDispatchOwnership $guardRuntime $providerTemp $container
+  Assert-True ($guardOwners.health.status -ceq "ok" -and
+    $guardOwners.health.counts.candidates -eq 1 -and
+    $guardOwners.health.counts.examined -eq 1 -and
+    $guardOwners.health.counts.truncated -eq 0 -and
+    @($guardOwners.activeLanes | Where-Object { $_.launchId -ceq $guardRecord.record.launchId }).Count -eq 1) "hosted ownership census reads only the synthetic runtime, never the poisoned default source (status=$($guardOwners.health.status) candidates=$($guardOwners.health.counts.candidates) examined=$($guardOwners.health.counts.examined) truncated=$($guardOwners.health.counts.truncated) diagnostics=$(@($guardOwners.health.diagnostics | ForEach-Object { $_.code }) -join ',') active=$(@($guardOwners.activeLanes | ForEach-Object { $_.launchId }) -join ','))"
+  Write-Output "CONTROL hosted-census-source syntheticCandidates=1 poisonedCandidates=2 PASS"
 
   $advancedWorktree = Add-ControlWorktree $identityMain "lane-01" "agent/issue-6263-registration-atomicity"
   $advancedRuntime = New-ControlRuntime "branch-advanced-runtime"
@@ -978,7 +1025,14 @@ try {
   }
   Remove-Item -LiteralPath $rootResolved -Recurse -Force -ErrorAction SilentlyContinue
 }
+}
 
+if (-not $Part) {
+  Invoke-DispatchOwnershipLocalSmoke
+}
+
+if (& $runSection 'portable-carrier') {
+try {
 # #9334: closed ordinary-author binding shape (interrupted-canonical-integration/v2).
 $ordinaryState = [ordered]@{branch='synthetic/9334';originalHead=('1'*40);onto=('2'*40);stoppedHead=('2'*40);stoppedCommit=('3'*40);oldBase=('4'*40);metadataSha256=('a'*64);indexSha256=('b'*64);stagesSha256=('c'*64);dirtySha256=('d'*64);stagedSha256=('e'*64);unstagedSha256=('f'*64)}
 $ordinaryBinding = [ordered]@{schemaVersion='interrupted-canonical-integration/v2'
@@ -1026,7 +1080,19 @@ try {
   $env:CHASE_SETS_ROUTING_LKG_PATH = Join-Path $staleRoutingRoot 'absent-lkg.json'
   $routingTestScope = Enter-RoutingDataTestScope
   try {
-    Test-7963ResumeCarrier 'ownership' | Tee-Object -Variable ownershipCarrierOutput
+    $priorFleetContainer = [string]$env:CHASE_SETS_TEST_FLEET_CONTAINER
+    try {
+      if ($Part -ceq 'portable-carrier') { $env:CHASE_SETS_TEST_FLEET_CONTAINER = $root }
+      Test-7963ResumeCarrier 'ownership' | Tee-Object -Variable ownershipCarrierOutput
+    } finally {
+      if ($Part -ceq 'portable-carrier') {
+        if ([string]::IsNullOrEmpty($priorFleetContainer)) {
+          Remove-Item Env:CHASE_SETS_TEST_FLEET_CONTAINER -ErrorAction SilentlyContinue
+        } else {
+          $env:CHASE_SETS_TEST_FLEET_CONTAINER = $priorFleetContainer
+        }
+      }
+    }
     $scopeRoot = [IO.Path]::GetFullPath($routingTestScope.root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     $childInputs = @($ownershipCarrierOutput | ForEach-Object { [regex]::Matches([string]$_, 'raw=(\S+)\.result\.json') } |
       ForEach-Object { "$($_.Groups[1].Value).input.json" } | Sort-Object -Unique | Where-Object { Test-Path -LiteralPath $_ })
@@ -1044,4 +1110,17 @@ try {
   $env:CHASE_SETS_ROUTING_DATA_ROOT = $ambientRouting.root
   $env:CHASE_SETS_ROUTING_LKG_PATH = $ambientRouting.lkg
   Remove-Item -LiteralPath $staleRoutingRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+} finally {
+  # The reducer section removes the root on its own path; the carrier part, which skips it, removes it here.
+  if ($Part -ceq 'portable-carrier') {
+    $carrierRootResolved = [IO.Path]::GetFullPath($root)
+    $carrierTempResolved = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
+    if ((Split-Path -Parent $carrierRootResolved).TrimEnd("\", "/") -ne $carrierTempResolved -or
+        (Split-Path -Leaf $carrierRootResolved) -notlike "dispatch-ownership-test-*") {
+      throw "refusing unsafe test cleanup target: $carrierRootResolved"
+    }
+    Remove-Item -LiteralPath $carrierRootResolved -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 }
