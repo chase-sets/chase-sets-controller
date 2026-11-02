@@ -411,7 +411,7 @@ function Invoke-ReaderInventory {
     @('invoke-heavy-verifier.ps1','Get-OwnerSnapshot','ReadAllText + ReadAllBytes','1','BOM-aware UTF8; schema6 strict UTF8, no BOM, 16384 bytes','Test-ThisOwner; release; reclaim'),
     @('controller-release-battery.ps1','Get-BatteryFleetLoad','Get-Content -Raw','3','BOM-aware UTF8 / ConvertFrom-Json','battery item runner'),
     @('controller-release-battery.ps1','Assert-BatteryAdmission','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-Json','battery admission poll'),
-    @('landed-integration-evidence.psm1','Get-FleetLoadObservation','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-RebaseJson','interrupted-integration-test-support.ps1:160,254,556,558'),
+    @('landed-integration-evidence.psm1','Get-FleetLoadObservation','ReadAllText','1','BOM-aware UTF8 / ConvertFrom-RebaseJson','interrupted-integration-test-support.ps1:161,255,557,559'),
     @('host-heavy-verifier.test.ps1','Wait-NativeOwner','Get-Content -Raw','3','BOM-aware UTF8 / ConvertFrom-Json','native fixture wait'),
     @('controller-install-lock.psm1','Get-ControllerInstallOwnerSnapshot','FileStream / MemoryStream','7','strict UTF8, no BOM / ConvertFrom-Json','installer dead-owner reclaim')
   )) {
@@ -453,12 +453,14 @@ function Invoke-ReaderInventory {
     'lane-priority.test.ps1'=@(41)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
     'landed-integration-dispatch.test.ps1'=@(540)
-    'interrupted-integration-test-support.ps1'=@(987)
+    'interrupted-integration-test-support.ps1'=@(988)
     'landed-integration-evidence-test-support.ps1'=@(245)
     'landed-integration-r3.test.ps1'=@(49)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(396,455,509,548)
+    # CI coverage reads the dispatch-ownership test source text, not an owner record.
+    'controller-ci-coverage.check.ps1'=@(142)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
