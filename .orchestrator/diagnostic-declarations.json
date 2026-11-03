@@ -37,6 +37,13 @@
       "path": ".tmp/10761-json-census/census-runner.mjs",
       "sha256": "1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce",
       "maxBudgetSeconds": 600
+    },
+    "json-census-cost-attribution": {
+      "enabled": true,
+      "kind": "standalone-node",
+      "path": ".tmp/10761-json-census-cost/diagnostic-runner.mjs",
+      "sha256": "50b2a18135f92913e162fc3ce97fd761361b181ec2b3c67aa23f4262ba8f3b42",
+      "maxBudgetSeconds": 600
     }
   }
 }

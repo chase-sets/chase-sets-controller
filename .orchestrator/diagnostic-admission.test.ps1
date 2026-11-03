@@ -1,7 +1,14 @@
 [CmdletBinding()]
-param()
+param(
+  [switch]$CostAttributionOnly,
+  [switch]$ExistingAdmissionOnly,
+  [switch]$JsonCensusOnly,
+  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All'
+)
 
 $ErrorActionPreference = 'Stop'
+if (([int][bool]$CostAttributionOnly + [int][bool]$ExistingAdmissionOnly + [int][bool]$JsonCensusOnly) -gt 1) { throw 'Select only one focused diagnostic-admission control set' }
+if ($CostPart -ne 'All' -and -not $CostAttributionOnly) { throw 'CostPart requires the explicit CostAttributionOnly focus' }
 $guard = Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'
 function Assert-True($Condition, [string]$Message) { if (-not $Condition) { throw "ASSERTION FAILED: $Message" } }
 function Start-TestChild([string[]]$Arguments, [hashtable]$Environment = @{}) {
@@ -46,12 +53,12 @@ Assert-True (($actualChromiumDependencies -join '|') -ceq ($expectedChromiumDepe
 Write-Output 'PASS release declaration staged-import-chromium-control dependencies=5 hashes=unchanged'
 $censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
 $censusReviewedSha256 = '1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce'
-Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run' -and
+Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run,json-census-cost-attribution' -and
   $censusDeclaration.enabled -eq $true -and $censusDeclaration.kind -ceq 'standalone-node' -and
   $censusDeclaration.path -ceq '.tmp/10761-json-census/census-runner.mjs' -and
   $censusDeclaration.sha256 -ceq $censusReviewedSha256 -and $censusDeclaration.maxBudgetSeconds -eq 600 -and
-  $censusDeclaration.PSObject.Properties.Name -cnotcontains 'dependencies') 'release declaration adds only json-census-five-run with its ignored path, reviewed bytes and 600-second cap'
-Write-Output 'PASS release declaration json-census-five-run names=3 path=1 sha256=1 maxBudget=600 dependencies=0'
+  $censusDeclaration.PSObject.Properties.Name -cnotcontains 'dependencies') 'release declaration retains json-census-five-run with its ignored path, reviewed bytes and 600-second cap'
+Write-Output 'PASS release declaration json-census-five-run names=4 path=1 sha256=1 maxBudget=600 dependencies=0'
 # The controller publishes the reviewed runner; the lane copies it unchanged to the declared seat path.
 $censusRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-runner.mjs'
 Assert-True ((Test-Path -LiteralPath $censusRunnerSource -PathType Leaf) -and
@@ -60,6 +67,16 @@ Write-Output 'PASS release declaration json-census-five-run committed-runner sha
 $replayDeclaration = $releaseDeclarations.manifestReplays.'10808-ac3-replay'
 Assert-True ($replayDeclaration.enabled -eq $false -and $replayDeclaration.kind -ceq 'manifest-replay' -and
   $replayDeclaration.path -ceq '' -and $replayDeclaration.sha256 -ceq '' -and $replayDeclaration.maxBudgetSeconds -eq 540) 'manifest replay ships disabled without invented product pins'
+$costDeclaration = $releaseDeclarations.diagnostics.'json-census-cost-attribution'
+$costReviewedSha256 = '50b2a18135f92913e162fc3ce97fd761361b181ec2b3c67aa23f4262ba8f3b42'
+$costRunnerSource = Join-Path $PSScriptRoot 'diagnostics/10761-json-census-cost-runner.mjs'
+Assert-True ($costDeclaration.enabled -eq $true -and $costDeclaration.kind -ceq 'standalone-node' -and
+  $costDeclaration.path -ceq '.tmp/10761-json-census-cost/diagnostic-runner.mjs' -and
+  $costDeclaration.sha256 -ceq $costReviewedSha256 -and $costDeclaration.maxBudgetSeconds -eq 600 -and
+  (@($costDeclaration.PSObject.Properties.Name) -join ',') -ceq 'enabled,kind,path,sha256,maxBudgetSeconds' -and
+  [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($costRunnerSource))).ToLowerInvariant() -ceq $costReviewedSha256 -and
+  -not [IO.File]::ReadAllText($costRunnerSource).Contains("`r")) 'cost-attribution declaration and published LF runner pin exact reviewed bytes, closed fields and 600-second cap'
+Write-Output 'PASS release declaration json-census-cost-attribution path=1 sha256=declared LF=1 maxBudget=600 dependencies=0'
 function Invoke-FixtureGit([string[]]$Arguments) {
   $output = @(& git -C $worktree @Arguments 2>&1); if ($LASTEXITCODE -ne 0) { throw "fixture git failed: $($output -join "`n")" }; return ($output -join "`n").Trim()
 }
@@ -770,11 +787,346 @@ fs.writeFileSync(fileURLToPath(import.meta.url).replace(/\.mjs$/, '.result.json'
   Write-Output 'PASS json-census-undeclared-must-refuse case-variant=73 suffixed=73 declaration-removed=73 body-side-effect=0'
 }
 
+function New-CostAttributionFixture([string]$Name) {
+  $seat=Join-Path $container "cost-$Name"
+  New-Item -ItemType Directory -Path $seat, (Join-Path $seat '.orchestrator/artifacts'), (Join-Path $seat '.tmp/10761-json-census-cost') -Force | Out-Null
+  $savedWorktree=$worktree
+  try {
+    $worktree=$seat
+    Invoke-FixtureGit @('init','--initial-branch=codex/test') | Out-Null
+    Invoke-FixtureGit @('config','user.name','Diagnostic Admission Test') | Out-Null
+    Invoke-FixtureGit @('config','user.email','diagnostic-admission@example.invalid') | Out-Null
+    Invoke-FixtureGit @('config','core.autocrlf','false') | Out-Null
+    [IO.File]::WriteAllText((Join-Path $seat '.gitignore'), "/.tmp/`n/.orchestrator/artifacts/`n")
+    $sourcePaths=@('scripts/check-structure/json-import-attributes.mjs','scripts/check-structure/json-import-attributes.test.mjs','scripts/lib/repo.mjs','scripts/lib/git-listing.mjs','packages/typescript-compiler-api/index.mjs','vitest.shared.mjs')
+    foreach ($relative in $sourcePaths) {
+      $destination=Join-Path $seat $relative
+      New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+      [IO.File]::WriteAllText($destination, "// Inert controller fixture, not product source.`n")
+    }
+    # Only this inert tracked module is imported by the runner copy. Modes vary
+    # through fixture inputs, never by changing runner operations or guards.
+    [IO.File]::WriteAllText((Join-Path $seat $sourcePaths[0]), @'
+import fs from 'node:fs';
+import childProcess from 'node:child_process';
+import { Session } from 'node:inspector/promises';
+const mode = process.env.COST_FIXTURE_MODE;
+const marker = process.env.DIAGNOSTIC_MARKER;
+fs.appendFileSync(`${marker}.imports`, 'import\n');
+if (mode === 'import-error') throw new Error('inert import error');
+if (mode === 'profile-error') {
+  const post = Session.prototype.post;
+  Session.prototype.post = function (method, ...args) {
+    if (method === 'Profiler.stop') throw new Error('inert profile stop error');
+    return post.call(this, method, ...args);
+  };
+}
+export function validateJsonImportAttributes(...args) {
+  if (args.length !== 0) throw new Error('census options are forbidden');
+  fs.appendFileSync(marker, 'census\n');
+  if (mode === 'duplicate' && fs.readFileSync(marker, 'utf8') === 'census\n') validateJsonImportAttributes();
+  if (mode === 'census-error') throw new Error('inert census error');
+  if (mode === 'cutoff') return new Promise(() => setInterval(() => {}, 1000));
+  if (mode === 'missing-evidence') return {};
+  if (mode === 'missing-work') return { inventory: { declarations: [], partition: {} }, violations: [] };
+  if (mode === 'guard') childProcess.execFileSync(process.execPath, ['-e', ''], { env: { ...process.env, NODE_OPTIONS: '' } });
+  fs.readFileSync(new URL('../lib/repo.mjs', import.meta.url));
+  fs.readdirSync(new URL('../lib/', import.meta.url));
+  fs.existsSync(new URL('../lib/repo.mjs', import.meta.url));
+  childProcess.execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true });
+  const work = {
+    schema: 'inert-work/v1',
+    gitSubprocesses: 1,
+    wholeTreeScans: 0,
+    fileReads: ['scripts/lib/repo.mjs'],
+    fullParses: [],
+    configParses: [],
+    indexCandidates: ['scripts/lib/repo.mjs'],
+    discoveredWorkspaces: [],
+    enrolledWorkspaces: [],
+    manifestCandidates: [],
+    sourceIndex: {
+      kind: 'git-index-source/v1', pathCount: 1, sourceCount: 1,
+      prefilterCount: 1, candidateCount: 1, candidates: ['scripts/lib/repo.mjs'],
+    },
+    closures: [{ seeds: ['scripts/lib/repo.mjs'], indexed: 1, relevant: ['scripts/lib/repo.mjs'], size: 1 }],
+    traversals: 1,
+    counts: { tracked: 6 },
+    retained: ['full', { nested: true }],
+  };
+  const result = { inventory: { work, declarations: [], partition: { inert: true } }, violations: [] };
+  if (mode === 'freeze-error') result.bad = new Proxy({}, { ownKeys() { throw new Error('inert freeze error'); } });
+  const inventory = result.inventory;
+  Object.defineProperty(result, 'inventory', { enumerable: true, get() {
+    fs.appendFileSync(`${marker}.freeze`, JSON.stringify({ rootFrozen: Object.isFrozen(result), workFrozen: Object.isFrozen(work), nestedFrozen: Object.isFrozen(work.counts) }) + '\n');
+    return inventory;
+  } });
+  return result;
+}
+'@)
+    Invoke-FixtureGit @('add','--all') | Out-Null
+    Invoke-FixtureGit @('commit','-m','inert census cost fixture') | Out-Null
+    $fixtureHead=Invoke-FixtureGit @('rev-parse','HEAD')
+    $remote=Join-Path $root "cost-$Name.git"
+    Invoke-FixtureGit @('init','--bare',$remote) | Out-Null
+    Invoke-FixtureGit @('remote','add','origin',$remote) | Out-Null
+    Invoke-FixtureGit @('push','origin','codex/test') | Out-Null
+    $source=[IO.File]::ReadAllText($costRunnerSource)
+    $candidate=$source
+    $replacements=@(
+      @('const root = "D:/Users/ToddS/Source/Repos/chase-sets/20261029-10761-impl-g1";', ('const root = ' + (ConvertTo-Json $seat.Replace('\','/') -Compress) + ';')),
+      @('const branch = "codex/10761-impl-g1";', 'const branch = "codex/test";'),
+      @('const head = "7c373870313a83e564ddae64e72cbc75354a64ab";', ('const head = "' + $fixtureHead + '";'))
+    )
+    foreach ($replacement in $replacements) {
+      Assert-True (([regex]::Matches($candidate,[regex]::Escape($replacement[0]))).Count -eq 1) 'cost-fixture-only-constants: each identity constant matched once'
+      $candidate=$candidate.Replace($replacement[0],$replacement[1])
+    }
+    $before=$source.Split("`n"); $after=$candidate.Split("`n")
+    $changed=@(for($i=0;$i -lt $before.Length;$i++){if($before[$i] -cne $after[$i]){$i}})
+    Assert-True ($before.Length -eq $after.Length -and ($changed -join ',') -ceq '11,12,13') 'cost-fixture-only-constants: exact line diff is root/branch/head and nothing else'
+    $entry=Join-Path $seat $costDeclaration.path
+    [IO.File]::WriteAllText($entry,$candidate,[Text.UTF8Encoding]::new($false))
+    Assert-True ((Invoke-FixtureGit @('status','--porcelain=v1','--untracked-files=all')) -ceq '') 'cost-fixture-only-constants: clean ignored runner fixture'
+    return [pscustomobject]@{ Seat=$seat; Head=$fixtureHead; Entry=$entry; Hash=(Get-Sha256 $entry); Prefix=$entry.Replace('.mjs',''); Remote=$remote }
+  } finally { $worktree=$savedWorktree }
+}
+function Write-CostAttributionDeclaration([string]$Hash = $costReviewedSha256) {
+  $declaration=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'diagnostic-declarations.json') -Raw | ConvertFrom-Json
+  $declaration.diagnostics.'json-census-cost-attribution'.sha256=$Hash
+  [IO.File]::WriteAllText($declarationPath,($declaration|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
+}
+function Assert-CostEvidence($Fixture, $Case) {
+  $result=Get-Content -LiteralPath "$($Fixture.Prefix).result.json" -Raw | ConvertFrom-Json
+  $events=@(Get-Content -LiteralPath "$($Fixture.Prefix).events.jsonl" | ForEach-Object { $_ | ConvertFrom-Json })
+  Assert-True ($Case.Result.Code -eq 0 -and $result.exit -eq 0 -and $result.terminal -ceq 'COMPLETED_DIAGNOSTIC_ONLY' -and
+    $result.claim -ceq 'DIAGNOSTIC_ONLY_NOT_AC4' -and $result.invocations -eq 1 -and
+    [IO.File]::ReadAllText($Case.Marker) -ceq "census`n" -and [IO.File]::ReadAllText("$($Case.Marker).imports") -ceq "import`n") 'cost-single-invocation: exactly one fresh import and one no-options census, never acceptance'
+  $identity=$result.admissionIdentity
+  $receipts=@(Get-ChildItem -LiteralPath (Join-Path $Fixture.Seat '.orchestrator/artifacts') -Filter 'host-heavy-diagnostic-*.json' -File)
+  Assert-True ($receipts.Count -eq 1) 'cost-receipt: exactly one canonical receipt'
+  $record=Get-Content -LiteralPath $receipts[0].FullName -Raw | ConvertFrom-Json
+  Assert-True ($identity.slotId -ceq $record.slot.lockId -and $identity.lane -ceq 'lane-test' -and $identity.worktree -ieq $Fixture.Seat -and
+    $identity.head -ceq $Fixture.Head -and $result.branch -ceq 'codex/test' -and $identity.entrySha256 -ceq $Fixture.Hash -and
+    $identity.diagnosticName -ceq 'json-census-cost-attribution' -and $record.diagnostic.name -ceq $identity.diagnosticName -and
+    $record.diagnostic.scriptPath -ceq $costDeclaration.path -and $record.diagnostic.sha256 -ceq $Fixture.Hash -and
+    $record.diagnostic.budgetSeconds -eq 600 -and $record.diagnostic.maxBudgetSeconds -eq 600 -and
+    $record.head -ceq $Fixture.Head -and $record.branch -ceq 'codex/test' -and $record.worktree -ieq $Fixture.Seat -and
+    $record.lane -ceq $identity.lane -and $record.nativeExit -eq 0 -and $record.exit -eq 0 -and -not $record.timedOut -and
+    $record.resultSha256 -ceq (Get-Sha256 "$($Fixture.Prefix).result.json") -and
+    @($record.modules | Where-Object { $_.path -ieq $Fixture.Entry -and $_.sha256 -ceq $Fixture.Hash }).Count -eq 1 -and
+    @($record.modules | Where-Object { $_.path -ieq (Join-Path $Fixture.Seat 'scripts/check-structure/json-import-attributes.mjs') }).Count -eq 1) 'cost-receipt: real slot/lane/seat/head/branch/digest/budget/result/module identities bind'
+  Assert-True (($result.before|ConvertTo-Json -Depth 10 -Compress) -ceq ($result.after|ConvertTo-Json -Depth 10 -Compress) -and
+    $result.before.pathCount -eq 7 -and @($result.before.sources).Count -eq 6 -and
+    $result.before.pathSetSha256 -cmatch '^[a-f0-9]{64}$' -and $result.before.indexEntriesSha256 -cmatch '^[a-f0-9]{64}$' -and
+    @($result.before.sources | Where-Object { $_.blob -cnotmatch '^[a-f0-9]{40}$' -or $_.diskSha256 -cnotmatch '^[a-f0-9]{64}$' }).Count -eq 0) 'cost-snapshots: unchanged clean source blob/disk/index/path-set identities'
+  Assert-True ((@($result.stages.PSObject.Properties.Name) -join ',') -ceq 'moduleImport,census,freeze' -and $events.Count -eq 8 -and
+    $events[0].terminal -ceq 'STARTED' -and $events[-1].terminal -ceq 'COMPLETED_DIAGNOSTIC_ONLY') 'cost-stages: separate import/census/freeze and terminal events'
+  foreach ($name in @('moduleImport','census','freeze')) {
+    $stage=$result.stages.$name
+    $stageEvents=@($events | Where-Object stage -CEQ $name)
+    Assert-True ($stage.terminal -ceq 'COMPLETED' -and $stage.durationMs -ge 0 -and
+      $stageEvents.Count -eq 2 -and $stageEvents[0].terminal -ceq 'STARTED' -and $null -eq $stageEvents[0].durationMs -and
+      $stageEvents[1].terminal -ceq 'COMPLETED' -and $stageEvents[1].durationMs -eq $stage.durationMs -and
+      $stage.profile.note -like 'Inclusive estimates overlap*' -and
+      (@($stage.profile.inclusiveSampledMicroseconds.PSObject.Properties.Name) -join ',') -ceq 'preprocessing,ast,resolution,closure,discovery,git,freeze') "cost-stages: $name has its own nonnegative completed duration and overlapping sampling disclaimer"
+  }
+  $expectedArtifacts=@('moduleImport.profile','moduleImport.io','census.profile','census.io','freeze.profile','freeze.io','work' | ForEach-Object { "diagnostic-runner.$_.json" })
+  Assert-True ((@($result.artifacts.path) -join ',') -ceq ($expectedArtifacts -join ',')) 'cost-artifacts: raw profiles, IO and full work receipt retained'
+  foreach ($artifact in $result.artifacts) {
+    $artifactPath=Join-Path (Split-Path -Parent $Fixture.Entry) $artifact.path
+    Assert-True ((Get-Sha256 $artifactPath) -ceq $artifact.sha256 -and (Get-Item -LiteralPath $artifactPath).Length -eq $artifact.bytes) 'cost-artifacts: every artifact byte length and hash binds'
+    $value=Get-Content -LiteralPath $artifactPath -Raw | ConvertFrom-Json
+    if ($artifact.path -like '*.profile.json') { Assert-True ($value.nodes.Count -gt 0 -and $value.endTime -ge $value.startTime) 'cost-artifacts: raw CPU profile is readable' }
+  }
+  $work=Get-Content -LiteralPath "$($Fixture.Prefix).work.json" -Raw | ConvertFrom-Json
+  Assert-True (($work|ConvertTo-Json -Depth 10 -Compress) -ceq ($result.work|ConvertTo-Json -Depth 10 -Compress) -and
+    $work.schema -ceq 'inert-work/v1' -and $work.traversals -eq 1 -and $work.counts.tracked -eq 6 -and $work.retained[1].nested -eq $true) 'cost-work: complete nested receipt retained, not a counts-only substitute'
+  $io=@(Get-Content -LiteralPath "$($Fixture.Prefix).census.io.json" -Raw | ConvertFrom-Json)
+  Assert-True (@($io | Where-Object { $_.method -ceq 'readFileSync' -and $_.path -ceq 'scripts/lib/repo.mjs' -and $_.returnedBytes -gt 0 }).Count -eq 1 -and
+    @($io | Where-Object method -CEQ 'readdirSync').Count -ge 1 -and @($io | Where-Object method -CEQ 'existsSync').Count -ge 1 -and
+    @($io | Where-Object { $_.method -ceq 'execFileSync' -and $_.command -ceq 'git' -and $_.calls -eq 1 }).Count -eq 1) 'cost-io: filesystem returned bytes/calls and Git meter survive wrappers'
+  $frozen=@(Get-Content -LiteralPath "$($Case.Marker).freeze" | ForEach-Object { $_ | ConvertFrom-Json })
+  Assert-True ($frozen.Count -gt 1 -and $frozen[0].rootFrozen -and $frozen[-1].rootFrozen -and $frozen[-1].workFrozen -and $frozen[-1].nestedFrozen) 'cost-freeze: exact helper deeply freezes result before post-freeze work access'
+}
+function Test-JsonCensusCostAttribution {
+  $source=[IO.File]::ReadAllText($costRunnerSource)
+  $freeze=@'
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+'@
+  Assert-True ($source.Contains($freeze.Replace("`r`n","`n")) -and
+    ([regex]::Matches($source,'censusModule\.validateJsonImportAttributes\(\)')).Count -eq 1 -and
+    ([regex]::Matches($source,'await stage\("census"')).Count -eq 1 -and
+    $source.Contains('await stage("freeze", () => deepFreeze(result))') -and
+    $source -cnotmatch 'startPreciseCoverage|takePreciseCoverage|run\.mjs|spawn\(|execFile\(|process\.binding|registerHooks|\.open\(' -and
+    $source.Contains('original[name].apply(this, args)') -and $source.Contains('original.execFileSync.apply(this, args)') -and
+    $source.Contains('syncBuiltinESMExports()') -and $source.Contains('import(pathToFileURL(path.join(root, sourcePaths[0])).href)') -and
+    $source.Contains('const workJson = JSON.stringify(result.inventory.work);') -and
+    $source.Contains('const work = workJson === undefined ? undefined : JSON.parse(workJson);') -and
+    $source.Contains('assertWorkEvidence(work);') -and $source.Contains('receipt.work = work;')) 'cost-source: one production call, no Vitest/test/five-run/coverage/loader/transformation/debug listener; exact helper and guarded original wrappers; mandatory work evidence is validated before publication'
+  Write-Output 'PASS cost-source one-call=1 options=0 helper=exact guards=retained precise-coverage=off product-execution=NOT_EXECUTED'
+  $scriptRelative=[string]$costDeclaration.path
+  if ($CostPart -in @('All','Admission')) {
+  $fixture=New-CostAttributionFixture 'success'
+  $worktree=$fixture.Seat; $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'; $head=$fixture.Head
+  $scriptRelative=[string]$costDeclaration.path; $scriptPath=$fixture.Entry; $scriptHash=$fixture.Hash
+  Write-CostAttributionDeclaration
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticSha256'=$costReviewedSha256; '-DiagnosticBudgetSeconds'='600' } 'cost-release-bytes' @{} 'json-census-cost-attribution') 'declared diagnostic SHA-256 does not match the script'
+  Write-CostAttributionDeclaration $scriptHash
+  $negatives=@(
+    @{ name='name-case'; override=@{'-Diagnostic'='JSON-census-cost-attribution'}; message='diagnostic name is not declared' },
+    @{ name='name-suffix'; override=@{'-Diagnostic'='json-census-cost-attribution-g4'}; message='diagnostic name is not declared' },
+    @{ name='path'; override=@{'-DiagnosticScriptPath'='.tmp/10761-json-census/census-runner.mjs'}; message='diagnostic script path does not match host declaration' },
+    @{ name='hash'; override=@{'-DiagnosticSha256'=('0'*64)}; message='diagnostic SHA-256 does not match host declaration' },
+    @{ name='budget'; override=@{'-DiagnosticBudgetSeconds'='601'}; message='diagnostic budget exceeds declared maximum' },
+    @{ name='missing-budget'; override=@{'-DiagnosticBudgetSeconds'=$null}; message='diagnostic budget is required' },
+    @{ name='head'; override=@{'-ClaimedHead'=('0'*40)}; message='supplied exact launch-time HEAD does not match the live Git HEAD' },
+    @{ name='branch'; override=@{'-Branch'='codex/wrong'}; message='supplied branch identity does not match the live Git branch' },
+    @{ name='missing-head'; override=@{'-ClaimedHead'=$null}; message='supply both the claimed branch and its exact launch-time HEAD' }
+  )
+  foreach ($negative in $negatives) {
+    $overrides=@{'-DiagnosticBudgetSeconds'='600'}; foreach($entry in $negative.override.GetEnumerator()){$overrides[$entry.Key]=$entry.Value}
+    $case=Invoke-Diagnostic $overrides "cost-$($negative.name)" @{} 'json-census-cost-attribution'
+    Assert-Refused $case $negative.message
+    Assert-True (-not (Test-Path -LiteralPath "$($case.Marker).imports")) 'cost-pre-census-refusal: inert module never imported'
+    Write-Output "PASS cost-admission case=$($negative.name) census=not-imported"
+  }
+  $tracked=Join-Path $worktree 'scripts/lib/repo.mjs'; $trackedBytes=[IO.File]::ReadAllBytes($tracked)
+  try {
+    [IO.File]::AppendAllText($tracked,'// dirty')
+    Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'cost-dirty' @{} 'json-census-cost-attribution') 'host verifier requires a clean exact-head worktree'
+  } finally { [IO.File]::WriteAllBytes($tracked,$trackedBytes) }
+  $entryBytes=[IO.File]::ReadAllBytes($scriptPath)
+  try {
+    [IO.File]::AppendAllText($scriptPath,'// drift')
+    Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'cost-byte-drift' @{} 'json-census-cost-attribution') 'declared diagnostic SHA-256 does not match the script'
+  } finally { [IO.File]::WriteAllBytes($scriptPath,$entryBytes) }
+  $case=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'cost-success' @{} 'json-census-cost-attribution'
+  Assert-CostEvidence $fixture $case
+  Write-Output 'PASS cost-canonical-route identity=bound budget=600 wrong-name-path-hash-head-branch=refused dirty=refused missing-identity=refused raw-profiles-IO-work=retained'
+  $evidenceBefore=@{}; foreach($file in Get-ChildItem -LiteralPath (Split-Path -Parent $scriptPath) -File){$evidenceBefore[$file.FullName]=Get-Sha256 $file.FullName}
+  Assert-Refused (Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } 'cost-prior-result' @{} 'json-census-cost-attribution') 'diagnostic result file already exists'
+  foreach($path in $evidenceBefore.Keys){Assert-True ((Get-Sha256 $path) -ceq $evidenceBefore[$path]) 'cost-exclusive-evidence: existing result/events/artifacts never overwritten'}
+  Write-Output 'PASS cost-exclusive-evidence prior-result=refused all-evidence-bytes=unchanged'
+  }
+
+  if ($CostPart -in @('All','Protocol','MissingWork')) {
+  $modes=if($CostPart -eq 'MissingWork'){@('missing-work')}else{@('duplicate','import-error','census-error','freeze-error','profile-error','missing-evidence','guard','prior-events','prior-artifact','unsafe-scratch','missing-slot','wrong-seat','stale-pushed-head','missing-work')}
+  foreach ($mode in $modes) {
+    $fixture=New-CostAttributionFixture $mode
+    $worktree=$fixture.Seat; $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'; $head=$fixture.Head
+    $scriptPath=$fixture.Entry; $scriptHash=$fixture.Hash
+    Write-CostAttributionDeclaration $scriptHash
+    $entryGuard=$testGuard
+    $retainedPath=$null
+    if ($mode -eq 'prior-events') { $retainedPath="$($fixture.Prefix).events.jsonl" }
+    if ($mode -eq 'prior-artifact') { $retainedPath="$($fixture.Prefix).moduleImport.profile.json" }
+    if ($retainedPath) { [IO.File]::WriteAllText($retainedPath,'earlier-evidence'); $retainedHash=Get-Sha256 $retainedPath }
+    $scratch=Join-Path (Split-Path -Parent $scriptPath) 'tmp'
+    if ($mode -eq 'unsafe-scratch') {
+      $outside=Join-Path $root 'cost-outside'; New-Item -ItemType Directory -Path $outside -Force | Out-Null
+      New-Item -ItemType Junction -Path $scratch -Target $outside | Out-Null
+    }
+    if ($mode -in @('missing-slot','wrong-seat')) {
+      $entryGuard=New-TestOnlyDiagnosticGuard "cost-$mode-guard"
+      $anchor='$start.Environment["CHASE_SETS_HEAVY_ADMISSION_CONFIG"] ='
+      $injection=if($mode -eq 'missing-slot'){'$start.Environment["CHASE_SETS_HEAVY_SLOT_ID"] = ""'}else{'$configuration.worktree = $container'}
+      Set-TestVerifierSubstitution $entryGuard $anchor ($injection + "`n    " + $anchor) "cost-$mode-canonical-identity-fixture"
+    }
+    if ($mode -eq 'stale-pushed-head') {
+      Invoke-FixtureGit @('commit','--allow-empty','-m','inert remote successor') | Out-Null
+      Invoke-FixtureGit @('push','origin','codex/test') | Out-Null
+      Invoke-FixtureGit @('switch','-c','codex/local-successor') | Out-Null
+      Invoke-FixtureGit @('branch','-f','codex/test',$head) | Out-Null
+      Invoke-FixtureGit @('switch','codex/test') | Out-Null
+    }
+    try { $case=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='600' } "cost-$mode" @{ COST_FIXTURE_MODE=$mode } 'json-census-cost-attribution' $entryGuard }
+    finally { if($mode -eq 'unsafe-scratch'){Remove-Item -LiteralPath $scratch -Force} }
+    if ($retainedPath) { Assert-True ((Get-Sha256 $retainedPath) -ceq $retainedHash) 'cost-exclusive-evidence: prior events or artifact retain exact bytes' }
+    $result=Get-Content -LiteralPath "$($fixture.Prefix).result.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+    if ($mode -eq 'duplicate') {
+      Assert-True ($case.Result.Code -eq 0 -and $result.invocations -eq 1 -and [IO.File]::ReadAllText($case.Marker) -ceq "census`ncensus`n") 'cost-duplicate-control: actual duplicate fixture reached, runner-side counter alone is insufficient'
+      $failed=$false
+      try { Assert-CostEvidence $fixture $case } catch {
+        if (-not $_.Exception.Message.StartsWith('ASSERTION FAILED: cost-single-invocation:')) { throw }
+        $failed=$true
+      }
+      Assert-True $failed 'cost-duplicate-control: independent inert census counter kills duplicate work'
+    } elseif ($mode -eq 'missing-work') {
+      $artifact=if(Test-Path -LiteralPath "$($fixture.Prefix).work.json"){[IO.File]::ReadAllText("$($fixture.Prefix).work.json").Trim()}else{'<absent>'}
+      Assert-True ($case.Result.Code -ne 0 -and $result.exit -ne 0 -and $result.terminal -cne 'COMPLETED_DIAGNOSTIC_ONLY') "cost-missing-work-must-refuse: absent inventory.work cannot complete a diagnostic (exit=$($case.Result.Code) terminal=$($result.terminal) work-artifact=$artifact)"
+    } else {
+      Assert-True ($case.Result.Code -ne 0) "cost-error-evidence: $mode cannot succeed (exit=$($case.Result.Code) stderr=$($case.Result.Stderr))"
+      if ($mode -in @('prior-events','unsafe-scratch','missing-slot','wrong-seat','stale-pushed-head')) {
+        Assert-True (-not(Test-Path -LiteralPath $case.Marker) -and -not(Test-Path -LiteralPath "$($case.Marker).imports")) "cost-pre-census-refusal: $mode never imports or invokes census"
+      }
+      if ($mode -in @('import-error','census-error','freeze-error','profile-error','missing-evidence','guard','prior-artifact','unsafe-scratch','stale-pushed-head')) {
+        Assert-True ($null -ne $result -and $result.exit -eq 1 -and $null -ne $result.error -and $result.terminal -in @('ERROR_DIAGNOSTIC_ONLY','ERROR_BEFORE_CENSUS')) "cost-error-evidence: $mode retains failure, never completion"
+      }
+      $errorStage=switch($mode){'import-error'{'moduleImport'} 'census-error'{'census'} 'freeze-error'{'freeze'} 'profile-error'{'moduleImport'} 'guard'{'census'} 'prior-artifact'{'moduleImport'}}
+      if ($errorStage) {
+        Assert-True ($result.stages.$errorStage.terminal -ceq 'ERROR' -and $result.stages.$errorStage.durationMs -ge 0) "cost-error-evidence: $mode records stage error separately"
+      }
+      if ($mode -eq 'guard') {
+        Assert-True ($result.error.message.Contains('NODE_OPTIONS lacks the diagnostic preload')) 'cost-guard-preservation: the meter still calls the canonical guarded child launcher'
+      }
+      if ($mode -in @('import-error','census-error','freeze-error','profile-error','missing-evidence','guard')) {
+        $expectedInvocations=if($mode -in @('import-error','profile-error')){0}else{1}
+        $events=@(Get-Content -LiteralPath "$($fixture.Prefix).events.jsonl" | ForEach-Object { $_ | ConvertFrom-Json })
+        Assert-True ($result.invocations -eq $expectedInvocations -and $events[-1].terminal -ceq 'ERROR_DIAGNOSTIC_ONLY' -and
+          $events[-1].invocations -eq $expectedInvocations -and $events[-1].exit -eq 1 -and
+          @($events | Where-Object terminal -CEQ 'COMPLETED_DIAGNOSTIC_ONLY').Count -eq 0) "cost-error-evidence: $mode retains exact invocation count and terminal error event"
+      }
+    }
+    Write-Output "PASS cost-protocol case=$mode real-route=1 fixture-only=1"
+  }
+  }
+  if ($CostPart -in @('All','Cutoff')) {
+  $fixture=New-CostAttributionFixture 'cutoff'
+  $worktree=$fixture.Seat; $artifactRoot=Join-Path $worktree '.orchestrator/artifacts'; $head=$fixture.Head
+  $scriptPath=$fixture.Entry; $scriptHash=$fixture.Hash
+  Write-CostAttributionDeclaration $scriptHash
+  $clock=New-DiagnosticClockFixture
+  $marker=Join-Path $root 'cost-cutoff.marker'
+  $arguments=@('-NoProfile','-NonInteractive','-File',$testGuard,'-Diagnostic','json-census-cost-attribution',
+    '-DiagnosticScriptPath',$scriptRelative,'-DiagnosticSha256',$scriptHash,'-DiagnosticBudgetSeconds','600',
+    '-Worktree',$worktree,'-Lane','lane-test','-Branch','codex/test','-ClaimedHead',$head,'-ContainerRoot',$container)
+  $started=Start-TestChild $arguments @{ DIAGNOSTIC_CLOCK_FIXTURE=$clock; DIAGNOSTIC_CLOCK_OBSERVED=(Join-Path $root 'cost-cutoff-clock-observed'); DIAGNOSTIC_MARKER=$marker; COST_FIXTURE_MODE='cutoff' }
+  try {
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    while (-not(Test-Path -LiteralPath $marker) -and -not $started.Process.HasExited -and $watch.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 25 }
+    Assert-True ((Test-Path -LiteralPath $marker) -and -not $started.Process.HasExited -and [IO.File]::ReadAllText($marker) -ceq "census`n") 'cost-cutoff-ready: one actual inert census is blocked before advancing clock'
+    Set-DiagnosticClock $clock ([DateTimeOffset]::UtcNow.AddSeconds(601))
+    Assert-True ($started.Process.WaitForExit(30000)) 'cost-cutoff-terminal: canonical route returns promptly after budget expiry'
+    $result=Complete-TestChild $started
+    $events=@(Get-Content -LiteralPath "$($fixture.Prefix).events.jsonl" | ForEach-Object { $_ | ConvertFrom-Json })
+    $censusEvents=@($events | Where-Object stage -CEQ 'census')
+    $records=@(Get-ChildItem -LiteralPath $artifactRoot -Filter 'host-heavy-diagnostic-*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json })
+    Assert-True ($result.Code -eq 124 -and $records.Count -eq 1 -and $records[0].timedOut -eq $true -and $records[0].exit -eq 124 -and
+      $records[0].diagnostic.name -ceq 'json-census-cost-attribution' -and $records[0].diagnostic.budgetSeconds -eq 600 -and
+      $censusEvents.Count -eq 1 -and $censusEvents[0].terminal -ceq 'STARTED' -and $null -eq $censusEvents[0].durationMs -and
+      @($events | Where-Object stage -CEQ 'freeze').Count -eq 0 -and
+      -not(Test-Path -LiteralPath "$($fixture.Prefix).result.json") -and -not(Test-Path -LiteralPath "$($fixture.Prefix).census.profile.json") -and
+      (Test-Path -LiteralPath "$($fixture.Prefix).moduleImport.profile.json") -and -not(Test-Path -LiteralPath $lockRoot)) 'cost-cutoff-evidence: exit 124 retains raw completed stage and unknown interrupted duration, never fabricates completion or result'
+    Write-Output 'PASS cost-cutoff real-route=1 budget=600 exit=124 completed-profile=retained census-duration=unknown freeze=not-started result=absent'
+  } finally { Stop-TestExactProcess $started.Process $started.StartTicks }
+  }
+}
+
 try {
   Assert-NoProductionDiagnosticClockSeam
   Assert-MutantDiagnosticClockSeamIsRejected
   $testGuard=New-TestOnlyDiagnosticGuard
   Write-Output "PASS fixture verifier clock substitution-count=$script:diagnosticClockSubstitutionCount"
+  if (-not $ExistingAdmissionOnly -and -not $JsonCensusOnly) { Test-JsonCensusCostAttribution }
+  if ($CostAttributionOnly) { return }
+  if ($JsonCensusOnly) { Test-JsonCensusDeclaration; return }
   Test-DiagnosticDescendantSnapshot
   Test-RepeatDiagnosticImports
   Test-IgnoredChromiumPackage
@@ -1066,4 +1418,7 @@ if (process.env.DIAGNOSTIC_LINGERING_DESCENDANT === '1') {
   $unsafe=Invoke-Diagnostic @{ '-DiagnosticScriptPath'=$safeRelative; '-DiagnosticSha256'=$safeHash } 'unsafe-receipt'
   Assert-True ($unsafe.Result.Code -eq 73 -and $unsafe.Result.Stderr.Trim() -ceq 'heavy-verifier: receipt directory is unsafe' -and -not (Test-Path (Join-Path $root 'unsafe-receipt.marker'))) 'unsafe receipt path is refused with exact text and diagnostic body is not run'
   Write-Output 'PASS diagnostic negative unsafe-receipt=1 exact-text=1 no-success=1'
-} finally { if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } }
+} finally {
+  Assert-True ([IO.Path]::GetFullPath($root).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) 'owned diagnostic cleanup stays inside its temporary fixture root'
+  if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+}
