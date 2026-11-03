@@ -276,9 +276,11 @@ landing-preflight/v1
     [void](Publish-Release "controller-v1.2.$replayFileNumber" {}); $replayFileNumber++
   }
   # A valid dead replay owner is reclaimed using exactly the ordinary protocol.
-  $deadReplay=$replayOwner.Clone(); $deadReplay.pid=2147483647; $deadReplay.processStartUtc='2020-01-01T00:00:00Z'
+  $deadReplay=[ordered]@{}; foreach ($entry in $replayOwner.GetEnumerator()) { $deadReplay[$entry.Key]=$entry.Value }; $deadReplay.pid=2147483647; $deadReplay.processStartUtc='2020-01-01T00:00:00Z'
   [void][IO.Directory]::CreateDirectory($nativeLock); [IO.File]::WriteAllText($ownerPath,($deadReplay|ConvertTo-Json -Compress))
-  $deadReplayInstall=Invoke-Installer "controller-v1.2.$($replayFileNumber-1)"
+  $deadReplayTag="controller-v1.2.$replayFileNumber"; $replayFileNumber++
+  [void](Publish-Release $deadReplayTag { Add-Content -LiteralPath (Join-Path $publisher '.orchestrator/native-db-admission.py') -Value 'dead replay heavy revision' })
+  $deadReplayInstall=Invoke-Installer $deadReplayTag
   Assert-True ($deadReplayInstall.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $nativeLock)) 'exact dead replay-owner reclaim admits restored release'
   Write-Output 'PASS replay installer: each authority-only delta heavy; live/unknown owners preserve bytes; each missing runtime refused; dead replay owner reclaimed'
 
@@ -323,6 +325,7 @@ landing-preflight/v1
     gate = 'verify:test'; commandIdentity = ('b' * 64); worktree = (Resolve-Path $container).Path
     head = $v12; identityMode = 'immutable-head'; state = 'started'; childPid = 2147483646; childProcessStartUtc = $deadStarted
   }
+  [void][IO.Directory]::CreateDirectory($nativeLock)
   [IO.File]::WriteAllText($ownerPath, ($deadOwner | ConvertTo-Json -Compress))
   [void](Publish-Release "controller-v1.3.2" { [IO.File]::WriteAllText((Join-Path $publisher '.orchestrator/install-controller-skills.ps1'), $installerText) })
   $reclaimed = Invoke-Installer 'controller-v1.3.2'

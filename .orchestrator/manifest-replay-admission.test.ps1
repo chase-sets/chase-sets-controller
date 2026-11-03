@@ -3,6 +3,7 @@ param([ValidateSet('All','Pair','Admission','Results','Lifecycle','Containment')
   [ValidateSet('','wrong-stage','text-only','missing','malformed','overflow')][string]$ResultCase='')
 $ErrorActionPreference='Stop'
 function Assert-Replay($Value,[string]$Message) { if (-not $Value) { throw "ASSERTION FAILED: $Message" } }
+$script:activeCalls=[Collections.Generic.List[object]]::new()
 if ($Scenario -ceq 'All') {
   $children=@(); $watch=[Diagnostics.Stopwatch]::StartNew()
   try {
@@ -48,12 +49,17 @@ function Start-Call([hashtable]$Overrides=@{},[string]$Phase='base') {
   foreach ($entry in $parameters.GetEnumerator()) { $start.ArgumentList.Add('-'+$entry.Key); if ($entry.Value -isnot [bool]) { $start.ArgumentList.Add([string]$entry.Value) } }
   foreach ($key in @('CHASE_SETS_HEAVY_SLOT_ID','CHASE_SETS_HEAVY_SLOT_TRANSPORT','CHASE_SETS_HEAVY_ADMISSION_CONFIG','NODE_OPTIONS')) { [void]$start.Environment.Remove($key) }
   $process=[Diagnostics.Process]::Start($start); [void]$process.Handle
-  return @{process=$process;output=$process.StandardOutput.ReadToEndAsync();errors=$process.StandardError.ReadToEndAsync()}
+  $call=@{process=$process;output=$process.StandardOutput.ReadToEndAsync();errors=$process.StandardError.ReadToEndAsync()}
+  $script:activeCalls.Add($call)
+  return $call
 }
 function Complete-Call($Call) {
-  if (-not $Call.process.WaitForExit(90000)) { $Call.process.Kill($true); [void]$Call.process.WaitForExit(2000); throw 'fixture foreground call exceeded 90s' }
-  $value=@{code=$Call.process.ExitCode;stdout=$Call.output.GetAwaiter().GetResult();stderr=$Call.errors.GetAwaiter().GetResult()}
-  $Call.process.Dispose(); return $value
+  try {
+    if (-not $Call.process.WaitForExit(90000)) { $Call.process.Kill($true); [void]$Call.process.WaitForExit(2000); throw 'fixture foreground call exceeded 90s' }
+    return @{code=$Call.process.ExitCode;stdout=$Call.output.GetAwaiter().GetResult();stderr=$Call.errors.GetAwaiter().GetResult()}
+  } finally {
+    $Call.process.Dispose(); [void]$script:activeCalls.Remove($Call)
+  }
 }
 function Call([hashtable]$Overrides=@{},[string]$Phase='base') { Complete-Call (Start-Call $Overrides $Phase) }
 function Refuses($Result,[string]$Name) {
@@ -96,9 +102,10 @@ if(behavior==='heavy-child') {
 }
 if(behavior==='overflow') { process.stdout.write('x'.repeat(9*1024*1024)); setInterval(()=>{},100); }
 if(behavior==='hang' || behavior==='spawn-exit') {
-  const child=spawn(process.execPath,['-e',"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},100)",path.join(path.dirname(spec.resultPath),'survivor.pid')],{stdio:'inherit'});
+  const child=spawn(process.env.ComSpec,['/c','ping','127.0.0.1','-n','100'],{stdio:'ignore'});
+  fs.writeFileSync(path.join(path.dirname(spec.resultPath),'survivor.pid'),String(child.pid));
   fs.writeFileSync(path.join(path.dirname(spec.resultPath),'barrier'),String(process.pid));
-  if(behavior==='spawn-exit') process.exit(0);
+  if(behavior==='spawn-exit') child.once('spawn',()=>setTimeout(()=>process.exit(0),1000));
   setInterval(()=>{},100);
 } else if(behavior==='child73') { process.exit(73); }
 else if(behavior==='missing') { console.log('PASS_PRECOMMIT_ONLY'); process.exit(0); }
@@ -138,8 +145,12 @@ function Substitute([string]$Old,[string]$New) {
 }
 function Wait-File([string]$Path,$Call) {
   $watch=[Diagnostics.Stopwatch]::StartNew()
-  while (-not (Test-Path -LiteralPath $Path) -and -not $Call.process.HasExited -and $watch.ElapsedMilliseconds -lt 20000) { Start-Sleep -Milliseconds 20 }
-  Assert-Replay (Test-Path -LiteralPath $Path) "barrier exists $Path $(if($Call.process.HasExited){$Call.errors.GetAwaiter().GetResult()})"
+  while (-not (Test-Path -LiteralPath $Path) -and -not $Call.process.HasExited -and $watch.ElapsedMilliseconds -lt 80000) { Start-Sleep -Milliseconds 20 }
+  if (-not (Test-Path -LiteralPath $Path)) {
+    if (-not $Call.process.HasExited) { $Call.process.Kill($true); [void]$Call.process.WaitForExit(3000) }
+    $stdout=$Call.output.GetAwaiter().GetResult(); $stderr=$Call.errors.GetAwaiter().GetResult()
+    throw "ASSERTION FAILED: barrier exists $Path stdout=$stdout stderr=$stderr"
+  }
 }
 try {
   [IO.File]::WriteAllText((Join-Path $seat '.gitignore'),".orchestrator/logs/`n.orchestrator/artifacts/`n")
@@ -239,18 +250,18 @@ try {
   Set-Package
   Substitute '    $job.Resume()' ('    [IO.File]::WriteAllText((Join-Path $script:replayEvidence "pre-resume.barrier"),"suspended")' + "`n" + '    Start-Sleep -Seconds 15' + "`n" + '    $job.Resume()')
   $suspended=Start-Call; Wait-File (Join-Path $script:evidence 'pre-resume.barrier') $suspended
-  $published=Get-Content (Join-Path $script:evidence 'base.start.json') -Raw | ConvertFrom-Json
+  $published=Get-Content (Join-Path $script:evidence 'base.start.json') -Raw | ConvertFrom-Json -DateKind String
   $exact=Get-Process -Id $published.childPid; [void]$exact.Handle
-  Assert-Replay ($exact.StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse($published.childProcessStartUtc).UtcTicks) 'pre-resume exact published identity'
+  Assert-Replay ($exact.StartTime.ToUniversalTime().Ticks -eq [DateTimeOffset]::Parse($published.childProcessStartUtc).UtcTicks) "pre-resume exact published identity actual=$($exact.StartTime.ToUniversalTime().ToString('o')) published=$($published.childProcessStartUtc)"
   $suspended.process.Kill(); [void]$suspended.process.WaitForExit(3000)
   Assert-Replay ($exact.WaitForExit(3000) -and -not (Test-Path -LiteralPath (Join-Path $script:evidence 'base.result.json'))) 'host loss before resume kills suspended payload without marker'
   $exact.Dispose(); $suspended.process.Dispose()
   # The dead owner is reclaimed by the real admission path of the next fixture.
   foreach ($behavior in @('hang','spawn-exit')) {
-    Set-Package $behavior; Substitute '$resumeMs+540000' '$resumeMs+1500'
+    Set-Package $behavior; Substitute '$resumeMs+540000' '$resumeMs+5000'
     $result=Call; Assert-Replay ($result.code -eq 124) "$behavior short deadline exits124 $($result.stderr)"
     $receipt=Receipt; Assert-Replay ($receipt.cleanupComplete -and $receipt.survivorsAfterCleanup -eq 0 -and $receipt.outcome -ceq 'timed-out') "$behavior exact Job cleanup"
-    $survivor=[int](Get-Content (Join-Path $script:evidence 'survivor.pid')); Assert-Replay (-not (Get-Process -Id $survivor -ErrorAction SilentlyContinue)) "$behavior no surviving descendant"
+    $survivorPath=Join-Path $script:evidence 'survivor.pid'; Assert-Replay (Test-Path -LiteralPath $survivorPath) "$behavior survivor pid published stdout=$($result.stdout) stderr=$($result.stderr)"; $survivor=[int](Get-Content $survivorPath); Assert-Replay (-not (Get-Process -Id $survivor -ErrorAction SilentlyContinue)) "$behavior no surviving descendant"
     Write-Output "PASS atomic Job $behavior timeout124 descendants=0"
   }
   Set-Package 'hang'; $runCall=Start-Call; Wait-File (Join-Path $script:evidence 'barrier') $runCall
@@ -265,5 +276,16 @@ try {
 } finally {
   $absolute=[IO.Path]::GetFullPath($root); $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
   if (-not $absolute.StartsWith($temp,[StringComparison]::OrdinalIgnoreCase)) { throw 'fixture cleanup escaped temp' }
-  if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+  foreach ($call in @($script:activeCalls)) {
+    try { if (-not $call.process.HasExited) { $call.process.Kill($true); [void]$call.process.WaitForExit(3000) } } catch {}
+    try { $call.process.Dispose() } catch {}
+  }
+  $script:activeCalls.Clear(); [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+  if (Test-Path -LiteralPath $root) {
+    $removed=$false
+    for ($attempt=0; $attempt -lt 50 -and -not $removed; $attempt++) {
+      try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop; $removed=$true } catch { Start-Sleep -Milliseconds 100 }
+    }
+    if (-not $removed -and (Test-Path -LiteralPath $root)) { throw 'fixture cleanup could not remove owned root after closing active calls' }
+  }
 }

@@ -88,11 +88,14 @@ function Get-ControllerInstallProcessIdentityState($ProcessId, [string]$StartIde
 }
 
 function Test-ControllerInstallOwnerShape($Record) {
-  if ($null -eq $Record -or $Record.schemaVersion -isnot [long] -or $Record.schemaVersion -notin @(2, 3, 4, 5)) { return $false }
+  if ($null -eq $Record) { return $false }
+  $schemaProperty = $Record.PSObject.Properties['schemaVersion']
+  if ($null -eq $schemaProperty -or $schemaProperty.Value -isnot [long] -or $schemaProperty.Value -notin @(2, 3, 4, 5)) { return $false }
+  $schemaVersion = [long]$schemaProperty.Value
   $legacyCommon = @('schemaVersion', 'lockId', 'owner', 'lane', 'branch', 'pid', 'processStartUtc', 'startedUtc', 'gate', 'commandIdentity')
-  $expected = if ($Record.schemaVersion -in @(2, 3)) {
+  $expected = if ($schemaVersion -in @(2, 3)) {
     @($legacyCommon) + @('state', 'childPid', 'childProcessStartUtc')
-  } elseif ($Record.schemaVersion -eq 4) {
+  } elseif ($schemaVersion -eq 4) {
     @($legacyCommon) + @('worktree', 'head', 'identityMode', 'state', 'childPid', 'childProcessStartUtc')
   } else {
     @($legacyCommon) + @('worktree', 'head', 'identityMode', 'state', 'childPid', 'childProcessStartUtc', 'admissionRoot')
@@ -103,8 +106,8 @@ function Test-ControllerInstallOwnerShape($Record) {
   foreach ($name in @('lockId', 'owner', 'lane', 'pid', 'processStartUtc', 'startedUtc', 'gate', 'commandIdentity')) {
     if ([string]::IsNullOrWhiteSpace([string]$Record.$name)) { return $false }
   }
-  if ($Record.schemaVersion -lt 4 -and [string]::IsNullOrWhiteSpace([string]$Record.branch)) { return $false }
-  if ($Record.schemaVersion -in @(4, 5)) {
+  if ($schemaVersion -lt 4 -and [string]::IsNullOrWhiteSpace([string]$Record.branch)) { return $false }
+  if ($schemaVersion -in @(4, 5)) {
     if ([string]::IsNullOrWhiteSpace([string]$Record.worktree) -or
         "$($Record.head)" -cnotmatch '^[a-f0-9]{40}$' -or
         $Record.identityMode -cnotin @('branch', 'immutable-head') -or
@@ -112,7 +115,7 @@ function Test-ControllerInstallOwnerShape($Record) {
         ($Record.identityMode -ceq 'immutable-head' -and $null -ne $Record.branch)) { return $false }
     try { if (-not [IO.Path]::IsPathFullyQualified([string]$Record.worktree)) { return $false } } catch { return $false }
   }
-  if ($Record.schemaVersion -eq 5) {
+  if ($schemaVersion -eq 5) {
     if ($Record.state -cne 'attached' -or [string]::IsNullOrWhiteSpace([string]$Record.admissionRoot)) { return $false }
     try {
       $root = [IO.Path]::GetFullPath([string]$Record.admissionRoot).TrimEnd('\', '/')
@@ -208,7 +211,7 @@ function Test-ControllerInstallPossibleOwnedChild($Record) {
 }
 
 function Test-ReclaimableOwner($Record) {
-  if (-not (Test-ControllerInstallOwnerShape $Record) -or $Record.schemaVersion -notin @(2, 3, 4, 5)) { return $false }
+  if (-not (Test-ControllerInstallOwnerShape $Record)) { return $false }
   if ((Get-ControllerInstallProcessIdentityState $Record.pid ([string]$Record.processStartUtc)) -cne 'dead') { return $false }
   if ($Record.state -in @('started', 'attached')) {
     $childState = Get-ControllerInstallProcessIdentityState $Record.childPid ([string]$Record.childProcessStartUtc)

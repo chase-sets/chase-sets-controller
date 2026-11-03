@@ -348,6 +348,7 @@ function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $nul
 
 trap {
   if ($isManifestReplay) {
+    try { Close-ReplaySourceStreams } catch {}
     [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
     exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
   }
@@ -647,6 +648,10 @@ function Open-ReplayPin([string]$Path, [string]$Expected, [int]$Maximum = 335544
     return $record
   } catch { $stream.Dispose(); throw }
 }
+function Close-ReplaySourceStreams {
+  foreach ($pin in @($script:replaySources.Values)) { try { $pin.stream.Dispose() } catch {} }
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+}
 function Read-ReplaySource($Pin, [int]$Maximum = 262144) {
   $stream = $Pin.stream
   if ($stream.Length -gt $Maximum) { throw 'heavy-verifier: replay input exceeds bound' }
@@ -698,6 +703,8 @@ function Invoke-ReplayGit([string[]]$Arguments) {
 }
 function Assert-ReplayPackage {
   $script:replaySources=[ordered]@{}; $script:replaySourceBytes=0
+  $packageComplete=$false
+  try {
   Assert-ReplayPath $container; Assert-ReplayPath $worktreeFull
   $declarationPath=Join-Path $PSScriptRoot 'diagnostic-declarations.json'
   $declarationPin=Open-ReplayPin $declarationPath '' 262144
@@ -769,6 +776,10 @@ function Assert-ReplayPackage {
     if (Test-Path -LiteralPath (Join-Path $script:replayEvidence "$ReplayPhase.$suffix")) { throw 'heavy-verifier: replay phase already claimed or evidence exists; no relaunch' }
   }
   Assert-ReplayPins
+  $packageComplete=$true
+  } finally {
+    if (-not $packageComplete) { Close-ReplaySourceStreams }
+  }
 }
 function Read-ReplayEvidence([string]$Path, [int]$Maximum=1048576) {
   Assert-ReplayPath $Path
