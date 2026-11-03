@@ -596,7 +596,7 @@ public sealed class ManifestReplayJob : IDisposable {
 }
 function Get-ReplayRemaining([int]$Maximum = 5000) {
   $remaining = 590000 - $script:replayEntryWatch.ElapsedMilliseconds
-  if ($remaining -le 0) { throw 'heavy-verifier: replay foreground deadline' }
+  if ($remaining -lt 1) { throw 'heavy-verifier: replay foreground deadline' }
   return [int][Math]::Min($Maximum, $remaining)
 }
 function Assert-ReplayPath([string]$Path) {
