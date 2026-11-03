@@ -14,7 +14,7 @@ $guardTokens=$null;$guardErrors=$null
 $guardAst=[Management.Automation.Language.Parser]::ParseInput($guard,[ref]$guardTokens,[ref]$guardErrors)
 Assert-True ($guardErrors.Count -eq 0) 'heavy-verifier priority source parses'
 $eligibilityCalls=@($guardAst.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Assert-HeavyCallerEligibility'},$true))
-Assert-True ($eligibilityCalls.Count -eq 6) 'every production eligibility call is present exactly once'
+Assert-True ($eligibilityCalls.Count -eq 8) 'every production eligibility call is present exactly once (six admission paths plus the manifest-replay acquisition and completion rechecks)'
 foreach($call in $eligibilityCalls){
   $scoped=$false
   for($parent=$call.Parent;$null -ne $parent;$parent=$parent.Parent){
