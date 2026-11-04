@@ -573,8 +573,43 @@ function Invoke-8102RetainedLeg([string]$Test,[string]$Label,[hashtable]$Edits,[
   Write-Host "CONTROL 8102 $Test $Label holder=$holderIdentity exit=$($run.exit) elapsedSeconds=$([int]$run.elapsedSeconds) measuredLines=$($measured.Count) finished=$finished stdout=$($run.stdoutPath) stderr=$($run.stderrPath)"
   return [pscustomobject]@{label=$Label;copy=$copy;run=$run;holder=$holderIdentity;measured=$measured;finished=$finished;exit=$run.exit;text=$text}
 }
+function Get-8102HeldCarrierExcerpt([string]$Text) {
+  # Only this stable refusal family is safe to retain. Do not copy native
+  # stream text: it can contain paths, environment values, secrets or stack data.
+  if($null -ne $Text -and $Text.IndexOf('INTEGRATION_RESUME_PRIOR_OWNER',[StringComparison]::Ordinal)-ge0){
+    return 'INTEGRATION_RESUME_PRIOR_OWNER'
+  }
+  return $null
+}
+function Format-8102HeldCarrierDiagnostic($Leg) {
+  $maxStreamBytes=1024
+  if($null -eq $Leg -or $Leg.label-cne'phantom-root-held'-or$null -eq $Leg.run){throw 'held carrier diagnostic input unavailable'}
+  $streams=[ordered]@{}
+  foreach($name in @('stdout','stderr')){
+    $text=$Leg.run.$name
+    if($text-isnot[string]){throw 'held carrier diagnostic stream unavailable'}
+    $bytes=[Text.Encoding]::UTF8.GetByteCount($text)
+    $streams[$name]=[ordered]@{bytes=$bytes;truncated=($bytes-gt$maxStreamBytes);excerpt=(Get-8102HeldCarrierExcerpt $text)}
+  }
+  $line=[ordered]@{exit=[int]$Leg.exit;stdout=$streams.stdout;stderr=$streams.stderr}|ConvertTo-Json -Compress -Depth 4
+  $lineBytes=[Text.Encoding]::UTF8.GetByteCount($line)
+  if($lineBytes-gt2048){throw 'held carrier diagnostic exceeds UTF-8 byte bound'}
+  return "8102_HELD_CARRIER $line"
+}
+function Write-8102HeldCarrierDiagnostic($Leg) {
+  try {
+    $line=Format-8102HeldCarrierDiagnostic $Leg
+    if([Text.Encoding]::UTF8.GetByteCount($line)-gt2048){throw 'held carrier diagnostic exceeds UTF-8 byte bound'}
+    [Console]::Error.WriteLine($line)
+  } catch {
+    try{[Console]::Error.WriteLine('8102_HELD_CARRIER_UNAVAILABLE')}catch{}
+  }
+}
 function Assert-8102([bool]$Condition,[string]$Test,[string]$Name,$Leg) {
-  if(-not$Condition){throw "8102 $Test ASSERTION FAILED: $Name; leg=$($Leg.label) exit=$($Leg.exit) stdout=$($Leg.run.stdoutPath) stderr=$($Leg.run.stderrPath)"}
+  if(-not$Condition){
+    if($null -ne $Leg-and$Leg.label-ceq'phantom-root-held'){Write-8102HeldCarrierDiagnostic $Leg}
+    throw "8102 $Test ASSERTION FAILED: $Name; leg=$($Leg.label) exit=$($Leg.exit) stdout=$($Leg.run.stdoutPath) stderr=$($Leg.run.stderrPath)"
+  }
   Write-Output "PROOF 8102 $Test $Name"
 }
 
