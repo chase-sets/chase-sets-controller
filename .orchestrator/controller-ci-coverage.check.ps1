@@ -595,7 +595,7 @@ function Assert-R3HeldCarrierDiagnostics([string]$Source) {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
   Assert-Ci ($errors.Count-eq0) 'r3 held-carrier diagnostics source parse failed'
-  $names=@('Get-8102HeldCarrierExcerpt','Format-8102HeldCarrierDiagnostic','Write-8102HeldCarrierDiagnostic','Assert-8102')
+  $names=@('Get-8102HeldCarrierFacts','Get-8102HeldPairFacts','Format-8102HeldCarrierDiagnostic','Write-8102HeldCarrierDiagnostic','Assert-8102')
   foreach($name in $names){
     $functions=@($ast.FindAll({param($n) $n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq$name},$true))
     Assert-Ci ($functions.Count-eq1) "r3 held-carrier diagnostics helper missing or duplicated: $name"
@@ -604,26 +604,38 @@ function Assert-R3HeldCarrierDiagnostics([string]$Source) {
   Assert-Ci ($Source.Contains("if(`$null -ne `$Leg-and`$Leg.label-ceq'phantom-root-held'){Write-8102HeldCarrierDiagnostic `$Leg}")) 'held-carrier diagnostics call was removed or widened'
   Assert-Ci ($Source.Contains('[Console]::Error.WriteLine($line)')-and$Source.Contains("[Console]::Error.WriteLine('8102_HELD_CARRIER_UNAVAILABLE')")) 'held-carrier diagnostics must publish only to stderr and fail closed'
   Assert-Ci ($Source.Contains('[Text.Encoding]::UTF8.GetByteCount($text)')-and$Source.Contains('if($lineBytes-gt2048){throw')) 'held-carrier diagnostics lost UTF-8 byte bounds'
-  Assert-Ci ($Source.Contains("excerpt=(Get-8102HeldCarrierExcerpt `$text)")) 'held-carrier diagnostics copied an unallowlisted stream excerpt'
-  $secret='synthetic-bearer-never-valid';$path='C:\Users\Todd\synthetic\held-secret.txt';$unicode='界'*2000
-  $stdout="$path`nraw=$secret`n$unicode"
-  $stderr="INTEGRATION_RESUME_PRIOR_OWNER: live root $path`nAuthorization: Bearer $secret`n$unicode"
-  $leg=[pscustomobject]@{label='phantom-root-held';exit=75;run=[pscustomobject]@{stdout=$stdout;stderr=$stderr;stdoutPath=$path;stderrPath=(Join-Path $path 'stderr')}}
+  Assert-Ci ($Source.Contains("facts=(Get-8102HeldCarrierFacts `$text)")-and$Source.Contains('$pair=Get-8102HeldPairFacts $Leg.pair')) 'held-carrier diagnostics copied unallowlisted stream text or dropped pair projection'
+  $secret='synthetic-bearer-never-valid';$path='C:\Users\Todd\synthetic\held-secret.txt';$unicode=([string][char]0x754C)*2000
+  $stdout="EXCEPTION 7963 retained retained retry binds its current full index independent omitted guard actual exit=1 expected=0 plan=RAN harness=NOTRUN all target/runtime bytes=UNCHANGED raw=$path`nRETAINED 7963 retained native objects, stage bodies, entry snapshots and source evidence: $path; finished=False`n$unicode"
+  $stderr="R3_PRIOR_TEARDOWN: ambiguous root`nAuthorization: Bearer $secret`n$unicode"
+  $pair=[pscustomobject]@{name='retained retry binds its current full index';mutantExit=1;fleetLoad=[pscustomobject]@{held=$true}}
+  $leg=[pscustomobject]@{label='phantom-root-held';exit=1;pair=$pair;run=[pscustomobject]@{stdout=$stdout;stderr=$stderr;stdoutPath=$path;stderrPath=(Join-Path $path 'stderr')}}
   $previousError=[Console]::Error;$errorCapture=[IO.StringWriter]::new()
   try {
     [Console]::SetError($errorCapture)
     $LASTEXITCODE=19
     $failure=$null;try{Assert-8102 $false 'synthetic-held' 'original failure' $leg}catch{$failure=$_.Exception.Message}
-    $expected="8102 synthetic-held ASSERTION FAILED: original failure; leg=phantom-root-held exit=75 stdout=$path stderr=$(Join-Path $path 'stderr')"
+    $expected="8102 synthetic-held ASSERTION FAILED: original failure; leg=phantom-root-held exit=1 stdout=$path stderr=$(Join-Path $path 'stderr')"
     Assert-Ci ($failure-ceq$expected-and$LASTEXITCODE-eq19) 'held diagnostic changed the original assertion failure or exit code'
     $line=$errorCapture.ToString().TrimEnd("`r","`n");$prefix='8102_HELD_CARRIER '
     Assert-Ci ($line.StartsWith($prefix,[StringComparison]::Ordinal)-and[Text.Encoding]::UTF8.GetByteCount($line)-le2048) 'held diagnostic missing prefix or exceeding UTF-8 byte bound'
     Assert-Ci (-not$line.Contains($secret)-and-not$line.Contains($path)-and-not$line.Contains('root=')-and-not$line.Contains('raw=')) 'held diagnostic leaked secret/path/free-form payload'
     $payload=$line.Substring($prefix.Length)|ConvertFrom-Json
     $expectedStdoutBytes=[Text.Encoding]::UTF8.GetByteCount($stdout);$expectedStderrBytes=[Text.Encoding]::UTF8.GetByteCount($stderr)
-    Assert-Ci ($payload.exit-eq75-and$payload.stdout.bytes-eq$expectedStdoutBytes-and$payload.stderr.bytes-eq$expectedStderrBytes-and
-      $payload.stdout.truncated-and$payload.stderr.truncated-and$null-eq$payload.stdout.excerpt-and
-      $payload.stderr.excerpt-ceq'INTEGRATION_RESUME_PRIOR_OWNER') 'held diagnostic lost stream byte counts, truncation state or allowlisted refusal token'
+    Assert-Ci ($payload.exit-eq1-and$payload.stdout.bytes-eq$expectedStdoutBytes-and$payload.stderr.bytes-eq$expectedStderrBytes-and
+      $payload.stdout.overLimit-and$payload.stderr.overLimit-and
+      $payload.stdout.facts.exception-and$payload.stdout.facts.proofName-ceq'retained retry binds its current full index'-and
+      $payload.stdout.facts.omittedGuardExit-eq1-and$payload.stdout.facts.finished-eq$false-and
+      $payload.stderr.facts.teardownReason-ceq'R3_PRIOR_TEARDOWN: ambiguous root' -and
+      $payload.pair.mutantExit-eq1-and$payload.pair.fleetLoadHeld) 'held diagnostic lost bounded carrier families, pair evidence or UTF-8 byte counts'
+    $facts=Get-8102HeldCarrierFacts "EXCEPTION 7963 retained retained retry binds its current full index candidate exit=1 plan/body=NOTRUN`nMEASURED_LOAD 7963 retained fleetHolder=synthetic elapsedSeconds=30 discriminator=retained retry binds its current full index mutantExit=1 raw=$path`nRETAINED 7963 retained native objects, stage bodies, entry snapshots and source evidence: $path; finished=True`nINTEGRATION_RESUME_PRIOR_OWNER: live root"
+    Assert-Ci ($facts.candidateExit-eq1-and$facts.measuredLoad-and$facts.finished-and$facts.resumeReason-ceq'INTEGRATION_RESUME_PRIOR_OWNER: live root') 'carrier reason/exit families were not projected from realistic controller output'
+    $unrelated=[pscustomobject]@{label='phantom-root-held';exit=1;pair=$null;run=[pscustomobject]@{stdout='EXCEPTION 7963 retained R3_PRIOR_TEARDOWN: native inventory unavailable STACK controller stack';stderr='R3_PRIOR_TEARDOWN: native inventory unavailable';stdoutPath=$path;stderrPath=(Join-Path $path 'stderr')}}
+    $unrelatedPayload=(Format-8102HeldCarrierDiagnostic $unrelated).Substring($prefix.Length)|ConvertFrom-Json
+    Assert-Ci ($unrelatedPayload.stdout.facts.teardownReason-ceq'R3_PRIOR_TEARDOWN: native inventory unavailable'-and$null-eq$unrelatedPayload.pair) 'realistic refusal and teardown carrier failures were not distinguishable'
+    function Get-8102HeldCarrierFacts { return [ordered]@{exception=$true;proofName=('x'*3000);candidateExit=$null;omittedGuardExit=$null;teardownReason=$null;resumeReason=$null;measuredLoad=$false;finished=$null} }
+    $overflowFailure=$null;try{Format-8102HeldCarrierDiagnostic $leg|Out-Null}catch{$overflowFailure=$_.Exception.Message}
+    Assert-Ci ($overflowFailure-ceq'held carrier diagnostic exceeds UTF-8 byte bound') 'oversized projected carrier facts did not fail closed at the UTF-8 line bound'
     [void]$errorCapture.GetStringBuilder().Clear()
     $vacant=$leg|Select-Object *;$vacant.label='phantom-root-vacant'
     $vacantFailure=$null;try{Assert-8102 $false 'synthetic-vacant' 'vacant failure' $vacant}catch{$vacantFailure=$_.Exception.Message}
@@ -632,7 +644,7 @@ function Assert-R3HeldCarrierDiagnostics([string]$Source) {
     $LASTEXITCODE=19
     $formatterFailure=$null;try{& { function Format-8102HeldCarrierDiagnostic { throw 'synthetic formatter failure' };Assert-8102 $false 'synthetic-held' 'original failure' $leg }}catch{$formatterFailure=$_.Exception.Message}
     Assert-Ci ($formatterFailure-ceq$expected-and$LASTEXITCODE-eq19-and$errorCapture.ToString().Trim()-ceq'8102_HELD_CARRIER_UNAVAILABLE') 'formatter failure did not preserve the original assertion/exit or fail closed'
-    [void]$errorCapture.GetStringBuilder().Clear();Assert-8102 $true 'synthetic-held' 'no failure' $leg
+    [void]$errorCapture.GetStringBuilder().Clear();[void](Assert-8102 $true 'synthetic-held' 'no failure' $leg)
     Assert-Ci ($errorCapture.ToString()-ceq'') 'successful held assertion published diagnostics'
   } finally { [Console]::SetError($previousError);$errorCapture.Dispose() }
 }
@@ -641,14 +653,15 @@ $heldDiagnosticMutants=@(
   @('if($null -ne $Leg-and$Leg.label-ceq''phantom-root-held''){Write-8102HeldCarrierDiagnostic $Leg}','if($false){Write-8102HeldCarrierDiagnostic $Leg}'),
   @('if($lineBytes-gt2048){throw ''held carrier diagnostic exceeds UTF-8 byte bound''}','if($false){throw ''held carrier diagnostic exceeds UTF-8 byte bound''}'),
   @('[Console]::Error.WriteLine($line)','[Console]::Out.WriteLine($line)'),
-  @('excerpt=(Get-8102HeldCarrierExcerpt $text)','excerpt=$text'),
+  @('facts=(Get-8102HeldCarrierFacts $text)','facts=$text'),
+  @('overLimit=($bytes-gt$maxStreamBytes)','overLimit=$false'),
   @('throw "8102 $Test ASSERTION FAILED: $Name; leg=$($Leg.label) exit=$($Leg.exit) stdout=$($Leg.run.stdoutPath) stderr=$($Leg.run.stderrPath)"','return')
 )
 foreach($mutant in $heldDiagnosticMutants){
-  Assert-Ci ($r3Source.Contains($mutant[0])) "r3 held-carrier diagnostic mutant anchor missing: $($mutant[0])"
+  Assert-Ci (([regex]::Matches($r3Source,[regex]::Escape($mutant[0]))).Count-eq1) "r3 held-carrier diagnostic mutant anchor missing or duplicated: $($mutant[0])"
   Refuses-Coverage { Assert-R3HeldCarrierDiagnostics $r3Source.Replace($mutant[0],$mutant[1]) }
 }
-Write-Output 'PASS r3 held-carrier diagnostics: failure-only stderr publication, allowlisted refusal token, secret/path suppression, UTF-8 bounds and original failure preservation; removal, unbounded, stdout, unredacted and swallowed-throw mutants refused'
+Write-Output 'PASS r3 held-carrier diagnostics: failure-only stderr publication, closed carrier/pair projections, secret/path suppression, UTF-8 bounds and original failure preservation; removal, unbounded, stdout, unredacted, over-limit and swallowed-throw mutants refused'
 # Keep the full proof/helper source immutable: only entrypoint routing changes.
 $completedBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','1238d8ae56ba7142013a2c0076a7349b1d569266'))
 $completedSupport=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1'))

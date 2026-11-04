@@ -569,17 +569,77 @@ function Invoke-8102RetainedLeg([string]$Test,[string]$Label,[hashtable]$Edits,[
   $measured=@($lines|Where-Object{$_-clike'MEASURED_LOAD *'})
   $finished=[bool]@($lines|Where-Object{$_-clike'RETAINED 7963 retained *finished=True'}).Count
   $text=$run.stdout+"`n"+$run.stderr
+  $pair=$null
+  $pairFiles=@(Get-ChildItem -LiteralPath (Join-Path $copy.runtime 'artifacts') -Filter '*.pair.json' -File -ErrorAction SilentlyContinue)
+  foreach($pairFile in $pairFiles){
+    try {
+      $candidatePair=Get-Content -LiteralPath $pairFile.FullName -Raw|ConvertFrom-Json
+      if($candidatePair.name-ceq'retained retry binds its current full index'){$pair=$candidatePair;break}
+    } catch { $pair=$null }
+  }
   # Write-Host keeps the leg object the function's only pipeline output.
   Write-Host "CONTROL 8102 $Test $Label holder=$holderIdentity exit=$($run.exit) elapsedSeconds=$([int]$run.elapsedSeconds) measuredLines=$($measured.Count) finished=$finished stdout=$($run.stdoutPath) stderr=$($run.stderrPath)"
-  return [pscustomobject]@{label=$Label;copy=$copy;run=$run;holder=$holderIdentity;measured=$measured;finished=$finished;exit=$run.exit;text=$text}
+  return [pscustomobject]@{label=$Label;copy=$copy;run=$run;pair=$pair;holder=$holderIdentity;measured=$measured;finished=$finished;exit=$run.exit;text=$text}
 }
-function Get-8102HeldCarrierExcerpt([string]$Text) {
-  # Only this stable refusal family is safe to retain. Do not copy native
-  # stream text: it can contain paths, environment values, secrets or stack data.
-  if($null -ne $Text -and $Text.IndexOf('INTEGRATION_RESUME_PRIOR_OWNER',[StringComparison]::Ordinal)-ge0){
-    return 'INTEGRATION_RESUME_PRIOR_OWNER'
+function Get-8102HeldCarrierFacts([string]$Text) {
+  $facts=[ordered]@{exception=$false;proofName=$null;candidateExit=$null;omittedGuardExit=$null;teardownReason=$null;resumeReason=$null;measuredLoad=$false;finished=$null}
+  if($null -eq $Text){return $facts}
+  $teardownReasons=@(
+    'R3_PRIOR_TEARDOWN: owned producer identity differs',
+    'R3_PRIOR_TEARDOWN: release outside fixture',
+    'R3_PRIOR_TEARDOWN: native inventory unavailable',
+    'R3_PRIOR_TEARDOWN: native inventory incomplete',
+    'R3_PRIOR_TEARDOWN: ambiguous root',
+    'R3_PRIOR_TEARDOWN: live root without terminal producer',
+    'R3_PRIOR_TEARDOWN: descendant inventory unavailable',
+    'R3_PRIOR_TEARDOWN: ambiguous descendant',
+    'R3_PRIOR_TEARDOWN: live descendant without terminal producer'
+  )
+  $resumeReasons=@(
+    'INTEGRATION_RESUME_PRIOR_OWNER: live root',
+    'INTEGRATION_RESUME_PRIOR_OWNER: incomplete native process inventory',
+    'INTEGRATION_RESUME_PRIOR_OWNER: ambiguous root',
+    'INTEGRATION_RESUME_PRIOR_OWNER: possible descendant',
+    'INTEGRATION_RESUME_PRIOR_OWNER: ambiguous descendant',
+    'INTEGRATION_RESUME_OWNER: rival owner',
+    'INTEGRATION_RESUME_STATE: stale or unrelated bytes',
+    'INTEGRATION_RESUME_ROUTE: exact eligible implementation route required',
+    'INTEGRATION_RESUME_SOURCE: changed binding',
+    'INTEGRATION_RESUME_SOURCE: canonical helper conflict absent or ambiguous',
+    'INTEGRATION_RESUME_SOURCE: closed checkpoint state',
+    'INTEGRATION_RESUME_SOURCE: retained stop causality',
+    'INTEGRATION_RESUME_REMOTE: original branch/PR changed',
+    'INTEGRATION_RESUME_GIT_UNKNOWN: redirected GIT_ALTERNATE_OBJECT_DIRECTORIES'
+  )
+  $proofNames=@('retained retry binds its current full index')
+  foreach($line in @($Text -split "\r?\n")){
+    if($line.StartsWith('EXCEPTION 7963 retained ',[StringComparison]::Ordinal)){
+      $facts.exception=$true
+      foreach($proofName in $proofNames){
+        if($line.StartsWith("EXCEPTION 7963 retained $proofName ",[StringComparison]::Ordinal)){$facts.proofName=$proofName;break}
+      }
+    }
+    foreach($reason in $teardownReasons){if($line.Contains($reason,[StringComparison]::Ordinal)){$facts.teardownReason=$reason;break}}
+    foreach($reason in $resumeReasons){if($line.Contains($reason,[StringComparison]::Ordinal)){$facts.resumeReason=$reason;break}}
+    if($line.StartsWith('MEASURED_LOAD 7963 retained ',[StringComparison]::Ordinal)){$facts.measuredLoad=$true}
+    $match=[regex]::Match($line,'^RETAINED 7963 retained .*; finished=(True|False)$')
+    if($match.Success){$facts.finished=($match.Groups[1].Value-ceq'True')}
+    $match=[regex]::Match($line,'\bcandidate exit=(\d+)\b')
+    if($match.Success){$facts.candidateExit=[int]$match.Groups[1].Value}
+    $match=[regex]::Match($line,'\bindependent omitted guard actual exit=(\d+)\b')
+    if($match.Success){$facts.omittedGuardExit=[int]$match.Groups[1].Value}
   }
-  return $null
+  return $facts
+}
+function Get-8102HeldPairFacts($Pair) {
+  if($null -eq $Pair){return $null}
+  if($Pair.name-cne'retained retry binds its current full index'){throw 'held carrier pair name unavailable'}
+  $facts=[ordered]@{mutantExit=$null;fleetLoadHeld=$null}
+  if($null -eq $Pair.mutantExit){throw 'held carrier pair mutant exit unavailable'}
+  $facts.mutantExit=[int]$Pair.mutantExit
+  if($null -eq $Pair.fleetLoad-or$null -eq $Pair.fleetLoad.held-or$Pair.fleetLoad.held-isnot[bool]){throw 'held carrier pair fleet-load state unavailable'}
+  $facts.fleetLoadHeld=[bool]$Pair.fleetLoad.held
+  return $facts
 }
 function Format-8102HeldCarrierDiagnostic($Leg) {
   $maxStreamBytes=1024
@@ -589,9 +649,10 @@ function Format-8102HeldCarrierDiagnostic($Leg) {
     $text=$Leg.run.$name
     if($text-isnot[string]){throw 'held carrier diagnostic stream unavailable'}
     $bytes=[Text.Encoding]::UTF8.GetByteCount($text)
-    $streams[$name]=[ordered]@{bytes=$bytes;truncated=($bytes-gt$maxStreamBytes);excerpt=(Get-8102HeldCarrierExcerpt $text)}
+    $streams[$name]=[ordered]@{bytes=$bytes;overLimit=($bytes-gt$maxStreamBytes);facts=(Get-8102HeldCarrierFacts $text)}
   }
-  $line=[ordered]@{exit=[int]$Leg.exit;stdout=$streams.stdout;stderr=$streams.stderr}|ConvertTo-Json -Compress -Depth 4
+  $pair=Get-8102HeldPairFacts $Leg.pair
+  $line=[ordered]@{exit=[int]$Leg.exit;stdout=$streams.stdout;stderr=$streams.stderr;pair=$pair}|ConvertTo-Json -Compress -Depth 6
   $lineBytes=[Text.Encoding]::UTF8.GetByteCount($line)
   if($lineBytes-gt2048){throw 'held carrier diagnostic exceeds UTF-8 byte bound'}
   return "8102_HELD_CARRIER $line"
