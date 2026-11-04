@@ -16,7 +16,7 @@ $pins=@{
   'invoke-heavy-verifier.test.ps1'='4abac745923af272440e35f9c04fb05448681d08'
 }
 $newTestPins=@{
-  'heavy-verifier-priority.test.ps1'='11465f6804b615fe90c64a5eec1fd35b06132f77c909649eb7fa530544ff9d59'
+  'heavy-verifier-priority.test.ps1'='b5354627d03b595b7295e7e573641f55189b86676682b9b34bc8f61340fd0d80'
 }
 # Baseline nodes retired by an intentional behavior change, keyed by exact node text.
 # Each entry must be consumed by a node that is absent from the candidate, or the check refuses.
