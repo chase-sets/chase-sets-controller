@@ -569,13 +569,13 @@ function Invoke-8102RetainedLeg([string]$Test,[string]$Label,[hashtable]$Edits,[
   $measured=@($lines|Where-Object{$_-clike'MEASURED_LOAD *'})
   $finished=[bool]@($lines|Where-Object{$_-clike'RETAINED 7963 retained *finished=True'}).Count
   $text=$run.stdout+"`n"+$run.stderr
-  $pair=$null
+  $pair='unavailable'
   $pairFiles=@(Get-ChildItem -LiteralPath (Join-Path $copy.runtime 'artifacts') -Filter '*.pair.json' -File -ErrorAction SilentlyContinue)
   foreach($pairFile in $pairFiles){
     try {
       $candidatePair=Get-Content -LiteralPath $pairFile.FullName -Raw|ConvertFrom-Json
       if($candidatePair.name-ceq'retained retry binds its current full index'){$pair=$candidatePair;break}
-    } catch { $pair=$null }
+    } catch {}
   }
   # Write-Host keeps the leg object the function's only pipeline output.
   Write-Host "CONTROL 8102 $Test $Label holder=$holderIdentity exit=$($run.exit) elapsedSeconds=$([int]$run.elapsedSeconds) measuredLines=$($measured.Count) finished=$finished stdout=$($run.stdoutPath) stderr=$($run.stderrPath)"
@@ -615,24 +615,25 @@ function Get-8102HeldCarrierFacts([string]$Text) {
   foreach($line in @($Text -split "\r?\n")){
     if($line.StartsWith('EXCEPTION 7963 retained ',[StringComparison]::Ordinal)){
       $facts.exception=$true
+      $exceptionPrefix='EXCEPTION 7963 retained 7963 retained ASSERTION FAILED: '
       foreach($proofName in $proofNames){
-        if($line.StartsWith("EXCEPTION 7963 retained $proofName ",[StringComparison]::Ordinal)){$facts.proofName=$proofName;break}
+        if($line.StartsWith("$exceptionPrefix$proofName ",[StringComparison]::Ordinal)){$facts.proofName=$proofName;break}
       }
+      $match=[regex]::Match($line,'\bcandidate exit=(\d+)\b')
+      if($match.Success){$facts.candidateExit=[int]$match.Groups[1].Value}
+      $match=[regex]::Match($line,'\bindependent omitted guard actual exit=(\d+)\b')
+      if($match.Success){$facts.omittedGuardExit=[int]$match.Groups[1].Value}
     }
     foreach($reason in $teardownReasons){if($line.Contains($reason,[StringComparison]::Ordinal)){$facts.teardownReason=$reason;break}}
     foreach($reason in $resumeReasons){if($line.Contains($reason,[StringComparison]::Ordinal)){$facts.resumeReason=$reason;break}}
     if($line.StartsWith('MEASURED_LOAD 7963 retained ',[StringComparison]::Ordinal)){$facts.measuredLoad=$true}
     $match=[regex]::Match($line,'^RETAINED 7963 retained .*; finished=(True|False)$')
     if($match.Success){$facts.finished=($match.Groups[1].Value-ceq'True')}
-    $match=[regex]::Match($line,'\bcandidate exit=(\d+)\b')
-    if($match.Success){$facts.candidateExit=[int]$match.Groups[1].Value}
-    $match=[regex]::Match($line,'\bindependent omitted guard actual exit=(\d+)\b')
-    if($match.Success){$facts.omittedGuardExit=[int]$match.Groups[1].Value}
   }
   return $facts
 }
 function Get-8102HeldPairFacts($Pair) {
-  if($null -eq $Pair){return $null}
+  if($null -eq $Pair-or$Pair-ceq'unavailable'){return 'unavailable'}
   if($Pair.name-cne'retained retry binds its current full index'){throw 'held carrier pair name unavailable'}
   $facts=[ordered]@{mutantExit=$null;fleetLoadHeld=$null}
   if($null -eq $Pair.mutantExit){throw 'held carrier pair mutant exit unavailable'}
