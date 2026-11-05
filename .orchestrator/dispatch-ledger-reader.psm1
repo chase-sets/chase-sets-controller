@@ -16,6 +16,114 @@ function Get-NonDispatchLedgerPath {
   return $Path
 }
 
+function Open-DispatchLedgerReadStream([string]$Path) {
+  return [IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+}
+
+function Initialize-DispatchHistoryStream {
+  if ('DispatchHistoryStreaming.ReaderV1' -as [type]) { return }
+  $gate=[string]::Intern('DispatchHistoryStreaming.ReaderV1 initialization')
+  [Threading.Monitor]::Enter($gate)
+  try {
+  if ('DispatchHistoryStreaming.ReaderV1' -as [type]) { return }
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+using System.Security.Cryptography;
+namespace DispatchHistoryStreaming {
+  // The owner supplies its already-open shared stream. This class owns no path I/O.
+  public sealed class ReaderV1 : IDisposable {
+    readonly Stream stream;
+    readonly long length, prefixLength;
+    readonly byte[] buffer = new byte[65536];
+    readonly MemoryStream pending = new MemoryStream();
+    readonly Queue<string> lines = new Queue<string>();
+    readonly IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    readonly IncrementalHash prefixHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+    readonly UTF8Encoding utf8 = new UTF8Encoding(false, true);
+    bool finished, first = true;
+    public long BytesRead { get; private set; }
+    public long ReadOperations { get; private set; }
+    public long SnapshotLength { get; private set; }
+    public int SnapshotLines { get; private set; }
+    public int PrefixLines { get; private set; }
+    public bool PrefixTerminated { get; private set; }
+    public bool PartialTrailingRow { get; private set; }
+    public bool DecodeFailed { get; private set; }
+    public string SnapshotHash { get; private set; }
+    public string PrefixHash { get; private set; }
+    public ReaderV1(Stream stream, long length, long prefixLength) {
+      this.stream = stream; this.length = length; this.prefixLength = prefixLength;
+      PrefixTerminated = prefixLength == 0;
+    }
+    public string ReadLine() {
+      while (lines.Count == 0 && !finished) {
+        if (BytesRead == length) { Finish(); break; }
+        int n = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, length - BytesRead));
+        ReadOperations++;
+        if (n == 0) throw new EndOfStreamException("history shrank during streaming snapshot");
+        int prefixBytes = (int)Math.Max(0, Math.Min(n, prefixLength - BytesRead));
+        if (prefixBytes > 0) prefixHash.AppendData(buffer, 0, prefixBytes);
+        if (prefixLength > BytesRead && prefixLength <= BytesRead + n)
+          PrefixTerminated = buffer[(int)(prefixLength - BytesRead - 1)] == 10;
+        BytesRead += n;
+        int lastLf = Array.LastIndexOf(buffer, (byte)10, n - 1, n);
+        if (lastLf >= 0) {
+          pending.Write(buffer, 0, lastLf + 1);
+          byte[] committed = pending.ToArray(); pending.SetLength(0);
+          hash.AppendData(committed);
+          long previousLength = SnapshotLength;
+          SnapshotLength += committed.Length;
+          string text;
+          try { text = utf8.GetString(committed); }
+          catch (DecoderFallbackException) {
+            // Finish the captured byte pass before choosing the failure reason:
+            // strict unterminated-tail refusal precedes UTF-8 decoding errors.
+            DecodeFailed = true;
+            pending.Write(buffer, lastLf + 1, n - lastLf - 1);
+            continue;
+          }
+          if (first && text.Length > 0 && text[0] == '\ufeff') text = text.Substring(1);
+          first = false;
+          using (var reader = new StringReader(text)) {
+            string line;
+            long physicalOffset = previousLength;
+            // Prefix boundaries are LF offsets. Count CR/CRLF rows using the
+            // same StringReader semantics as the existing snapshot API.
+            int charOffset = 0;
+            while ((line = reader.ReadLine()) != null) {
+              lines.Enqueue(line); SnapshotLines++;
+              int end = charOffset;
+              while (end < text.Length && text[end] != '\r' && text[end] != '\n') end++;
+              if (end < text.Length && text[end++] == '\r' && end < text.Length && text[end] == '\n') end++;
+              physicalOffset += utf8.GetByteCount(text.Substring(charOffset, end - charOffset));
+              if (previousLength == 0 && charOffset == 0 && committed.Length >= 3 &&
+                  committed[0] == 239 && committed[1] == 187 && committed[2] == 191) physicalOffset += 3;
+              if (physicalOffset <= prefixLength) PrefixLines++;
+              charOffset = end;
+            }
+          }
+          pending.Write(buffer, lastLf + 1, n - lastLf - 1);
+        } else pending.Write(buffer, 0, n);
+      }
+      return lines.Count == 0 ? null : lines.Dequeue();
+    }
+    void Finish() {
+      if (stream.Length < length) throw new IOException("history shrank during streaming snapshot");
+      PartialTrailingRow = pending.Length != 0;
+      SnapshotHash = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+      PrefixHash = Convert.ToHexString(prefixHash.GetHashAndReset()).ToLowerInvariant();
+      finished = true;
+    }
+    public void Dispose() { pending.Dispose(); hash.Dispose(); prefixHash.Dispose(); }
+  }
+}
+'@
+  } finally { [Threading.Monitor]::Exit($gate) }
+}
+
 function Read-DispatchLedgerSnapshot {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path, [long]$MaxBytes = [long]::MaxValue,
@@ -28,7 +136,7 @@ function Read-DispatchLedgerSnapshot {
     $audit.pathStatus='missing';$result.reason='HISTORY_MISSING';return $result
   }
   try {
-    $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    $stream=Open-DispatchLedgerReadStream -Path $Path
     try {
       $length=$stream.Length
       $audit.bytes=$length
@@ -89,48 +197,42 @@ function Read-DispatchLedgerBytes {
 
 function Read-DispatchCountHistory {
   [CmdletBinding()]
-  param([Parameter(Mandatory)][string]$Path,$PrefixHistory=$null,[int]$MaxRows=50000,
-    [long]$MaxBytes=33554432,[switch]$RequireTerminated)
+  param([Parameter(Mandatory)][string]$Path,$PrefixHistory=$null,[int]$MaxRows=[int]::MaxValue,
+    [long]$MaxBytes=[long]::MaxValue,[switch]$RequireTerminated,[ref]$ReadMetrics)
   if ($null -ne $PrefixHistory -and -not $PrefixHistory.complete) { return $PrefixHistory }
-  $snapshot=Read-DispatchLedgerSnapshot -Path $Path -MaxBytes $MaxBytes -RequireTerminated:$RequireTerminated
-  $audit=$snapshot.audit
+  $audit=[ordered]@{pathStatus='unknown';bytes=0;rows=0;parsedRows=0;malformedRows=0;truncated=$false;malformedLineNumbers=@()}
+  $metrics=[ordered]@{readPasses=0;bytesRead=0L;readOperations=0L;boundaryProbes=0;tailParsedRows=0;prefixRows=0}
   $rows=[Collections.Generic.List[object]]::new()
-  $reason=$snapshot.reason
-  $complete=$snapshot.complete
-  if ($complete) {
-    $prefixLength=0L;$prefixLines=0
-    if ($null -ne $PrefixHistory) {
-      $prefixLength=[long]$PrefixHistory.snapshotLength;$prefixLines=[int]$PrefixHistory.snapshotLines
-      $valid=$prefixLength -ge 0 -and $prefixLength -le $snapshot.snapshotLength -and $prefixLines -ge 0
-      if ($valid) {
-        $hash=[Security.Cryptography.SHA256]::Create()
-        try { $prefixHash=[Convert]::ToHexString($hash.ComputeHash($snapshot.bytes,0,$prefixLength)).ToLowerInvariant() }
-        finally { $hash.Dispose() }
-        $valid=$prefixHash -ceq $PrefixHistory.snapshotHash -and ($prefixLength -eq 0 -or $snapshot.bytes[$prefixLength-1] -eq 10)
-        $actualLines=0
-        for ($i=0L;$i -lt $prefixLength;$i++) {
-          if ($snapshot.bytes[$i] -eq 10) { $actualLines++ }
-          elseif ($snapshot.bytes[$i] -eq 13) {
-            $actualLines++
-            if ($i+1 -lt $prefixLength -and $snapshot.bytes[$i+1] -eq 10) { $i++ }
-          }
+  $reason='HISTORY_UNREADABLE';$complete=$false
+  $snapshotLength=0L;$snapshotLines=0;$snapshotHash=$null;$partial=$false
+  $stream=$null;$reader=$null
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+      $audit.pathStatus='missing';$reason='HISTORY_MISSING'
+    } else {
+      Initialize-DispatchHistoryStream
+      $stream=Open-DispatchLedgerReadStream -Path $Path
+      $length=$stream.Length;$audit.bytes=$length
+      if ($length -gt $MaxBytes) {
+        $audit.pathStatus='oversize';$audit.truncated=$true;$reason='HISTORY_TRUNCATED'
+      } else {
+        $prefixLength=0L;$prefixLines=0;$prefixValid=$true
+        if ($null -ne $PrefixHistory) {
+          $prefixLength=[long]$PrefixHistory.snapshotLength;$prefixLines=[int]$PrefixHistory.snapshotLines
+          $prefixValid=$prefixLength -ge 0 -and $prefixLength -le $length -and $prefixLines -ge 0
+          if ($prefixValid) {
+            foreach ($row in $PrefixHistory.rows) { $rows.Add($row) }
+            $audit.rows=$PrefixHistory.audit.rows;$audit.parsedRows=$PrefixHistory.audit.parsedRows
+            $metrics.prefixRows=$PrefixHistory.audit.parsedRows
+          } else { $prefixLength=0L;$prefixLines=0 }
         }
-        $valid=$valid -and $actualLines -eq $prefixLines
-      }
-      if (-not $valid) { $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='moved' }
-      else {
-        foreach ($row in $PrefixHistory.rows) { $rows.Add($row) }
-        $audit.rows=$PrefixHistory.audit.rows;$audit.parsedRows=$PrefixHistory.audit.parsedRows
-      }
-    }
-    if ($complete -and $prefixLines -gt $MaxRows) { $complete=$false;$audit.truncated=$true;$reason='HISTORY_TRUNCATED' }
-    if ($complete) {
-      # Re-homed installed PrefixHistory fold: parse only the tail, retaining
-      # global line identity, raw row hash and the existing byte/physical-row caps.
-      for ($index=$prefixLines;$index -lt $snapshot.lines.Count;$index++) {
-        $lineNumber=$index+1
-        if ($lineNumber -gt $MaxRows) { $audit.truncated=$true;break }
-        $line=$snapshot.lines[$index]
+        $reader=[DispatchHistoryStreaming.ReaderV1]::new($stream,$length,$prefixLength)
+        $metrics.readPasses=1
+        $lineNumber=0
+        while ($null -ne ($line=$reader.ReadLine())) {
+          $lineNumber++
+          if ($lineNumber -gt $MaxRows) { $audit.truncated=$true;continue }
+          if ($lineNumber -le $prefixLines) { continue }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $audit.rows++
         try {
@@ -156,16 +258,52 @@ function Read-DispatchCountHistory {
           $rows.Add([pscustomobject][ordered]@{line=$lineNumber;raw=$line;byteLength=$rawBytes.Length
             rawSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant();value=$row})
           $audit.parsedRows++
+          $metrics.tailParsedRows++
         } catch { $audit.malformedRows++;$audit.malformedLineNumbers+= $lineNumber }
+        }
+        $snapshotLength=$reader.SnapshotLength;$snapshotLines=$reader.SnapshotLines
+        $snapshotHash=$reader.SnapshotHash;$partial=$reader.PartialTrailingRow
+        $metrics.bytesRead=$reader.BytesRead;$metrics.readOperations=$reader.ReadOperations
+        $audit.pathStatus=if ($audit.truncated) {'truncated'} elseif ($audit.malformedRows) {'malformed'} else {'ok'}
+        $complete=$true;$reason='HISTORY_COMPLETE'
+        if ($RequireTerminated -and $partial) {
+          $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='unterminated'
+          $rows.Clear();$audit.rows=0;$audit.parsedRows=0;$audit.malformedRows=0;$audit.malformedLineNumbers=@()
+          $snapshotLength=0L;$snapshotLines=0;$snapshotHash=$null
+        }
+        else {
+          # Preserve the original single committed-boundary probe, not a second
+          # scan. Appends beyond captured EOF still do not affect this snapshot.
+          if ($snapshotLength -gt 0) {
+            [void]$stream.Seek($snapshotLength-1,[IO.SeekOrigin]::Begin)
+            $metrics.boundaryProbes++
+            if ($stream.ReadByte() -ne 10) { throw 'history boundary changed' }
+          }
+          if ($reader.DecodeFailed) { throw 'history UTF8 invalid' }
+          if ($null -ne $PrefixHistory -and (-not $prefixValid -or
+              $reader.PrefixHash -cne $PrefixHistory.snapshotHash -or -not $reader.PrefixTerminated -or
+              $reader.PrefixLines -ne $prefixLines)) {
+            $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='moved'
+            $rows.Clear();$audit.rows=0;$audit.parsedRows=0;$audit.malformedRows=0;$audit.malformedLineNumbers=@();$audit.truncated=$false
+          } elseif ($audit.truncated) { $complete=$false;$reason='HISTORY_TRUNCATED' }
+          elseif ($audit.malformedRows) { $complete=$false;$reason='HISTORY_MALFORMED' }
+        }
       }
-      $audit.pathStatus=if ($audit.truncated) {'truncated'} elseif ($audit.malformedRows) {'malformed'} else {'ok'}
-      if ($audit.truncated) { $complete=$false;$reason='HISTORY_TRUNCATED' }
-      elseif ($audit.malformedRows) { $complete=$false;$reason='HISTORY_MALFORMED' }
     }
+  } catch {
+    $complete=$false
+    $rows.Clear();$audit.rows=0;$audit.parsedRows=0;$audit.malformedRows=0;$audit.malformedLineNumbers=@()
+    $snapshotLength=0L;$snapshotLines=0;$snapshotHash=$null
+    if ($_.Exception.Message -ceq 'HISTORY_PREFIX_MOVED') { $reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='moved' }
+    else { $reason='HISTORY_UNREADABLE';$audit.pathStatus='unreadable' }
+  } finally {
+    if ($null -ne $ReadMetrics) { $ReadMetrics.Value=[pscustomobject]$metrics }
+    if ($null -ne $reader) { $reader.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
   }
   return [pscustomobject][ordered]@{complete=$complete;rows=$rows.ToArray();audit=$audit;reason=$reason
-    snapshotLength=$snapshot.snapshotLength;snapshotLines=$snapshot.snapshotLines;snapshotHash=$snapshot.snapshotHash
-    cursor=$snapshot.cursor;partialTrailingRow=$snapshot.partialTrailingRow}
+    snapshotLength=$snapshotLength;snapshotLines=$snapshotLines;snapshotHash=$snapshotHash
+    cursor=$snapshotLength;partialTrailingRow=$partial}
 }
 
 Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory

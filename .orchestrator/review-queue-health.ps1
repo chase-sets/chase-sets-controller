@@ -7,8 +7,8 @@ param(
   [ValidatePattern("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")]
   [string]$Repository = "chase-sets/chase-sets",
   [string]$HistoryPath = (Join-Path $PSScriptRoot "dispatch-log.jsonl"),
-  [ValidateRange(1, 1000000)][int]$MaxHistoryRows = 50000,
-  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = 33554432,
+  [ValidateRange(1, [int]::MaxValue)][int]$MaxHistoryRows = [int]::MaxValue,
+  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = [long]::MaxValue,
   [switch]$SkipRemoteProbes,
   [string]$AuthorityFixture,
   [string]$AuthorityScenario,

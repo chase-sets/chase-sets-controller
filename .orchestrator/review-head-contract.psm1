@@ -468,8 +468,8 @@ function Get-ExactHeadReviewContract {
   [pscustomobject][ordered]@{
     receiptSchema = $script:ReviewReceiptSchema
     reducerSchema = $script:ReviewReducerSchema
-    maxHistoryBytes = 33554432
-    maxHistoryRows = 50000
+    maxHistoryBytes = [long]::MaxValue
+    maxHistoryRows = [int]::MaxValue
   }
 }
 
@@ -690,8 +690,8 @@ function Get-ReviewReceiptValidation($Row, [object]$Vocabulary = $null) {
 
 function Read-ExactHeadReviewHistory(
   [string]$Path,
-  [int]$MaxRows = 50000,
-  [long]$MaxBytes = 33554432,
+  [int]$MaxRows = [int]::MaxValue,
+  [long]$MaxBytes = [long]::MaxValue,
   [switch]$RequireTerminated
 ) {
   dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -MaxRows $MaxRows -MaxBytes $MaxBytes -RequireTerminated:$RequireTerminated

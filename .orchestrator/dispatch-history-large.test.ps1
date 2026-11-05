@@ -19,7 +19,16 @@ function Get-RawHash([string]$Raw) {
 }
 function Read-LargeHistory([string]$Reader,[string]$Path,[switch]$RequireTerminated) {
   switch -CaseSensitive ($Reader) {
-    'owner' { dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -RequireTerminated:$RequireTerminated }
+    'owner' {
+      $metrics=$null
+      $history=dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -RequireTerminated:$RequireTerminated -ReadMetrics ([ref]$metrics)
+      if($history.complete) {
+        Assert-Large ($metrics.readPasses -eq 1 -and $metrics.bytesRead -eq $history.audit.bytes -and
+          $metrics.boundaryProbes -eq $(if($history.snapshotLength -gt 0){1}else{0})) 'owner payload reread, incomplete pass or missing LF boundary probe'
+        if($history.audit.bytes -gt 33554432){Write-Output "METRICS owner bytesRead=$($metrics.bytesRead) readPasses=$($metrics.readPasses) parsedRows=$($history.audit.parsedRows)" | Write-Host}
+      }
+      return $history
+    }
     'exact-head' { Read-ExactHeadReviewHistory -Path $Path -RequireTerminated:$RequireTerminated }
     'query' { Read-DispatchCountHistory -Path $Path -RequireTerminated:$RequireTerminated }
     default { throw 'unknown real reader entrypoint' }
@@ -119,7 +128,11 @@ try {
           $decision.reason -ceq 'DISPATCH_THRESHOLD' -and $decision.action -ceq $(if($phase -eq 0){'NONE'}else{'CLAIM_DECISION'})) 'count decision lost append continuity'
         if($reader -ceq 'owner') {
           if($null -ne $priorOwner) {
-            $fold=dispatch-ledger-reader\Read-DispatchCountHistory -Path $path -PrefixHistory $priorOwner -RequireTerminated
+            $foldMetrics=$null
+            $fold=dispatch-ledger-reader\Read-DispatchCountHistory -Path $path -PrefixHistory $priorOwner -RequireTerminated -ReadMetrics ([ref]$foldMetrics)
+            Assert-Large ($foldMetrics.readPasses -eq 1 -and $foldMetrics.bytesRead -eq $length -and
+              $foldMetrics.boundaryProbes -eq 1 -and $foldMetrics.tailParsedRows -eq 1 -and
+              $foldMetrics.prefixRows -eq $priorOwner.audit.parsedRows) 'PrefixHistory reread or reparsed immutable prefix'
             Assert-Large ($fold.complete -and $fold.audit.parsedRows -eq $expectedRows -and $fold.rows.Count -eq $expectedRows) 'real PrefixHistory fold refused large append'
             for($index=0;$index -lt $expectedRows;$index++) {
               Assert-Large ($fold.rows[$index].line -eq $history.rows[$index].line -and
