@@ -436,8 +436,8 @@ function Invoke-ReaderInventory {
   # Each fixture exception is a site, not a file exemption. These observations
   # inspect fixture-owned retained records; they do not define live publication.
   $fixtures=@{
-    # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
-    'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
+    # 3246: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
+    'controller-release-battery.test.ps1'=@(953,962,972,991,1597,1932,3246)
     'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
     'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
     # install-controller-skills.ps1 reads the installed release record, not heavy
@@ -446,19 +446,19 @@ function Invoke-ReaderInventory {
     'install-controller-skills.test.ps1'=@(209,226,231,262,366,387,401)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
+    'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1763,2159,2239,2249,2263,2558,2563,2582,2588,2815,2822,2834,2837,2847,2858,2880,2885,2897,2902,2919,2933)
     'long-product-gate.test.ps1'=@(208,215,231,871)
-    'host-heavy-verifier.test.ps1'=@(1277)
+    'host-heavy-verifier.test.ps1'=@(1279)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
-    'landed-integration-dispatch.test.ps1'=@(540)
+    'landed-integration-dispatch.test.ps1'=@(543)
     'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)
     'landed-integration-r3.test.ps1'=@(52)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
-    'product-census-budget.test.ps1'=@(396,455,509,548)
+    'product-census-budget.test.ps1'=@(397,456,510,549)
     # Source-conservation checker reads a synthetic ownership path for its
     # static contract; it is not a production owner publication reader.
     'controller-ci-coverage.check.ps1'=@(143)

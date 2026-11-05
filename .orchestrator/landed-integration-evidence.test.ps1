@@ -27,7 +27,7 @@ try {
   $candidateSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence.psm1'))
   $nl=if($candidateSource.Contains("`r`n")){"`r`n"}else{"`n"}
   $candidateCopy=Join-Path $root 'candidate';[IO.Directory]::CreateDirectory($candidateCopy)|Out-Null
-  foreach($name in @('dispatch-ownership.ps1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $candidateCopy}
+  foreach($name in @('dispatch-ownership.ps1','dispatch-ledger-reader.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $candidateCopy}
   function New-Arm([string]$Name,[string]$Path){ $module=Import-Module $Path -Force -DisableNameChecking -PassThru; $script:imported+=$module; [pscustomobject]@{name=$Name;module=$module} }
   function New-Mutant([string]$Name,[string]$Old,[string]$New) {
     Assert-True (([regex]::Matches($candidateSource,[regex]::Escape($Old))).Count-eq1) "mutant $Name anchor must occur exactly once"

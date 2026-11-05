@@ -66,6 +66,9 @@ try {
   $native="$import;function Read-Synthetic {param(`$Path);[IO.File]::ReadAllText(($value))}"
   $cases=[ordered]@{
     native=@(0,$native)
+    globalImport=@(0,$native.Replace($import,"$import -Global"))
+    scopedImport=@(1,$native.Replace($import,"$import -Scope Global"))
+    globalArgument=@(1,$native.Replace($import,"$import -Global:`$false"))
     content=@(0,"$import;function Read-Synthetic {param(`$Path);Get-Content -LiteralPath ($value)}")
     expression=@(0,"$import;function Read-Synthetic {param(`$Item);[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path `$Item.path))}")
     dispatchLiteral=@(0,"$import;[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path 'dispatch-log.jsonl'))")

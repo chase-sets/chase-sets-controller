@@ -370,7 +370,7 @@ function Get-NonDispatchLedgerPath {
         $call=$statement.PipelineElements[0]
         if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -ine 'Import-Module' -or $call.CommandElements.Count -lt 2) { continue }
         $options=@($call.CommandElements | Select-Object -Skip 2)
-        if (@($options | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] -or $_.Argument -or $_.ParameterName -notin @('Force','DisableNameChecking') }).Count) { continue }
+        if (@($options | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] -or $_.Argument -or $_.ParameterName -notin @('Global','Force','DisableNameChecking') }).Count) { continue }
         $argument=$call.CommandElements[1]
         if ($argument -isnot [Management.Automation.Language.ParenExpressionAst] -or $argument.Pipeline.PipelineElements.Count -ne 1) { continue }
         $join=$argument.Pipeline.PipelineElements[0]

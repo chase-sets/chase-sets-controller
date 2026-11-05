@@ -687,7 +687,7 @@ function Get-ReviewReceiptValidation($Row, [object]$Vocabulary = $null) {
   }
 }
 
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 function Read-ExactHeadReviewHistory(
   [string]$Path,
