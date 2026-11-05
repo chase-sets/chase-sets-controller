@@ -51,20 +51,20 @@ function Get-BoardHistory([string]$Path) {
   $count = 0
   try {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'canonical lifecycle log unavailable' }
-    # This family was uncapped. Preserve that policy without altering the
-    # query/review families' existing byte and row limits.
-    $history=Read-DispatchCountHistory -Path $Path -MaxBytes ([long]::MaxValue) -MaxRows ([int]::MaxValue)
-    $count=$history.audit.rows
-    if (-not $history.complete) {
-      if ($history.reason -cne 'HISTORY_MALFORMED') { throw "canonical lifecycle log refused: $($history.reason)" }
-      foreach ($line in $history.audit.malformedLineNumbers) { $errors.Add("malformed lifecycle row $line") }
-    }
-    foreach ($entry in $history.rows) {
-      $row=$entry.value
-      if ($row.kind -is [string] -and $null -ne $row.issue -and $row.transcript -is [string]) { $records.Add($row) }
-      if (-not $row.kind) { continue }
-      if ($row.kind -in @('dispatch','lane-complete','repair-complete','review-complete','lane-blocked','landed') -or
-          $row.outcome -in @('PARKED_DECISION','REPLAN_REQUIRED','REPLAN_REPLACED','REPLAN_COMPLETE')) { $rows.Add($row) }
+    # Board history was uncapped and included the final raw line. Keep its
+    # JSON fold and nonblank error ordinals separate from LF-count authority.
+    $history=dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path -IncludeUnterminated
+    if (-not $history.complete) { throw "canonical lifecycle log refused: $($history.reason)" }
+    foreach ($line in $history.lines) {
+      if (-not "$line".Trim()) { continue }
+      $count++
+      try {
+        $row = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop
+        if ($row.kind -is [string] -and $null -ne $row.issue -and $row.transcript -is [string]) { $records.Add($row) }
+        if (-not $row.kind) { continue }
+        if ($row.kind -in @('dispatch','lane-complete','repair-complete','review-complete','lane-blocked','landed') -or
+            $row.outcome -in @('PARKED_DECISION','REPLAN_REQUIRED','REPLAN_REPLACED','REPLAN_COMPLETE')) { $rows.Add($row) }
+      } catch { $errors.Add("malformed lifecycle row $count") }
     }
   } catch { $errors.Add($_.Exception.Message) }
   $specs = @{}
