@@ -228,7 +228,7 @@ function Get-ReclamationDispatch([string]$RuntimeRoot) {
   $paths=@{};$branches=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
   try {
     # The append order is authoritative: never fall back to an older recognizable row.
-    foreach($line in (Read-DispatchLedgerLines -Path (Join-Path $RuntimeRoot 'dispatch-log.jsonl'))){
+    foreach($line in (Read-DispatchLedgerLines -Path (Join-Path $RuntimeRoot 'dispatch-log.jsonl') -RequireTerminated)){
       if([string]::IsNullOrWhiteSpace($line)){continue}
       $row=$line|ConvertFrom-Json -DateKind String
       if($row-isnot[pscustomobject]){throw 'malformed dispatch row'}
