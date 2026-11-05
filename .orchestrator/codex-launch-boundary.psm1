@@ -1,5 +1,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 if ($null -eq ("ChaseSets.Controller.CodexBoundaryNative" -as [type])) {
   Add-Type -TypeDefinition @'
@@ -322,7 +323,7 @@ function Invoke-CodexBoundaryVersion {
 
 function Test-CodexBoundaryNativePe {
   param([Parameter(Mandatory)][string]$LiteralPath)
-  $stream = [IO.File]::Open($LiteralPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $LiteralPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
   try {
     if ($stream.Length -lt 68) { return $false }
     $reader = [IO.BinaryReader]::new($stream, [Text.Encoding]::ASCII, $true)
@@ -592,7 +593,7 @@ function Get-CodexBoundaryLiveSurfaceBytes {
       Add-CodexBoundaryGeneratedFileBlock `
         -Stream $stream `
         -RelativePath $relativePath `
-        -Bytes ([IO.File]::ReadAllBytes($generatedPath))
+        -Bytes ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $generatedPath)))
     }
     return $stream.ToArray()
   } finally {
@@ -615,7 +616,7 @@ function Assert-CodexBoundarySurfaceInternal {
   if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
     Throw-CodexBoundaryRefusal "codex-boundary-surface-drift"
   }
-  $fixtureBytes = [IO.File]::ReadAllBytes($fixturePath)
+  $fixtureBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $fixturePath))
   $fixtureSha256 = Get-CodexBoundarySha256Bytes -Bytes $fixtureBytes
   if ($fixtureSha256 -cne $ExpectedSha256) {
     Throw-CodexBoundaryRefusal "codex-boundary-surface-drift"

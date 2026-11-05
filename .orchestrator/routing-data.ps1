@@ -6,6 +6,7 @@ Dot-source with -Library. State and cache overrides support isolated fixtures.
 [CmdletBinding()]
 param([string]$StateRoot,[string]$LkgPath,[switch]$Library)
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 $script:RoutingConfiguredStateRoot = $StateRoot
 $script:RoutingConfiguredLkgPath = $LkgPath
 
@@ -23,7 +24,7 @@ function Get-RoutingLkgPath([string]$Override) {
 
 function Read-RoutingJson([string]$Path) {
   if (-not [IO.File]::Exists($Path)) { throw 'ROUTING_DATA_MISSING' }
-  try { return [IO.File]::ReadAllText($Path) | ConvertFrom-Json -Depth 100 -DateKind String -ErrorAction Stop }
+  try { return [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -Depth 100 -DateKind String -ErrorAction Stop }
   catch { throw 'ROUTING_DATA_UNPARSEABLE' }
 }
 
@@ -338,7 +339,7 @@ function Get-CapacityForecast {
   catch { $result.status='malformed';return $result }
   $result.status='malformed'
   try {
-    $result.bytes=[IO.File]::ReadAllBytes($path)
+    $result.bytes=[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
     $f=[Text.UTF8Encoding]::new($false,$true).GetString($result.bytes) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
     foreach($object in @($f,$f.providers,$f.providers.codex,$f.providers.claude,$f.balance)) {
       if ($object -is [array] -or -not (Test-RoutingObject $object)) { return $result } # CAPACITY_GUARD_OBJECT
@@ -688,19 +689,14 @@ function Get-CapacityAuthorHistory {
   $rows=[Collections.Generic.List[object]]::new()
   $hashes=[Collections.Generic.List[string]]::new()
   $links=[Collections.Generic.Dictionary[string,Collections.Generic.List[int]]]::new([StringComparer]::Ordinal)
-  $reader=$null
   try {
     # Read the complete stable ledger, not a schema-filtered tail. Malformed or
     # concurrently truncated bytes cannot prove that an author is absent.
     $before=Get-Item -LiteralPath $Path
     $length=$before.Length;$write=$before.LastWriteTimeUtc
-    $reader=[IO.StreamReader]::new($Path,[Text.UTF8Encoding]::new($false,$true))
-    if($length -gt 0){
-      [void]$reader.BaseStream.Seek(-1,[IO.SeekOrigin]::End)
-      if($reader.BaseStream.ReadByte() -ne 10){return $unknown}
-      [void]$reader.BaseStream.Seek(0,[IO.SeekOrigin]::Begin)
-    }
-    while($null -ne ($line=$reader.ReadLine())) {
+    $snapshot=dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path -RequireTerminated
+    if (-not $snapshot.complete -or $snapshot.audit.bytes -ne $length) { return $unknown }
+    foreach($line in $snapshot.lines) {
       if ([string]::IsNullOrWhiteSpace($line)) { continue }
       $document=[Text.Json.JsonDocument]::Parse($line)
       try {
@@ -732,7 +728,7 @@ function Get-CapacityAuthorHistory {
     }
     $after=Get-Item -LiteralPath $Path
     if ($after.Length -ne $length -or $after.LastWriteTimeUtc -ne $write) { return $unknown }
-  } catch { return $unknown } finally { if($null -ne $reader){$reader.Dispose()} }
+  } catch { return $unknown }
   $byRow=@{}
   foreach($key in $links.Keys) { foreach($id in $links[$key]) {
     if(-not $byRow.ContainsKey($id)){$byRow[$id]=[Collections.Generic.List[string]]::new()};$byRow[$id].Add($key)

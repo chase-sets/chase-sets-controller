@@ -15,6 +15,7 @@ function Test-DispatchLedgerConsumerCompatibility {
     if ($LASTEXITCODE -ne 0) { throw 'compatibility baseline unavailable' }
     $modulePath=Join-Path $temporary 'implementation-base.psm1'
     Copy-Item -LiteralPath (Join-Path $RuntimeRoot 'routing-data.ps1') -Destination $temporary
+    Copy-Item -LiteralPath (Join-Path $RuntimeRoot 'dispatch-ledger-reader.psm1') -Destination $temporary
     [IO.File]::WriteAllLines($modulePath,$baselineSource,[Text.UTF8Encoding]::new($false))
     $baseline=Import-Module $modulePath -Force -PassThru -DisableNameChecking
     $before=& $baseline {param($p) Read-ExactHeadReviewHistory -Path $p} $path
