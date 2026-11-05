@@ -168,10 +168,15 @@ try {
   $historicalReceipt.authorModel='claude-sonnet-5'
   $historicalReceipt.reviewerAttempt='synthetic-retired-sonnet'
   $historicalPath=Join-Path $root 'historical-sonnet-review.jsonl'
-  [IO.File]::WriteAllText($historicalPath,($historicalReceipt|ConvertTo-Json -Compress -Depth 20))
+  [IO.File]::WriteAllText($historicalPath,(($historicalReceipt|ConvertTo-Json -Compress -Depth 20)+"`n"))
   $beforeHash=(Get-FileHash $historicalPath).Hash
   $r=& (Join-Path $PSScriptRoot 'review-head-reducer.ps1') -Pr 9901 -CurrentHead ('a'*40) -HistoryPath $historicalPath|ConvertFrom-Json
   Check ($r.state-ceq'authorized'-and(Get-FileHash $historicalPath).Hash-ceq$beforeHash) 'historical Sonnet receipt unreadable or rewritten'
+  $uncommittedPath=Join-Path $root 'uncommitted-historical-sonnet-review.jsonl'
+  [IO.File]::WriteAllText($uncommittedPath,($historicalReceipt|ConvertTo-Json -Compress -Depth 20))
+  $uncommittedHash=(Get-FileHash $uncommittedPath).Hash
+  $uncommitted=& (Join-Path $PSScriptRoot 'review-head-reducer.ps1') -Pr 9901 -CurrentHead ('a'*40) -HistoryPath $uncommittedPath|ConvertFrom-Json
+  Check ($uncommitted.state-cne'authorized'-and(Get-FileHash $uncommittedPath).Hash-ceq$uncommittedHash) 'uncommitted historical receipt must not authorize or be rewritten'
   Write-Output 'PASS versioned host arms, pinned host identity, and historical/successor exact-head receipts'
 
   $transcripts=Join-Path $root 'transcripts';[IO.Directory]::CreateDirectory($transcripts)|Out-Null
