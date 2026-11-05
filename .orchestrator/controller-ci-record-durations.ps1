@@ -2,6 +2,7 @@
 param([switch]$Library,[string]$RecordPlanPath,[string]$ResultPath,[string]$OutputPath,[switch]$Append,
   [string]$RepositoryRoot=(Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 if(-not (Get-Command Assert-Ci -ErrorAction SilentlyContinue)) {
   . (Join-Path $PSScriptRoot 'controller-ci.ps1') -Mode Library
 }
@@ -148,8 +149,8 @@ function New-CiDurationProfile($Existing,[object[]]$Records) {
 }
 
 if($Library){return}
-$plan=Get-Content -LiteralPath $RecordPlanPath -Raw|ConvertFrom-Json -Depth 50 -DateKind String
-$result=Get-Content -LiteralPath $ResultPath -Raw|ConvertFrom-Json -Depth 50 -DateKind String
+$plan=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $RecordPlanPath) -Raw|ConvertFrom-Json -Depth 50 -DateKind String
+$result=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ResultPath) -Raw|ConvertFrom-Json -Depth 50 -DateKind String
 $digest=(Get-FileHash -LiteralPath $RecordPlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $records=New-CiDurationRecords $plan $result $digest $RepositoryRoot
 $existing=$null
