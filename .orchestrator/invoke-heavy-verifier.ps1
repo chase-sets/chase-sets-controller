@@ -144,6 +144,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
+try {
 $isManifestReplay = $PSCmdlet.ParameterSetName -ceq 'ManifestReplay'
 $script:replayEntryWatch = [Diagnostics.Stopwatch]::StartNew()
 $script:replayExecutionStarted = $false
@@ -345,47 +346,6 @@ function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $nul
       Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
     }
   }
-}
-
-trap {
-  if ($isManifestReplay) {
-    try { Close-ReplaySourceStreams } catch {}
-    [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
-    exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
-  }
-  if ($isNativeDb) {
-    if ($nativeRequest -and -not $nativeReplyWritten) {
-      Write-NativeReply $(if ($ownedRaw) { 'unknown' } else { 'refused' }) $_.Exception.Message
-    }
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isAttachedAdmission) {
-    try { Write-AdmissionResult $false $_.Exception.Message } catch {}
-    try {
-      if (Get-Command Complete-RefusedAttachedAdmission -CommandType Function -ErrorAction SilentlyContinue) {
-        Complete-RefusedAttachedAdmission
-      }
-    } catch {}
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: verify queue', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: unable to persist queue', [StringComparison]::Ordinal)) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isControllerSlot -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isHostVerifier -or $isControllerHostHeavyVerifier) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  throw $_.Exception
 }
 
 if ($isAttachedAdmission) {
@@ -4436,3 +4396,43 @@ if ($isNativeDb) {
   Write-NativeReply $nativeResult.status $nativeResult.diagnostic
 }
 exit $exitCode
+} catch {
+  if ($isManifestReplay) {
+    try { Close-ReplaySourceStreams } catch {}
+    [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
+    exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
+  }
+  if ($isNativeDb) {
+    if ($nativeRequest -and -not $nativeReplyWritten) {
+      Write-NativeReply $(if ($ownedRaw) { 'unknown' } else { 'refused' }) $_.Exception.Message
+    }
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isAttachedAdmission) {
+    try { Write-AdmissionResult $false $_.Exception.Message } catch {}
+    try {
+      if (Get-Command Complete-RefusedAttachedAdmission -CommandType Function -ErrorAction SilentlyContinue) {
+        Complete-RefusedAttachedAdmission
+      }
+    } catch {}
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: verify queue', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: unable to persist queue', [StringComparison]::Ordinal)) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isControllerSlot -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isHostVerifier -or $isControllerHostHeavyVerifier) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  throw $_.Exception
+}

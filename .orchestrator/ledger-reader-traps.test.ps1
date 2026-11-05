@@ -45,8 +45,12 @@ try {
   $body='function Read-Synthetic {param($Path);'+$read+'}'
   $heavy=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'),[ref]$null,[ref]$null)
   $traps=@($heavy.FindAll({param($node)$node -is [Management.Automation.Language.TrapStatementAst]},$true))
-  Check ($traps.Count -eq 1) 'actual heavy trap count'
-  $actual=$traps[0].Extent.Text
+  Check ($traps.Count -eq 0) 'heavy runtime has no resumable script trap'
+  $boundary=@($heavy.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.TryStatementAst]})
+  Check ($boundary.Count -eq 1 -and $boundary[0].CatchClauses.Count -eq 1 -and -not $boundary[0].Finally) 'one outer heavy catch boundary'
+  # Retain the former complex-trap discriminator using the actual handler body.
+  # Moving that handler into a catch does not authorize any opaque trap shape.
+  $actual='trap '+$boundary[0].CatchClauses[0].Body.Extent.Text
   $cases=[ordered]@{
     actual=@($true,$actual)
     rethrow=@($false,'trap {throw $_.Exception}')

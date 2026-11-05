@@ -15,8 +15,10 @@ try {
   $trapSource=''
   if($WithTrap) {
     $traps=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.TrapStatementAst]},$true))
-    Check ($traps.Count -eq 1) 'one actual heavy trap'
-    $trapSource=$traps[0].Extent.Text
+    Check ($traps.Count -eq 0) 'heavy runtime has no resumable script trap'
+    $boundary=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.TryStatementAst]})
+    Check ($boundary.Count -eq 1 -and $boundary[0].CatchClauses.Count -eq 1) 'one outer heavy catch boundary'
+    $trapSource='trap '+$boundary[0].CatchClauses[0].Body.Extent.Text
   }
   $import="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking"
   $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $import})
