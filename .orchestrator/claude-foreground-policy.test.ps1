@@ -485,8 +485,13 @@ exit $code
   $auditSource = [IO.File]::ReadAllText($auditHelper)
   $mutantSource = $auditSource.Replace('accepted = $auditErrors.Count -eq 0', 'accepted = $true')
   Assert-Policy ($mutantSource -cne $auditSource) 'AC3 rejection-disabled mutant differs from the audit in exactly its acceptance verdict'
+  $mutantRoot = Join-Path $testRoot 'audit-mutant'
+  [void][IO.Directory]::CreateDirectory($mutantRoot)
+  $mutantPath = Join-Path $mutantRoot 'dispatch-claude-stream-audit.ps1'
+  [IO.File]::WriteAllText($mutantPath, $mutantSource, [Text.UTF8Encoding]::new($false))
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $mutantRoot
   $caught = @(& {
-      . ([scriptblock]::Create($mutantSource))
+      . $mutantPath
       foreach ($control in $controls | Where-Object { -not $_.Accept }) {
         if (-not (Test-AuditControl $control (Test-ClaudeStreamJsonCompletion $control.Path))) { $control.Name }
       }
