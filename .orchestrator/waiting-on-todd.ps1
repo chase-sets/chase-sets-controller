@@ -284,7 +284,7 @@ if (-not $DryRun) {
 }
 try {
   $state = Read-WaitingOnToddState $script:statePathFull $settings.Repo $settings.Assignee
-  $actions = Get-ToddActionFold (Read-ToddActionRows $ledgerPath)
+  $actions = Get-ToddActionFold (Read-ToddActionRows $ledgerPath -RequireTerminated)
   $desired = [int[]]@($actions | Where-Object { $_.state -ceq 'now' } | ForEach-Object { [int]$_.issue } | Sort-Object -Unique)
   $body = Get-WaitingOnToddBody $actions $now $settings.DoneWindowDays
   $bodySha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($body))).ToLowerInvariant()

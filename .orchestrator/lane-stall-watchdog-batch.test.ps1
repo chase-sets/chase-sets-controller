@@ -35,6 +35,7 @@ Check (Test-Path -LiteralPath $entry) 'native batch entry exists'
 $root=Join-Path $PSScriptRoot ('artifacts/batch-native-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 $pwsh=(Get-Command pwsh).Source
+$fixtureOwner=[pscustomobject]@{pid=$PID;startIdentity=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')}
 $active=[Collections.Generic.List[object]]::new()
 $workers=[Collections.Generic.List[object]]::new()
 $sequence=0
@@ -69,24 +70,28 @@ function New-Producer([string]$Label,[ValidateSet('dead','terminal','live')][str
   $body=Join-Path $case 'worker.ps1';$release=Join-Path $case 'release';$progress=Join-Path $case 'session output.jsonl';$grow=Join-Path $case 'grow'
   [IO.File]::WriteAllText($progress,'synthetic session start')
   [IO.File]::WriteAllText((Join-Path $case 'descendant.ps1'),@'
-param($Release,$Progress,$Grow)
-$until=[datetime]::UtcNow.AddSeconds(90)
-while(-not(Test-Path -LiteralPath $Release)-and[datetime]::UtcNow-lt$until){
+param($Release,$Progress,$Grow,$OwnerPid,$OwnerStart)
+function Test-Owner {
+  try{return (Get-Process -Id $OwnerPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks-eq[datetimeoffset]::Parse($OwnerStart).UtcTicks}catch{return $false}
+}
+while(-not(Test-Path -LiteralPath $Release)-and(Test-Owner)){
   if(Test-Path -LiteralPath $Grow){[IO.File]::AppendAllText($Progress,"synthetic descendant progress`n")}
   Start-Sleep -Milliseconds 20
 }
 '@)
   [IO.File]::WriteAllText($body,@'
-param($Mode,$Release,$Progress,$Grow)
+param($Mode,$Release,$Progress,$Grow,$OwnerPid,$OwnerStart)
+function Test-Owner {
+  try{return (Get-Process -Id $OwnerPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks-eq[datetimeoffset]::Parse($OwnerStart).UtcTicks}catch{return $false}
+}
 $null=[Console]::In.ReadToEnd()
 Write-Output '{"type":"synthetic.worker.started"}'
 if($Mode-eq'dead'){[Console]::Error.WriteLine('stream disconnected');exit 17}
 if($Mode-eq'live'){
-  $arguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'descendant.ps1'),$Release,$Progress,$Grow)|ForEach-Object{'"'+$_+'"'}
+  $arguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'descendant.ps1'),$Release,$Progress,$Grow,$OwnerPid,$OwnerStart)|ForEach-Object{'"'+$_+'"'}
   $child=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WindowStyle Hidden -PassThru
   @{pid=$child.Id;startIdentity=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath ($Progress+'.child.json')
-  $until=[datetime]::UtcNow.AddSeconds(90)
-  while(-not(Test-Path -LiteralPath $Release)-and[datetime]::UtcNow-lt$until){
+  while(-not(Test-Path -LiteralPath $Release)-and(Test-Owner)){
     Start-Sleep -Milliseconds 20
   }
   [IO.File]::WriteAllText($Release,'cooperative descendant exit');$child.WaitForExit();$child.Dispose()
@@ -95,8 +100,10 @@ Write-Output '{"type":"turn.completed"}'
 exit 0
 '@)
   $config=Join-Path $case 'dispatch.json';$runner=Join-Path $case 'produce.ps1'
-  $workerArguments=@('-NoProfile','-NonInteractive','-File',$body,$Mode,$release,$progress,$grow)|ForEach-Object{'"'+$_+'"'}
-  Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness='codex';Model='gpt-6-astra';Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
+  $workerArguments=@('-NoProfile','-NonInteractive','-File',$body,$Mode,$release,$progress,$grow,$fixtureOwner.pid,$fixtureOwner.startIdentity)|ForEach-Object{'"'+$_+'"'}
+  # This fixture tests lifecycle, not background scheduling. Keep synthetic
+  # processes at Normal while production retains its default BelowNormal.
+  Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness='codex';Model='gpt-6-astra';Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PriorityClass='Normal';PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
   [IO.File]::WriteAllText($runner,'$c=Get-Content -LiteralPath '''+$config.Replace("'","''")+''' -Raw|ConvertFrom-Json -AsHashtable;$p=$c.parameters;& $c.script @p;exit $LASTEXITCODE')
   $handle=Begin-Native $runner @() "$Label-producer"
   $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle}
@@ -105,7 +112,11 @@ exit 0
   else{
     $deadline=[datetime]::UtcNow.AddSeconds(30);$ready=$false
     while([datetime]::UtcNow-lt$deadline-and-not$handle.process.HasExited){
-      if(Test-Path -LiteralPath $caseObject.spec){$spec=Get-Content -LiteralPath $caseObject.spec -Raw|ConvertFrom-Json;if($spec.state-eq'running'-and(Test-Path ($progress+'.child.json'))){$ready=$true;break}}
+      if(Test-Path -LiteralPath $caseObject.spec){$spec=Get-Content -LiteralPath $caseObject.spec -Raw|ConvertFrom-Json;if($spec.state-eq'running'-and(Test-Path ($progress+'.child.json'))){
+        $descendant=Get-Content -LiteralPath ($progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+        $child=Get-Process -Id $descendant.pid -ErrorAction SilentlyContinue
+        if($child-and$child.StartTime.ToUniversalTime().Ticks-eq[datetimeoffset]::Parse($descendant.startIdentity).UtcTicks){$ready=$true;break}
+      }}
       Start-Sleep -Milliseconds 50
     }
     Check $ready 'real producer published live spec'
@@ -183,6 +194,19 @@ function Growth-Oracle($Result,$Case){
 }
 try{
   $terminal=New-Producer 'synthetic-terminal' terminal
+  foreach($ownerCase in @(
+    @{name='stale';pid=$fixtureOwner.pid;start=([datetimeoffset]::Parse($fixtureOwner.startIdentity).AddSeconds(-1).ToString('o'))},
+    @{name='absent';pid=2147483647;start=$fixtureOwner.startIdentity}
+  )){
+    $probeRelease=Join-Path $root ("owner-$($ownerCase.name).release")
+    $probeProgress=Join-Path $root ("owner-$($ownerCase.name).progress")
+    $probeGrow=Join-Path $root ("owner-$($ownerCase.name).grow")
+    [IO.File]::WriteAllText($probeProgress,'unchanged');[IO.File]::WriteAllText($probeGrow,'grow')
+    try{
+      $probe=Run-Native (Join-Path (Split-Path -Parent $terminal.progress) 'descendant.ps1') @($probeRelease,$probeProgress,$probeGrow,[string]$ownerCase.pid,$ownerCase.start) "owner-$($ownerCase.name)"
+      Check ($probe.exit-eq0-and[IO.File]::ReadAllText($probeProgress)-ceq'unchanged') 'fixture descendant refuses absent/reused owner before progress'
+    }finally{[IO.File]::WriteAllText($probeRelease,'cooperative probe cleanup')}
+  }
   $reducer=Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1'
   $reducerHash=(Get-FileHash $reducer).Hash
   if($Only-in@('All','AC1')){
@@ -337,7 +361,11 @@ try{
       # 8186: the throwing reducer is a contained, secret-free lane failure; the watcher still exits nonzero and never touches the worker.
       Reducer-Failure $r 'REDUCER_EXIT' 'AC4 failure is contained, nonzero, and secret-free' 'WINDOW_EXPIRED' $live.label
       Same-Worker $spec
+      $growthBefore=(Get-Item -LiteralPath $live.progress).Length
       [IO.File]::WriteAllText($live.grow,'grow')
+      $growthDeadline=[datetime]::UtcNow.AddSeconds(30)
+      while((Get-Item -LiteralPath $live.progress).Length-eq$growthBefore-and[datetime]::UtcNow-lt$growthDeadline){Same-Worker $spec;Start-Sleep -Milliseconds 20}
+      Check ((Get-Item -LiteralPath $live.progress).Length-gt$growthBefore) 'AC4 actual descendant growth ready'
       $r=Batch @((Lane $live -Progress)) 'AC4-session-growth' @() $entry 1 3
       Growth-Oracle $r $live
       $mutant=Mutate 'ignore-session-growth' '$size-ne$lane.size-or$progressSize-ne$lane.progressSize' '$size-ne$lane.size'
