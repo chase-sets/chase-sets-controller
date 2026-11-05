@@ -30,6 +30,7 @@ function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { thr
 & (Join-Path $PSScriptRoot 'ledger-reader-reclamation-history.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-guard-receipt-paths.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-direct-native-paths.test.ps1')
+& (Join-Path $PSScriptRoot 'ledger-reader-direct-tail.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-board-history.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-query-paths.test.ps1')
 $census=Get-LedgerReaderCensus -Root $ControllerRoot

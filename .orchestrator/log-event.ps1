@@ -205,7 +205,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "orchestration-log-lock.psm1") -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
@@ -283,7 +283,7 @@ if ($briefPresent) {
     # attests these bytes. Persist its digest before the publication event.
     if (-not $BriefEvidencePath -or -not [IO.File]::Exists($BriefEvidencePath)) { throw 'BRIEF_ATTRIBUTION_INVALID: attestation report required' }
     try {
-      $reportBytes=[IO.File]::ReadAllBytes($BriefEvidencePath)
+      $reportBytes=[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $BriefEvidencePath))
       $report=[Text.UTF8Encoding]::new($false,$true).GetString($reportBytes)
     } catch { throw 'BRIEF_ATTRIBUTION_INVALID: unreadable UTF-8 attestation report' }
     $reportHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($reportBytes)).ToLowerInvariant()

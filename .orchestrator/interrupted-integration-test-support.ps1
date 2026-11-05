@@ -494,7 +494,7 @@ exit $LASTEXITCODE
     }
     if($CopiedHelper){
       $copyRoot=Join-Path $case 'synthetic-copied-helper';[IO.Directory]::CreateDirectory($copyRoot)|Out-Null
-      foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1')){
+      foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')){
         Copy-Item -LiteralPath (Join-Path $runtime $name) -Destination (Join-Path $copyRoot $name)
         if((Get-FileHash (Join-Path $copyRoot $name)).Hash-cne(Get-FileHash (Join-Path $runtime $name)).Hash){throw '7963 copied helper bytes differ'}
       }

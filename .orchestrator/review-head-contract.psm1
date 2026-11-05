@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 function Get-ObservedLaneValue($Row, [string]$Name) {
   if ($null -ne $Row -and $null -ne $Row.PSObject.Properties[$Name]) { return $Row.$Name }
   return $null
@@ -125,7 +126,7 @@ function Read-LaneTimeCapture([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     $file = Get-Item -LiteralPath $full -ErrorAction Stop
     if ($file.Length -gt 33554432 -or $file.PSIsContainer) { throw 'capture size/type' }
-    $bytes = [IO.File]::ReadAllBytes($full)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $full))
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
     $entries = ConvertFrom-LaneTimeJson $text
     if ($entries -isnot [array]) { throw 'capture must be an array' }
@@ -686,8 +687,6 @@ function Get-ReviewReceiptValidation($Row, [object]$Vocabulary = $null) {
     instant = $instant
   }
 }
-
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 function Read-ExactHeadReviewHistory(
   [string]$Path,

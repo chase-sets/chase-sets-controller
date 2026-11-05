@@ -1,3 +1,5 @@
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
+
 function Assert-SuiteSelection([string]$Part, [string[]]$Names, $BoundParameters, [string[]]$LegacySelectors) {
   if (-not $BoundParameters.ContainsKey('Part')) { return }
   if (-not $Part -or $Part -cnotin $Names) { throw "SUITE_PART: unknown part '$Part'" }
@@ -282,7 +284,7 @@ function Get-SuiteRoutingParts([string]$Source) {
 }
 
 function Get-SuiteExpectedParts([string]$Path) {
-  $source=[IO.File]::ReadAllText($Path)
+  $source=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))
   if((Split-Path -Leaf $Path)-ceq'dispatch-routing-data.test.ps1'){return Get-SuiteRoutingParts $source}
   if((Split-Path -Leaf $Path)-ceq'invoke-heavy-verifier.test.ps1'){return @((Get-HeavySuitePartMap).Keys)}
   if((Split-Path -Leaf $Path)-ceq'dispatch-lane.test.ps1'){return @((Get-DispatchLanePartMap).Keys)}
