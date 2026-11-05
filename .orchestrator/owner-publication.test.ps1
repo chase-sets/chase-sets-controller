@@ -437,8 +437,8 @@ function Invoke-ReaderInventory {
   # Each fixture exception is a site, not a file exemption. These observations
   # inspect fixture-owned retained records; they do not define live publication.
   $fixtures=@{
-    # 3246: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
-    'controller-release-battery.test.ps1'=@(953,962,972,991,1597,1932,3246)
+    # 3304: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
+    'controller-release-battery.test.ps1'=@(1003,1012,1022,1041,1655,1990,3304)
     'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
     'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
     # install-controller-skills.ps1 reads the installed release record, not heavy

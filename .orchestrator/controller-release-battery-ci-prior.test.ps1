@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 Write-Output "Focused child priority=$([Diagnostics.Process]::GetCurrentProcess().PriorityClass)"
 # Load definitions and the real reuse/merge blocks, never the battery entry,
 # admission, host discovery, census or live runtime. All inputs are private.
