@@ -29,6 +29,7 @@ param(
   [Parameter(DontShow)][switch]$SynchronousDispatch
 )
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1')
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
@@ -41,7 +42,7 @@ $ownershipInvalid=@{}
 $ownershipSnapshots=@{}
 $platformRepository='todd-skelton/orchestration-platform'
 if($GraphFixturePath){
-  $graphFixture=@(Get-Content -LiteralPath $GraphFixturePath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop)
+  $graphFixture=@(Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $GraphFixturePath) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop)
   if($graphFixture.Count-lt1){throw 'CENSUS_UNKNOWN_GRAPH_FIXTURE'}
 }
 
@@ -477,7 +478,7 @@ function Assert-LegacyPlatformRegisterInactive{
   $path=Join-Path $ContainerRoot '.orchestrator/platform-handoff.md'
   try{
     if(-not(Test-Path -LiteralPath $path)){return}
-    $bytes=[IO.File]::ReadAllBytes($path)
+    $bytes=[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
     $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
   }catch{throw 'LEGACY_PLATFORM_REGISTER_ACTIVE'}
   $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
@@ -650,7 +651,7 @@ foreach($pr in $orderedPullRequests){
   $obligation=[ordered]@{schemaVersion='landed-integration-owed/v1';landedPr=[long]$LandedPr;landedHead=$LandedHead;pr=[long]$pr.number;targetHead=[string]$pr.headRefOid;newBase=[string]$census.newBase;branch=[string]$pr.headRefName;worktree=[IO.Path]::GetFullPath($worktree).TrimEnd('\','/');integrationLane=$lane}
   $obligationLine=$obligation|ConvertTo-Json -Compress
   $pendingHandoff=Test-Path -LiteralPath $owed -PathType Leaf
-  $owedBytesBefore=if($pendingHandoff){[IO.File]::ReadAllBytes($owed)}else{$null}
+  $owedBytesBefore=if($pendingHandoff){[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $owed))}else{$null}
   $expectedIdentity=Get-Identity $obligationLine
   Assert-HandoffAcknowledgementNamespace
   $legacyFilter="integration-owed-ack-$(('?'*64)).json"
@@ -666,7 +667,7 @@ foreach($pr in $orderedPullRequests){
     if($reconciledAcknowledgement){
       $obligation=$reconciledAcknowledgement.obligation;$obligationLine=$reconciledAcknowledgement.line;$acknowledgementPath=$reconciledAcknowledgement.path
     }elseif($pendingHandoff){
-      $obligationLine=([IO.File]::ReadAllText($owed)).Trim();$obligation=Read-RebaseJson $owed
+      $obligationLine=([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $owed))).Trim();$obligation=Read-RebaseJson $owed
       $keys=@('schemaVersion','landedPr','landedHead','pr','targetHead','newBase','branch','worktree','integrationLane');$actual=@($obligation.PSObject.Properties.Name)
       if($actual.Count-ne$keys.Count-or@($keys|Where-Object{$_-cnotin$actual}).Count-ne0-or$obligation.schemaVersion-cne'landed-integration-owed/v1'-or
         [int64]$obligation.landedPr-ne$LandedPr-or[string]$obligation.landedHead-cne$LandedHead-or[int64]$obligation.pr-ne[int64]$pr.number-or
@@ -763,7 +764,7 @@ foreach($item in $plan){
       $bytes=[Text.UTF8Encoding]::new($false).GetBytes($obligationLine);$stream=[IO.File]::Open($owed,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
       try{$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
       $owedBytesBefore=$bytes
-    }elseif($null-ne$owedBytesBefore-and(Get-RebaseHash ([IO.File]::ReadAllBytes($owed)))-cne(Get-RebaseHash $owedBytesBefore)){throw 'CENSUS_UNKNOWN_OWED_IDENTITY: changed after planning'}
+    }elseif($null-ne$owedBytesBefore-and(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $owed))))-cne(Get-RebaseHash $owedBytesBefore)){throw 'CENSUS_UNKNOWN_OWED_IDENTITY: changed after planning'}
     $handoff=Invoke-ObligationHandoff $obligation $identity $(if($originalOwners.Count-eq1){$originalOwners[0]}else{$null}) $acknowledgementPath
     if(-not$handoff.acknowledged){$results.Add([ordered]@{pr=[int]$pr.number;action='HANDOFF_RETRYABLE'});continue}
     if($alreadySuccessful.Count-eq0){
@@ -778,7 +779,7 @@ foreach($item in $plan){
     Assert-IntegrationTerminal $terminalRows[0].value
     if($terminalRows[0].value.targetBranch-cne$pr.headRefName-or-not(Test-HandoffSamePath $terminalRows[0].value.worktree $worktree)){throw 'CENSUS_UNKNOWN_TERMINAL_IDENTITY'}
     if(Test-Path -LiteralPath $owed -PathType Leaf){
-      if ($null -eq $owedBytesBefore -or (Get-RebaseHash ([IO.File]::ReadAllBytes($owed))) -cne (Get-RebaseHash $owedBytesBefore)) { throw 'CENSUS_UNKNOWN_OWED_IDENTITY: changed before deletion' }
+      if ($null -eq $owedBytesBefore -or (Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $owed)))) -cne (Get-RebaseHash $owedBytesBefore)) { throw 'CENSUS_UNKNOWN_OWED_IDENTITY: changed before deletion' }
       Remove-Item -LiteralPath $owed -Force
     }
     $terminalAcknowledgementPath=Get-HandoffAcknowledgementPath $obligation $identity

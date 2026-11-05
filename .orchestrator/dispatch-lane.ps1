@@ -135,6 +135,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 
 # Browser/computer-use access is currently bound to the interactive host
 # session, not to detached CIM-launched lanes. Refuse before routing, census,
@@ -150,7 +151,7 @@ function Get-LanePriority([string]$Path, [string]$Override) {
     if (-not (Test-Path -LiteralPath $Path -ErrorAction Stop)) {
       return @{ priorityClass='BelowNormal'; prioritySource='default' }
     }
-    $configuration = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -NoEnumerate -ErrorAction Stop
+    $configuration = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -NoEnumerate -ErrorAction Stop
     if ($configuration -isnot [System.Management.Automation.PSCustomObject] -or $configuration.schemaVersion -isnot [string] -or $configuration.schemaVersion -cne 'lane-priority/v1') {
       return @{ priorityClass='Normal'; prioritySource='fallback:schemaVersion' }
     }
@@ -642,7 +643,7 @@ function Get-ClaudeForegroundSettingsConflicts([string]$WorktreePath) {
         $property = Get-ItemProperty -LiteralPath $source.registry -Name "Settings" -ErrorAction SilentlyContinue
         if ($property) { [string]$property.Settings } else { $null }
       } elseif (Test-Path -LiteralPath $source.location -PathType Leaf) {
-        [IO.File]::ReadAllText($source.location)
+        [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $source.location))
       } else { $null }
       if ($null -eq $text) { $parsed = $true; break }
       try { $settings = $text | ConvertFrom-Json -AsHashtable -Depth 100; $parsed = $true }
@@ -685,7 +686,7 @@ if ($LaneRole -eq "review") {
   if (-not (Test-Path -LiteralPath $reviewContractPath -PathType Leaf)) {
     throw "dispatch-lane: review contract is missing: $reviewContractPath"
   }
-  $reviewContractText = [IO.File]::ReadAllText($reviewContractPath)
+  $reviewContractText = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $reviewContractPath))
   if ($reviewContractText -notmatch "REVIEW_CONTRACT_VERSION: review-contract/v2") {
     throw "dispatch-lane: review contract version marker is missing or unsupported"
   }
@@ -696,7 +697,7 @@ if ($LaneRole -eq "planning") {
   if (-not (Test-Path -LiteralPath $planningContractPath -PathType Leaf)) {
     throw "dispatch-lane: planning contract is missing: $planningContractPath"
   }
-  $planningContractText = [IO.File]::ReadAllText($planningContractPath)
+  $planningContractText = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $planningContractPath))
   if ($planningContractText -notmatch "PLANNING_CONTRACT_VERSION: planning-repair/v1") {
     throw "dispatch-lane: planning contract version marker is missing or unsupported"
   }
@@ -1135,7 +1136,7 @@ if ($successorResume) {
 $harnessPreamble = if ($Harness -eq "claude") { $claudeForegroundPreamble } else { "" }
 $reviewPreamble = if ($LaneRole -eq "review") { $reviewContractText.TrimEnd() + "`r`n`r`n" } else { "" }
 $planningPreamble = if ($LaneRole -eq "planning") { $planningContractText.TrimEnd() + "`r`n`r`n" } else { "" }
-$composedPrompt = $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + [IO.File]::ReadAllText($promptResolved)
+$composedPrompt = $gatePreamble + $boundedRetrievalPreamble + $harnessPreamble + $reviewPreamble + $planningPreamble + [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $promptResolved))
 $plan = [ordered]@{
   harness = $Harness
   routing = $dispatchRouting
@@ -1578,7 +1579,7 @@ try {
     }
     if ($LongProductGate -and $dispatchCleanupProven -and (Test-Path -LiteralPath $longProductGateResultPath -PathType Leaf)) {
       try {
-        $result = [IO.File]::ReadAllText($longProductGateResultPath) | ConvertFrom-Json -DateKind String -ErrorAction Stop
+        $result = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $longProductGateResultPath)) | ConvertFrom-Json -DateKind String -ErrorAction Stop
         $same = $result.schema -ceq 'long-product-gate/v1' -and
           $result.launchId -ceq $launchId -and $result.gate -ceq 'test:scripts' -and
           $result.lane -ceq $admissionLane -and $result.worktree -ceq ([IO.Path]::GetFullPath($worktreeResolved).TrimEnd('\','/')) -and
