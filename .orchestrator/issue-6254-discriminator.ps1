@@ -126,7 +126,7 @@ function Invoke-ReceiptPoisonDiscriminator {
 
     $legacyMutantRoot = Join-Path $testRoot "legacy-non-pr-global-poison"
     [IO.Directory]::CreateDirectory($legacyMutantRoot) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $runtime "review-head-reducer.ps1") -Destination $legacyMutantRoot
+    Copy-Item -LiteralPath (Join-Path $runtime "review-head-reducer.ps1"),(Join-Path $runtime 'dispatch-ledger-reader.psm1'),(Join-Path $runtime 'routing-data.ps1') -Destination $legacyMutantRoot
     $legacyContractSource = Get-Content -LiteralPath (Join-Path $runtime "review-head-contract.psm1") -Raw
     $legacyNeedle = 'if (Test-LegacyNonPrReviewIdentity $row) {'
     Assert-6254 (@([regex]::Matches($legacyContractSource,[regex]::Escape($legacyNeedle))).Count -eq 1) `
@@ -140,7 +140,7 @@ function Invoke-ReceiptPoisonDiscriminator {
     $legacyMutant = Invoke-ReceiptReducer (Join-Path $legacyMutantRoot "review-head-reducer.ps1") $legacyHistory
     Assert-6254 ($legacyMutant.state -ceq "unknown" -and
       $legacyMutant.reason -ceq "RELEVANT_RECEIPT_UNVERIFIABLE") `
-      "named legacy-non-pr-global-poison bypass mutant survived the complete-class control"
+      "named legacy-non-pr-global-poison bypass mutant survived the complete-class control: observed=$($legacyMutant | ConvertTo-Json -Compress -Depth 10)"
 
     $otherMalformed = New-ReceiptRow 9002 $headA "other-pr-malformed"
     $otherMalformed.reviewerAttempt = $otherMalformed.authorAttempt
@@ -151,7 +151,7 @@ function Invoke-ReceiptPoisonDiscriminator {
 
     $mutantRoot = Join-Path $testRoot "other-pr-global-poison"
     [IO.Directory]::CreateDirectory($mutantRoot) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $runtime "review-head-reducer.ps1") -Destination $mutantRoot
+    Copy-Item -LiteralPath (Join-Path $runtime "review-head-reducer.ps1"),(Join-Path $runtime 'dispatch-ledger-reader.psm1'),(Join-Path $runtime 'routing-data.ps1') -Destination $mutantRoot
     $contractSource = Get-Content -LiteralPath (Join-Path $runtime "review-head-contract.psm1") -Raw
     $needle = 'if ($rowPr -ne $Pr) {'
     Assert-6254 (@([regex]::Matches($contractSource,[regex]::Escape($needle))).Count -eq 1) `

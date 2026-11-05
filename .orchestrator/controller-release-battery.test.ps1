@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ArtifactWrites", "ConcurrentIdentity", "FleetSampling")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ArtifactWrites", "ConcurrentIdentity", "FleetSampling", "MeasuredLoad")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -1487,6 +1487,7 @@ function Invoke-8102BatteryLeg([string]$Label, [hashtable]$ExtraRuntimeFiles, [s
   # 43308dc; the shared omission inventory above does not carry it, so these
   # legs supply it themselves and leave the other scenarios' fixture unchanged.
   $legFiles = @{ "fixtures/legacy-non-pr-review-history.jsonl" = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "fixtures/legacy-non-pr-review-history.jsonl")) }
+  $legFiles['routing-data-test-support.ps1'] = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'routing-data-test-support.ps1'))
   foreach ($name in @($ExtraRuntimeFiles.Keys)) { $legFiles[$name] = $ExtraRuntimeFiles[$name] }
   $fixture = New-OmissionFixture $legFiles
   $resultPath = Join-Path $fixture.root ".orchestrator/artifacts/8102-$Label.json"
@@ -3583,6 +3584,8 @@ try {
     Test-BatteryConcurrentIdentity
   } elseif ($Scenario -ceq 'FleetSampling') {
     Test-BatteryFleetSampling
+  } elseif ($Scenario -ceq 'MeasuredLoad') {
+    Test-BatteryIncompleteUnderMeasuredLoad
   } else {
     Write-BatterySuiteResult $ExpectedControllerHead $SuiteResultOut
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"
