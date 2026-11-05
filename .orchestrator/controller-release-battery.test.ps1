@@ -503,7 +503,7 @@ function Invoke-ScopeControl {
   # unknown identity plans silently.
   $refusalTerm = 'if (-not $identitySet.Contains($noReuse)) { Stop-Battery "BATTERY_NO_REUSE_IDENTITY_UNKNOWN:$noReuse" }'
   Assert-BatteryTest (@([regex]::Matches($batterySource, [regex]::Escape($refusalTerm))).Count -eq 1) 'unknown-identity bypass mutant needs the exact refusal'
-  $bypassMutant = Join-Path $testRoot 'no-reuse-identity-bypass-mutant.ps1'
+  $bypassMutant = Join-Path $fixture.root '.orchestrator/no-reuse-identity-bypass-mutant.ps1'
   [IO.File]::WriteAllText($bypassMutant, $batterySource.Replace($refusalTerm, ''), [Text.UTF8Encoding]::new($false))
   $mutantObserved = ''
   $mutantPlan = ''
@@ -2715,7 +2715,7 @@ function Test-BatteryConcurrentValidation {
     Assert-BatteryTest ($observed -match 'BATTERY_CONCURRENT_IDENTITY_(EMPTY_SEGMENT|NOT_TEST)') "-ConcurrentIdentity '$refused' did not refuse: $observed"
   }
   # Named mutant: without the limit, a three-entry list plans silently.
-  $mutantPath = Join-Path $testRoot 'concurrent-limit-removed-mutant.ps1'
+  $mutantPath = Join-Path $fixture.root '.orchestrator/concurrent-limit-removed-mutant.ps1'
   [IO.File]::WriteAllText($mutantPath, (Replace-BatteryFixtureSource (Get-Concurrent120Source) "  if (`$concurrentSegments.Count -gt 2) { Stop-Battery 'BATTERY_CONCURRENT_IDENTITY_LIMIT' }" ''), [Text.UTF8Encoding]::new($false))
   $mutantObserved = ''; $mutantPlan = ''
   try { $mutantPlan = & $mutantPath -ControllerRoot $fixture.root -ExpectedControllerHead $fixture.head -EvidenceReceiptPath $fixture.receipt -ConcurrentIdentity 'test:cc-a.test.ps1;test:cc-b.test.ps1;test:cc-c.test.ps1' -ValidatePlanOnly 2>&1 | Out-String }
