@@ -433,6 +433,7 @@ try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'even
   $anchor='if ($active.Count) {'
   Assert-Log ($moduleSource.Contains($anchor)) 'STOP precedence mutant anchor missing'
   $mutantPath=Join-Path $root 'synthetic-stop-precedence.psm1';[IO.File]::WriteAllText($mutantPath,$moduleSource.Replace($anchor,'if ($false) {'))
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
   $mutant=Import-Module $mutantPath -Force -PassThru -DisableNameChecking
   try{
     $wrong=& $mutant {param($h,$head) Reduce-LandedIntegrationAuthority $h 908132 'synthetic/terminal' $head} (Read-ExactHeadReviewHistory $authorityLog) $head

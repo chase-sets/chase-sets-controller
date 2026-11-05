@@ -6,7 +6,7 @@ Dot-source with -Library. State and cache overrides support isolated fixtures.
 [CmdletBinding()]
 param([string]$StateRoot,[string]$LkgPath,[switch]$Library)
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $script:RoutingConfiguredStateRoot = $StateRoot
 $script:RoutingConfiguredLkgPath = $LkgPath
 

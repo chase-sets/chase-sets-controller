@@ -8,7 +8,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('ledger-routing-boundary-'+[guid]::N
 [void][IO.Directory]::CreateDirectory($root)
 try {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
-  $localImport="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking"
+  $import="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking"
   $sources=[ordered]@{'routing-data.ps1'=@('$Path','$path');'codex-launch-boundary.psm1'=@('$LiteralPath','$generatedPath','$fixturePath')}
   $payload='{"synthetic":"non-dispatch"}'
   $positive=Join-Path $root 'ordinary.json';[IO.File]::WriteAllText($positive,$payload,[Text.UTF8Encoding]::new($false))
@@ -17,7 +17,6 @@ try {
     'dispatch-log.jsonl ','dispatch-log.jsonl:boundary','dispatch-log.jsonl.:boundary')
   $total=0
   foreach($name in $sources.Keys) {
-    $import=if($name -ceq 'codex-launch-boundary.psm1'){$localImport.Replace(' -DisableNameChecking',' -Global -DisableNameChecking')}else{$localImport}
     $errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$null,[ref]$errors)
     Check ($errors.Count -eq 0) "source parses $name"
     $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $import})

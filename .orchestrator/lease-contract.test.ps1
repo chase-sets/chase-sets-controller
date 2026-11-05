@@ -178,6 +178,7 @@ try {
   $replacement = 'if (($ObservedAtUtc - $renewedAt).TotalMinutes -gt 60) { return New-OrchestrationLeaseResult "stale" $Value @("freshness-refusal") $Fingerprint $Bytes }; New-OrchestrationLeaseResult "ok" $Value @() $Fingerprint $Bytes'
   [IO.File]::WriteAllText($mutantPath, $source.Replace($anchor, $replacement), [Text.UTF8Encoding]::new($false))
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'routing-data.ps1') -Destination (Join-Path $root 'routing-data.ps1')
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
   Import-Module $mutantPath -Force -Prefix FreshnessMutant -DisableNameChecking
   $mutantRead = Read-FreshnessMutantOrchestrationLease -Path $recordPath -ObservedAtUtc $t0.AddDays(90)
   Assert-True ($mutantRead.status -cin @("stale","malformed") -and @($mutantRead.diagnostics).Count -gt 0) "mutant control actually reintroduces a freshness refusal"
