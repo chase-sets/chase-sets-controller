@@ -1,5 +1,14 @@
 # Sole dispatch-history I/O owner. No dependency on reducers or query-ledgers:
 # those entrypoints delegate here, including the installed PrefixHistory fold.
+function Assert-NonDispatchLedgerPath {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  $leaf=([IO.Path]::GetFileName($Path) -split ':',2)[0].TrimEnd(' ','.')
+  if ([string]::Equals($leaf,'dispatch-log.jsonl',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'DISPATCH_LEDGER_OWNER_REQUIRED'
+  }
+}
+
 function Read-DispatchLedgerSnapshot {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path, [long]$MaxBytes = [long]::MaxValue,
@@ -149,4 +158,4 @@ function Read-DispatchCountHistory {
     cursor=$snapshot.cursor;partialTrailingRow=$snapshot.partialTrailingRow}
 }
 
-Export-ModuleMember -Function Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
+Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory

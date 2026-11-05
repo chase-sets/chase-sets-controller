@@ -874,7 +874,10 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
 }
 
 function Read-RebaseJsonLines([string]$Path, [switch]$DispatchHistory) {
-  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else { [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true)) }
+  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else {
+    dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+    [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true))
+  }
   foreach ($line in $lines) {
     if ($line.Trim()) { ConvertFrom-RebaseJson $line }
   }

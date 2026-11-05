@@ -10,7 +10,21 @@ if(-not(Test-Path -LiteralPath $dispatchPath -PathType Leaf)){throw "no lifecycl
 $waitingPath=if($WaitingOnToddConfig){$WaitingOnToddConfig}else{Join-Path $PSScriptRoot 'waiting-on-todd.psd1'}
 $waitingIssue=if(Test-Path -LiteralPath $waitingPath -PathType Leaf){(Import-PowerShellDataFile -LiteralPath $waitingPath).PinnedIssue}
 if($waitingIssue -isnot [int] -or $waitingIssue -lt 1){throw "no pinned Waiting-on-Todd issue in $waitingPath"}
-function Read-DigestRows([string]$Path,[int]$Tail,[switch]$DispatchHistory){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return @()};$rows=@();foreach($line in $(if($DispatchHistory){Read-DispatchLedgerLines -Path $Path | Select-Object -Last $Tail}else{Get-Content -LiteralPath $Path -Tail $Tail})){if(-not"$line".Trim()){continue};try{$rows+=($line|ConvertFrom-Json -DateKind String)}catch{throw "malformed lifecycle row in $Path"}};@($rows)}
+function Read-DigestRows([string]$Path,[int]$Tail,[switch]$DispatchHistory) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+  $rows=@()
+  $lines=if ($DispatchHistory) {
+    Read-DispatchLedgerLines -Path $Path | Select-Object -Last $Tail
+  } else {
+    dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+    Get-Content -LiteralPath $Path -Tail $Tail
+  }
+  foreach ($line in $lines) {
+    if (-not "$line".Trim()) { continue }
+    try { $rows+=($line | ConvertFrom-Json -DateKind String) } catch { throw "malformed lifecycle row in $Path" }
+  }
+  @($rows)
+}
 $rows=Read-DigestRows $dispatchPath 500 -DispatchHistory
 if($rows.Count-eq0){throw 'lifecycle log has no rows'}
 $latest=@($rows|Sort-Object{[datetimeoffset]::Parse([string]$_.ts)}-Descending|Select-Object -First 1)[0]

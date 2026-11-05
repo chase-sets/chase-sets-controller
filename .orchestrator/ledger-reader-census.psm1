@@ -8,10 +8,51 @@ function Get-LedgerReaderCensus {
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
   $variableKeys=@{};$factParts=@{};$scriptParts=@{};$assignmentShapes=@{}
   $pathAssignments=@{};$pathParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $dataFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($name in @('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')) { [void]$dataFunctions.Add($name) }
   $rows=[Collections.Generic.List[object]]::new()
+  function TokenShape($Node) {
+    $tokens=$null;$errors=$null
+    $null=[Management.Automation.Language.Parser]::ParseInput($Node.Extent.Text,[ref]$tokens,[ref]$errors)
+    if ($errors.Count) { return '' }
+    return (@($tokens | Where-Object { $_.Kind -notin @('NewLine','Comment','EndOfInput') } | ForEach-Object { "$($_.Kind):$($_.Text)" }) -join "`n")
+  }
+  function ReaderPath($Node) {
+    if ($Node -isnot [Management.Automation.Language.CommandAst]) { return $Node }
+    $elements=$Node.CommandElements
+    if (@($elements | Where-Object { $_ -is [Management.Automation.Language.VariableExpressionAst] -and $_.Splatted }).Count) { return $null }
+    $paths=@()
+    for ($i=1;$i -lt $elements.Count;$i++) {
+      $element=$elements[$i]
+      if ($element -is [Management.Automation.Language.CommandParameterAst] -and $element.ParameterName -in @('Path','LiteralPath')) {
+        if ($element.Argument) { $paths+=,$element.Argument }
+        elseif ($i+1 -lt $elements.Count -and $elements[$i+1] -isnot [Management.Automation.Language.CommandParameterAst]) { $i++;$paths+=,$elements[$i] }
+        else { return $null }
+      }
+    }
+    if ($paths.Count -eq 1) { return $paths[0] }
+    if ($paths.Count -eq 0 -and $elements.Count -gt 1 -and $elements[1] -isnot [Management.Automation.Language.CommandParameterAst]) { return $elements[1] }
+    return $null
+  }
+  function HasPathGuard($Node,$Path,$Unit) {
+    if (-not $nonDispatchGuardValid -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset -or $Path -isnot [Management.Automation.Language.VariableExpressionAst]) { return $false }
+    if (-not $stringParameters.Contains((Key $Path $Unit))) { return $false }
+    $statement=$Node
+    while ($statement.Parent -and $statement.Parent -isnot [Management.Automation.Language.StatementBlockAst] -and $statement.Parent -isnot [Management.Automation.Language.NamedBlockAst]) { $statement=$statement.Parent }
+    $block=$statement.Parent
+    if (-not $block) { return $false }
+    $index=$block.Statements.IndexOf($statement)
+    if ($index -lt 1) { return $false }
+    $previous=$block.Statements[$index-1]
+    if ($previous -isnot [Management.Automation.Language.PipelineAst] -or $previous.PipelineElements.Count -ne 1) { return $false }
+    $call=$previous.PipelineElements[0]
+    if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -cne 'dispatch-ledger-reader\Assert-NonDispatchLedgerPath' -or $call.CommandElements.Count -ne 3) { return $false }
+    $parameter=$call.CommandElements[1];$value=$call.CommandElements[2]
+    return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Path' -and -not $parameter.Argument -and
+      $value -is [Management.Automation.Language.VariableExpressionAst] -and (Key $value $Unit) -ceq (Key $Path $Unit)
+  }
   function Scope($Node,$Unit) {
     $parent=$Node.Parent
     while ($null -ne $parent) {
@@ -168,7 +209,11 @@ function Get-LedgerReaderCensus {
       loops=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.ForEachStatementAst]},$true) })
       calls=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true) })};$units.Add($unit)
     if ($test) { continue }
-    foreach ($parameter in $unit.parameters) { [void]$pathParameters.Add((Key $parameter.Name $unit)) }
+    foreach ($parameter in $unit.parameters) {
+      $key=Key $parameter.Name $unit
+      [void]$pathParameters.Add($key)
+      if (@($parameter.Attributes | Where-Object { $_ -is [Management.Automation.Language.TypeConstraintAst] -and $_.TypeName.FullName -in @('string','System.String') }).Count) { [void]$stringParameters.Add($key) }
+    }
     foreach ($assignment in $unit.assignments) {
       if ($assignment.Left -isnot [Management.Automation.Language.VariableExpressionAst]) { continue }
       $key=Key $assignment.Left $unit
@@ -181,6 +226,58 @@ function Get-LedgerReaderCensus {
       $parameters=@($(if ($function.Parameters) { $function.Parameters } elseif ($function.Body.ParamBlock) { $function.Body.ParamBlock.Parameters }) | Where-Object { $null -ne $_ })
       $functions[$name]+=[pscustomobject]@{unit=$unit;parameters=$parameters;node=$function
         calls=@($function.Body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))}
+    }
+  }
+  # A guard name alone is not authority. Authenticate the actual owner's
+  # fail-closed body and an unconditional import of that tracked module.
+  $nonDispatchGuardValid=$false
+  $guardImports=@{}
+  $expectedGuard=@'
+function Assert-NonDispatchLedgerPath {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  $leaf=([IO.Path]::GetFileName($Path) -split ':',2)[0].TrimEnd(' ','.')
+  if ([string]::Equals($leaf,'dispatch-log.jsonl',[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'DISPATCH_LEDGER_OWNER_REQUIRED'
+  }
+}
+'@
+  $tokens=$null;$errors=$null
+  $expectedAst=[Management.Automation.Language.Parser]::ParseInput($expectedGuard,[ref]$tokens,[ref]$errors)
+  $expectedBody=$expectedAst.EndBlock.Statements[0].Body
+  if ($functions.ContainsKey('assert-nondispatchledgerpath') -and $functions['assert-nondispatchledgerpath'].Count -eq 1) {
+    $target=$functions['assert-nondispatchledgerpath'][0]
+    $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
+    $exported=$false
+    foreach ($statement in $target.unit.ast.EndBlock.Statements) {
+      if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
+      $call=$statement.PipelineElements[0]
+      if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -ine 'Export-ModuleMember' -or $call.CommandElements.Count -ne 3) { continue }
+      $parameter=$call.CommandElements[1];$names=$call.CommandElements[2]
+      if ($parameter -isnot [Management.Automation.Language.CommandParameterAst] -or $parameter.ParameterName -ine 'Function') { continue }
+      $values=if ($names -is [Management.Automation.Language.ArrayLiteralAst]) { @($names.Elements) } else { @($names) }
+      if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Assert-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $exported=$true }
+    }
+    $nonDispatchGuardValid=$nonDispatchGuardValid -and $exported
+  }
+  if ($nonDispatchGuardValid) {
+    $ownerPath=[IO.Path]::GetFullPath((Join-Path $Root '.orchestrator/dispatch-ledger-reader.psm1'))
+    foreach ($unit in $units | Where-Object { -not $_.test -and $_.ast }) {
+      foreach ($statement in $unit.ast.EndBlock.Statements) {
+        if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
+        $call=$statement.PipelineElements[0]
+        if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -ine 'Import-Module' -or $call.CommandElements.Count -lt 2) { continue }
+        $options=@($call.CommandElements | Select-Object -Skip 2)
+        if (@($options | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] -or $_.Argument -or $_.ParameterName -notin @('Force','DisableNameChecking') }).Count) { continue }
+        $argument=$call.CommandElements[1]
+        if ($argument -isnot [Management.Automation.Language.ParenExpressionAst] -or $argument.Pipeline.PipelineElements.Count -ne 1) { continue }
+        $join=$argument.Pipeline.PipelineElements[0]
+        if ($join -isnot [Management.Automation.Language.CommandAst] -or $join.GetCommandName() -ine 'Join-Path' -or $join.CommandElements.Count -ne 3) { continue }
+        $base=$join.CommandElements[1];$leaf=$join.CommandElements[2]
+        if ($base -isnot [Management.Automation.Language.VariableExpressionAst] -or $base.VariablePath.UserPath -ine 'PSScriptRoot' -or $leaf -isnot [Management.Automation.Language.StringConstantExpressionAst]) { continue }
+        $directory=Split-Path -Parent (Join-Path $Root $unit.path)
+        if ([IO.Path]::GetFullPath((Join-Path $directory $leaf.Value)) -ceq $ownerPath -and -not $guardImports.ContainsKey($unit.path)) { $guardImports[$unit.path]=$statement.Extent.EndOffset }
+      }
     }
   }
   Write-Verbose 'Ledger census: resolving script aliases'
@@ -321,7 +418,15 @@ function Get-LedgerReaderCensus {
         if ($family -match '^IO\.File\.(Exists|Delete|Move|Copy|Replace|Write.*|Append.*|Create.*|OpenWrite|Get.*|Set.*)$') { $role='writer' }
         elseif ($family -match '^IO\.File\.(Open|OpenRead|OpenText|ReadLines|ReadAllLines|ReadAllText|ReadAllBytes)$|^(StreamReader|FileStream)$') {
           $role='reader'
-          if ($node.Extent.Text -match 'FileAccess\]\s*::\s*Write\b|FileMode\]\s*::\s*(Create|CreateNew|Append)\b') { $role='writer' }
+          if ($family -in @('IO.File.Open','FileStream')) {
+            $mode=if ($node.Arguments.Count -gt 1) { $node.Arguments[1] }
+            $access=if ($node.Arguments.Count -gt 2) { $node.Arguments[2] }
+            $writeMode=$mode -is [Management.Automation.Language.MemberExpressionAst] -and $mode.Static -and
+              $mode.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $mode.Expression.TypeName.FullName -match '^(System\.)?IO\.FileMode$' -and $mode.Member.Value -in @('Create','CreateNew','Append')
+            $writeAccess=$access -is [Management.Automation.Language.MemberExpressionAst] -and $access.Static -and
+              $access.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $access.Expression.TypeName.FullName -match '^(System\.)?IO\.FileAccess$' -and $access.Member.Value -eq 'Write'
+            if ($writeMode -or $writeAccess) { $role='writer' }
+          }
         } else { $role='unclassified';$unknown=$true }
         $container=$node.Parent
         while ($container -and $container -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $container=$container.Parent }
@@ -354,16 +459,20 @@ function Get-LedgerReaderCensus {
         }
         if ($text -match '\b(?:File\s*\.|new\s+(?:FileStream|StreamReader)\s*\()') {
           foreach ($match in $nativeMatches) {
-            if (-not $dispatchContext) { continue }
+            $method=$match.Groups['method'].Value
+            $embeddedRole=if ($method -match '^(Exists|Delete|Move|Copy|Replace|Write.*|Append.*|Create.*|OpenWrite|Get.*|Set.*)$') { 'writer' }
+              elseif ($match.Groups['type'].Success -or $method -match '^(Open|OpenRead|OpenText|ReadLines|ReadAllLines|ReadAllText|ReadAllBytes)$') { 'reader' }
+              else { 'unclassified' }
             $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber+($text.Substring(0,$match.Index).Split("`n").Count-1)
               family=('embedded-C#.'+$(if ($match.Groups['method'].Success) {'File.'+$match.Groups['method'].Value} else {$match.Groups['type'].Value}))
-              role='reader';authority='dispatch';owner=$false;test=$unit.test;handled=$false})
+              role=$embeddedRole;authority=$(if ($dispatchContext) {'dispatch'} elseif ($embeddedRole -eq 'writer') {'non-ledger'} else {'indeterminate'})
+              owner=$false;test=$unit.test;handled=($embeddedRole -eq 'writer')})
           }
         }
         # Unknown embedded readers remain candidates even when their receiver
         # is an alias, using-static import, or an unclassified native family.
         # Do not pretend that recognizing Add-Type proves its payload harmless.
-        if ($dispatchContext -and -not $nativeMatches.Count -and $unclassifiedNative) {
+        if (-not $nativeMatches.Count -and $unclassifiedNative) {
           $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber
             family='embedded-C#.unclassified';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
         }
@@ -373,15 +482,18 @@ function Get-LedgerReaderCensus {
         continue
       }
       $mask=Fact $argument $unit
+      $pathArgument=if ($family -eq 'Get-Content') { ReaderPath $argument } elseif ($argument -isnot [Management.Automation.Language.CommandAst]) { $argument } else { $null }
       # Inventory every native I/O shape, including non-ledger exclusions.
       # Only path-forwarders with no ledger provenance are irrelevant.
       if ($mask -eq 0 -and $role -eq 'path-forwarder' -and $family -ne 'owner-api') { continue }
       # A branch flag (or a mention in its body) does not constrain the path.
       # Mixed helpers stay candidates until an actual path exclusion is proved.
-      $authority=if ($family -eq 'owner-api') {'dispatch'} elseif ($mask -eq 2) {
-        if ($role -eq 'reader' -and -not (NonLedgerPath $argument $unit)) { 'indeterminate' } else { 'cost' }
+      $authority=if ($family -eq 'owner-api') {'dispatch'} elseif ($role -eq 'reader' -and (HasPathGuard $node $pathArgument $unit)) {
+        if ($mask -eq 2) { 'cost' } else { 'non-ledger' }
+      } elseif ($mask -eq 2) {
+        if ($role -eq 'reader' -and -not (NonLedgerPath $pathArgument $unit)) { 'indeterminate' } else { 'cost' }
       } elseif ($mask -eq 0) {
-        if ($role -eq 'reader' -and -not (NonLedgerPath $argument $unit)) { 'indeterminate' } else { 'non-ledger' }
+        if ($role -eq 'reader' -and -not (NonLedgerPath $pathArgument $unit)) { 'indeterminate' } else { 'non-ledger' }
       } elseif ($mask -band 1) {'dispatch'} else {'indeterminate'}
       if ($role -eq 'path-forwarder' -and $family -eq 'new-object' -and ($mask -band 1)) { $role='unclassified';$unknown=$true }
       if ($role -eq 'path-forwarder' -and $family -in @('invoke-expression','iex') -and ($mask -band 1)) { $role='unclassified';$unknown=$true }

@@ -71,7 +71,10 @@ $readFailures=@{}
 function Read-Jsonl([string]$Path, [switch]$DispatchHistory) {
   if (-not (Test-Path -LiteralPath $Path)) { return @() }
   $out = @()
-  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else { Get-Content -LiteralPath $Path }
+  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else {
+    dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+    Get-Content -LiteralPath $Path
+  }
   foreach ($line in $lines) {
     if (-not $line.Trim()) { continue }
     try { $out += ($line | ConvertFrom-Json -DateKind String) } catch { $readFailures[$Path]=$true;continue }
