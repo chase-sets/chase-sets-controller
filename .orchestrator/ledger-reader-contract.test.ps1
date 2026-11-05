@@ -3,6 +3,7 @@ param([string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[string]$Census
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ledger-reader-census.psm1') -Force
 function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { throw "ASSERTION FAILED: $Message" } }
+& (Join-Path $PSScriptRoot 'ledger-reader-ast-selection.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-provenance.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-exclusion.test.ps1')
 $census=Get-LedgerReaderCensus -Root $ControllerRoot

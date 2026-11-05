@@ -1,4 +1,26 @@
 # Static, tracked-source census. Never loads or executes the inspected scripts.
+if (-not ('ChaseSets.LedgerCensus.AstSelectionV1' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Linq;
+using System.Management.Automation.Language;
+namespace ChaseSets.LedgerCensus {
+  public static class AstSelectionV1 {
+    public static Ast[] Find(Ast root, params Type[] kinds) {
+      return root.FindAll(node => {
+        foreach (var kind in kinds) if (kind.IsInstanceOfType(node)) return true;
+        return false;
+      }, true).ToArray();
+    }
+  }
+}
+'@
+}
+
+function Find-LedgerCensusAst($Node,[type[]]$Kinds) {
+  [ChaseSets.LedgerCensus.AstSelectionV1]::Find($Node,$Kinds)
+}
+
 function Get-LedgerReaderCensus {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root,[hashtable]$SourceOverride=@{})
@@ -73,8 +95,8 @@ function Get-LedgerReaderCensus {
     if ($null -eq $Node) { return 0 }
     $mask=0
     if (-not $factParts.ContainsKey($Node)) {
-      $parts=@($Node.FindAll({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or
-          $n -is [Management.Automation.Language.ExpandableStringExpressionAst] -or $n -is [Management.Automation.Language.VariableExpressionAst]},$true))
+      $parts=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],
+          [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst]))
       $factParts[$Node]=@($parts | Where-Object {
         $ancestor=$_;$nested=$false
         while ($ancestor -and $ancestor -ne $Node) {
@@ -146,7 +168,7 @@ function Get-LedgerReaderCensus {
     $name=$Node.GetCommandName()
     if ($null -eq $name) {
       $head=$Node.CommandElements[0]
-      foreach ($literal in $head.FindAll({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst]},$true)) {
+      foreach ($literal in (Find-LedgerCensusAst $head ([Management.Automation.Language.StringConstantExpressionAst]))) {
         $leaf=($literal.Value -split '[/\\]')[-1]
         if ($trackedScripts.Contains($leaf)) { return $leaf.ToLowerInvariant() }
       }
@@ -161,7 +183,7 @@ function Get-LedgerReaderCensus {
   function ScriptNames($Node,$Unit) {
     if (-not $Node) { return }
     if (-not $scriptParts.ContainsKey($Node)) {
-      $scriptParts[$Node]=@($Node.FindAll({param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.VariableExpressionAst]},$true))
+      $scriptParts[$Node]=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],[Management.Automation.Language.VariableExpressionAst]))
     }
     foreach ($part in $scriptParts[$Node]) {
       if ($part -is [Management.Automation.Language.VariableExpressionAst]) {
@@ -204,10 +226,10 @@ function Get-LedgerReaderCensus {
     $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
     if ($errors.Count) { throw "LEDGER_CENSUS_PARSE_FAILED:$path" }
     $unit=[pscustomobject]@{path=$path;source=$source;test=$test;ast=$ast
-      assignments=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst]},$true) })
-      parameters=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.ParameterAst]},$true) })
-      loops=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.ForEachStatementAst]},$true) })
-      calls=@(if (-not $test) { $ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true) })};$units.Add($unit)
+      assignments=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.AssignmentStatementAst]) })
+      parameters=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.ParameterAst]) })
+      loops=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.ForEachStatementAst]) })
+      calls=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.CommandAst]) })};$units.Add($unit)
     if ($test) { continue }
     foreach ($parameter in $unit.parameters) {
       $key=Key $parameter.Name $unit
@@ -220,12 +242,12 @@ function Get-LedgerReaderCensus {
       if (-not $pathAssignments.ContainsKey($key)) { $pathAssignments[$key]=@() }
       $pathAssignments[$key]+=$assignment
     }
-    foreach ($function in $ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]},$true)) {
+    foreach ($function in (Find-LedgerCensusAst $ast ([Management.Automation.Language.FunctionDefinitionAst]))) {
       $name=$function.Name.ToLowerInvariant()
       if (-not $functions.ContainsKey($name)) { $functions[$name]=@() }
       $parameters=@($(if ($function.Parameters) { $function.Parameters } elseif ($function.Body.ParamBlock) { $function.Body.ParamBlock.Parameters }) | Where-Object { $null -ne $_ })
       $functions[$name]+=[pscustomobject]@{unit=$unit;parameters=$parameters;node=$function
-        calls=@($function.Body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst]},$true))}
+        calls=@(Find-LedgerCensusAst $function.Body ([Management.Automation.Language.CommandAst]))}
     }
   }
   # A guard name alone is not authority. Authenticate the actual owner's
@@ -323,9 +345,9 @@ function Assert-NonDispatchLedgerPath {
         if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst]) {
           if (-not $assignmentShapes.ContainsKey($assignment)) {
             $assignmentShapes[$assignment]=@{
-              dataCall=$assignment.Right.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $dataFunctions.Contains((CommandName $n $unit))},$true)
-              dataRead=$assignment.Right.Find({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member.Value -match '^Read(All|Lines)' -and $n.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $n.Expression.TypeName.FullName -match '^(System\.)?IO\.File$'},$true)
-              type=$assignment.Right.Find({param($n) $n -is [Management.Automation.Language.TypeExpressionAst]},$true)
+              dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
+              dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
+              type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }
           $dataCall=$assignmentShapes[$assignment].dataCall;$dataRead=$assignmentShapes[$assignment].dataRead
@@ -356,7 +378,7 @@ function Assert-NonDispatchLedgerPath {
           }
           if (-not $argument -and $call.CommandElements.Count -gt 1 -and $call.CommandElements[1] -isnot [Management.Automation.Language.CommandParameterAst]) { $argument=$call.CommandElements[1] }
           if ($argument -and (Fact $argument $unit) -eq 0) {
-            foreach ($variable in $argument.FindAll({param($n) $n -is [Management.Automation.Language.VariableExpressionAst]},$true)) {
+            foreach ($variable in (Find-LedgerCensusAst $argument ([Management.Automation.Language.VariableExpressionAst]))) {
               if (AddFact (Key $variable $unit) 1) { $changed=$true }
             }
           }
@@ -378,7 +400,7 @@ function Assert-NonDispatchLedgerPath {
   $knownCommands=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($command in Get-Command -CommandType Cmdlet,Application -ListImported) { [void]$knownCommands.Add($command.Name) }
   foreach ($unit in $units | Where-Object ast) {
-    foreach ($alias in $unit.ast.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -in @('Set-Alias','New-Alias')},$true)) {
+    foreach ($alias in (Find-LedgerCensusAst $unit.ast ([Management.Automation.Language.CommandAst]) | Where-Object { $_.GetCommandName() -in @('Set-Alias','New-Alias') })) {
       $values=@{};$position=0
       for ($i=1;$i -lt $alias.CommandElements.Count;$i++) {
         $element=$alias.CommandElements[$i]
@@ -392,9 +414,9 @@ function Assert-NonDispatchLedgerPath {
   }
   foreach ($unit in $units) {
     Write-Verbose "Ledger census: classifying $($unit.path)"
-    $nodes=if ($unit.ast) { @($unit.ast.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -or
-      $n -is [Management.Automation.Language.CommandAst] -or $n -is [Management.Automation.Language.StringConstantExpressionAst] -or
-      $n -is [Management.Automation.Language.ExpandableStringExpressionAst]},$true)) } else { @() }
+    $nodes=if ($unit.ast) { @(Find-LedgerCensusAst $unit.ast @([Management.Automation.Language.InvokeMemberExpressionAst],
+      [Management.Automation.Language.CommandAst],[Management.Automation.Language.StringConstantExpressionAst],
+      [Management.Automation.Language.ExpandableStringExpressionAst])) } else { @() }
     foreach ($node in $nodes) {
       $family=$null;$role=$null;$argument=$node;$owner=$false;$unknown=$false
       if ($node -is [Management.Automation.Language.InvokeMemberExpressionAst]) {
