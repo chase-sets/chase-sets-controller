@@ -34,6 +34,7 @@ source "$1" "synthetic:$2"
 Check (Test-Path -LiteralPath $entry) 'native batch entry exists'
 $root=Join-Path $PSScriptRoot ('artifacts/batch-native-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
 $pwsh=(Get-Command pwsh).Source
 $fixtureOwner=[pscustomobject]@{pid=$PID;startIdentity=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')}
 $active=[Collections.Generic.List[object]]::new()
