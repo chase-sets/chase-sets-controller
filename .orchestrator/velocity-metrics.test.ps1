@@ -966,7 +966,7 @@ Case '9056-shared-product-census-next-page' {
 function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{health=[pscustomobject]@{status='ok'};activeLanes=@()}}
 '@)
     $logPath=Join-Path $runtime 'dispatch-log.jsonl'
-    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress)+"`n")
     function Census-Issue([int]$Number,[string]$Kind='kind:product',[int]$Milestone=148,[string]$Status='committed'){
       [pscustomobject]@{number=$Number;title='Synthetic ordinary issue';body='';labels=[pscustomobject]@{totalCount=1;nodes=@([pscustomobject]@{name=$Kind})};blockedBy=[pscustomobject]@{totalCount=0;nodes=@()};milestone=[pscustomobject]@{number=$Milestone;state='OPEN';description="<!-- outcome: {`"version`":1,`"track`":`"commerce`",`"status`":`"$Status`"} -->"}}
     }
@@ -1006,16 +1006,16 @@ function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{
     # Terminal exclusion and admitted re-entry use canonical routing/history,
     # not a PR title, kind label, plain dispatch note or stale observation window.
     $stop=@{ts=$at.AddMinutes(-2).ToString('o');kind='lane-blocked';issue=905601;lane='synthetic-905601';outcome='REPLAN_REQUIRED'}
-    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($stop|ConvertTo-Json -Compress))
+    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($stop|ConvertTo-Json -Compress)+"`n")
     $stopped=Get-VelocityLandingCandidates $root $at
     Assert-Velocity ($stopped.complete -and @($stopped.candidates.pr) -notcontains 906101) '9056 durable terminal stop excludes product candidate'
     $route=Get-Content (Join-Path $PSScriptRoot 'fixtures/velocity-launch-routes-8674.jsonl') -First 1|ConvertFrom-Json -DateKind String
     $route.ts=$at.AddMinutes(-1).ToString('o');$route.issue=905601;$route.lane='synthetic-905601-reentry';$route.label='synthetic-905601-reentry';$route.attemptId='synthetic-905601-reentry'
     $route.worktree=Join-Path $root 'synthetic-905601-reentry';$route.branch='synthetic/905601-reentry';$route.head='a'*40;$route.transcript=Join-Path $runtime 'synthetic-905601-reentry.jsonl'
-    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($route|ConvertTo-Json -Compress -Depth 30))
+    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($route|ConvertTo-Json -Compress -Depth 30)+"`n")
     $reentered=Get-VelocityLandingCandidates $root $at
     Assert-Velocity ($reentered.complete -and @($reentered.candidates.pr) -contains 906101) "9056 canonical admitted re-entry is retained: $($reentered.gaps -join ',')"
-    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress)+"`n")
     $savedSearch=(Get-Item Function:Invoke-VelocitySearch).ScriptBlock
     try {
       function Invoke-VelocitySearch($SearchQuery,$Fields){if($SearchQuery -like '*is:pr is:open*'){$script:censusPrs|Select-Object -First 100}else{@()}}
