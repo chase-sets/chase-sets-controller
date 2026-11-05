@@ -29,7 +29,8 @@ try {
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file),[ref]$tokens,[ref]$errors)
     $asts[$file]=$ast
     Check ($errors.Count -eq 0) "parse $file"
-    $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $import})
+    $expectedImport=if($file -ceq 'controller-install-lock.psm1'){$import.Replace(' -Force',' -Global -Force')}else{$import}
+    $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $expectedImport})
     Check ($imports.Count -eq 1) "literal unconditional owner import: $file"
     $reads=@($ast.FindAll({param($node)
       ($node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -cin @('Get-Content','Get-FileHash')) -or
