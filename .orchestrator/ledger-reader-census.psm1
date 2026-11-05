@@ -66,6 +66,7 @@ function Get-LedgerEmbeddedFileStreams([string]$Text) {
     }
   } catch {
     # Partial binding must not leak a positive decision from an earlier site.
+    $parsed=$false
     foreach ($site in $sites) { $site.writer=$false }
   }
   return [pscustomobject]@{parsed=$parsed;sites=$sites.ToArray()}
