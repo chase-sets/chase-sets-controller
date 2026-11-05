@@ -3770,11 +3770,22 @@ if ([string]$staging.status -ceq "in_progress") {
     $unreadable.mutationCount -eq 0) "unreadable review history refuses before mutation"
 
   $malformedHistory = Join-Path $testRoot "malformed.jsonl"
-  [IO.File]::WriteAllText($malformedHistory, '{"kind":"review-complete"', [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($malformedHistory, ('{"kind":"review-complete"' + "`n"), [Text.UTF8Encoding]::new($false))
   $malformed = Invoke-Preflight "eligible" $malformedHistory
   Assert-True ($malformed.status -eq "unknown" -and
     $malformed.reason -eq "REVIEW_AUTHORITY_HISTORY_MALFORMED" -and
     $malformed.mutationCount -eq 0) "unattributed malformed history cannot fabricate requested-PR authority"
+
+  foreach ($tail in @('{"kind":"review-complete"', ((New-Pass $headA) | ConvertTo-Json -Depth 30 -Compress))) {
+    $partialHistory = Join-Path $testRoot 'uncommitted-review-tail.jsonl'
+    [IO.File]::WriteAllText($partialHistory, $tail, [Text.UTF8Encoding]::new($false))
+    $beforePartial = [IO.File]::ReadAllBytes($partialHistory)
+    $partial = Invoke-Preflight "eligible" $partialHistory
+    Assert-True ($partial.status -eq "unknown" -and
+      $partial.reason -eq "REVIEW_AUTHORITY_NO_REVIEW_HISTORY" -and $partial.mutationCount -eq 0 -and
+      [Linq.Enumerable]::SequenceEqual([byte[]]$beforePartial, [byte[]][IO.File]::ReadAllBytes($partialHistory))) `
+      'malformed or valid uncommitted review tail cannot authorize mutation or change bytes'
+  }
 
   $truncatedHistory = New-History @((New-Pass $headA), (New-Pass $headA))
   $truncated = Invoke-Preflight "eligible" $truncatedHistory -MaxHistoryRows 1

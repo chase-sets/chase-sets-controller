@@ -18,8 +18,8 @@ try {
   $body=$definition.Body.Extent.Text
   $oracle=[scriptblock]::Create('param([string]$Path)'+"`n"+$body.Substring(1,$body.Length-2))
   $row='{"kind":"dispatch","issue":985,"lane":"synthetic","transcript":"synthetic.jsonl"}'
-  $cases=[ordered]@{empty='';terminated="$row`n";crlf="`r`n$row`r`n`r`n";
-    validTail=$row;malformedTail='{broken';errorOrdinal="$row`n`n{broken`n{} `n";
+  $cases=[ordered]@{empty="`n";terminated="$row`n";crlf="`r`n$row`r`n`r`n";
+    errorOrdinal="$row`n`n{broken`n{} `n";
     duplicateCase="{`"kind`":`"dispatch`",`"Kind`":`"landed`"}`n";array="[]`n"}
   $path=Join-Path $root 'dispatch-log.jsonl'
   foreach($bom in @($false,$true)) {
@@ -28,10 +28,18 @@ try {
       $before=[Convert]::ToHexString([IO.File]::ReadAllBytes($path))
       $expected=& $oracle $path
       $actual=& $candidate $path
-      foreach($field in @('rows','records','specs','errors','count','indexes','unlinkedSpecs')) {
+      foreach($field in @('rows','specs','errors','count','indexes','unlinkedSpecs')) {
         Check (($actual[$field]|ConvertTo-Json -Depth 60 -Compress) -ceq ($expected[$field]|ConvertTo-Json -Depth 60 -Compress)) "original board field $field/$name/BOM=$bom"
       }
       Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($path)) -ceq $before) "board read unchanged bytes $name/BOM=$bom"
+    }
+    foreach($tail in @($row,'{broken')) {
+      [IO.File]::WriteAllText($path,$tail,[Text.UTF8Encoding]::new($bom))
+      $before=[Convert]::ToHexString([IO.File]::ReadAllBytes($path))
+      $actual=& $candidate $path
+      Check ($actual.rows.Count -eq 0 -and $actual.count -eq 0 -and $actual.errors -contains 'canonical lifecycle log refused: HISTORY_UNTERMINATED' -and
+        -not $actual.indexes.scopeComplete) "uncommitted tail cannot establish absence or board authority/BOM=$bom"
+      Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($path)) -ceq $before) 'partial tail bytes untouched'
     }
   }
   [IO.File]::WriteAllText($path,"$row`n",[Text.UTF8Encoding]::new($false))
@@ -48,9 +56,10 @@ try {
   $current=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'board-reconcile.ps1'),[ref]$null,[ref]$errors)
   $history=$current.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-BoardHistory'},$true)
   $calls=@($history.Body.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'dispatch-ledger-reader\Read-DispatchLedgerSnapshot'},$true))
-  Check ($calls.Count -eq 1 -and $calls[0].Extent.Text -ceq 'dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path -IncludeUnterminated') 'explicit sole-owner raw board policy'
+  Check ($calls.Count -eq 1 -and $calls[0].Extent.Text -ceq 'dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path' -and
+    $history.Extent.Text -match 'if \(\$history.partialTrailingRow\)') 'explicit sole-owner LF board policy with partial-tail refusal'
   Check ($history.Extent.Text -notmatch 'Read-DispatchCountHistory|ReadAllText|ReadAllLines|StreamReader') 'no second canonical parser or native history read'
-  Write-Output "PASS ledger-reader-board-history checks=$checks originalCases=16 genuineAppendWriter=True"
+  Write-Output "PASS ledger-reader-board-history checks=$checks originalCommittedCases=12 uncommittedRefusals=4 genuineAppendWriter=True"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or

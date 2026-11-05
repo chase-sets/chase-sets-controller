@@ -51,10 +51,11 @@ function Get-BoardHistory([string]$Path) {
   $count = 0
   try {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'canonical lifecycle log unavailable' }
-    # Board history was uncapped and included the final raw line. Keep its
-    # JSON fold and nonblank error ordinals separate from LF-count authority.
-    $history=dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path -IncludeUnterminated
+    # Keep the uncapped board fold and nonblank error ordinals. An incomplete
+    # append cannot establish absence or authorize a board mutation.
+    $history=dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path
     if (-not $history.complete) { throw "canonical lifecycle log refused: $($history.reason)" }
+    if ($history.partialTrailingRow) { throw 'canonical lifecycle log refused: HISTORY_UNTERMINATED' }
     foreach ($line in $history.lines) {
       if (-not "$line".Trim()) { continue }
       $count++
