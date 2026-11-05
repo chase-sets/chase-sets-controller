@@ -192,7 +192,7 @@ while (-not [IO.File]::Exists('__RELEASE__')) {
       $writer=[powershell]::Create()
       [void]$writer.AddScript({param($logger,$ledger)
         $ErrorActionPreference='Stop'
-        foreach ($issue in 2..3) { & $logger -Log dispatch -Kind cycle -Issue $issue -OutFile $ledger -NoBoard }
+        foreach ($issue in 2..3) { & $logger -Log dispatch -Kind scale -Issue $issue -Note 'synthetic held-reader append' -OutFile $ledger -NoBoard }
       }).AddArgument($logger).AddArgument($ledger)
       $writerPending=$writer.BeginInvoke()
       Assert-Retry ($writerPending.AsyncWaitHandle.WaitOne(45000)) 'append worker did not finish while readers held open'
