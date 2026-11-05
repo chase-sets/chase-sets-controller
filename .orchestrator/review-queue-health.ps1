@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 $schema = "exact-head-review-queue-health/v1"
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 
@@ -55,7 +56,7 @@ function Get-QueueFixture {
     throw "review-queue fixture requires -AuthorityFixture and -AuthorityScenario"
   }
   try {
-    $fixture = Get-Content -LiteralPath $AuthorityFixture -Raw |
+    $fixture = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $AuthorityFixture) -Raw |
       ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
     throw "review-queue fixture is missing or malformed"
