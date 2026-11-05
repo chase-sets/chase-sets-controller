@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 $laneSelectionSavedReceiptPath = $ReceiptPath
 $laneSelectionSavedReceiptJson = $ReceiptJson
 $laneSelectionSavedInputPath = $InputPath
@@ -512,8 +513,8 @@ if ($MyInvocation.InvocationName -ne ".") {
   if (($InputPath -and $InputJson) -or (-not $InputPath -and -not $InputJson)) {
     throw "supply exactly one of -InputPath or -InputJson"
   }
-  $receiptText = if ($ReceiptPath) { Get-Content -LiteralPath $ReceiptPath -Raw } else { $ReceiptJson }
-  $inputText = if ($InputPath) { Get-Content -LiteralPath $InputPath -Raw } else { $InputJson }
+  $receiptText = if ($ReceiptPath) { Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ReceiptPath) -Raw } else { $ReceiptJson }
+  $inputText = if ($InputPath) { Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $InputPath) -Raw } else { $InputJson }
   $receipt = $receiptText | ConvertFrom-Json
   $inputObject = $inputText | ConvertFrom-Json
   $result = ConvertTo-LaneSelection $receipt $inputObject

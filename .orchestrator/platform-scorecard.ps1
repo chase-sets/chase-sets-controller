@@ -22,7 +22,7 @@ param(
     [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 function Add-ScorecardGap([string]$Gap) { $null = $script:ScorecardGaps.Add($Gap) }
 
@@ -42,7 +42,7 @@ function Test-ScorecardNumber($Value) {
 }
 function Test-ScorecardInteger($Value) { return (Test-ScorecardNumber $Value) -and [math]::Truncate([double]$Value) -eq $Value }
 function Read-ScorecardJson([string]$Path) {
-    return ([IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop)
+    return ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop)
 }
 function Invoke-ScorecardGraphQL([string]$Query, [hashtable]$Variables) {
     $arguments = @('api','graphql','-f',"query=$Query")

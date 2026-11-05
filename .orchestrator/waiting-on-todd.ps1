@@ -33,7 +33,7 @@ param(
   [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 $script:ToddActionSchema = 'todd-action/v1'
 $script:ToddActionFields = @('ts','kind','toddActionSchema','actionId','issue','state','action','time','unblocks')
@@ -163,7 +163,7 @@ function New-WaitingOnToddState([string]$Repo, [string]$Assignee) {
 
 function Read-WaitingOnToddState([string]$Path, [string]$Repo, [string]$Assignee) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return New-WaitingOnToddState $Repo $Assignee }
-  try { $state = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -DateKind String -ErrorAction Stop }
+  try { $state = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -DateKind String -ErrorAction Stop }
   catch { throw "WAITING_ON_TODD_STATE_INVALID: $Path does not parse" }
   $names = @($state.PSObject.Properties.Name)
   if ($state -isnot [pscustomobject] -or $names.Count -ne 5 -or
@@ -278,7 +278,7 @@ if (-not $DryRun) {
   $lockDirectory = Split-Path -Parent $script:statePathFull
   if (-not (Test-Path -LiteralPath $lockDirectory -PathType Container)) { [void](New-Item -ItemType Directory -Path $lockDirectory) }
   try {
-    $lock = [IO.FileStream]::new("$($script:statePathFull).lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+    $lock = [IO.FileStream]::new((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path "$($script:statePathFull).lock"), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
       [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
   } catch { throw "WAITING_ON_TODD_BUSY: another cycle holds the state lock ($($_.Exception.InnerException.Message))" }
 }
