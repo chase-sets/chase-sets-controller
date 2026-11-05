@@ -3,6 +3,7 @@ param([string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[string]$Census
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ledger-reader-census.psm1') -Force
 function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { throw "ASSERTION FAILED: $Message" } }
+& (Join-Path $PSScriptRoot 'ledger-reader-provenance.test.ps1')
 $census=Get-LedgerReaderCensus -Root $ControllerRoot
 foreach ($row in $census.rows) { Write-Output ("CENSUS {0}:{1} role={2} family={3} authority={4} owner={5} test={6} handled={7}" -f $row.path,$row.line,$row.role,$row.family,$row.authority,$row.owner,$row.test,$row.handled) }
 if ($CensusPath) { $census | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $CensusPath -Encoding utf8 }
