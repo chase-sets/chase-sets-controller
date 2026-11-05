@@ -21,6 +21,56 @@ function Find-LedgerCensusAst($Node,[type[]]$Kinds) {
   [ChaseSets.LedgerCensus.AstSelectionV1]::Find($Node,$Kinds)
 }
 
+function Get-LedgerEmbeddedFileStreams([string]$Text) {
+  $sites=[Collections.Generic.List[object]]::new()
+  $parsed=$false
+  try {
+    # Use the compiler shipped with PowerShell for syntax/binding only. Never
+    # emit an assembly or execute the inspected payload. Unavailable or invalid
+    # binding grants no writer exemption; the caller retains its native census.
+    if (-not ('Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree' -as [type])) {
+      [void][Reflection.Assembly]::LoadFrom((Join-Path $PSHOME 'Microsoft.CodeAnalysis.dll'))
+      [void][Reflection.Assembly]::LoadFrom((Join-Path $PSHOME 'Microsoft.CodeAnalysis.CSharp.dll'))
+    }
+    $tree=[Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree]::ParseText($Text)
+    $parsed=$true
+    foreach ($node in $tree.GetRoot().DescendantNodes()) {
+      if ($node -is [Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax] -and
+          $node.Type.ToString() -match '^(?:global::)?(?:System\s*\.\s*IO\s*\.\s*)?FileStream$') {
+        $sites.Add([pscustomobject]@{index=$node.SpanStart;writer=$false;node=$node})
+      }
+    }
+    if (-not $sites.Count) { return [pscustomobject]@{parsed=$true;sites=@()} }
+    $references=[Collections.Generic.List[Microsoft.CodeAnalysis.MetadataReference]]::new()
+    foreach ($path in ([AppContext]::GetData('TRUSTED_PLATFORM_ASSEMBLIES') -split [IO.Path]::PathSeparator)) {
+      $references.Add([Microsoft.CodeAnalysis.MetadataReference]::CreateFromFile($path))
+    }
+    $options=[Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions]::new([Microsoft.CodeAnalysis.OutputKind]::DynamicallyLinkedLibrary)
+    $compilation=[Microsoft.CodeAnalysis.CSharp.CSharpCompilation]::Create('LedgerCensusBinding',[Microsoft.CodeAnalysis.SyntaxTree[]]@($tree),$references,$options)
+    if (@($compilation.GetDiagnostics() | Where-Object Severity -EQ 'Error').Count) { return [pscustomobject]@{parsed=$true;sites=$sites.ToArray()} }
+    $model=$compilation.GetSemanticModel($tree)
+    foreach ($site in $sites) {
+      $operation=$model.GetOperation($site.node)
+      $constructor=$operation.Constructor
+      if (-not $constructor -or $constructor.ContainingType.MetadataName -cne 'FileStream' -or
+          $constructor.ContainingType.ContainingNamespace.ToString() -cne 'System.IO' -or
+          $constructor.ContainingAssembly.Identity.Name -cne [IO.FileStream].Assembly.GetName().Name) { continue }
+      foreach ($argument in $operation.Arguments) {
+        $parameter=$argument.Parameter
+        if ($parameter.Name -cne 'access' -or $parameter.Type.MetadataName -cne 'FileAccess' -or
+            $parameter.Type.ContainingNamespace.ToString() -cne 'System.IO' -or
+            $parameter.Type.ContainingAssembly.Identity.Name -cne [IO.FileAccess].Assembly.GetName().Name) { continue }
+        $constant=$model.GetConstantValue($argument.Value.Syntax)
+        if ($constant.HasValue -and $constant.Value -eq [int][IO.FileAccess]::Write) { $site.writer=$true }
+      }
+    }
+  } catch {
+    # Partial binding must not leak a positive decision from an earlier site.
+    foreach ($site in $sites) { $site.writer=$false }
+  }
+  return [pscustomobject]@{parsed=$parsed;sites=$sites.ToArray()}
+}
+
 function Get-LedgerReaderCensus {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root,[hashtable]$SourceOverride=@{})
@@ -494,10 +544,16 @@ function Get-NonDispatchLedgerPath {
       } else {
         # Embedded C# is inspected as code shape, not a comment/path allowlist.
         $text=$node.Value
-        $nativeMatches=@([regex]::Matches($text,'\b(?:File\s*\.\s*(?<method>\w+)\s*\(|new\s+(?<type>FileStream|StreamReader)\s*\()'))
-        $unclassifiedNative=$text -match '(?i)\.\s*\w*(?:read|open)\w*\s*\(|\busing\s+(?:static\s+|\w+\s*=\s*)(?:System\.)?IO\.(?:File|FileStream|StreamReader)\b'
+        $nativeMatches=@([regex]::Matches($text,'\b(?:File\s*\.\s*(?<method>\w+)\s*\(|new\s+(?:global::)?(?:System\s*\.\s*IO\s*\.\s*)?(?<type>FileStream|StreamReader)\s*\()'))
+        $streamResult=if ($text -match '\bFileStream\b') { Get-LedgerEmbeddedFileStreams $text } else { $null }
+        $streamSites=if ($null -ne $streamResult) { @($streamResult.sites) } else { @() }
+        $unclassifiedNative=$text -match '(?i)\busing\s+(?:static\s+|\w+\s*=\s*)(?:System\.)?IO\.(?:File|FileStream|StreamReader)\b'
+        foreach ($opaque in [regex]::Matches($text,'(?i)\.\s*\w*(?:read|open)\w*\s*\(')) {
+          if (-not @($nativeMatches | Where-Object { $_.Index -le $opaque.Index -and $_.Index+$_.Length -gt $opaque.Index }).Count) { $unclassifiedNative=$true }
+        }
+        if ($null -ne $streamResult -and -not $streamResult.parsed) { $unclassifiedNative=$true }
         $dispatchContext=$false
-        if ($nativeMatches.Count -or $unclassifiedNative) {
+        if ($nativeMatches.Count -or $streamSites.Count -or $unclassifiedNative) {
           if ($unit.test) {
             # Fixtures are report-only: inventory native shapes without an
             # interprocedural proof over their synthetic source strings.
@@ -508,10 +564,12 @@ function Get-NonDispatchLedgerPath {
             $dispatchContext=((Fact $context $unit) -band 1) -ne 0 -or $text -match 'dispatch-log(?:\\?\.)jsonl'
           }
         }
-        if ($text -match '\b(?:File\s*\.|new\s+(?:FileStream|StreamReader)\s*\()') {
+        if ($nativeMatches.Count) {
           foreach ($match in $nativeMatches) {
             $method=$match.Groups['method'].Value
-            $embeddedRole=if ($method -match '^(Exists|Delete|Move|Copy|Replace|Write.*|Append.*|Create.*|OpenWrite|Get.*|Set.*)$') { 'writer' }
+            $streamSite=@($streamSites | Where-Object index -EQ $match.Index)
+            $embeddedRole=if ($match.Groups['type'].Value -ceq 'FileStream' -and $streamSite.Count -eq 1 -and $streamSite[0].writer) { 'writer' }
+              elseif ($method -match '^(Exists|Delete|Move|Copy|Replace|Write.*|Append.*|Create.*|OpenWrite|Get.*|Set.*)$') { 'writer' }
               elseif ($match.Groups['type'].Success -or $method -match '^(Open|OpenRead|OpenText|ReadLines|ReadAllLines|ReadAllText|ReadAllBytes)$') { 'reader' }
               else { 'unclassified' }
             $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber+($text.Substring(0,$match.Index).Split("`n").Count-1)
@@ -520,10 +578,19 @@ function Get-NonDispatchLedgerPath {
               owner=$false;test=$unit.test;handled=($embeddedRole -eq 'writer')})
           }
         }
+        # Syntax also inventories valid constructors with trivia that a lexical
+        # fallback cannot recognize. Binding, not spelling, proves write-only.
+        foreach ($site in $streamSites) {
+          if (@($nativeMatches | Where-Object Index -EQ $site.index).Count) { continue }
+          $embeddedRole=if ($site.writer) { 'writer' } else { 'reader' }
+          $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber+($text.Substring(0,$site.index).Split("`n").Count-1)
+            family='embedded-C#.FileStream';role=$embeddedRole;authority=$(if ($dispatchContext) {'dispatch'} elseif ($site.writer) {'non-ledger'} else {'indeterminate'})
+            owner=$false;test=$unit.test;handled=$site.writer})
+        }
         # Unknown embedded readers remain candidates even when their receiver
         # is an alias, using-static import, or an unclassified native family.
         # Do not pretend that recognizing Add-Type proves its payload harmless.
-        if (-not $nativeMatches.Count -and $unclassifiedNative) {
+        if ($unclassifiedNative) {
           $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber
             family='embedded-C#.unclassified';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
         }
