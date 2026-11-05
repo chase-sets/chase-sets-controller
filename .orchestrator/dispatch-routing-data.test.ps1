@@ -130,6 +130,11 @@ function Test-CapacityCases([string]$Name) {
       $claudeEffort=@{3='medium';4='medium';5='high';6='high';7='xhigh';8='high';9='high';10='medium';11='high';12='medium';13='low';14='high';15='high'}
       foreach($toward in @('claude','codex')) {foreach($k in 0..4) {foreach($row in 1..15) {foreach($onToward in @($false,$true)) {
         $f=Copy-Forecast;$f.balance.toward=$toward;$f.balance.steps=$k;Set-Forecast $f
+        # Each native scenario needs a fresh valid window; the full matrix may
+        # take longer than one forecast's lifetime. Stale-policy cases stay separate.
+        $iterationNow=[DateTimeOffset]::UtcNow
+        $f.generatedAt=$iterationNow.AddMinutes(-1).ToString('o')
+        $f.staleAfter=$iterationNow.AddMinutes(14).ToString('o');Set-Forecast $f
         $from=if($onToward){$toward}elseif($toward -ceq 'claude'){'codex'}else{'claude'}
         $model=if($from -ceq 'codex' -and $row -in @(14,15)){'gpt-6-astra'}elseif($from -ceq 'codex'){'gpt-6.1-sol'}else{'claude-opus-5-5'}
         if($row -eq 6){Assert-BrowserRowRefused @{Harness=$from;Model=$model;Effort='high';Placement=$(if($from -ceq 'codex'){'provisional'}else{'override-Todd'});Row=$row} "matrix $toward k=$k row=6 on=$onToward refuses before planning";$count++;continue}
