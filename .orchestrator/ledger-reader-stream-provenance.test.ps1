@@ -1,0 +1,115 @@
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'ledger-reader-census.psm1') -Force
+$checks = 0
+function Check([bool]$Condition,[string]$Message) {
+  $script:checks++
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+$root = Join-Path ([IO.Path]::GetTempPath()) ('ledger-stream-provenance-'+[guid]::NewGuid().ToString('N'))
+try {
+  [void][IO.Directory]::CreateDirectory((Join-Path $root '.orchestrator'))
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination (Join-Path $root '.orchestrator')
+  $sourcePath = Join-Path $root 'reader.ps1'
+  [IO.File]::WriteAllText($sourcePath,'# tracked synthetic stream proof')
+  & git -C $root init -q
+  Check ($LASTEXITCODE -eq 0) 'fixture init'
+  & git -C $root add reader.ps1 .orchestrator/dispatch-ledger-reader.psm1
+  Check ($LASTEXITCODE -eq 0) 'fixture track'
+  & git -C $root -c user.name=Synthetic -c user.email=synthetic@example.invalid commit -qm streams
+  Check ($LASTEXITCODE -eq 0) 'fixture commit'
+  $import = 'Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-reader.psm1'') -Global -DisableNameChecking'
+  $guard = '(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)'
+  $open = '[IO.File]::Open('+$guard+',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)'
+  $construct = '[System.IO.FileStream]::new('+$guard+',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)'
+  $read = '$reader=[IO.StreamReader]::new($stream)'
+  # An adjacent guarded open does not prove writable, untransformed storage or
+  # successful assignment. Variable-fed constructors must remain unhandled.
+  $cases = [ordered]@{
+    fileOpen = @($false,('$stream='+$open+';'+$read))
+    fileStream = @($false,('$stream='+$construct+';'+$read))
+    openRead = @($false,('$stream=[System.IO.File]::OpenRead('+$guard+');'+$read))
+    rethrow = @($false,('$stream='+$open+';'+$read))
+    nestedRethrow = @($false,('trap {throw $_.Exception};$stream='+$open+';'+$read))
+    unknownStream = @($false,$read)
+    unguarded = @($false,('$stream='+$open.Replace($guard,'$Path')+';'+$read))
+    wrongVariable = @($false,('$other='+$open+';'+$read))
+    reassigned = @($false,('$stream='+$open+';$stream=$Other;'+$read))
+    interveningCommand = @($false,('$stream='+$open+';Invoke-Opaque;'+$read))
+    conditional = @($false,('if($flag){$stream='+$open+'};'+$read))
+    nestedTry = @($false,('try {$stream='+$open+'} finally {};'+$read))
+    alias = @($false,('$stream='+$open+';$alias=$stream;$reader=[IO.StreamReader]::new($alias)'))
+    unknownFactory = @($false,('$stream=Get-Stream '+$guard+';'+$read))
+    typeAlias = @($false,('$io=[IO.File];$stream=$io::OpenRead('+$guard+');'+$read))
+    scopeQualified = @($false,('$script:stream='+$open+';$reader=[IO.StreamReader]::new($script:stream)'))
+    compoundAssignment = @($false,('$stream+='+$open+';'+$read))
+    pipelineOutput = @($false,('$stream='+$open+'|Select-Object -First 1;'+$read))
+    trapped = @($false,('trap {continue};$stream='+$open+';'+$read))
+    opaqueTrap = @($false,('trap {Invoke-Opaque;throw $_.Exception};$stream='+$open+';'+$read))
+    newObject = @($false,('$stream=New-Object IO.FileStream -ArgumentList '+$guard+';'+$read))
+    differentReceiver = @($false,('$stream=[Unknown.IO]::OpenRead('+$guard+');'+$read))
+    readOnlyStorage = @($false,('$ErrorActionPreference=''Continue'';Set-Variable -Name stream -Value $Other -Option ReadOnly;$stream='+$open+';'+$read))
+    constantStorage = @($false,('$ErrorActionPreference=''Continue'';Set-Variable -Name stream -Value $Other -Option Constant;$stream='+$open+';'+$read))
+    transformedStorage = @($false,('[string]$stream=$Other;$stream='+$open+';'+$read))
+    failedOpenStaleStorage = @($false,('$ErrorActionPreference=''Continue'';$stream=$Other;$stream='+$open+';'+$read))
+  }
+  foreach ($name in $cases.Keys) {
+    $trap = if ($name -ceq 'rethrow') { 'trap {throw $_.Exception}' } else { '' }
+    [IO.File]::WriteAllText($sourcePath,$import+"`n"+$trap+"`nfunction Read-Synthetic { param(`$Path,`$Other,`$flag) "+$cases[$name][1]+' }')
+    $errors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$null,[ref]$errors)
+    Check ($errors.Count -eq 0) "synthetic source parses $name"
+    $census = Get-LedgerReaderCensus -Root $root
+    Check ($census.scanned -eq 2 -and $census.total -eq 2) "complete inventory $name"
+    $rows = @($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader' })
+    Check ($rows.Count -eq 1) "actual StreamReader inventory $name"
+    Check ([bool]$rows[0].handled -eq $cases[$name][0]) "stream provenance $name handled=$($rows[0].handled)"
+  }
+
+  # Execute the actual cost-harvest constructor pair, not a lookalike helper.
+  $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'cost-harvest.ps1'),[ref]$null,[ref]$null)
+  $function = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-RunFacts'},$true))
+  Check ($function.Count -eq 1) 'actual cost function'
+  $assignments = @($function[0].Body.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -cin @('$stream','$reader')
+  })
+  Check ($assignments.Count -eq 2) 'actual adjacent constructor assignments'
+  $actual = ($assignments | ForEach-Object { $_.Extent.Text }) -join "`n"
+  Check ($actual.Contains($guard,[StringComparison]::Ordinal)) 'actual path guard operand retained'
+  $native = $actual.Replace($guard,'$Path')
+  $probe = Join-Path $root 'probe.ps1'
+  $preamble = 'param([string]$Path)'+"`n"+$import+"`n"
+  $drain = "`ntry { `$reader.ReadToEnd() } finally { `$reader.Dispose() }"
+  $positive = Join-Path $root 'ordinary.txt'
+  $bytes = [byte[]]@(0xef,0xbb,0xbf,0x61,0x0d,0x0a,0xff,0x62)
+  [IO.File]::WriteAllBytes($positive,$bytes)
+  [IO.File]::WriteAllText($probe,$preamble+$native+$drain)
+  $expected = & $probe $positive
+  [IO.File]::WriteAllText($probe,$preamble+$actual+$drain)
+  Check ((& $probe $positive) -ceq $expected) 'actual cost stream text/BOM/CRLF/invalidUTF8 unchanged'
+  $refused = 0; $red = 0
+  foreach ($alias in @('dispatch-log.jsonl','DISPATCH-LOG.JSONL','./dispatch-log.jsonl','dispatch-log.jsonl.','dispatch-log.jsonl ','dispatch-log.jsonl:stream','dispatch-log.jsonl.:stream')) {
+    $target = Join-Path $root $alias
+    [IO.File]::WriteAllBytes($target,$bytes)
+    $held = [IO.File]::Open($target,'Open','ReadWrite','None')
+    try {
+      foreach ($body in @($actual,$native)) {
+        [IO.File]::WriteAllText($probe,$preamble+$body+$drain)
+        $failure = ''; try { & $probe $target | Out-Null } catch { $failure = $_.Exception.Message }
+        if ($body -ceq $actual) {
+          Check ($failure -match 'DISPATCH_LEDGER_OWNER_REQUIRED') "actual cost owner refusal $alias"
+          $refused++
+        } else {
+          Check ($failure -notmatch 'DISPATCH_LEDGER_OWNER_REQUIRED' -and $failure -match 'used by another process|sharing violation|Could not open the.*alternate data stream') "actual guard-removal native failure $alias"
+          $red++
+        }
+      }
+    } finally { $held.Dispose() }
+    Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToHexString($bytes)) "canonical alias unchanged $alias"
+  }
+  Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red"
+} finally {
+  $full = [IO.Path]::GetFullPath($root)
+  if ((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or
+      (Split-Path -Leaf $full) -cnotlike 'ledger-stream-provenance-*') { throw 'unsafe stream provenance cleanup' }
+  if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+}
