@@ -297,7 +297,7 @@ function Test-RetentionUnchanged($Before,$After) {
     return $true
 }
 function Write-RetentionZip([string]$Path,$Files) {
-    $s=[IO.File]::Open($Path,'CreateNew','Write','None');$zip=[IO.Compression.ZipArchive]::new($s,'Create')
+    $s=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);$zip=[IO.Compression.ZipArchive]::new($s,'Create')
     try {
         foreach($f in $Files) {
             $e=$zip.CreateEntry($f.path);$out=$e.Open()
@@ -437,7 +437,7 @@ function Invoke-RuntimeRetention {
         if(-not (Test-RetentionZip ($stem+'.zip.partial') $files)){throw 'archive-verification-failed'}
         $manifest=@{schema='runtime-retention-manifest/v1';verifiedAt=$Now.ToString('o');files=@($files | Select-Object path,source,length,lastWriteUtc,sha256,link)}
         $bytes=[Text.Encoding]::UTF8.GetBytes(($manifest|ConvertTo-Json -Depth 8))
-        $s=[IO.File]::Open(($stem+'.manifest.json.partial'),'CreateNew','Write','None');try{$s.Write($bytes,0,$bytes.Length);$s.Flush($true)}finally{$s.Dispose()}
+        $s=[IO.File]::Open(($stem+'.manifest.json.partial'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$s.Write($bytes,0,$bytes.Length);$s.Flush($true)}finally{$s.Dispose()}
         & $Dependencies.Phase 'before-publish' $Root
         [IO.File]::Move(($stem+'.zip.partial'),($stem+'.zip'))
         [IO.File]::Move(($stem+'.manifest.json.partial'),($stem+'.manifest.json'))
