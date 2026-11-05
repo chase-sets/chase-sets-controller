@@ -67,7 +67,7 @@ function Get-PreRepairSource([string]$Source, [switch]$ReaderOnly) {
   $claimPathPattern = [regex]::Escape('(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath)')
   $catchPattern = '(?ms)    try \{\r?\n      \$stream = \[IO\.File\]::Open\(' + $claimPathPattern + ', \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \$share\)\r?\n    \} catch \[IO\.IOException\] \{\r?\n      if \(\(\$_.Exception\.GetBaseException\(\)\.HResult -band 0xffff\) -eq 32\) \{ return \$false \}\r?\n      throw\r?\n    \}\r?\n'
   Assert-Owner (([regex]::Matches($reverted, $catchPattern)).Count -eq 1) 'pre-repair claim opener seam exists once'
-  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
+  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + ('$' + 'ClaimPath') + '), [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
   return [regex]::Replace($reverted, $catchPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $open })
 }
 function Get-Definition([string]$Source, [string]$Name) {
@@ -463,6 +463,9 @@ function Invoke-ReaderInventory {
     # Source-conservation checker reads a synthetic ownership path for its
     # static contract; it is not a production owner publication reader.
     'controller-ci-coverage.check.ps1'=@(143)
+    # Exact native-expression baselines in the battery boundary fixture, not
+    # executed reads of a production owner record.
+    'ledger-reader-battery-paths.test.ps1'=@(27,28)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"

@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -40,7 +41,10 @@ Assert-True ($errors.Count -eq 0) 'guard source parses'
 foreach ($definition in $ast.FindAll({ param($n)
     $n -is [Management.Automation.Language.FunctionDefinitionAst]
   }, $false)) {
-  . ([scriptblock]::Create($definition.Extent.Text))
+  $definitionAst=[Management.Automation.Language.Parser]::ParseInput($definition.Extent.Text,
+    (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'),[ref]$tokens,[ref]$errors)
+  Assert-True ($errors.Count -eq 0) 'extracted definition retains production source identity'
+  . $definitionAst.GetScriptBlock()
 }
 
 # Real binding, census, closed record validator, routing reader and filesystem;

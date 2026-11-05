@@ -25,7 +25,11 @@ $observationDefinitions = @($ast.FindAll({ param($n)
 }, $false))
 Assert-True ($observationDefinitions.Count -eq 1) 'one production dispatch observation clock helper'
 . ([scriptblock]::Create($observationDefinitions[0].Extent.Text))
-. ([scriptblock]::Create($definitions[0].Extent.Text))
+# Retain the production file identity for its literal owner-module import.
+$routingAst=[Management.Automation.Language.Parser]::ParseInput($definitions[0].Extent.Text,
+  (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'),[ref]$tokens,[ref]$errors)
+Assert-True ($errors.Count -eq 0) 'routing definition retains source identity'
+. $routingAst.GetScriptBlock()
 
 # Run the real closed validator and routing reader against a private ledger.
 # No dispatch, heavy reservation, process census or command body is started.
