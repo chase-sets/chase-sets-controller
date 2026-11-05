@@ -48,12 +48,16 @@ try {
   Check ($traps.Count -eq 1) 'actual heavy trap count'
   $actual=$traps[0].Extent.Text
   $cases=[ordered]@{
-    actual=@($false,$actual)
+    actual=@($true,$actual)
     rethrow=@($false,'trap {throw $_.Exception}')
-    nonzeroExit=@($false,'trap {if($flag){exit 73};throw $_.Exception}')
-    nonzeroBranches=@($false,'trap {if($flag){exit $(if($other){1}else{73})};throw $_.Exception}')
-    multipleBranches=@($false,'trap {if($flag){exit $(if($a){1}elseif($b){2}else{73})};throw $_.Exception}')
-    quotedControl=@($false,'trap {''continue;exit 0'';throw $_.Exception}')
+    commentedRethrow=@($false,"trap {# continue;exit 0`n throw `$_.Exception }")
+    nonzeroExit=@($true,'trap {if($flag){exit 73};throw $_.Exception}')
+    nonzeroBranches=@($true,'trap {if($flag){exit $(if($other){1}else{73})};throw $_.Exception}')
+    multipleBranches=@($true,'trap {if($flag){exit $(if($a){1}elseif($b){2}else{73})};throw $_.Exception}')
+    quotedControl=@($true,'trap {''continue;exit 0'';throw $_.Exception}')
+    opaqueContinue=@($true,'trap {& ([scriptblock]::Create(''continue''));throw $_.Exception}')
+    functionContinue=@($true,'function Suppress {continue};trap {Suppress;throw $_.Exception}')
+    methodContinue=@($true,'trap {[scriptblock]::Create(''continue'').Invoke();throw $_.Exception}')
     dispatchLiteral=@($false,'trap {throw $_.Exception}',$body.Replace('-Path $Path','-Path ''dispatch-log.jsonl'''))
     separateAssertion=@($true,'trap {throw $_.Exception}','function Read-Synthetic {param([string]$Path);dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path;[IO.File]::ReadAllText($Path)}')
     resume=@($true,'trap {continue}')
@@ -104,6 +108,10 @@ try {
     Check ($mutant.code -ne 0 -and $mutant.output -notmatch 'DISPATCH_LEDGER_OWNER_REQUIRED') 'guard removal exposes native I/O failure'
     $resumed=Invoke-Probe ($terminal.Replace('throw $_.Exception','continue')) $dispatch
     Check ($resumed.code -eq 0 -and $resumed.output -match 'AFTER_NATIVE') 'resume mutant suppresses refusal; must remain unknown'
+    foreach($name in @('opaqueContinue','functionContinue','methodContinue')) {
+      $opaque=Invoke-Probe ($preamble+$cases[$name][1]+"`n"+$read+$after) $dispatch
+      Check ($opaque.code -eq 0 -and $opaque.output -match 'AFTER_NATIVE' -and $opaque.output -notmatch 'DISPATCH_LEDGER_OWNER_REQUIRED') "$name suppresses refusal; must remain unknown"
+    }
   } finally {$held.Dispose()}
   $allowed=Invoke-Probe $terminal $positive
   Check ($allowed.code -eq 0 -and $allowed.output -match 'POSITIVE_NATIVE_BYTES' -and $allowed.output -match 'AFTER_NATIVE') 'positive native payload unchanged'
@@ -112,7 +120,7 @@ try {
   Check ($exited.code -eq 73 -and $exited.output -match 'DISPATCH_LEDGER_OWNER_REQUIRED' -and $exited.output -notmatch 'AFTER_NATIVE') 'actual conditional trap retains nonzero refusal'
   & (Join-Path $PSScriptRoot 'ledger-reader-heavy-paths.test.ps1') -WithTrap
   if($failures.Count){throw "SURVIVED trap classification controls: $($failures -join ',')"}
-  Write-Output "PASS typed trap controls=$($cases.Count) nativeChecks=$checks actual28NativePaths=true resumeMutant=RED guardRemoval=RED"
+  Write-Output "PASS single-statement rethrow controls=$($cases.Count) nativeChecks=$checks complexOpaqueTraps=UNKNOWN actual28NativePaths=true resumeMutant=RED opaqueMutants=RED guardRemoval=RED"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or (Split-Path -Leaf $full) -cnotlike 'ledger-traps-*'){throw 'unsafe trap fixture cleanup'}

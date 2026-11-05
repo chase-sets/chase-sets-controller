@@ -225,34 +225,17 @@ function Get-LedgerReaderCensus {
     if ($element -isnot [Management.Automation.Language.CommandExpressionAst] -or $element.Redirections.Count) { return $null }
     return $element.Expression
   }
-  function NonzeroExitValue($Node) {
-    if ($Node -is [Management.Automation.Language.PipelineAst]) { return NonzeroExitValue (SingleExpression $Node) }
-    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return NonzeroExitValue $Node.Pipeline }
-    if ($Node -is [Management.Automation.Language.SubExpressionAst]) { return NonzeroExitValue $Node.SubExpression }
-    if ($Node -is [Management.Automation.Language.StatementBlockAst] -and $Node.Statements.Count -eq 1) { return NonzeroExitValue $Node.Statements[0] }
-    if ($Node -is [Management.Automation.Language.ConstantExpressionAst]) {
-      return ($Node.Value -is [int] -or $Node.Value -is [long]) -and $Node.Value -ge 1 -and $Node.Value -le 255
-    }
-    if ($Node -is [Management.Automation.Language.IfStatementAst] -and $Node.ElseClause -and $Node.Clauses.Count) {
-      foreach ($clause in $Node.Clauses) { if (-not (NonzeroExitValue $clause.Item2)) { return $false } }
-      return NonzeroExitValue $Node.ElseClause
-    }
-    return $false
-  }
   function TerminalUnitTrap($Unit) {
     if (-not $Unit.traps.Count) { return $true }
     if ($terminalTrapProof.ContainsKey($Unit.path)) { return $terminalTrapProof[$Unit.path] }
-    # Only a single untyped script-level trap with an unconditional rethrow is
-    # proved. Scope transfers, nested traps and zero/opaque exits stay unknown.
+    # Only a single untyped script-level trap containing just a rethrow is proved.
+    # Other statements can transfer control through opaque/transitive calls.
     # This proof is for the frozen value guard, never a separate assertion.
     $safe=& {
       if ($Unit.traps.Count -ne 1) { return $false }
       $trap=$Unit.traps[0]
-      if ($trap.TrapType -or $trap.Parent -ne $Unit.ast.EndBlock -or -not $trap.Body.Statements.Count) { return $false }
-      $transfers=@(Find-LedgerCensusAst $trap.Body @([Management.Automation.Language.ReturnStatementAst],
-          [Management.Automation.Language.BreakStatementAst],[Management.Automation.Language.ContinueStatementAst]))
-      if ($transfers.Count) { return $false }
-      $last=$trap.Body.Statements[-1]
+      if ($trap.TrapType -or $trap.Parent -ne $Unit.ast.EndBlock -or $trap.Body.Statements.Count -ne 1) { return $false }
+      $last=$trap.Body.Statements[0]
       if ($last -isnot [Management.Automation.Language.ThrowStatementAst]) { return $false }
       $exception=SingleExpression $last.Pipeline
       if ($exception -isnot [Management.Automation.Language.MemberExpressionAst] -or
@@ -260,9 +243,6 @@ function Get-LedgerReaderCensus {
           $exception.Expression -isnot [Management.Automation.Language.VariableExpressionAst] -or
           $exception.Expression.VariablePath.UserPath -cne '_' -or
           $exception.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $exception.Member.Value -cne 'Exception') { return $false }
-      foreach ($exit in (Find-LedgerCensusAst $trap.Body ([Management.Automation.Language.ExitStatementAst]))) {
-        if (-not (NonzeroExitValue $exit.Pipeline)) { return $false }
-      }
       return $true
     }
     $terminalTrapProof[$Unit.path]=$safe
