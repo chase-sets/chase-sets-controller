@@ -232,8 +232,10 @@ try {
   # unchanged 16-mutation manifest (all applied once and killed).
   # 3f89a50 added exact-head check-suite identity and changed the production
   # blob; the same 16-mutation manifest remains the guard against regressions.
+  # Shared-reader path guards change the blob, not the mutation manifest.
+  # Qualification below must still execute the candidate and all 16 mutants.
   Assert-6254Evidence ($LASTEXITCODE -eq 0 -and
-    $candidateBlob -ceq "ad64f4780ac2c4bb1c19218a4d37290ec56da33f") `
+    $candidateBlob -ceq "71cddb563d971165f833a31f098c963a48c0c3b5") `
     "production landing-preflight blob changed (observed=$candidateBlob)"
 
   $applied = 0
