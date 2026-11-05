@@ -162,6 +162,7 @@ function Invoke-DeterministicBudget([scriptblock]$Probe, [string]$MutationOld, [
       $deterministicBudgetSource = $deterministicBudgetSource.Replace($MutationOld,$MutationNew)
     }
     $deterministicBudgetSubject = Join-Path $deterministicBudgetRoot 'deterministic-budget.ps1'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $deterministicBudgetRoot
     [IO.File]::WriteAllText($deterministicBudgetSubject,(ConvertTo-DeterministicBudgetSubject $deterministicBudgetSource))
     $deterministicBudgetMeter = New-DeterministicBudgetMeter
     & { . $deterministicBudgetSubject; & $Probe }
@@ -172,6 +173,7 @@ function Invoke-CensusSourceMutant([string]$Name, [string]$Old, [string]$New, [s
   $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'))
   Assert-CensusFixture (([regex]::Matches($text,[regex]::Escape($Old))).Count -eq 1) "single mutation $Name"
   $subject = Join-Path $Parent "$Name.ps1"
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $Parent -Force
   [IO.File]::WriteAllText($subject,(ConvertTo-DeterministicBudgetSubject $text.Replace($Old,$New)))
   & { . $subject; & $Probe }
 }
@@ -325,6 +327,7 @@ function Test-ProductCensusFleetAdmission {
     Assert-CensusFixture ($text.Contains('[switch]$ProductCensus,')) 'default scoped mutant match'
     [IO.File]::WriteAllText((Join-Path $parent 'dispatch-ownership.ps1'),$text.Replace('[switch]$ProductCensus,','[switch]$ProductCensus = $true,'))
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1') -Destination $parent
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $parent
     Import-Module (Join-Path $parent 'fleet-exclusive-admission.psm1') -Force -DisableNameChecking
     $mutant = Assert-FleetExclusiveLaneCensusVacant -RuntimeRoot $f.runtime -TempRoot $f.temp -ContainerRoot $f.container
     Assert-CensusFixture ($mutant.health.status -ceq 'ok') 'default-scoped-projection unmasked'

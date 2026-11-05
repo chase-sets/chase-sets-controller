@@ -19,7 +19,8 @@ function Get-NonDispatchLedgerPath {
 function Read-DispatchLedgerSnapshot {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path, [long]$MaxBytes = [long]::MaxValue,
-    [switch]$RequireTerminated)
+    [switch]$RequireTerminated,[switch]$IncludeUnterminated)
+  if ($RequireTerminated -and $IncludeUnterminated) { throw 'INCOMPATIBLE_HISTORY_TERMINATION_OPTIONS' }
   $audit = [ordered]@{pathStatus='unknown';bytes=0;rows=0;parsedRows=0;malformedRows=0;truncated=$false;malformedLineNumbers=@()}
   $result = [pscustomobject]@{complete=$false;reason='HISTORY_UNREADABLE';audit=$audit;bytes=[byte[]]@();lines=[string[]]@()
     snapshotLength=0L;snapshotLines=0;snapshotHash=$null;cursor=0L;partialTrailingRow=$false}
@@ -49,8 +50,10 @@ function Read-DispatchLedgerSnapshot {
         if ($stream.ReadByte() -ne 10) { throw 'history boundary changed' }
       }
     } finally { $stream.Dispose() }
-    if ($completeLength -ne $length) { [Array]::Resize([ref]$bytes,[int]$completeLength) }
-    # Decode only the complete prefix, never half of a multi-byte UTF-8 scalar.
+    $retainedLength=if ($IncludeUnterminated) { $length } else { $completeLength }
+    if ($retainedLength -ne $length) { [Array]::Resize([ref]$bytes,[int]$retainedLength) }
+    # Authority reads retain only the LF-committed prefix. Explicit raw-line
+    # telemetry may retain captured EOF, still requiring strictly valid UTF-8.
     $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
     if ($text.StartsWith([string][char]0xfeff,[StringComparison]::Ordinal)) { $text=$text.Substring(1) }
     # Preserve StreamReader's row/raw/line-number semantics, including CRLF
@@ -61,7 +64,7 @@ function Read-DispatchLedgerSnapshot {
     finally { $memory.Dispose() }
     $lines=$lineList.ToArray()
     $result.bytes=$bytes;$result.lines=[string[]]@($lines)
-    $result.snapshotLength=$completeLength;$result.cursor=$completeLength;$result.snapshotLines=@($lines).Count
+    $result.snapshotLength=$retainedLength;$result.cursor=$retainedLength;$result.snapshotLines=@($lines).Count
     $result.snapshotHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
     $audit.pathStatus='ok';$result.complete=$true;$result.reason='HISTORY_COMPLETE'
   } catch { $audit.pathStatus='unreadable' }
@@ -70,8 +73,8 @@ function Read-DispatchLedgerSnapshot {
 
 function Read-DispatchLedgerLines {
   [CmdletBinding()]
-  param([Parameter(Mandatory)][string]$Path,[switch]$RequireTerminated)
-  $snapshot=Read-DispatchLedgerSnapshot -Path $Path -RequireTerminated:$RequireTerminated
+  param([Parameter(Mandatory)][string]$Path,[switch]$RequireTerminated,[switch]$IncludeUnterminated)
+  $snapshot=Read-DispatchLedgerSnapshot -Path $Path -RequireTerminated:$RequireTerminated -IncludeUnterminated:$IncludeUnterminated
   if (-not $snapshot.complete) { throw "dispatch ledger refused: $($snapshot.reason)" }
   return $snapshot.lines
 }

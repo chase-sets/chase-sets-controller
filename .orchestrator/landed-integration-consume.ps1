@@ -14,6 +14,7 @@ param(
   [Parameter(DontShow)][switch]$NoPush
 )
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
@@ -69,7 +70,7 @@ function Publish-OwnerAcceptance($Obligation,[string]$Identity){
   $acceptance=[ordered]@{schemaVersion='landed-integration-owed-accept/v1';obligationIdentity=$Identity;ownerLaunchId=[string]$owner.launchId;ownerRecordPath=[IO.Path]::GetFullPath($AcceptingOwnerRecordPath);branch=[string]$Obligation.branch;worktree=$root;ownerPid=[long]$owner.launcherPid;ownerStartIdentity=[string]$owner.launcherStartIdentity;acceptedAt=[datetimeoffset]::UtcNow.ToString('o')}
   $acceptPath=Join-Path $runtime "integration-owed-accept-$Identity-$($owner.launchId).json";$line=$acceptance|ConvertTo-Json -Compress
   if(Test-Path -LiteralPath $acceptPath -PathType Leaf){
-    $existing=Get-Content -LiteralPath $acceptPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $existing=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $acceptPath) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
     $keys=@('schemaVersion','obligationIdentity','ownerLaunchId','ownerRecordPath','branch','worktree','ownerPid','ownerStartIdentity','acceptedAt')
     if(-not(Test-ExactKeys $existing $keys)-or$existing.schemaVersion-cne'landed-integration-owed-accept/v1'-or$existing.obligationIdentity-cne$Identity-or$existing.ownerLaunchId-cne[string]$owner.launchId-or
       -not(Test-ConsumerSamePath ([string]$existing.ownerRecordPath) $AcceptingOwnerRecordPath)-or$existing.branch-cne[string]$Obligation.branch-or-not(Test-ConsumerSamePath ([string]$existing.worktree) $root)-or
@@ -89,7 +90,7 @@ $processed=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $obligationPaths=@(Get-ChildItem -LiteralPath $runtime -Filter 'integration-owed-*.json' -File|Where-Object{$_.Name-notlike'integration-owed-ack-*'-and$_.Name-notlike'integration-owed-accept-*'}|Sort-Object Name)
 Wait-ConsumerBarrier $ReleaseScanObservedPath $ReleaseScanContinuePath
 foreach($path in $obligationPaths){
-  $obligation=Get-Content -LiteralPath $path.FullName -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+  $obligation=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path.FullName) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
   $keys=@('schemaVersion','landedPr','landedHead','pr','targetHead','newBase','branch','worktree','integrationLane')
   if(-not(Test-ExactKeys $obligation $keys)-or$obligation.schemaVersion-cne'landed-integration-owed/v1'-or
     $obligation.landedPr-isnot[long]-or$obligation.landedPr-lt1-or$obligation.pr-isnot[long]-or$obligation.pr-lt1-or

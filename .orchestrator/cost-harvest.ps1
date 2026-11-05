@@ -187,7 +187,7 @@ function Get-HarvestBenchmarkFacts([string]$Model, [string]$Effort) {
 # ---------------------------------------------------------------- existing ---
 $already = @{}
 if (Test-Path -LiteralPath $Ledger) {
-  foreach ($line in (Get-Content -LiteralPath $Ledger -ErrorAction SilentlyContinue)) {
+  foreach ($line in (Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Ledger) -ErrorAction SilentlyContinue)) {
     if (-not $line.Trim()) { continue }
     try { $row = $line | ConvertFrom-Json } catch { continue }
     if ($row.transcript) { $already[$row.transcript] = $row }
@@ -237,7 +237,7 @@ function Get-RunFacts {
   # append, and an exclusive handle here would both fail the harvest and risk
   # contending with running work. Harvesting must never disturb a live lane.
   $stream = [System.IO.FileStream]::new(
-    $Path,
+    (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path),
     [System.IO.FileMode]::Open,
     [System.IO.FileAccess]::Read,
     [System.IO.FileShare]::ReadWrite)
@@ -389,7 +389,7 @@ function Get-DispatchModels {
   $models = @{}
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $models }
   $ambiguous = @{}
-  foreach ($line in (Read-DispatchLedgerLines -Path $Path)) {
+  foreach ($line in (Read-DispatchLedgerLines -Path $Path -IncludeUnterminated)) {
       if (-not $line.Contains('"kind":"dispatch"') -or -not $line.Contains('"transcript"')) { continue }
       try { $row = $line | ConvertFrom-Json } catch { continue }
       if ($row.kind -ne "dispatch" -or -not $row.transcript -or -not $row.model) { continue }
@@ -544,7 +544,7 @@ if ($harvested.Count -gt 0) {
 # ---------------------------------------------------------------- rollup ---
 $all = @()
 if (Test-Path -LiteralPath $Ledger) {
-  foreach ($line in (Get-Content -LiteralPath $Ledger)) {
+  foreach ($line in (Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Ledger))) {
     if (-not $line.Trim()) { continue }
     try { $all += ($line | ConvertFrom-Json) } catch { continue }
   }
