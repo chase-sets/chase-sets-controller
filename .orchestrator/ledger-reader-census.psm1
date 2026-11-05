@@ -1,4 +1,5 @@
 # Static, tracked-source census. Never loads or executes the inspected scripts.
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 if (-not ('ChaseSets.LedgerCensus.AstSelectionV1' -as [type])) {
   Add-Type -TypeDefinition @'
 using System;
@@ -312,7 +313,7 @@ function Get-LedgerReaderCensus {
   foreach ($path in $paths) {
     $full=Join-Path $Root $path
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "LEDGER_CENSUS_PATH_MISSING:$path" }
-    $source=if ($SourceOverride.ContainsKey($path)) { $SourceOverride[$path] } else { [IO.File]::ReadAllText($full) }
+    $source=if ($SourceOverride.ContainsKey($path)) { $SourceOverride[$path] } else { [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $full)) }
     $test=$path -match '(?i)(^|/)(fixtures|diagnostics)/|(?:\.test|\.check|\.test-support|-test-support|-fixture-harness|-test-fixture)\.ps1$|/issue-\d+-(?:discriminator|live-readonly-proof)\.ps1$'
     if ($path.EndsWith('.cs')) { $units.Add([pscustomobject]@{path=$path;source=$source;test=$test;ast=$null});continue }
     $tokens=$null;$errors=$null

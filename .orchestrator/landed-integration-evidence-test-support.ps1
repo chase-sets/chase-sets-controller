@@ -517,7 +517,7 @@ exit $LASTEXITCODE
       # and the other completion fields stay fixed across the pair.
       $modulePath=Join-Path $controlRuntime 'landed-integration-evidence.psm1';$source=[IO.File]::ReadAllText($modulePath)
       $mutantRoot=Join-Path $case 'mutant';New-Item -ItemType Directory -Path $mutantRoot|Out-Null
-      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1') -Destination $mutantRoot
+      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $mutantRoot
       Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$mutantRoot}) $CensusLatencyMs
       $mutantPath=Join-Path $mutantRoot 'landed-integration-evidence.psm1';$check=Join-Path $case 'check-evidence.ps1'
       [IO.File]::WriteAllText($check,@'

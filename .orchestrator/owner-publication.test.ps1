@@ -452,7 +452,7 @@ function Invoke-ReaderInventory {
     'host-heavy-verifier.test.ps1'=@(1279)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
-    'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
+    'invoke-fleet-exclusive-gate.test.ps1'=@(313,314)
     'landed-integration-dispatch.test.ps1'=@(543)
     'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)

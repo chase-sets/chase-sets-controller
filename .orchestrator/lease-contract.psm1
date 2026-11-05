@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $routingLibrary = Join-Path $PSScriptRoot 'routing-data.ps1'
 if (Test-Path -LiteralPath $routingLibrary -PathType Leaf) { . $routingLibrary -Library }
 
@@ -128,7 +129,7 @@ function Get-OrchestrationLeaseFileSnapshot {
   }
 
   try {
-    $bytes = [IO.File]::ReadAllBytes($fullPath)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $fullPath))
   } catch {
     return [pscustomobject]@{
       path = $fullPath

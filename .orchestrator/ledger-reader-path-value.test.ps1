@@ -6,14 +6,14 @@ Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -Di
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ledger-path-value-'+[guid]::NewGuid().ToString('N'))
 $observed=[Collections.Generic.List[object]]::new();$failures=[Collections.Generic.List[string]]::new()
 $ownerSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1')).Replace("`r`n","`n")
-$valueBody=@'
+$valueBody=(@'
 function Get-NonDispatchLedgerPath {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path)
   dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
   return $Path
 }
-'@
+'@).Replace("`r`n","`n")
 if (-not $ownerSource.Contains($valueBody)) { throw 'path-value owner mutation seam missing' }
 $untypedValue=$ownerSource.Replace($valueBody,$valueBody.Replace('[string]$Path','$Path'))
 $import='Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-reader.psm1'')'

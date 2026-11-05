@@ -75,6 +75,9 @@ function Invoke-Wrapper(
   $environment = @{
     FLEET_TEST_RESULT = $result
     FLEET_TEST_EXIT = $VerifierExit.ToString()
+    # The real verifier installs this fixture's preload. An inherited preload
+    # from another container would inspect that container's unrelated owner.
+    NODE_OPTIONS = ''
   }
   foreach ($key in $ExtraEnvironment.Keys) { $environment[$key] = $ExtraEnvironment[$key] }
   $arguments = @(
@@ -111,6 +114,7 @@ try {
     $moduleSourcePath,
     $ownershipSourcePath,
     $leaseContractSourcePath,
+    (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'),
     (Join-Path $PSScriptRoot 'routing-data.ps1')
   )) {
     Copy-Item -LiteralPath $file -Destination (Join-Path $runtime (Split-Path -Leaf $file))
