@@ -3435,6 +3435,7 @@ function Invoke-Pause99Run([string]$Variant, [string]$Sampler) {
         $samplerScript = Join-Path $container 'sampler.ps1'
         [IO.File]::WriteAllText($samplerScript, (@(
               'param([string]$Controller, [string]$Signal)'
+              'Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-reader.psm1'') -Global -DisableNameChecking'
               'function Invoke-Sampler99Hold {'
               '  [IO.File]::WriteAllText((Join-Path $Signal "sampler.open"), "open")'
               '  $deadline = [DateTime]::UtcNow.AddSeconds(120)'
