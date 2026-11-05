@@ -22,6 +22,17 @@ function Test-DispatchLedgerConsumerCompatibility {
     Import-Module (Join-Path $RuntimeRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
     $exact=Read-ExactHeadReviewHistory -Path $path
     $owned=dispatch-ledger-reader\Read-DispatchCountHistory -Path $path
+    foreach ($emitBom in @($false,$true)) {
+      $bomPath=Join-Path $temporary "bom-$emitBom.jsonl"
+      [IO.File]::WriteAllText($bomPath,$text,[Text.UTF8Encoding]::new($emitBom))
+      $oldBom=& $baseline {param($p) Read-ExactHeadReviewHistory -Path $p} $bomPath
+      $newBom=dispatch-ledger-reader\Read-DispatchCountHistory -Path $bomPath
+      if (-not $newBom.complete -or $newBom.audit.parsedRows -ne 2 -or
+          ($newBom.rows | ConvertTo-Json -Depth 30 -Compress) -cne ($oldBom.rows | ConvertTo-Json -Depth 30 -Compress) -or
+          ($newBom.audit | ConvertTo-Json -Compress) -cne ($oldBom.audit | ConvertTo-Json -Compress)) {
+        throw "$Consumer BOM=$emitBom first-row preservation failed"
+      }
+    }
     $query=& {
       param($runtime,$p)
       . (Join-Path $runtime 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library -RuntimeRoot $runtime

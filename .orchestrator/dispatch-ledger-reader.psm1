@@ -36,7 +36,7 @@ function Read-DispatchLedgerSnapshot {
     if ($completeLength -ne $length) { [Array]::Resize([ref]$bytes,[int]$completeLength) }
     # Decode only the complete prefix, never half of a multi-byte UTF-8 scalar.
     $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
-    if ($text.StartsWith([string][char]0xfeff)) { $text=$text.Substring(1) }
+    if ($text.StartsWith([string][char]0xfeff,[StringComparison]::Ordinal)) { $text=$text.Substring(1) }
     # Preserve StreamReader's row/raw/line-number semantics, including CRLF
     # and isolated CR, without a second file open or a temporary parser file.
     $lineList=[Collections.Generic.List[string]]::new()
