@@ -722,7 +722,7 @@ function Assert-ReplayPackage {
   $bindingsRaw=Read-ReplaySource $script:replaySources[$bindingsPath]
   $script:replayBindings=Read-ReplayJson $bindingsRaw
   $script:replayControllerPins=[ordered]@{}
-  foreach ($name in @('invoke-heavy-verifier.ps1','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','heavy-admission-preload.cjs','heavy-slot.cjs','dispatch-ownership.ps1')) {
+  foreach ($name in @('invoke-heavy-verifier.ps1','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','heavy-admission-preload.cjs','heavy-slot.cjs','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')) {
     $path=Join-Path $PSScriptRoot $name
     $pin=Open-ReplayPin $path ''
     $script:replayControllerPins[$name]=$pin.sha256
@@ -1604,6 +1604,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
   return $chain
 }
 function Get-HeavyRoutingRow($Record, [string]$RuntimeRoot) {
+  Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
   $path = Join-Path $RuntimeRoot 'dispatch-log.jsonl'
   $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
   Assert-DispatchObservationTime
@@ -1618,13 +1619,10 @@ using System.IO;
 using System.Text.Json;
 namespace ChaseSets.HeavyAdmission {
   public static class RoutingHistory {
-    public static IEnumerable<string> RelevantRows(string path, string label, string transcript, Action checkExpiry) {
-      using (var reader = new StreamReader(path)) {
+    public static IEnumerable<string> RelevantRows(IEnumerable<string> lines, string label, string transcript, Action checkExpiry) {
       checkExpiry();
-      while (true) {
-        string line = reader.ReadLine();
+      foreach (string line in lines) {
         checkExpiry();
-        if (line == null) break;
         if (String.IsNullOrWhiteSpace(line)) continue;
         using (JsonDocument document = JsonDocument.Parse(line)) {
           JsonElement schema;
@@ -1637,7 +1635,6 @@ namespace ChaseSets.HeavyAdmission {
           if (relevant) yield return line;
         }
       }
-      }
     }
   }
 }
@@ -1645,7 +1642,7 @@ namespace ChaseSets.HeavyAdmission {
   }
   Assert-DispatchObservationTime
   $candidates = @()
-  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows($path, $Record.label, (Split-Path -Leaf $Record.transcriptPath), [Action]{ Assert-DispatchObservationTime })) {
+  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows([string[]](Read-DispatchLedgerLines -Path $path), $Record.label, (Split-Path -Leaf $Record.transcriptPath), [Action]{ Assert-DispatchObservationTime })) {
     $row = ConvertFrom-DispatchClosedJson $line
     if ($null -eq $row) { throw 'routing history malformed' }
     $keys = @(Get-DispatchRoutingLedgerKeys $row.dispatchRoutingSchema $row)
@@ -2310,7 +2307,8 @@ $hostHeavyVerifierFiles = @(
   ".orchestrator/heavy-nested-owner.cs",
   ".orchestrator/heavy-nested-client.cjs",
   ".orchestrator/heavy-admission-holder-launcher.cjs",
-  ".orchestrator/dispatch-ownership.ps1"
+  ".orchestrator/dispatch-ownership.ps1",
+  ".orchestrator/dispatch-ledger-reader.psm1"
 )
 $hostHeavyVerifierBlobs = [ordered]@{}
 $hostHeavyVerifierPath = $null
@@ -2323,7 +2321,7 @@ function Assert-ControllerHostHeavyControllerState {
   if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'heavy-verifier: controller source root must be a clean exact-head worktree' }
   $head = (@(& git -C $root rev-parse HEAD 2>$null) -join '').Trim()
   if ($head -notmatch '^[a-f0-9]{40}$') { throw 'heavy-verifier: controller source root head is unavailable' }
-  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1')
+  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1','.orchestrator/dispatch-ledger-reader.psm1')
   $blobs = [ordered]@{}
   foreach ($relative in $files) {
     $tracked = @(& git -C $root ls-tree $head -- $relative 2>$null) -join ''

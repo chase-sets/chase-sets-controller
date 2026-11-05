@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param([string]$HistorySnapshot,[string]$HistoryModule,[string]$HistoryOutput)
 $ErrorActionPreference = "Stop"
+$readerCompatibilityRuntime=$PSScriptRoot
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'review-head' -RuntimeRoot $readerCompatibilityRuntime
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
@@ -946,6 +949,7 @@ try {
     Assert-True ($prelogSource.Split(@($mutant.From),[StringSplitOptions]::None).Count -eq 2) "9382 unique mutant anchor $($mutant.Name)"
     $mutantRoot=Join-Path $testRoot $mutant.Name;[IO.Directory]::CreateDirectory($mutantRoot)|Out-Null
     Copy-Item (Join-Path $PSScriptRoot 'routing-data.ps1') $mutantRoot
+    Copy-Item (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') $mutantRoot
     $mutantPath=Join-Path $mutantRoot 'review-head-contract.psm1'
     [IO.File]::WriteAllText($mutantPath,$prelogSource.Replace($mutant.From,$mutant.To),[Text.UTF8Encoding]::new($false))
     $mutantModule=Import-Module $mutantPath -Force -PassThru -DisableNameChecking

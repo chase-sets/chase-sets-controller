@@ -38,6 +38,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "orchestration-log-lock.psm1") -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 if (-not $TranscriptDir) { $TranscriptDir = $PSScriptRoot }
@@ -388,10 +389,7 @@ function Get-DispatchModels {
   $models = @{}
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $models }
   $ambiguous = @{}
-  $stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-  $reader = [System.IO.StreamReader]::new($stream)
-  try {
-    while ($null -ne ($line = $reader.ReadLine())) {
+  foreach ($line in (Read-DispatchLedgerLines -Path $Path)) {
       if (-not $line.Contains('"kind":"dispatch"') -or -not $line.Contains('"transcript"')) { continue }
       try { $row = $line | ConvertFrom-Json } catch { continue }
       if ($row.kind -ne "dispatch" -or -not $row.transcript -or -not $row.model) { continue }
@@ -404,9 +402,7 @@ function Get-DispatchModels {
         $models[$transcript] = [pscustomobject]@{model=[string]$row.model;effort=$effort}
       }
       $models[$transcript].model = [string]$row.model
-    }
   }
-  finally { $reader.Dispose() }
   foreach ($key in @($ambiguous.Keys)) { $models.Remove($key) }
   return $models
 }

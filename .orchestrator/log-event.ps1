@@ -205,6 +205,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "orchestration-log-lock.psm1") -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
@@ -430,7 +431,7 @@ function New-RebaseOnlyContinuationEvidence {
     })
   }
 
-  $history = Read-ExactHeadReviewHistory -Path $target
+  $history = Read-ExactHeadReviewHistory -Path $target -RequireTerminated
   $source = Reduce-ExactHeadReview -Pr ([int]$rawPr) -CurrentHead $ReviewedHead -History $history
   if ($source.state -cne "authorized" -or $source.latest.outcome -cne "PASS" -or
       $source.latest.reviewedHead -cne $ReviewedHead -or
@@ -1083,10 +1084,10 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
   if ($controllerPrelogVoid -or ($strictController -and $Kind -ceq 'dispatch') -or ($DispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3' -and $StrictControllerLaunch)) {
     # Read once under the same append lock as v3 publication. A refusal and a
     # launch cannot both win by observing the other's row outside this lock.
-    $history=Read-ExactHeadReviewHistory -Path $target
+    $history=Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     if (-not $history.complete -and $history.reason -cne 'HISTORY_MISSING') { throw "PRELOG_VOID_HISTORY_INVALID: $($history.reason)" }
     if ([IO.File]::Exists($target)) {
-      $bytes=[IO.File]::ReadAllBytes($target)
+      $bytes=(Read-DispatchLedgerBytes -Path $target -RequireTerminated)
       if ($bytes.Length -and $bytes[-1] -ne 10) { throw 'PRELOG_VOID_HISTORY_INVALID: unterminated history' }
     }
     $nextLine=1
@@ -1115,10 +1116,10 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     }
   }
   if ($briefPresent) {
-    $history=Read-ExactHeadReviewHistory -Path $target
+    $history=Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     if (-not $history.complete -and $history.reason -cne 'HISTORY_MISSING') { throw 'BRIEF_ATTRIBUTION_INVALID: incomplete history' }
     if ([IO.File]::Exists($target)) {
-      $bytes=[IO.File]::ReadAllBytes($target)
+      $bytes=(Read-DispatchLedgerBytes -Path $target -RequireTerminated)
       if ($bytes.Length -and $bytes[-1] -ne 10) { throw 'BRIEF_ATTRIBUTION_INVALID: truncated history' }
     }
     $values=@($history.rows | ForEach-Object { $_.value })+@((ConvertFrom-BriefJson $line))
@@ -1132,9 +1133,10 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     Assert-LaneTimeTerminalTarget $target $Lane
   }
   if ($hasObservedTime -or $laneTimePresent) {
-    $observedHistory = Read-ExactHeadReviewHistory -Path $target
+    $observedHistory = Read-ExactHeadReviewHistory -Path $target -RequireTerminated
+    if ($observedHistory.reason -ceq 'HISTORY_UNTERMINATED_OR_MOVED') { throw 'OBSERVED_HISTORY_INVALID: unterminated history' }
     if (Test-Path -LiteralPath $target -PathType Leaf) {
-      $original = [IO.File]::ReadAllBytes($target)
+      $original = (Read-DispatchLedgerBytes -Path $target -RequireTerminated)
       if ($original.Length -and $original[-1] -ne 10) { throw 'OBSERVED_HISTORY_INVALID: unterminated history' }
     }
     $projection = Get-LaneTimeProjection $observedHistory
@@ -1159,12 +1161,12 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
   if ($toddAction) {
     # An actionId names one action for life; rebinding it to another issue
     # would make ownership ambiguous, which goes to host triage, never Todd.
-    $rebound = @((Read-ToddActionRows $target -AllowMissing) | Where-Object { $_.value.actionId -ceq $ActionId -and $_.value.issue -ne $Issue })
+    $rebound = @((Read-ToddActionRows $target -AllowMissing -RequireTerminated) | Where-Object { $_.value.actionId -ceq $ActionId -and $_.value.issue -ne $Issue })
     if ($rebound.Count) { throw "TODD_ACTION_ID_CONFLICT: $ActionId is bound to #$($rebound[0].value.issue)" }
   }
   if ($dispatchDecisionPresent) { & {
     . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library
-    $history=Read-DispatchCountHistory $target -PrefixHistory $dispatchHistory
+    $history=Read-DispatchCountHistory $target -PrefixHistory $dispatchHistory -RequireTerminated
     $before=Get-DispatchCountDecision $history $Issue open clear
     if ($before.state -ceq 'UNKNOWN') { throw 'DISPATCH_DECISION_HISTORY_UNKNOWN' }
     $phase=$entry.dispatchDecision.phase
@@ -1176,9 +1178,9 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     if ($after.state -ceq 'UNKNOWN') { throw 'DISPATCH_DECISION_TRANSITION_INVALID' }
   } }
   if ($controllerCorrection) {
-    $history = Read-ExactHeadReviewHistory -Path $target
+    $history = Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     if (-not $history.complete) { throw "controller audit correction refuses $($history.reason)" }
-    $originalBytes = [IO.File]::ReadAllBytes($target)
+    $originalBytes = (Read-DispatchLedgerBytes -Path $target -RequireTerminated)
     if ($originalBytes.Length -eq 0 -or $originalBytes[-1] -ne 10) { throw 'controller audit correction refuses an unterminated original history' }
     $nextLine = 1 + [int](@($history.rows | Sort-Object line -Descending | Select-Object -First 1)[0].line)
     $proposed = [pscustomobject]@{ line=$nextLine; value=($line | ConvertFrom-Json -DateKind String)
@@ -1195,10 +1197,10 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     }
   }
   if ($IntegrationAuthoritySchema) {
-    $history=Read-ExactHeadReviewHistory -Path $target
+    $history=Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     if (-not $history.complete -and $history.reason -cne 'HISTORY_MISSING') { throw "AUTHORITY_INVALID: $($history.reason)" }
     if (Test-Path -LiteralPath $target) {
-      $original=[IO.File]::ReadAllBytes($target)
+      $original=(Read-DispatchLedgerBytes -Path $target -RequireTerminated)
       if ($original.Length -and $original[-1] -ne 10) { throw 'AUTHORITY_INVALID: unterminated history' }
     }
     $nextLine=1
@@ -1219,7 +1221,7 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     if($lastMatch -gt 0 -and $lastTransition -le $lastMatch){throw 'AUTHORITY_DUPLICATE'}
   }
   if($ContinuationSchema){
-    $finalHistory=Read-ExactHeadReviewHistory -Path $target
+    $finalHistory=Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     $finalSource=Reduce-ExactHeadReview -Pr ([int]$rawPr) -CurrentHead $ReviewedHead -History $finalHistory
     if($finalSource.state-cne'authorized'-or$finalSource.latest.outcome-cne'PASS'-or$finalSource.latest.receiptIdentity-cne$SourcePassReceiptIdentity){throw 'rebase-only continuation source authority moved before append'}
     $finalPredecessor=Reduce-ExactHeadReview -Pr ([int]$rawPr) -CurrentHead $ContinuationPredecessorHead -History $finalHistory
@@ -1230,7 +1232,7 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     if($finalHead-cne$ContinuationNewHead-or-not[string]::IsNullOrWhiteSpace($finalStatus)){throw 'rebase-only continuation worktree moved before append'}
   }
   if (($IntegrationDispatchSchema -or $WatchdogSchema) -and (Test-Path -LiteralPath $target -PathType Leaf)) {
-    $history = Read-ExactHeadReviewHistory -Path $target
+    $history = Read-ExactHeadReviewHistory -Path $target -RequireTerminated
     if (-not $history.complete) { throw "integration dispatch history is not complete: $($history.reason)" }
     $duplicate = if($IntegrationDispatchSchema){@($history.rows | Where-Object {
       $value=$_.value

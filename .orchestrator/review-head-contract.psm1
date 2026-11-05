@@ -411,17 +411,12 @@ function Get-LaneTimeProjection($History, [datetime]$Now = [datetime]::UtcNow) {
 
 function Assert-LaneTimeTerminalTarget([string]$Path, [string]$Lane) {
   if (-not [IO.File]::Exists($Path)) { return }
-  $stream = [IO.File]::OpenRead($Path)
-  try {
-    if ($stream.Length) {
-      [void]$stream.Seek(-1, [IO.SeekOrigin]::End)
-      if ($stream.ReadByte() -ne 10) { throw 'OBSERVED_HISTORY_INVALID: unterminated history' }
-    }
-  } finally { $stream.Dispose() }
+  $snapshot=Read-DispatchLedgerSnapshot -Path $Path -RequireTerminated
+  if (-not $snapshot.complete) { throw "OBSERVED_HISTORY_INVALID: $($snapshot.reason)" }
   $laneToken = ConvertTo-Json -InputObject $Lane -Compress
   $latest = $null
   $corrected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-  foreach ($raw in [IO.File]::ReadLines($Path)) {
+  foreach ($raw in $snapshot.lines) {
     if ($raw.IndexOf($laneToken, [StringComparison]::Ordinal) -lt 0) { continue }
     try { $row = ConvertFrom-LaneTimeJson $raw }
     catch { throw 'LANE_TIME_HISTORY_INVALID: malformed lane evidence' }
@@ -692,93 +687,15 @@ function Get-ReviewReceiptValidation($Row, [object]$Vocabulary = $null) {
   }
 }
 
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+
 function Read-ExactHeadReviewHistory(
   [string]$Path,
   [int]$MaxRows = 50000,
-  [long]$MaxBytes = 33554432
+  [long]$MaxBytes = 33554432,
+  [switch]$RequireTerminated
 ) {
-  $audit = [ordered]@{
-    pathStatus = "unknown"
-    bytes = 0
-    rows = 0
-    parsedRows = 0
-    malformedRows = 0
-    truncated = $false
-    malformedLineNumbers = @()
-  }
-  $rows = [Collections.Generic.List[object]]::new()
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    $audit.pathStatus = "missing"
-    return [pscustomobject][ordered]@{ complete = $false; rows = @(); audit = $audit; reason = "HISTORY_MISSING" }
-  }
-  try {
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $audit.bytes = [int64]$item.Length
-    if ($item.Length -gt $MaxBytes) {
-      $audit.pathStatus = "oversize"
-      $audit.truncated = $true
-      return [pscustomobject][ordered]@{ complete = $false; rows = @(); audit = $audit; reason = "HISTORY_TRUNCATED" }
-    }
-    $lineNumber = 0
-    $reader = [IO.File]::OpenText($item.FullName)
-    try { while ($null -ne ($line = $reader.ReadLine())) {
-      $lineNumber += 1
-      if ($lineNumber -gt $MaxRows) {
-        $audit.truncated = $true
-        break
-      }
-      if ([string]::IsNullOrWhiteSpace($line)) { continue }
-      $audit.rows += 1
-      try {
-        # ConvertFrom-Json resolves duplicate names last-wins. Inspect decoded
-        # names in the raw row first so normalization cannot create authority.
-        $options = [System.Text.Json.JsonDocumentOptions]::new()
-        $options.MaxDepth = 1024
-        $document = [System.Text.Json.JsonDocument]::Parse($line, $options)
-        try {
-          $pending = [Collections.Generic.Stack[System.Text.Json.JsonElement]]::new()
-          $pending.Push($document.RootElement)
-          while ($pending.Count -gt 0) {
-            $element = $pending.Pop()
-            if ($element.ValueKind -eq [System.Text.Json.JsonValueKind]::Object) {
-              $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-              foreach ($property in $element.EnumerateObject()) {
-                if (-not $names.Add($property.Name)) { throw 'Duplicate decoded JSON property name' }
-                $pending.Push($property.Value)
-              }
-            } elseif ($element.ValueKind -eq [System.Text.Json.JsonValueKind]::Array) {
-              foreach ($item in $element.EnumerateArray()) { $pending.Push($item) }
-            }
-          }
-        } finally { $document.Dispose() }
-        $row = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop
-        $rawBytes = [Text.UTF8Encoding]::new($false).GetBytes($line)
-        $rows.Add([pscustomobject][ordered]@{
-          line = $lineNumber
-          raw = $line
-          byteLength = $rawBytes.Length
-          rawSha256 = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes))).ToLowerInvariant()
-          value = $row
-        })
-        $audit.parsedRows += 1
-      } catch {
-        $audit.malformedRows += 1
-        $audit.malformedLineNumbers += $lineNumber
-      }
-    }
-    } finally { $reader.Dispose() }
-    $audit.pathStatus = if ($audit.truncated) { "truncated" } elseif ($audit.malformedRows) { "malformed" } else { "ok" }
-  } catch {
-    $audit.pathStatus = "unreadable"
-    return [pscustomobject][ordered]@{ complete = $false; rows = @(); audit = $audit; reason = "HISTORY_UNREADABLE" }
-  }
-  if ($audit.truncated) {
-    return [pscustomobject][ordered]@{ complete = $false; rows = @($rows); audit = $audit; reason = "HISTORY_TRUNCATED" }
-  }
-  if ($audit.malformedRows -gt 0) {
-    return [pscustomobject][ordered]@{ complete = $false; rows = @($rows); audit = $audit; reason = "HISTORY_MALFORMED" }
-  }
-  [pscustomobject][ordered]@{ complete = $true; rows = @($rows); audit = $audit; reason = "HISTORY_COMPLETE" }
+  dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -MaxRows $MaxRows -MaxBytes $MaxBytes -RequireTerminated:$RequireTerminated
 }
 
 function Test-LandedIntegrationAuthorityRow($Row) {

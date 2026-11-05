@@ -174,6 +174,7 @@ $runtimeFiles = @(
   "lease-contract.psm1",
   "lease.ps1",
   "review-head-contract.psm1",
+  "dispatch-ledger-reader.psm1",
   "landed-integration-evidence.psm1",
   "dispatch-lane.ps1",
   "rebase-integration.ps1",

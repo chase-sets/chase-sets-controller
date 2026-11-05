@@ -292,7 +292,7 @@ exit [int]$env:FLEET_TEST_EXIT
   Assert-True ($wrapperSource.Contains($captureAnchor)) 'real fleet child diagnostic seam exists'
   $captureSource = $wrapperSource.Replace($captureAnchor, '-WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:FLEET_TEST_RUNTIME "heavy.out") -RedirectStandardError (Join-Path $env:FLEET_TEST_RUNTIME "heavy.err")')
   Commit-WrapperSource $captureSource 'restore fleet wrapper with child diagnostic capture'
-  foreach($name in @('invoke-heavy-verifier.ps1','heavy-admission-preload.cjs','heavy-slot.cjs',
+  foreach($name in @('invoke-heavy-verifier.ps1','dispatch-ledger-reader.psm1','heavy-admission-preload.cjs','heavy-slot.cjs',
       'heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime -Force
   }

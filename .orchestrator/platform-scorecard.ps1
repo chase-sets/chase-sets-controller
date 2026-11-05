@@ -22,6 +22,7 @@ param(
     [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 
 function Add-ScorecardGap([string]$Gap) { $null = $script:ScorecardGaps.Add($Gap) }
 
@@ -273,7 +274,7 @@ function Read-ScorecardLedgers([string]$Container) {
     $runtime=Join-Path $Container '.orchestrator'
     $dispatches=[Collections.Generic.List[object]]::new();$latest=@{};$dispatchComplete=$true;$costComplete=$true
     try {
-        foreach($line in [IO.File]::ReadLines((Join-Path $runtime 'dispatch-log.jsonl'))){
+        foreach($line in (Read-DispatchLedgerLines -Path (Join-Path $runtime 'dispatch-log.jsonl'))){
             if(-not $line.Trim()){continue}
             $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
             if($null -eq $row -or $row -isnot [System.Collections.IDictionary]){throw 'invalid dispatch row'}

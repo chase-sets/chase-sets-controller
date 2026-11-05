@@ -47,6 +47,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 $routingData = Get-RoutingData -ReadOnly:$DryRun
@@ -67,10 +68,11 @@ $nowUtc = (Get-Date).ToUniversalTime()
 $cutoff = $nowUtc.AddDays(-$SinceDays)
 
 $readFailures=@{}
-function Read-Jsonl([string]$Path) {
+function Read-Jsonl([string]$Path, [switch]$DispatchHistory) {
   if (-not (Test-Path -LiteralPath $Path)) { return @() }
   $out = @()
-  foreach ($line in Get-Content -LiteralPath $Path) {
+  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else { Get-Content -LiteralPath $Path }
+  foreach ($line in $lines) {
     if (-not $line.Trim()) { continue }
     try { $out += ($line | ConvertFrom-Json -DateKind String) } catch { $readFailures[$Path]=$true;continue }
   }
@@ -212,7 +214,7 @@ $excludedModelLedger = @($ledger | Where-Object { -not (Get-CanonicalModel $_.mo
 $excludedModelUsd = (($excludedModelLedger | Measure-Object -Property routingUsd -Sum).Sum)
 $ledger = @($ledger | Where-Object { Get-CanonicalModel $_.model })
 
-$dispatch = Read-Jsonl $DispatchLog
+$dispatch = Read-Jsonl $DispatchLog -DispatchHistory
 
 # ----------------------------------------------------------- effort identity --
 # The routing unit is a CONFIGURATION: exact model version + exact effort

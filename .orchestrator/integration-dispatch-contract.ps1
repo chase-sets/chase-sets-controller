@@ -277,7 +277,8 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
     foreach ($pair in @(@('originalPromptPath',"$($ack.label).prompt.txt"),@('partialReportPath',"$($ack.label).jsonl"),@('errorPath',"$($ack.label).err.log"))) {
       if (-not (Test-DispatchSamePath $spec.($pair[0]) (Join-Path $RuntimeRoot $pair[1]))) { throw 'crossed retained path' }
     }
-    foreach($path in @($HistoryPath,$spec.originalPromptPath,$spec.partialReportPath,$spec.errorPath)) { $locks.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)) }
+    # Canonical history must not deny the append share; retained non-ledger files stay pinned.
+    foreach($path in @($spec.originalPromptPath,$spec.partialReportPath,$spec.errorPath)) { $locks.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)) }
     $history = Read-ExactHeadReviewHistory -Path $HistoryPath
     if (-not $history.complete) { throw 'routing history unknown' }
     $routes = @($history.rows | Where-Object { $_.value.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.value.label -ceq $ack.label })

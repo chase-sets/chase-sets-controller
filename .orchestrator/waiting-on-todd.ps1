@@ -33,6 +33,7 @@ param(
   [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 
 $script:ToddActionSchema = 'todd-action/v1'
 $script:ToddActionFields = @('ts','kind','toddActionSchema','actionId','issue','state','action','time','unblocks')
@@ -75,18 +76,15 @@ function Assert-ToddActionRow($Row) {
 
 # Streams the whole ledger: a bounded tail would silently drop older actions.
 # Any line naming todd-action must parse; a todd-action row must be closed.
-function Read-ToddActionRows([string]$Path, [switch]$AllowMissing) {
+function Read-ToddActionRows([string]$Path, [switch]$AllowMissing, [switch]$RequireTerminated) {
   $rows = [Collections.Generic.List[object]]::new()
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     if ($AllowMissing) { return ,$rows }
     throw "TODD_ACTION_LEDGER_MISSING: $Path"
   }
   $number = 0
-  # Shared read so concurrent appends are never blocked; disposed on refusal.
-  $reader = [IO.StreamReader]::new([IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
-    [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), [Text.UTF8Encoding]::new($false, $true))
   try {
-    while ($null -ne ($line = $reader.ReadLine())) {
+    foreach ($line in (Read-DispatchLedgerLines -Path $Path -RequireTerminated:$RequireTerminated)) {
       $number++
       if (-not $line.Contains('todd-action')) { continue }
       try { $value = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop }
@@ -100,7 +98,7 @@ function Read-ToddActionRows([string]$Path, [switch]$AllowMissing) {
   } catch {
     if ($_.Exception.Message -like 'TODD_ACTION_*') { throw }
     throw "TODD_ACTION_LEDGER_INVALID: line $($number + 1) is not readable strict UTF-8"
-  } finally { $reader.Dispose() }
+  }
   return ,$rows
 }
 

@@ -127,7 +127,7 @@ function Test-StrictControllerWriter {
   }
   Check-Strict 'skip-strict-classifier-before-append' {
     $mutantRoot=Join-Path $root 'skip-strict-classifier-before-append';New-Item -ItemType Directory $mutantRoot|Out-Null
-    foreach($file in @('log-event.ps1','orchestration-log-lock.psm1','review-head-contract.psm1','routing-data.ps1')){Copy-Item (Join-Path $PSScriptRoot $file) $mutantRoot}
+    foreach($file in @('log-event.ps1','orchestration-log-lock.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1','routing-data.ps1')){Copy-Item (Join-Path $PSScriptRoot $file) $mutantRoot}
     $mutant=Join-Path $mutantRoot 'log-event.ps1';$source=[IO.File]::ReadAllText($mutant)
     $anchor='if ($strictController -and -not $controllerCorrection) {'
     Assert-Log ($source.Split(@($anchor),[StringSplitOptions]::None).Count-eq2) 'strict classifier bypass anchor must occur exactly once'
@@ -702,7 +702,7 @@ try{New-Item -ItemType Directory -Path $root|Out-Null;$log=Join-Path $root 'even
     $expectedAnchors9382=if($mutation9382.Name -ceq 'AC5-generic-strict-refusal'){3}else{2}
     Assert-Log ($loggerSource9382.Split(@($mutation9382.From),[StringSplitOptions]::None).Count -eq $expectedAnchors9382) "9382 exact logger mutant anchor count $($mutation9382.Name)"
     $mutantRoot9382=Join-Path $root $mutation9382.Name;[IO.Directory]::CreateDirectory($mutantRoot9382)|Out-Null
-    foreach($file9382 in @('orchestration-log-lock.psm1','review-head-contract.psm1','routing-data.ps1','dispatch-ownership.ps1')){Copy-Item (Join-Path $PSScriptRoot $file9382) $mutantRoot9382}
+    foreach($file9382 in @('orchestration-log-lock.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1','routing-data.ps1','dispatch-ownership.ps1')){Copy-Item (Join-Path $PSScriptRoot $file9382) $mutantRoot9382}
     $mutantLogger9382=Join-Path $mutantRoot9382 'log-event.ps1'
     [IO.File]::WriteAllText($mutantLogger9382,$loggerSource9382.Replace($mutation9382.From,$mutation9382.To),[Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllLines($voidLog,@($targetRaw9382),[Text.UTF8Encoding]::new($false))

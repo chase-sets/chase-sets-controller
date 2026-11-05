@@ -1,5 +1,8 @@
 param([string]$LiveLedgerPath)
 $ErrorActionPreference = "Stop"
+$readerCompatibilityRuntime=([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..')))
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'query' -RuntimeRoot $readerCompatibilityRuntime
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "FAIL: $Message" }

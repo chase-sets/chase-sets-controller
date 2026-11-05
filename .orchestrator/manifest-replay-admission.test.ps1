@@ -30,7 +30,7 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('manifest-replay-'+[guid]::NewGuid()
 $container=Join-Path $root 'container'; $runtime=Join-Path $container '.orchestrator'; $seat=Join-Path $container 'seat with spaces'
 $logs=Join-Path $seat '.orchestrator/logs'; $lock=Join-Path $runtime 'verify-lock.d'
 [IO.Directory]::CreateDirectory($runtime) | Out-Null; [IO.Directory]::CreateDirectory($logs) | Out-Null
-foreach ($name in @('invoke-heavy-verifier.ps1','diagnostic-declarations.json','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','dispatch-ownership.ps1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs')) {
+foreach ($name in @('invoke-heavy-verifier.ps1','diagnostic-declarations.json','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','dispatch-ownership.ps1','dispatch-ledger-reader.psm1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs')) {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime
 }
 $guard=Join-Path $runtime 'invoke-heavy-verifier.ps1'

@@ -50,6 +50,7 @@ $omissionRuntimeFiles = @(
   "lease-contract.psm1",
   "orchestration-log-lock.psm1",
   "dispatch-ownership.ps1",
+  "dispatch-ledger-reader.psm1",
   "review-head-contract.psm1",
   "routing-data.ps1",
   "review-head-reducer.ps1",
@@ -229,6 +230,7 @@ function New-PlanFixture {
   Copy-RuntimeFile $root "controller-release-battery.ps1"
   Copy-RuntimeFile $root "fail-closed-guard-evidence.ps1"
   Copy-RuntimeFile $root "fail-closed-guard-evidence.test.ps1"
+  Copy-RuntimeFile $root "dispatch-ledger-reader.psm1"
   Copy-RuntimeFile $root "review-head-contract.psm1"
   foreach ($name in @(
       "controller-release-battery.test.ps1",
@@ -656,6 +658,7 @@ function New-AdmissionFixture([hashtable]$ExtraRuntimeFiles = @{}, [string]$Pref
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
   Copy-RuntimeFile $root "controller-release-battery.ps1"
   Copy-RuntimeFile $root "invoke-heavy-verifier.ps1"
+  Copy-RuntimeFile $root "dispatch-ledger-reader.psm1"
   Copy-RuntimeFile $root "dispatch-ownership.ps1"
   Copy-RuntimeFile $root "heavy-nested-owner.cs"
   Copy-RuntimeFile $root "heavy-nested-client.cjs"
@@ -1555,6 +1558,7 @@ function Invoke-HostRun($Fixture, [string]$Label, [string]$Entry = 'Wrapper', [s
       [IO.Directory]::CreateDirectory((Split-Path -Parent $scriptPath)) | Out-Null
       [IO.File]::Copy((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'), $scriptPath)
       [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), (Join-Path (Split-Path -Parent $scriptPath) 'dispatch-ownership.ps1'))
+      [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'), (Join-Path (Split-Path -Parent $scriptPath) 'dispatch-ledger-reader.psm1'))
     }
     $branch = (& git -C $Fixture.root branch --show-current | Out-String).Trim()
     $arguments = @('-ControllerBattery', '-Worktree', $Fixture.root, '-Lane', 'host-fixture',
@@ -3301,7 +3305,7 @@ function Invoke-Pause99Run([string]$Variant, [string]$Sampler) {
   $newline = if ($guardSource.Contains("`r`n")) { "`r`n" } else { "`n" }
   $guard = Join-Path $runtime 'invoke-heavy-verifier.ps1'
   [IO.File]::WriteAllText($guard, $guardSource.Replace($pause99Anchor, $pause99Injection.Replace("`r`n", "`n").Replace("`n", $newline)), [Text.UTF8Encoding]::new($false))
-  foreach ($name in @('dispatch-ownership.ps1', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-preload.cjs')) {
+  foreach ($name in @('dispatch-ledger-reader.psm1', 'dispatch-ownership.ps1', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-preload.cjs')) {
     [IO.File]::Copy((Join-Path $PSScriptRoot $name), (Join-Path $runtime $name))
   }
   [IO.File]::WriteAllText((Join-Path $lane 'README.md'), "synthetic #99 pause lane`n")

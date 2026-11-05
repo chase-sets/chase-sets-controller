@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][int]$Tracking,[string]$Repo='chase-sets/chase-sets',[switch]$DryRun,[string]$DispatchLog,[string]$CostLedger,[string]$GhCommand='gh',[string]$WaitingOnToddConfig)
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 $dispatchPath=if($DispatchLog){$DispatchLog}else{Join-Path $PSScriptRoot 'dispatch-log.jsonl'}
 $costPath=if($CostLedger){$CostLedger}else{Join-Path $PSScriptRoot 'cost-ledger.jsonl'}
 if(-not(Test-Path -LiteralPath $dispatchPath -PathType Leaf)){throw "no lifecycle log at $dispatchPath"}
@@ -9,8 +10,8 @@ if(-not(Test-Path -LiteralPath $dispatchPath -PathType Leaf)){throw "no lifecycl
 $waitingPath=if($WaitingOnToddConfig){$WaitingOnToddConfig}else{Join-Path $PSScriptRoot 'waiting-on-todd.psd1'}
 $waitingIssue=if(Test-Path -LiteralPath $waitingPath -PathType Leaf){(Import-PowerShellDataFile -LiteralPath $waitingPath).PinnedIssue}
 if($waitingIssue -isnot [int] -or $waitingIssue -lt 1){throw "no pinned Waiting-on-Todd issue in $waitingPath"}
-function Read-DigestRows([string]$Path,[int]$Tail){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return @()};$rows=@();foreach($line in Get-Content -LiteralPath $Path -Tail $Tail){if(-not"$line".Trim()){continue};try{$rows+=($line|ConvertFrom-Json -DateKind String)}catch{throw "malformed lifecycle row in $Path"}};@($rows)}
-$rows=Read-DigestRows $dispatchPath 500
+function Read-DigestRows([string]$Path,[int]$Tail,[switch]$DispatchHistory){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return @()};$rows=@();foreach($line in $(if($DispatchHistory){Read-DispatchLedgerLines -Path $Path | Select-Object -Last $Tail}else{Get-Content -LiteralPath $Path -Tail $Tail})){if(-not"$line".Trim()){continue};try{$rows+=($line|ConvertFrom-Json -DateKind String)}catch{throw "malformed lifecycle row in $Path"}};@($rows)}
+$rows=Read-DigestRows $dispatchPath 500 -DispatchHistory
 if($rows.Count-eq0){throw 'lifecycle log has no rows'}
 $latest=@($rows|Sort-Object{[datetimeoffset]::Parse([string]$_.ts)}-Descending|Select-Object -First 1)[0]
 $active=@($rows|Where-Object{$_.lane}|Group-Object lane|ForEach-Object{@($_.Group|Sort-Object{[datetimeoffset]::Parse([string]$_.ts)}-Descending|Select-Object -First 1)[0]}|Where-Object{[string]$_.kind-ceq'dispatch'})

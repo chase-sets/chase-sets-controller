@@ -18,6 +18,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$readerCompatibilityRuntime=$PSScriptRoot
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'landing' -RuntimeRoot $readerCompatibilityRuntime
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 
@@ -2814,7 +2817,7 @@ if ([string]$staging.status -ceq "in_progress") {
 '@)
     $mutantPath = Join-Path $testRoot 'landing-preflight-always-healthy-mutant.ps1'
     [IO.File]::WriteAllText($mutantPath, $mutant, [Text.UTF8Encoding]::new($false))
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Destination $testRoot
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'),(Join-Path $PSScriptRoot 'review-head-contract.psm1') -Destination $testRoot
     $failedPredecessorRuns = Copy-TestValue $completionRuns
     $failedPredecessorRuns[1].conclusion = 'failure'
     Set-DeployFixtures $failedPredecessorRuns @{

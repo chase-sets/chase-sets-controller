@@ -192,7 +192,7 @@ try {
     $source=[IO.File]::ReadAllText($subject)
     Assert-True ($source.Contains($mutant.find)) "mutation seam $($mutant.name)"
     $runtime=Join-Path $EvidenceDir $mutant.name;[void][IO.Directory]::CreateDirectory($runtime)
-    foreach($dependency in @('routing-data.ps1','orchestration-log-lock.psm1','controller-install-lock.psm1','review-head-contract.psm1')){
+    foreach($dependency in @('routing-data.ps1','orchestration-log-lock.psm1','controller-install-lock.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1')){
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $runtime $dependency)
     }
     $mutated=Join-Path $runtime (Split-Path -Leaf $subject)

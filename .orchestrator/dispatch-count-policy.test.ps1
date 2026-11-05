@@ -9,6 +9,9 @@ param(
   [switch]$SkipMutants
 )
 $ErrorActionPreference = 'Stop'
+$readerCompatibilityRuntime=(Join-Path $ControllerRoot '.orchestrator')
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'dispatch' -RuntimeRoot $readerCompatibilityRuntime
 $removeEvidence = -not $PSBoundParameters.ContainsKey('EvidenceRoot')
 if ($ExpectedControllerHead) {
   $actualHead=(& git -C $ControllerRoot rev-parse HEAD | Out-String).Trim()
@@ -136,9 +139,10 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   $started=Join-Path $isolated 'parse-started'
   $release=Join-Path $isolated 'parse-release'
   $trace=Join-Path $isolated 'parse-bytes'
-  $reader=[IO.File]::ReadAllText((Join-Path $runtime 'review-head-contract.psm1'))
+  Copy-Item -LiteralPath (Join-Path $runtime 'review-head-contract.psm1') -Destination $isolated
+  $reader=[IO.File]::ReadAllText((Join-Path $runtime 'dispatch-ledger-reader.psm1'))
   $pause=@'
-  [IO.File]::AppendAllText('__TRACE__',([IO.FileInfo]::new($Path).Length.ToString())+"`n")
+  [IO.File]::AppendAllText('__TRACE__',(($snapshot.snapshotLength-$prefixLength).ToString())+"`n")
   if (-not [IO.File]::Exists('__STARTED__')) {
     [IO.File]::WriteAllText('__STARTED__','prefix parser entered')
     $deadline=[datetime]::UtcNow.AddSeconds(10)
@@ -147,8 +151,10 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   }
 '@
   $pause=$pause.Replace('__STARTED__',$started.Replace("'","''")).Replace('__RELEASE__',$release.Replace("'","''")).Replace('__TRACE__',$trace.Replace("'","''"))
-  $reader=$reader.Replace('  $audit = [ordered]@{',$pause+"`n  `$audit = [ordered]@{")
-  [IO.File]::WriteAllText((Join-Path $isolated 'review-head-contract.psm1'),$reader)
+  $seam='      for ($index=$prefixLines;$index -lt $snapshot.lines.Count;$index++) {'
+  Assert-Policy ($reader.Contains($seam)) 're-homed strict parser instrumentation seam exists'
+  $reader=$reader.Replace($seam,$pause+"`n"+$seam)
+  [IO.File]::WriteAllText((Join-Path $isolated 'dispatch-ledger-reader.psm1'),$reader)
   foreach ($mode in @('query','query-append','logger','logger-tail','logger-rewrite','logger-unterminated')) {
     Case "F2-$mode" {
     Seed 15

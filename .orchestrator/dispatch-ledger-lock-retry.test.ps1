@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$Revision = '',
-  [ValidateSet('', 'no-retry')][string]$Mutant = '',
-  [ValidateSet('all', 'transient', 'exhausted', 'non-sharing')][string]$Scenario = 'all',
+  [ValidateSet('', 'no-retry', 'reader-share')][string]$Mutant = '',
+  [ValidateSet('all', 'transient', 'exhausted', 'non-sharing', 'reader-prefix', 'reader-contention')][string]$Scenario = 'all',
   [string]$EvidenceRoot = ''
 )
 
@@ -43,17 +43,24 @@ try {
   $source = [IO.File]::ReadAllText($module)
   # The real lock algorithm runs against a private mutex, never the host ledger.
   $source = $source.Replace('Global\ChaseSetsOrchLog', ('Local\Synthetic8604-' + [guid]::NewGuid().ToString('N')))
-  if ($Mutant) {
+  if ($Mutant -eq 'no-retry') {
     $needle = 'if (-not $sharingViolation) { throw }'
     Assert-Retry ($source.Contains($needle)) 'no-retry mutant seam absent'
     $source = $source.Replace($needle, 'throw # MUTANT no-retry')
   }
   Write-TestFile $module $source
+  $readerModule=Join-Path $scripts 'dispatch-ledger-reader.psm1'
+  if ($Mutant -eq 'reader-share') {
+    $readerSource=[IO.File]::ReadAllText($readerModule)
+    $needle='[IO.FileShare]::ReadWrite'
+    Assert-Retry ($readerSource.Contains($needle)) 'old direct-open/share mutant seam missing'
+    Write-TestFile $readerModule ($readerSource.Replace($needle,'[IO.FileShare]::Read'))
+  }
   $logger = Join-Path $scripts 'log-event.ps1'
   $source = [IO.File]::ReadAllText($logger)
   $needle = '$bytes = [Text.UTF8Encoding]::new($false).GetBytes($line + [Environment]::NewLine)'
   Assert-Retry ($source.Contains($needle)) 'logger observation seam absent'
-  $source = $source.Replace($needle, "$needle`n  [IO.File]::WriteAllText(`$env:SYNTHETIC_8604_ATTEMPT, 'append-attempt')")
+  $source = $source.Replace($needle, "$needle`n  if (`$env:SYNTHETIC_8604_ATTEMPT) { [IO.File]::WriteAllText(`$env:SYNTHETIC_8604_ATTEMPT, 'append-attempt') }")
   Write-TestFile $logger $source
   . (Join-Path $scripts 'routing-data-test-support.ps1')
   $routingScope = Enter-RoutingDataTestScope
@@ -88,6 +95,131 @@ exit $LASTEXITCODE
 '@
 
   $failures = [Collections.Generic.List[string]]::new()
+  if ($Scenario -in @('all','reader-prefix')) {
+    Import-Module $readerModule -Force -DisableNameChecking
+    $ledger=Join-Path $root 'utf8-dispatch-log.jsonl'
+    $encoding=[Text.UTF8Encoding]::new($false,$true)
+    # U+00E9 / U+20AC / U+1F600 exercise 2/3/4-byte boundaries without
+    # depending on the source file's encoding. Include CRLF and a blank line.
+    $unicode=[string][char]0xe9+[char]0x20ac+[char]::ConvertFromUtf32(0x1f600)
+    $text="{`"kind`":`"dispatch`",`"issue`":1}`r`n`n{`"kind`":`"dispatch`",`"issue`":2,`"note`":`"$unicode`"}`n"
+    $all=$encoding.GetBytes($text)
+    $tested=0
+    for ($offset=0;$offset -le $all.Length;$offset++) {
+      $cut=[byte[]]::new($offset);[Array]::Copy($all,$cut,$offset);[IO.File]::WriteAllBytes($ledger,$cut)
+      $expected=0
+      for ($i=0;$i -lt $offset;$i++) { if ($cut[$i] -eq 10) { $expected=$i+1 } }
+      $history=Read-DispatchCountHistory -Path $ledger
+      Assert-Retry $history.complete "every-byte prefix unreadable offset=$offset"
+      Assert-Retry ($history.cursor -eq $expected -and $history.snapshotLength -eq $expected -and $history.audit.bytes -eq $offset) "cursor/snapshot byte boundary offset=$offset"
+      Assert-Retry ($history.partialTrailingRow -eq ($expected -ne $offset)) "partial-tail flag offset=$offset"
+      $prefix=[byte[]]::new($expected);[Array]::Copy($all,$prefix,$expected)
+      $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($prefix)).ToLowerInvariant()
+      Assert-Retry ($history.snapshotHash -ceq $digest) "snapshot digest offset=$offset"
+      $lines=0;foreach ($b in $prefix) { if ($b -eq 10) { $lines++ } }
+      Assert-Retry ($history.snapshotLines -eq $lines) "physical lines offset=$offset"
+      foreach ($row in $history.rows) {
+        Assert-Retry ($row.rawSha256 -ceq [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($encoding.GetBytes($row.raw))).ToLowerInvariant()) "raw hash offset=$offset"
+      }
+      $strict=Read-DispatchCountHistory -Path $ledger -RequireTerminated
+      Assert-Retry ($strict.complete -eq ($expected -eq $offset)) "under-lock tail refusal offset=$offset"
+      if ($expected -ne $offset) { Assert-Retry ($strict.reason -ceq 'HISTORY_UNTERMINATED_OR_MOVED') 'tail refusal reason changed' }
+      # Finish this same interrupted append: the cached LF prefix must extend
+      # identically without reparsing or renumbering its immutable rows.
+      [IO.File]::WriteAllBytes($ledger,$all)
+      $extended=Read-DispatchCountHistory -Path $ledger -PrefixHistory $history -RequireTerminated
+      $whole=Read-DispatchCountHistory -Path $ledger -RequireTerminated
+      Assert-Retry ($extended.complete -and ($extended.rows | ConvertTo-Json -Depth 30 -Compress) -ceq ($whole.rows | ConvertTo-Json -Depth 30 -Compress)) "prefix extension differs offset=$offset"
+      Assert-Retry ($whole.rows.Count -eq 2 -and $whole.rows[1].line -eq 3 -and $whole.cursor -eq $all.Length) 'global blank-line identity/cursor lost'
+      $tested++
+    }
+    foreach ($bad in @('{"a":1,"\u0061":2}', '{"nested":[{"x":1,"x":2}]}','{malformed')) {
+      Write-TestFile $ledger ($bad+"`n")
+      $history=Read-DispatchCountHistory -Path $ledger
+      Assert-Retry (-not $history.complete -and $history.reason -ceq 'HISTORY_MALFORMED' -and $history.audit.malformedLineNumbers[0] -eq 1) 'malformed/decoded duplicate row became authority'
+    }
+    [IO.File]::WriteAllBytes($ledger,[byte[]]@(123,34,120,34,58,34,255,34,125,10))
+    Assert-Retry (-not (Read-DispatchCountHistory -Path $ledger).complete) 'invalid UTF8 became authority'
+    Write-TestFile $ledger "{}`n{}`n"
+    Assert-Retry ((Read-DispatchCountHistory -Path $ledger -MaxRows 1).reason -ceq 'HISTORY_TRUNCATED') 'existing row cap changed'
+    Assert-Retry ((Read-DispatchCountHistory -Path $ledger -MaxBytes 1).reason -ceq 'HISTORY_TRUNCATED') 'existing byte cap changed'
+    $prefix=Read-DispatchCountHistory -Path $ledger
+    Write-TestFile $ledger "[]`n[]`n"
+    Assert-Retry (-not (Read-DispatchCountHistory -Path $ledger -PrefixHistory $prefix).complete) 'rewritten prefix was trusted'
+    Write-TestFile $ledger ''
+    Assert-Retry (-not (Read-DispatchCountHistory -Path $ledger -PrefixHistory $prefix).complete) 'rewound prefix was trusted'
+    $threw=$false
+    try { Read-DispatchLedgerLines -Path (Join-Path $root 'missing.jsonl') | Out-Null } catch { $threw=$true }
+    Assert-Retry $threw 'throwing line adapter swallowed refusal'
+    Write-TestFile $ledger "{}`r`r`n"
+    $cr=Read-DispatchCountHistory -Path $ledger
+    Assert-Retry ($cr.complete -and $cr.rows[0].raw -ceq '{}' -and $cr.rows[0].byteLength -eq 2 -and $cr.snapshotLines -eq 2) 'StreamReader raw/global-line compatibility changed for CR/CRLF'
+    Assert-Retry (-not (Read-DispatchCountHistory -Path (Join-Path $root 'missing.jsonl')).complete) 'missing history invented empty authority'
+    Write-Output "PASS reader-prefix UTF8-every-byte offsets=$tested globalLine=3 rawSha256=preserved"
+  }
+  if ($Scenario -in @('all','reader-contention')) {
+    # Instrument copies of the full owner at the open-handle seam, not a
+    # substitute stream-only reader. Both readers stay open across BOTH writes.
+    $ledger=Join-Path $root 'held-dispatch-log.jsonl';$release=Join-Path $root 'reader-release'
+    Write-TestFile $ledger "{`"kind`":`"dispatch`",`"issue`":1}`n"
+    $initialLength=(Get-Item -LiteralPath $ledger).Length
+    $readers=[Collections.Generic.List[object]]::new()
+    $writer=$null;$writerPending=$null
+    try {
+      foreach ($index in 1..2) {
+        $directory=Join-Path $root "reader-$index";[void][IO.Directory]::CreateDirectory($directory)
+        $marker=Join-Path $directory 'opened';$copy=Join-Path $directory 'dispatch-ledger-reader.psm1'
+        $source=[IO.File]::ReadAllText($readerModule)
+        $needle='$length=$stream.Length'
+        Assert-Retry ($source.Contains($needle)) 'held-open full reader seam absent'
+        $pause=@'
+[IO.File]::WriteAllText('__MARKER__','open')
+$deadline=[datetime]::UtcNow.AddSeconds(60)
+while (-not [IO.File]::Exists('__RELEASE__')) {
+  if ([datetime]::UtcNow -ge $deadline) { throw 'reader barrier expired' }
+  [Threading.Thread]::Sleep(10)
+}
+'@
+        $pause=$pause.Replace('__MARKER__',$marker.Replace("'","''")).Replace('__RELEASE__',$release.Replace("'","''"))
+        Write-TestFile $copy ($source.Replace($needle,$needle+"`n"+$pause))
+        $shell=[powershell]::Create()
+        [void]$shell.AddScript({param($module,$path) Import-Module $module -Force; Read-DispatchCountHistory -Path $path}).AddArgument($copy).AddArgument($ledger)
+        $pending=$shell.BeginInvoke();$readers.Add(@{shell=$shell;pending=$pending;marker=$marker;module=$copy})
+      }
+      $deadline=[datetime]::UtcNow.AddSeconds(30)
+      while (@($readers | Where-Object { -not [IO.File]::Exists($_.marker) }).Count -and [datetime]::UtcNow -lt $deadline) { [Threading.Thread]::Sleep(10) }
+      Assert-Retry (@($readers | Where-Object { [IO.File]::Exists($_.marker) -and -not $_.pending.IsCompleted }).Count -eq 2) 'N=2 full readers not genuinely held open'
+      $writer=[powershell]::Create()
+      [void]$writer.AddScript({param($logger,$ledger)
+        $ErrorActionPreference='Stop'
+        foreach ($issue in 2..3) { & $logger -Log dispatch -Kind cycle -Issue $issue -OutFile $ledger -NoBoard }
+      }).AddArgument($logger).AddArgument($ledger)
+      $writerPending=$writer.BeginInvoke()
+      Assert-Retry ($writerPending.AsyncWaitHandle.WaitOne(45000)) 'append worker did not finish while readers held open'
+      $writerOutput=$writer.EndInvoke($writerPending)
+      Assert-Retry (-not $writer.HadErrors -and ($writer.Streams.Error | Out-String) -notmatch 'ORCHESTRATION_LOG_SHARING_RETRY_EXHAUSTED') "held-reader append refused or exhausted sharing retries (old direct-open/share RED control): $($writer.Streams.Error | Out-String)"
+      Assert-Retry (@($readers | Where-Object { -not $_.pending.IsCompleted }).Count -eq 2) 'readers released before append completion'
+      Write-TestFile $release 'release after both persisted appends'
+      foreach ($reader in $readers) {
+        Assert-Retry ($reader.pending.AsyncWaitHandle.WaitOne(10000)) 'full reader failed to complete'
+        $history=@($reader.shell.EndInvoke($reader.pending))[-1]
+        Assert-Retry (-not $reader.shell.HadErrors -and $history.complete -and $history.cursor -eq $initialLength -and $history.rows.Count -eq 1) 'held reader returned torn/incomplete captured prefix'
+        $reader.shell.Commands.Clear()
+        [void]$reader.shell.AddScript({param($path) Read-DispatchCountHistory -Path $path}).AddArgument($ledger)
+        $final=@($reader.shell.Invoke())[-1]
+        Assert-Retry ($final.complete -and $final.rows.Count -eq 3 -and $final.cursor -eq (Get-Item -LiteralPath $ledger).Length -and -not $final.partialTrailingRow) 'reader final cursor omitted persisted append'
+        Assert-Retry ((@($final.rows | ForEach-Object { $_.value.issue }) -join ',') -ceq '1,2,3') 'append lost or duplicated'
+      }
+      Write-Output 'PASS reader-contention heldFullReaders=2 appends=2 persisted=2 completeCursors=2 retryExhaustion=0 timingGate=none'
+    } finally {
+      Write-TestFile $release 'release on failure'
+      if ($writer) {
+        if ($writerPending -and -not $writerPending.IsCompleted) { [void]$writerPending.AsyncWaitHandle.WaitOne(45000) }
+        $writer.Dispose()
+      }
+      foreach ($reader in $readers) { if (-not $reader.pending.IsCompleted) { [void]$reader.pending.AsyncWaitHandle.WaitOne(10000) };$reader.shell.Dispose() }
+    }
+  }
   foreach ($case in @('transient', 'exhausted', 'non-sharing')) {
     if ($Scenario -ne 'all' -and $Scenario -ne $case) { continue }
     $runtime = Join-Path $root "runtime-$case"
@@ -188,6 +320,13 @@ exit $LASTEXITCODE
         $process.Dispose()
       }
     }
+  }
+  if (-not $Mutant -and -not $Revision -and $Scenario -in @('all','reader-contention')) {
+    $redOutput=Join-Path $EvidenceRoot 'old-reader-share.red.log'
+    & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $PSCommandPath -Scenario reader-contention -Mutant reader-share *> $redOutput
+    $redExit=$LASTEXITCODE
+    Assert-Retry ($redExit -ne 0 -and [IO.File]::ReadAllText($redOutput).Contains('ORCHESTRATION_LOG_SHARING_RETRY_EXHAUSTED')) 'old direct-open/share RED control did not discriminate'
+    Write-Output "KILLED old-direct-open/share fullReaders=2 exit=$redExit log=$redOutput"
   }
   if ($failures.Count) { throw ($failures -join "`n") }
   Write-Output "PASS dispatch ledger sharing retry revision=$Revision mutant=$Mutant"

@@ -1,3 +1,4 @@
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 # Completion is execution evidence, never review or landing authority. The
 # runtime directory is the existing trusted controller store. Hashes bind bytes;
 # they do not authenticate an administrator who can rewrite that store.
@@ -821,7 +822,7 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
       -not (Test-DispatchSamePath $w.ownershipRecordPath (Join-Path $Runtime "dispatch-launch-$PriorLaunchId.json")) -or
       -not (Test-DispatchSamePath $w.originalPromptPath (Join-Path $Runtime "$PriorLabel.prompt.txt")) -or
       -not (Test-DispatchSamePath $w.partialReportPath (Join-Path $Runtime "$PriorLabel.jsonl"))) { throw 'INTEGRATION_RESUME_SOURCE: causal paths' }
-  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl')
+  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl') -DispatchHistory
   $routes = @($history | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.label -ceq $PriorLabel })
   if ($routes.Count -ne 1) { throw 'INTEGRATION_RESUME_SOURCE: ambiguous routing' }
   $route = $routes[0]
@@ -872,8 +873,9 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
   }
 }
 
-function Read-RebaseJsonLines([string]$Path) {
-  foreach ($line in [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true))) {
+function Read-RebaseJsonLines([string]$Path, [switch]$DispatchHistory) {
+  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else { [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true)) }
+  foreach ($line in $lines) {
     if ($line.Trim()) { ConvertFrom-RebaseJson $line }
   }
 }
@@ -1340,7 +1342,7 @@ function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$Pr
       -not (Test-DispatchSamePath $w.partialReportPath (Join-Path $Runtime "$PriorLabel.jsonl")) -or
       $w.originalPromptPath -isnot [string] -or -not (Test-DispatchFullyQualifiedPath $w.originalPromptPath) -or -not (Test-Path -LiteralPath $w.originalPromptPath -PathType Leaf) -or
       -not (Test-Path -LiteralPath $w.partialReportPath -PathType Leaf)) { throw 'INTEGRATION_RESUME_SOURCE: ordinary causal paths' }
-  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl')
+  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl') -DispatchHistory
   $routes = @($history | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.label -ceq $PriorLabel })
   if ($routes.Count -ne 1) { throw 'INTEGRATION_RESUME_SOURCE: ambiguous routing' }
   $route = $routes[0]

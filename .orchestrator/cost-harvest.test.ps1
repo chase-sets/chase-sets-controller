@@ -426,6 +426,7 @@ $rowMutantScript = Join-Path $testRoot "cost-harvest-row-without-key.ps1"
 [IO.File]::WriteAllText($rowMutantScript, $rowMutantSource, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "orchestration-log-lock.psm1") -Destination $testRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'routing-data.ps1') -Destination $testRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $testRoot
 $rowMutantLedger = Join-Path $testRoot "synthetic-complete-mutant-ledger.jsonl"
 & $rowMutantScript -TranscriptDir $completeRoot -Ledger $rowMutantLedger -Backfill | Out-Null
 $rowMutant = Get-Content -LiteralPath $rowMutantLedger | ConvertFrom-Json

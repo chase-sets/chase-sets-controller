@@ -68,7 +68,7 @@ landing-preflight/v1
   function Write-ControllerTree([string]$Root) {
     $orchestrator = Join-Path $Root ".orchestrator"
     New-Item -ItemType Directory -Path $orchestrator -Force | Out-Null
-    foreach ($name in @("install-controller-skills.ps1", "controller-install-lock.psm1", "review-head-contract.psm1",
+    foreach ($name in @("install-controller-skills.ps1", "controller-install-lock.psm1", 'dispatch-ledger-reader.psm1',"review-head-contract.psm1",
         "routing-data.ps1", "controller-heavy-paths.psm1")) {
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $orchestrator
     }

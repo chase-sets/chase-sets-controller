@@ -5,6 +5,9 @@ param()
 # ownership probe, no dispatch-log read.
 
 $ErrorActionPreference = "Stop"
+$readerCompatibilityRuntime=$PSScriptRoot
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'velocity' -RuntimeRoot $readerCompatibilityRuntime
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {

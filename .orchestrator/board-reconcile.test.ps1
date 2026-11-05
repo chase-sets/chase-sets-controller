@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param([switch]$FunctionsOnly, [string]$ScriptPath = (Join-Path $PSScriptRoot 'board-reconcile.ps1'))
 $ErrorActionPreference = 'Stop'
+$readerCompatibilityRuntime=$PSScriptRoot
+if (-not $FunctionsOnly) { . (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'board' -RuntimeRoot $readerCompatibilityRuntime }
 function Assert-Board([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }

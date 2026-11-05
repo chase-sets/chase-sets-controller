@@ -6,7 +6,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
 function Assert-HeavyFiles {
   foreach ($file in @(
     'diagnostic-declarations.json', 'manifest-replay-bindings.schema.json', 'manifest-replay-receipt.schema.json',
-    'invoke-heavy-verifier.ps1', 'native-db-admission.py', 'heavy-slot.cjs',
+    'invoke-heavy-verifier.ps1', 'dispatch-ledger-reader.psm1', 'native-db-admission.py', 'heavy-slot.cjs',
     'heavy-nested-client.cjs', 'heavy-nested-owner.cs', 'heavy-admission-preload.cjs',
     'heavy-admission-holder-launcher.cjs', 'dispatch-ownership.ps1', 'fleet-exclusive-admission.psm1', 'invoke-fleet-exclusive-gate.ps1',
     'lane-admission.ps1', 'lane-admission-v1.schema.json', 'lane-admission-collected-input-v1.schema.json',

@@ -33,6 +33,7 @@ param(
   [switch]$Library
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 # routing-data.ps1 declares its own StateRoot/LkgPath/Library parameters;
 # dot-sourcing it rebinds those names in this scope, so capture ours first.
 $script:PacingInvocation = [ordered]@{
@@ -260,7 +261,7 @@ function Get-PacingLaneHours([string]$LogPath, [string]$TranscriptDir, [DateTime
     return [pscustomobject]@{hours=$hours;diagnostics=$diagnostics}
   }
   $seen = [hashtable]::new([StringComparer]::Ordinal)
-  foreach ($line in [IO.File]::ReadLines($LogPath)) {
+  foreach ($line in (Read-DispatchLedgerLines -Path $LogPath)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     $row = $null
     try { $row = $line | ConvertFrom-Json -Depth 50 -DateKind String -ErrorAction Stop } catch { continue }
