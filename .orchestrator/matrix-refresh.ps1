@@ -47,7 +47,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 $routingData = Get-RoutingData -ReadOnly:$DryRun
@@ -704,7 +704,7 @@ foreach ($table in @($blockRateByRow, $blockRateByRowConfig, $flippedBlockRateBy
 }
 
 # ------------------------------------------------------------------ rewrite --
-$m = Get-Content -LiteralPath $Matrix -Raw | ConvertFrom-Json
+$m = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Matrix) -Raw | ConvertFrom-Json
 
 # Registry lifecycle is authoritative for the configuration roster.  A family
 # current swap creates exact successor/current configurations here, while the

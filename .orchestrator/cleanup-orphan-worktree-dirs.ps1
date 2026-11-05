@@ -11,7 +11,7 @@ or an idle HEAD reachable from base. Unknown authority always retains.
 param([switch]$Remove, [switch]$Json, [string]$ReportPath)
 
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $entryTimer = [Diagnostics.Stopwatch]::StartNew()
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 
@@ -194,7 +194,7 @@ function Get-ReclamationRegister([string]$RuntimeRoot) {
   try {
     $path=Join-Path $RuntimeRoot 'platform-handoff.md'
     if(-not(Test-Path -LiteralPath $path)){return [pscustomobject]@{active=$false}}
-    $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
+    $text=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path),[Text.UTF8Encoding]::new($false,$true))
     $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
     if(-not$table.Success){throw 'missing ownership register'}
     $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
