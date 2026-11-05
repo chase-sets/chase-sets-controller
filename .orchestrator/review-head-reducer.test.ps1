@@ -72,6 +72,7 @@ $reducer = Join-Path $PSScriptRoot "review-head-reducer.ps1"
 $legacyFixture = Join-Path $PSScriptRoot "fixtures/legacy-non-pr-review-history.jsonl"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("review-head-reducer-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'routing-data.ps1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $testRoot
 $baselinePath=Join-Path $testRoot 'controller-review-baseline.psm1'
 $baselineSource=& git -C (Split-Path -Parent $PSScriptRoot) show '16c53af23eb0656e7d2b233164fee99d8be55527:.orchestrator/review-head-contract.psm1'
 if($LASTEXITCODE-ne0){throw 'cannot extract reducer equivalence baseline'}
@@ -241,6 +242,7 @@ try {
   $ordinaryBaseline = "8d1affe3d308443155eb3d81eaa619c345e1124e"
   $baselineRuntime = Join-Path $testRoot "ordinary-baseline"
   [IO.Directory]::CreateDirectory($baselineRuntime) | Out-Null
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'routing-data.ps1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $baselineRuntime
   $controllerRoot = Split-Path -Parent $PSScriptRoot
   foreach($relative in @(".orchestrator/review-head-contract.psm1",".orchestrator/review-head-reducer.ps1")){
     $sourceLines=@(& git -C $controllerRoot show "${ordinaryBaseline}:$relative")

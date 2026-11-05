@@ -332,7 +332,7 @@ Case 'dispatch-park-disposition-refused' {
 }
 Case 'dispatch-incomplete-history-controls' {
   Seed 15
-  . $query -Library
+  . $query -Library -RuntimeRoot $runtime
   $h=Read-ExactHeadReviewHistory -Path $historyPath -MaxRows 14
   $r=Get-DispatchCountDecision -History $h -Issue 908527 -CandidateState open -Authority clear
   Assert-Policy ($r.state -ceq 'UNKNOWN' -and $null -eq $r.dispatchCount) 'decisive 15th row beyond cap cannot report below threshold'
