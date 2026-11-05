@@ -2,7 +2,7 @@
 # API fixtures replace only the remote API read; all Git probes remain native.
 # Model identities are resolved from the AgentPools registry.  The pool-status
 # payload is only an availability signal; it never defines the roster.
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 
 function Get-IntegrationRoutingAuthority {

@@ -12,7 +12,7 @@ try {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseFile($entry,[ref]$tokens,[ref]$errors)
   Check ($errors.Count -eq 0) 'integration contract parses'
-  $import="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking"
+  $import="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking"
   $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $import})
   Check ($imports.Count -eq 1) 'literal unconditional sole-owner import'
   $reads=@($ast.FindAll({param($node)
@@ -113,7 +113,36 @@ $spec=[pscustomobject]@{originalPromptPath=$ProbePath;partialReportPath=$ProbePa
       Check ($result.reason -like '*DISPATCH_LEDGER_OWNER_REQUIRED*' -and $result.action -ceq 'RETAINED_START_PENDING') 'full retained body reports owner refusal before native open'
     } finally {$held.Dispose()}
   }
-  Write-Output "PASS ledger-reader-integration-contract-paths checks=$script:checks native=11 unguarded=0"
+  # Resume reducers dot-source the complete contract inside the evidence module.
+  # A forced owner reload here invalidates its module-qualified self-call.
+  # Use a fresh native process: earlier extracted reads can prime command caches.
+  $nestedProbe=Join-Path $root 'nested-owner.ps1'
+  [IO.File]::WriteAllText($nestedProbe,@'
+param([string]$OwnerRoot,[string]$FixtureRoot)
+$ErrorActionPreference='Stop'
+$module=Import-Module (Join-Path $OwnerRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru
+$entry=Join-Path $OwnerRoot 'integration-dispatch-contract.ps1'
+$positive=Join-Path $FixtureRoot 'pool-status.json'
+$aliases=@('dispatch-log.jsonl','DISPATCH-LOG.JSONL','./dispatch-log.jsonl',
+  'dispatch-log.jsonl.','dispatch-log.jsonl ','dispatch-log.jsonl:integration','dispatch-log.jsonl.:integration')
+foreach($iteration in 1..2) {
+  $nested=& $module {param($Entry,$Path) . $Entry; Read-RebaseJson $Path} $entry $positive
+  if($nested.accounts[0].provider -cne 'codex'){throw 'nested native payload changed'}
+  foreach($alias in $aliases) {
+    $target=Join-Path $FixtureRoot $alias
+    $held=[IO.File]::Open($target,'Open','ReadWrite','None')
+    try {
+      $failure=''
+      try {& $module {param($Entry,$Path) . $Entry; Read-RebaseJson $Path} $entry $target|Out-Null}catch{$failure=$_.Exception.Message}
+      if($failure -notlike '*DISPATCH_LEDGER_OWNER_REQUIRED*'){throw "nested owner refusal absent: $failure"}
+    } finally {$held.Dispose()}
+  }
+}
+'PASS native nested owner imports=16 aliases=7'
+'@)
+  $nestedOutput=@(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $nestedProbe $PSScriptRoot $root 2>&1)
+  Check ($LASTEXITCODE -eq 0 -and 'PASS native nested owner imports=16 aliases=7' -cin $nestedOutput) "fresh native nested imports: $($nestedOutput -join ' ')"
+  Write-Output "PASS ledger-reader-integration-contract-paths checks=$script:checks native=11 unguarded=0 nestedImports=16"
 } finally {
   if($module){Remove-Module $module -Force}
   $full=[IO.Path]::GetFullPath($root)
