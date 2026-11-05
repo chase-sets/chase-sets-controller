@@ -571,7 +571,7 @@ function Invoke-ReaderInventory {
   $writerSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($writerExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $claimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($claimExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $ownershipSource=Read-Source 'dispatch-ownership.ps1'
-  $ownershipExpression='[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $RecordPath), [Text.Encoding]::UTF8)'
+  $ownershipExpression='[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + '$' + 'RecordPath), [Text.Encoding]::UTF8)'
   Assert-Owner ($ownershipSource.Contains($ownershipExpression,[StringComparison]::Ordinal)) 'ownership UTF8 reader anchor exists'
   $ownershipSite="dispatch-ownership.ps1:$((1+[regex]::Matches($ownershipSource.Substring(0,$ownershipSource.IndexOf($ownershipExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $productionSites=@{
