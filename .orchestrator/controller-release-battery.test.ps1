@@ -67,6 +67,18 @@ function Assert-BatteryTest([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
 
+function Remove-BatteryTestRoot([string]$Root, [string]$Parent) {
+  if (Test-Path -LiteralPath $Root) {
+    $resolved = [IO.Path]::GetFullPath($Root)
+    $temp = [IO.Path]::GetFullPath($Parent).TrimEnd("\", "/")
+    if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
+        (Split-Path -Leaf $resolved) -notlike "controller-release-battery-test-*") {
+      throw "refusing unsafe battery-test cleanup target: $resolved"
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Copy-Value($Value) {
   if ($Value -is [Collections.IDictionary]) {
     $copy = [ordered]@{}
@@ -2221,9 +2233,29 @@ function Test-BatteryBaselineAlsoFails {
   Assert-BatteryTest ($outcomeFailures.Count -gt 0) 'outcome-to-FAIL_PREEXISTING_ONLY mutant SURVIVED'
   Write-Host "MUTANT 98 outcome-to-FAIL_PREEXISTING_ONLY KILLED failures=$($outcomeFailures.Count): $($outcomeFailures -join '; ')"
   Write-Output 'PASS 98 battery baseline-also-fails truth table, outcome, retention and mutants'
-  Test-BatteryArtifactReparseRefusal
-  Test-BatteryArtifactJunctionAbove
-  Test-BatteryArtifactWriteWindowDetection
+  Test-BatteryArtifactWrites
+}
+
+function Test-BatteryArtifactWrites {
+  # Admission's arbitrary-command fixtures need LocalApplicationData/Temp.
+  # Junction write probes need the system temp filesystem and a real write-through.
+  $batteryTestTempRoot = [IO.Path]::GetTempPath()
+  $testRoot = Join-Path $batteryTestTempRoot ("controller-release-battery-test-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path (Join-Path $testRoot '.orchestrator') -Force | Out-Null
+  try {
+    $outside = Join-Path $testRoot 'junction-write-control'
+    New-Item -ItemType Directory -Path $outside | Out-Null
+    $link = Join-Path $testRoot 'junction-write-link'
+    try {
+      New-Reparse98Junction $link $outside
+      [void][IO.Directory]::CreateDirectory((Join-Path $link 'child'))
+      Assert-BatteryTest ([IO.Directory]::Exists((Join-Path $outside 'child'))) 'artifact fixture junction did not write through to its target'
+      Write-Host 'PASS artifact fixture native junction write-through control'
+    } finally { Remove-Reparse98Junction $link }
+    Test-BatteryArtifactReparseRefusal
+    Test-BatteryArtifactJunctionAbove
+    Test-BatteryArtifactWriteWindowDetection
+  } finally { Remove-BatteryTestRoot $testRoot $batteryTestTempRoot }
 }
 
 # ---- #98 review: a junction at or above .orchestrator/artifacts refuses every
@@ -3546,9 +3578,7 @@ try {
   } elseif ($Scenario -ceq 'BaselineAlsoFails') {
     Test-BatteryBaselineAlsoFails
   } elseif ($Scenario -ceq 'ArtifactWrites') {
-    Test-BatteryArtifactReparseRefusal
-    Test-BatteryArtifactJunctionAbove
-    Test-BatteryArtifactWriteWindowDetection
+    Test-BatteryArtifactWrites
   } elseif ($Scenario -ceq 'ConcurrentIdentity') {
     Test-BatteryConcurrentIdentity
   } elseif ($Scenario -ceq 'FleetSampling') {
@@ -3558,14 +3588,6 @@ try {
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"
   }
 } finally {
-  if (Test-Path -LiteralPath $testRoot) {
-    $resolved = [IO.Path]::GetFullPath($testRoot)
-    $temp = [IO.Path]::GetFullPath($batteryTestTempRoot).TrimEnd("\", "/")
-    if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
-        (Split-Path -Leaf $resolved) -notlike "controller-release-battery-test-*") {
-      throw "refusing unsafe battery-test cleanup target: $resolved"
-    }
-    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
-  }
+  Remove-BatteryTestRoot $testRoot $batteryTestTempRoot
   Exit-RoutingDataTestScope $routingTestScope
 }
