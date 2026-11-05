@@ -143,18 +143,23 @@ function Get-DispatchCountDecision($History, $Issue, [string]$CandidateState, [s
   return [pscustomobject]$result
 }
 
-function Read-DispatchCountHistory([string]$Path, $PrefixHistory = $null, [switch]$RequireTerminated) {
-  # Compatibility redirect only. The installed fold has one owner.
+function Import-QueryLedgerReader {
   $owner=Join-Path $PSScriptRoot '../../../dispatch-ledger-reader.psm1'
   # A source runtime missing its owner must refuse, not borrow an installed
   # runtime. Only the separately installed skill needs the RuntimeRoot route.
   if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot '../../../review-head-contract.psm1') -PathType Leaf)) {
     $owner=Join-Path $RuntimeRoot 'dispatch-ledger-reader.psm1'
   }
-  Import-Module $owner -DisableNameChecking
+  Import-Module $owner -Global -DisableNameChecking
+}
+
+function Read-DispatchCountHistory([string]$Path, $PrefixHistory = $null, [switch]$RequireTerminated) {
+  # Compatibility redirect only. The installed fold has one owner.
+  Import-QueryLedgerReader
   dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -PrefixHistory $PrefixHistory -RequireTerminated:$RequireTerminated
 }
 
+Import-QueryLedgerReader
 if ($Library) { return }
 if ($PSBoundParameters.ContainsKey('DispatchIssue')) {
   if ($DispatchIssue -is [string] -and $DispatchIssue -cmatch '^[1-9][0-9]{0,9}$') {
@@ -295,7 +300,7 @@ function Read-Ledger {
     throw "ledger query failed: missing $Path"
   }
 
-  $raw = Get-Content -LiteralPath $Path -Raw
+  $raw = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path) -Raw
   $matches = [regex]::Matches($raw, "(?ms)^## (?!<)([^\r\n]+)\r?\n(.*?)(?=^## |\z)")
   foreach ($match in $matches) {
     $heading = $match.Groups[1].Value.Trim()
@@ -383,7 +388,7 @@ if ($QueryFile) {
   if (-not (Test-Path -LiteralPath $resolvedQueryFile -PathType Leaf)) {
     throw "ledger query failed: query file missing: $resolvedQueryFile"
   }
-  $queryParts += Get-Content -LiteralPath $resolvedQueryFile -Raw
+  $queryParts += Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $resolvedQueryFile) -Raw
 }
 if ($Footprint.Count -gt 0) { $queryParts += ($Footprint -join " ") }
 $query = ($queryParts -join " ").Trim().ToLowerInvariant()
