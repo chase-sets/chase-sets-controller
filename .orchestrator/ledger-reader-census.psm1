@@ -86,6 +86,7 @@ function Get-LedgerReaderCensus {
   $dataFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   foreach ($name in @('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')) { [void]$dataFunctions.Add($name) }
   $rows=[Collections.Generic.List[object]]::new()
+  $terminalTrapProof=@{}
   function TokenShape($Node) {
     $tokens=$null;$errors=$null
     $null=[Management.Automation.Language.Parser]::ParseInput($Node.Extent.Text,[ref]$tokens,[ref]$errors)
@@ -110,8 +111,8 @@ function Get-LedgerReaderCensus {
     return $null
   }
   function HasPathGuard($Node,$Path,$Unit) {
-    if ($Unit.traps.Count) { return $false }
     if (NonDispatchValuePath $Path $Unit) { return $true }
+    if ($Unit.traps.Count) { return $false }
     if (-not $nonDispatchGuardValid -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset -or $Path -isnot [Management.Automation.Language.VariableExpressionAst]) { return $false }
     if (-not $stringParameters.Contains((Key $Path $Unit))) { return $false }
     $statement=$Node
@@ -218,8 +219,57 @@ function Get-LedgerReaderCensus {
     }
     return $false
   }
+  function SingleExpression($Node) {
+    if ($Node -isnot [Management.Automation.Language.PipelineAst] -or $Node.Background -or $Node.PipelineElements.Count -ne 1) { return $null }
+    $element=$Node.PipelineElements[0]
+    if ($element -isnot [Management.Automation.Language.CommandExpressionAst] -or $element.Redirections.Count) { return $null }
+    return $element.Expression
+  }
+  function NonzeroExitValue($Node) {
+    if ($Node -is [Management.Automation.Language.PipelineAst]) { return NonzeroExitValue (SingleExpression $Node) }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return NonzeroExitValue $Node.Pipeline }
+    if ($Node -is [Management.Automation.Language.SubExpressionAst]) { return NonzeroExitValue $Node.SubExpression }
+    if ($Node -is [Management.Automation.Language.StatementBlockAst] -and $Node.Statements.Count -eq 1) { return NonzeroExitValue $Node.Statements[0] }
+    if ($Node -is [Management.Automation.Language.ConstantExpressionAst]) {
+      return ($Node.Value -is [int] -or $Node.Value -is [long]) -and $Node.Value -ge 1 -and $Node.Value -le 255
+    }
+    if ($Node -is [Management.Automation.Language.IfStatementAst] -and $Node.ElseClause -and $Node.Clauses.Count) {
+      foreach ($clause in $Node.Clauses) { if (-not (NonzeroExitValue $clause.Item2)) { return $false } }
+      return NonzeroExitValue $Node.ElseClause
+    }
+    return $false
+  }
+  function TerminalUnitTrap($Unit) {
+    if (-not $Unit.traps.Count) { return $true }
+    if ($terminalTrapProof.ContainsKey($Unit.path)) { return $terminalTrapProof[$Unit.path] }
+    # Only a single untyped script-level trap with an unconditional rethrow is
+    # proved. Scope transfers, nested traps and zero/opaque exits stay unknown.
+    # This proof is for the frozen value guard, never a separate assertion.
+    $safe=& {
+      if ($Unit.traps.Count -ne 1) { return $false }
+      $trap=$Unit.traps[0]
+      if ($trap.TrapType -or $trap.Parent -ne $Unit.ast.EndBlock -or -not $trap.Body.Statements.Count) { return $false }
+      $transfers=@(Find-LedgerCensusAst $trap.Body @([Management.Automation.Language.ReturnStatementAst],
+          [Management.Automation.Language.BreakStatementAst],[Management.Automation.Language.ContinueStatementAst]))
+      if ($transfers.Count) { return $false }
+      $last=$trap.Body.Statements[-1]
+      if ($last -isnot [Management.Automation.Language.ThrowStatementAst]) { return $false }
+      $exception=SingleExpression $last.Pipeline
+      if ($exception -isnot [Management.Automation.Language.MemberExpressionAst] -or
+          $exception -is [Management.Automation.Language.InvokeMemberExpressionAst] -or $exception.Static -or $exception.NullConditional -or
+          $exception.Expression -isnot [Management.Automation.Language.VariableExpressionAst] -or
+          $exception.Expression.VariablePath.UserPath -cne '_' -or
+          $exception.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $exception.Member.Value -cne 'Exception') { return $false }
+      foreach ($exit in (Find-LedgerCensusAst $trap.Body ([Management.Automation.Language.ExitStatementAst]))) {
+        if (-not (NonzeroExitValue $exit.Pipeline)) { return $false }
+      }
+      return $true
+    }
+    $terminalTrapProof[$Unit.path]=$safe
+    return $safe
+  }
   function NonDispatchValuePath($Node,$Unit) {
-    if (-not $nonDispatchValueValid -or -not $Node -or $Unit.traps.Count -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
+    if (-not $nonDispatchValueValid -or -not $Node -or -not (TerminalUnitTrap $Unit) -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
     if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return NonDispatchValuePath $Node.Pipeline $Unit }
     if ($Node -is [Management.Automation.Language.PipelineAst] -and -not $Node.Background -and $Node.PipelineElements.Count -eq 1) { return NonDispatchValuePath $Node.PipelineElements[0] $Unit }
     if ($Node -isnot [Management.Automation.Language.CommandAst] -or $Node.Redirections.Count -or $Node.GetCommandName() -cne 'dispatch-ledger-reader\Get-NonDispatchLedgerPath' -or $Node.CommandElements.Count -ne 3) { return $false }

@@ -7,6 +7,7 @@ function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { thr
 & (Join-Path $PSScriptRoot 'ledger-reader-provenance.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-exclusion.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-path-value.test.ps1')
+& (Join-Path $PSScriptRoot 'ledger-reader-traps.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-embedded-writer.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-ci-paths.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-json-paths.test.ps1')

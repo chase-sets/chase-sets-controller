@@ -12,6 +12,8 @@ $queries=@(
   ,@([Management.Automation.Language.ParameterAst])
   ,@([Management.Automation.Language.ForEachStatementAst])
   ,@([Management.Automation.Language.TrapStatementAst])
+  ,@([Management.Automation.Language.ExitStatementAst])
+  ,@([Management.Automation.Language.ReturnStatementAst],[Management.Automation.Language.BreakStatementAst],[Management.Automation.Language.ContinueStatementAst])
   ,@([Management.Automation.Language.CommandAst])
   ,@([Management.Automation.Language.FunctionDefinitionAst])
   ,@([Management.Automation.Language.VariableExpressionAst])

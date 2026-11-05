@@ -1,3 +1,4 @@
+param([switch]$WithTrap)
 $ErrorActionPreference='Stop'
 $script:checks=0
 function Check([bool]$Condition,[string]$Message) {
@@ -11,6 +12,12 @@ try {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseFile($entry,[ref]$tokens,[ref]$errors)
   Check ($errors.Count -eq 0) 'heavy entry parses'
+  $trapSource=''
+  if($WithTrap) {
+    $traps=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.TrapStatementAst]},$true))
+    Check ($traps.Count -eq 1) 'one actual heavy trap'
+    $trapSource=$traps[0].Extent.Text
+  }
   $import="Import-Module (Join-Path `$PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking"
   $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $import})
   Check ($imports.Count -eq 1) 'literal unconditional owner import'
@@ -39,7 +46,8 @@ try {
     Check ($imports[0].Extent.EndOffset -lt $read.Extent.StartOffset) "import precedes read $index"
     $probe=Join-Path $root 'probe.ps1'
     $bindings='$Path=$claimPath=$path=$fixturePath=$declarationPath=$candidate=$full=$nativeRequestFull=$PSCommandPath=$RecordPath=$queueRecoveryPath=$stage=$proofPath=$ClaimPath=$diagnosticScriptFull=$diagnosticResultPath=$workspaceDbStagePath=$receiptPath=$ProbePath; $Evaluation=@{selectedPath=$ProbePath}; $manifestFile=[pscustomobject]@{FullName=$ProbePath}; $share=[IO.FileShare]::Read -bor [IO.FileShare]::Delete'
-    [IO.File]::WriteAllText($probe,('param([string]$ProbePath)'+"`n"+$import+"`n"+$bindings+"`n"+$read.Extent.Text))
+    if($WithTrap) {$bindings+='; $isManifestReplay=$isNativeDb=$isAttachedAdmission=$isControllerSlot=$isHostVerifier=$isControllerHostHeavyVerifier=$false'}
+    [IO.File]::WriteAllText($probe,('param([string]$ProbePath)'+"`n"+$import+"`n"+$trapSource+"`n"+$bindings+"`n"+$read.Extent.Text))
     $result=& $probe $positive
     try {
       if($read -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $read.Member.Value -ceq 'Open') {
@@ -74,7 +82,7 @@ try {
     # false owner rejection caused by the fixture itself.
     $mutant=$read.Extent.Text.Replace($guard,$paths[$index])
     Check ($mutant -cne $read.Extent.Text) "guard-removal mutation changes read $index"
-    [IO.File]::WriteAllText($probe,('param([string]$ProbePath)'+"`n"+$import+"`n"+$bindings+"`n"+$mutant))
+    [IO.File]::WriteAllText($probe,('param([string]$ProbePath)'+"`n"+$import+"`n"+$trapSource+"`n"+$bindings+"`n"+$mutant))
     $canonical=Join-Path $root 'dispatch-log.jsonl'
     $held=[IO.File]::Open($canonical,'Open','ReadWrite','None')
     try {
