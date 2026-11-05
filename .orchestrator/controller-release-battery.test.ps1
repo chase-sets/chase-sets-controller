@@ -236,6 +236,7 @@ function New-PlanFixture {
   Copy-RuntimeFile $root "fail-closed-guard-evidence.test.ps1"
   Copy-RuntimeFile $root "dispatch-ledger-reader.psm1"
   Copy-RuntimeFile $root "review-head-contract.psm1"
+  Copy-RuntimeFile $root "routing-data.ps1"
   foreach ($name in @(
       "controller-release-battery.test.ps1",
       "fail-closed-guard-evidence-aggregate.test.ps1",
