@@ -64,10 +64,10 @@ function Get-PreRepairSource([string]$Source, [switch]$ReaderOnly) {
   Assert-Owner (([regex]::Matches($Source, [regex]::Escape($replace))).Count -eq 1) 'pre-repair publication seam exists once'
   $reverted = $Source.Replace($replace, '[IO.File]::Move($temporaryPath, $ownerPath, $true)')
   $newline = if ($Source.Contains("`r`n")) { "`r`n" } else { "`n" }
-  $claimPathPattern = '\$' + 'ClaimPath'
+  $claimPathPattern = [regex]::Escape('(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath)')
   $catchPattern = '(?ms)    try \{\r?\n      \$stream = \[IO\.File\]::Open\(' + $claimPathPattern + ', \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \$share\)\r?\n    \} catch \[IO\.IOException\] \{\r?\n      if \(\(\$_.Exception\.GetBaseException\(\)\.HResult -band 0xffff\) -eq 32\) \{ return \$false \}\r?\n      throw\r?\n    \}\r?\n'
   Assert-Owner (([regex]::Matches($reverted, $catchPattern)).Count -eq 1) 'pre-repair claim opener seam exists once'
-  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open(' + ('$' + 'ClaimPath') + ', [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
+  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
   return [regex]::Replace($reverted, $catchPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $open })
 }
 function Get-Definition([string]$Source, [string]$Name) {
@@ -213,7 +213,7 @@ function Invoke-Primitive {
     Assert-Owner (-not$removed-and(Get-Hex (Read-Bytes $ownerPath))-ceq$before) "$control refusal retains exact bytes"
     $results.Add(@{test='owner-lifecycle-held-reader';control=$control;removed=$removed;bytes=$before})
   }
-  $open='$stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
+  $open='$stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
   Import-GuardFunctions ($source.Replace($open,"throw [IO.IOException]::new('injected non-sharing IO', 5)"))
   New-Lock
   $raw=Write-OwnerRecord @{schemaVersion=4} -CreateNew
@@ -564,7 +564,7 @@ function Invoke-ReaderInventory {
   $ownerVariable='$' + 'ownerPath'
   $claimVariable='$' + 'ClaimPath'
   $writerExpression='[IO.File]::Open(' + $ownerVariable + ', [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)'
-  $claimExpression='[IO.File]::Open(' + $claimVariable + ', [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
+  $claimExpression='[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + $claimVariable + '), [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
   $writerSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($writerExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $claimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($claimExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $ownershipSource=Read-Source 'dispatch-ownership.ps1'
@@ -575,7 +575,7 @@ function Invoke-ReaderInventory {
     $claimSite=@{site=$claimSite;api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
     $ownershipSite=@{site=$ownershipSite;api='ReadAllText(RecordPath, UTF8)';shareBefore='unchanged';shareAfter='unchanged';decoder='ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record reader, not heavy owner publication'}
   }
-  $replayClaimExpression='[IO.File]::Open(' + '$' + 'claimPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)'
+  $replayClaimExpression='[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + '$' + 'claimPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)'
   Assert-Owner ($invokeSource.Contains($replayClaimExpression)) 'replay immutable phase claim opener has its exact source site'
   $replayClaimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($replayClaimExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $productionSites[$replayClaimSite]=@{site=$replayClaimSite;api='File.Open(replay claim, Open, Read, Read)';shareBefore='new';shareAfter=1;decoder='none';callers='Invoke-ManifestReplay';owner='immutable nonce-bound replay phase claim, never the replaceable heavy owner'}
