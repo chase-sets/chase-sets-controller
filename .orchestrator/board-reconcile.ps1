@@ -16,7 +16,7 @@ param(
   [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 
 function Invoke-BoardQuery([string]$Cli, [string[]]$Arguments) {
@@ -72,7 +72,7 @@ function Get-BoardHistory([string]$Path) {
     foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Path) -Filter 'watchdog-lane-*.json' -File -ErrorAction Stop)) {
       $label = $file.BaseName.Substring('watchdog-lane-'.Length)
       try {
-        $spec = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String
+        $spec = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName) -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String
         if ($spec.label -cne $label) { throw 'watchdog filename/label mismatch' }
         $specs[$label] = @{ value = $spec; error = $null }
       } catch { $specs[$label] = @{ value = $null; error = "unreadable/malformed watchdog $label" } }
