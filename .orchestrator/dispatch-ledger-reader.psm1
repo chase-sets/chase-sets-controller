@@ -9,6 +9,13 @@ function Assert-NonDispatchLedgerPath {
   }
 }
 
+function Get-NonDispatchLedgerPath {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+  return $Path
+}
+
 function Read-DispatchLedgerSnapshot {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path, [long]$MaxBytes = [long]::MaxValue,
@@ -158,4 +165,4 @@ function Read-DispatchCountHistory {
     cursor=$snapshot.cursor;partialTrailingRow=$snapshot.partialTrailingRow}
 }
 
-Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
+Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory

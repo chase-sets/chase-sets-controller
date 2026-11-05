@@ -11,6 +11,7 @@ $queries=@(
   ,@([Management.Automation.Language.AssignmentStatementAst])
   ,@([Management.Automation.Language.ParameterAst])
   ,@([Management.Automation.Language.ForEachStatementAst])
+  ,@([Management.Automation.Language.TrapStatementAst])
   ,@([Management.Automation.Language.CommandAst])
   ,@([Management.Automation.Language.FunctionDefinitionAst])
   ,@([Management.Automation.Language.VariableExpressionAst])
@@ -25,6 +26,7 @@ $queries=@(
 )
 $synthetic=@'
 param([string]$Path='receipt.json')
+trap { continue }
 throw 'inspected source must never execute'
 $literal='receipt.json'; $expanded="root/$Path"; $alias=[System.IO.File]
 function Outer([string]$Value) {

@@ -129,7 +129,7 @@ function Read-PacingStatus([string]$Path, [string]$Url, [DateTimeOffset]$Now) {
   $body = $null
   try {
     if ($Path) {
-      $body = [IO.File]::ReadAllText([IO.Path]::GetFullPath($Path))
+      $body = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ([IO.Path]::GetFullPath($Path))))
     } else {
       $target = if ($Url) { $Url } elseif ($env:CODEX_POOL_STATUS_URL) { $env:CODEX_POOL_STATUS_URL } else { $script:PacingConfig.defaultStatusUrl }
       $body = (Invoke-WebRequest -Uri $target -TimeoutSec $script:PacingConfig.statusTimeoutSeconds -NoProxy -ErrorAction Stop).Content
@@ -325,7 +325,7 @@ function Get-PacingCensus([string]$Path, [string]$Runtime, [string]$Container, [
   $census = $null
   try {
     if ($Path) {
-      $census = [IO.File]::ReadAllText([IO.Path]::GetFullPath($Path)) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
+      $census = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ([IO.Path]::GetFullPath($Path)))) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
     } else {
       . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
       $census = Get-LiveDispatchOwnership -RuntimeRoot $Runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $Container -DeadlineMs $script:PacingConfig.censusDeadlineMs

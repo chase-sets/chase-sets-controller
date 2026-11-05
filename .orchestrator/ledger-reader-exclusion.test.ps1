@@ -54,6 +54,8 @@ try {
     contentSplat=@(1,'param($Parameters);Get-Content @Parameters')
     constructorTypeIsNotPath=@(1,'param($Path);New-Object System.IO.StreamReader -ArgumentList $Path')
     untypedGuardPath=@(1,"$import;function Read-Untyped {param(`$Path);$assert;[IO.File]::ReadAllText(`$Path)}")
+    trappedGuard=@(1,"$import;function Read-Synthetic {param(`$Path);trap {continue};$assert;[IO.File]::ReadAllText(`$Path)}")
+    redirectedGuard=@(1,"$import;function Read-Synthetic {param(`$Path);$assert 2>&1;[IO.File]::ReadAllText(`$Path)}")
   }
   foreach ($name in $cases.Keys) {
     # Match the real helpers' string binding. The separate untyped sibling

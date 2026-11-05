@@ -651,6 +651,7 @@ try {
     if ($Edit) { $source = & $Edit $source }
     [IO.File]::WriteAllText((Join-Path $dir 'capacity-pacing.ps1'), $source, $utf8)
     [IO.File]::Copy((Join-Path $PSScriptRoot 'routing-data.ps1'), (Join-Path $dir 'routing-data.ps1'))
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'), (Join-Path $dir 'dispatch-ledger-reader.psm1'))
     $record = Join-Path $dir 'census-args.json'
     $fake = @(
       'function Get-LiveDispatchOwnership { param([string]$RuntimeRoot, [string]$TempRoot, [string]$ContainerRoot, [int]$MaxRecords = 64, [int]$DeadlineMs = 5000)',

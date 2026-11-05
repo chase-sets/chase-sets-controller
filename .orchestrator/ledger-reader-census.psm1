@@ -59,6 +59,8 @@ function Get-LedgerReaderCensus {
     return $null
   }
   function HasPathGuard($Node,$Path,$Unit) {
+    if ($Unit.traps.Count) { return $false }
+    if (NonDispatchValuePath $Path $Unit) { return $true }
     if (-not $nonDispatchGuardValid -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset -or $Path -isnot [Management.Automation.Language.VariableExpressionAst]) { return $false }
     if (-not $stringParameters.Contains((Key $Path $Unit))) { return $false }
     $statement=$Node
@@ -68,9 +70,9 @@ function Get-LedgerReaderCensus {
     $index=$block.Statements.IndexOf($statement)
     if ($index -lt 1) { return $false }
     $previous=$block.Statements[$index-1]
-    if ($previous -isnot [Management.Automation.Language.PipelineAst] -or $previous.PipelineElements.Count -ne 1) { return $false }
+    if ($previous -isnot [Management.Automation.Language.PipelineAst] -or $previous.Background -or $previous.PipelineElements.Count -ne 1) { return $false }
     $call=$previous.PipelineElements[0]
-    if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -cne 'dispatch-ledger-reader\Assert-NonDispatchLedgerPath' -or $call.CommandElements.Count -ne 3) { return $false }
+    if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.Redirections.Count -or $call.GetCommandName() -cne 'dispatch-ledger-reader\Assert-NonDispatchLedgerPath' -or $call.CommandElements.Count -ne 3) { return $false }
     $parameter=$call.CommandElements[1];$value=$call.CommandElements[2]
     return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Path' -and -not $parameter.Argument -and
       $value -is [Management.Automation.Language.VariableExpressionAst] -and (Key $value $Unit) -ceq (Key $Path $Unit)
@@ -128,6 +130,7 @@ function Get-LedgerReaderCensus {
   }
   function NonLedgerPath($Node,$Unit,[string[]]$Visiting=@()) {
     if (-not $Node -or $Visiting.Count -ge 12) { return $false }
+    if (NonDispatchValuePath $Node $Unit) { return $true }
     if ($Node -is [Management.Automation.Language.StringConstantExpressionAst]) {
       $leaf=($Node.Value -split '[/\\]')[-1]
       return $leaf -notin @('','.','..') -and $Node.Value -notmatch '(?i)dispatch-log(?:\\?\.)jsonl'
@@ -163,6 +166,15 @@ function Get-LedgerReaderCensus {
       return $leaf -is [Management.Automation.Language.StringConstantExpressionAst] -and (NonLedgerPath $leaf $Unit $Visiting)
     }
     return $false
+  }
+  function NonDispatchValuePath($Node,$Unit) {
+    if (-not $nonDispatchValueValid -or -not $Node -or $Unit.traps.Count -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return NonDispatchValuePath $Node.Pipeline $Unit }
+    if ($Node -is [Management.Automation.Language.PipelineAst] -and -not $Node.Background -and $Node.PipelineElements.Count -eq 1) { return NonDispatchValuePath $Node.PipelineElements[0] $Unit }
+    if ($Node -isnot [Management.Automation.Language.CommandAst] -or $Node.Redirections.Count -or $Node.GetCommandName() -cne 'dispatch-ledger-reader\Get-NonDispatchLedgerPath' -or $Node.CommandElements.Count -ne 3) { return $false }
+    $parameter=$Node.CommandElements[1];$value=$Node.CommandElements[2]
+    return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Path' -and -not $parameter.Argument -and
+      $value -isnot [Management.Automation.Language.CommandParameterAst] -and -not ($value -is [Management.Automation.Language.VariableExpressionAst] -and $value.Splatted)
   }
   function CommandName($Node,$Unit) {
     $name=$Node.GetCommandName()
@@ -228,6 +240,7 @@ function Get-LedgerReaderCensus {
     $unit=[pscustomobject]@{path=$path;source=$source;test=$test;ast=$ast
       assignments=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.AssignmentStatementAst]) })
       parameters=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.ParameterAst]) })
+      traps=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.TrapStatementAst]) })
       loops=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.ForEachStatementAst]) })
       calls=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.CommandAst]) })};$units.Add($unit)
     if ($test) { continue }
@@ -253,6 +266,7 @@ function Get-LedgerReaderCensus {
   # A guard name alone is not authority. Authenticate the actual owner's
   # fail-closed body and an unconditional import of that tracked module.
   $nonDispatchGuardValid=$false
+  $nonDispatchValueValid=$false
   $guardImports=@{}
   $expectedGuard=@'
 function Assert-NonDispatchLedgerPath {
@@ -270,7 +284,7 @@ function Assert-NonDispatchLedgerPath {
   if ($functions.ContainsKey('assert-nondispatchledgerpath') -and $functions['assert-nondispatchledgerpath'].Count -eq 1) {
     $target=$functions['assert-nondispatchledgerpath'][0]
     $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
-    $exported=$false
+    $exported=$false;$valueExported=$false
     foreach ($statement in $target.unit.ast.EndBlock.Statements) {
       if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
       $call=$statement.PipelineElements[0]
@@ -279,8 +293,23 @@ function Assert-NonDispatchLedgerPath {
       if ($parameter -isnot [Management.Automation.Language.CommandParameterAst] -or $parameter.ParameterName -ine 'Function') { continue }
       $values=if ($names -is [Management.Automation.Language.ArrayLiteralAst]) { @($names.Elements) } else { @($names) }
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Assert-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $exported=$true }
+      if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $valueExported=$true }
     }
     $nonDispatchGuardValid=$nonDispatchGuardValid -and $exported
+  }
+  $expectedValue=@'
+function Get-NonDispatchLedgerPath {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path)
+  dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+  return $Path
+}
+'@
+  $valueAst=[Management.Automation.Language.Parser]::ParseInput($expectedValue,[ref]$tokens,[ref]$errors)
+  if ($nonDispatchGuardValid -and $valueExported -and $functions.ContainsKey('get-nondispatchledgerpath') -and $functions['get-nondispatchledgerpath'].Count -eq 1) {
+    $target=$functions['get-nondispatchledgerpath'][0]
+    $nonDispatchValueValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
+      (TokenShape $target.node.Body) -ceq (TokenShape $valueAst.EndBlock.Statements[0].Body)
   }
   if ($nonDispatchGuardValid) {
     $ownerPath=[IO.Path]::GetFullPath((Join-Path $Root '.orchestrator/dispatch-ledger-reader.psm1'))
