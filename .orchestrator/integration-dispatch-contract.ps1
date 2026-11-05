@@ -2,6 +2,7 @@
 # API fixtures replace only the remote API read; all Git probes remain native.
 # Model identities are resolved from the AgentPools registry.  The pool-status
 # payload is only an availability signal; it never defines the roster.
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 
 function Get-IntegrationRoutingAuthority {
@@ -56,7 +57,7 @@ function Assert-IntegrationAuthor($Harness, $Model, $Effort, $Row, $Placement, [
 function Read-PoolStatus([string]$PoolStatusFixturePath) {
   try {
     $body = if ($PoolStatusFixturePath) {
-      Get-Content -LiteralPath $PoolStatusFixturePath -Raw
+      Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $PoolStatusFixturePath) -Raw
     } else {
       $url = if ($env:CODEX_POOL_STATUS_URL) { $env:CODEX_POOL_STATUS_URL } else { 'http://127.0.0.1:8318/api/status' }
       (Invoke-WebRequest -Uri $url -TimeoutSec 3 -NoProxy -ErrorAction Stop).Content
@@ -231,7 +232,7 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
   $result = [ordered]@{pr=[int]$Pr.number;action='RETAINED_START_PENDING';requestIdentity=$Identity;requestedHead=[string]$Pr.headRefOid;actualHead=$null;reason='unknown'}
   $locks=[Collections.Generic.List[object]]::new()
   try {
-    $locks.Add([IO.File]::Open($AckPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+    $locks.Add([IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $AckPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
     $ack = Read-RebaseJson $AckPath
     $keys = @('schemaVersion','requestIdentity','label','launchId','ownershipRecordPath','worktree','branch','head','harness','model','effort','row','placement','state','childPid','childStartIdentity')
     $routingKeys=@('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
@@ -253,7 +254,7 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
         $ack.state -cne 'started' -or -not (Test-DispatchJsonInteger $ack.childPid 1) -or -not (Test-DispatchUtcIdentity $ack.childStartIdentity)) { throw 'ack identity' }
     $result.actualHead = $ack.head
     $specPath = Join-Path $RuntimeRoot "watchdog-lane-$($ack.label).json"
-    $locks.Add([IO.File]::Open($specPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+    $locks.Add([IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $specPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
     $spec = Read-RebaseJson $specPath
     $freshRequest=$null
     if ($spec.schemaVersion -ceq 'watchdog-lane/v3') {
@@ -278,7 +279,7 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
       if (-not (Test-DispatchSamePath $spec.($pair[0]) (Join-Path $RuntimeRoot $pair[1]))) { throw 'crossed retained path' }
     }
     # Canonical history must not deny the append share; retained non-ledger files stay pinned.
-    foreach($path in @($spec.originalPromptPath,$spec.partialReportPath,$spec.errorPath)) { $locks.Add([IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)) }
+    foreach($path in @($spec.originalPromptPath,$spec.partialReportPath,$spec.errorPath)) { $locks.Add([IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)) }
     $history = Read-ExactHeadReviewHistory -Path $HistoryPath
     if (-not $history.complete) { throw 'routing history unknown' }
     $routes = @($history.rows | Where-Object { $_.value.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.value.label -ceq $ack.label })
@@ -301,14 +302,14 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
     $result.reason = Get-IntegrationExitedState $spec
     if ($result.reason -cne 'exited') { return $result }
     if ($spec.state -cne 'exited' -or -not (Test-DispatchJsonInteger $spec.exitCode 0) -or $spec.exitCode -ne 0) { throw 'native exit unknown' }
-    $prompt = [IO.File]::ReadAllText($spec.originalPromptPath)
+    $prompt = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $spec.originalPromptPath))
     if ($freshRequest) {
       $requestPath=Join-Path $RuntimeRoot "integration-request-$($ack.label).json"
-      $locks.Add([IO.File]::Open($requestPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+      $locks.Add([IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $requestPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
       if ((Get-RebaseRecordIdentity (Read-RebaseJson $requestPath)) -cne (Get-RebaseRecordIdentity $freshRequest)) { throw 'retained request bytes differ' }
     } elseif (-not $prompt.Contains("ReviewedHead $($Pr.headRefOid)") -or -not $prompt.Contains("PR #$($Pr.number)")) { throw 'requested prompt identity' }
     if ($ack.head -ceq $Pr.headRefOid) { $result.action='RETAINED_STARTED';$result.reason='exact original start retained; completion requires its original result evidence';return $result }
-    Assert-IntegrationParameterStopTranscript ([IO.File]::ReadAllText($spec.partialReportPath))
+    Assert-IntegrationParameterStopTranscript ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $spec.partialReportPath)))
     $native = Get-DispatchGitIdentity $Worktree
     if ($native.status -cne 'ok' -or $native.branch -cne $ack.branch -or $native.head -cne $ack.head -or
         (Invoke-IntegrationProbe 'git' @('--no-optional-locks','-C',$Worktree,'status','--porcelain=v1'))) { throw 'current Git moved or observation unknown' }
@@ -322,7 +323,7 @@ function Get-RetainedIntegrationStart([string]$AckPath, [string]$Identity, $Pr,
         if ([long]$Matches[1] -ge ([datetimeoffset]$spec.launcherStartIdentity).ToUnixTimeSeconds()) { throw 'native Git movement since start' }
       }
     }
-    $record = [ordered]@{schemaVersion='integration-start-observation/v1';requestIdentity=$Identity;launchId=$ack.launchId;requestedHead=[string]$Pr.headRefOid;actualStartHead=$ack.head;observedHead=$native.head;harness=$ack.harness;model=$ack.model;effort=$ack.effort;row=$ack.row;placement=$ack.placement;status='EXITED_START_MISMATCH';nativeExitCode=[long]$spec.exitCode;integrationResult=$false;observedAt=[DateTime]::UtcNow.ToString('o');ackHash=Get-RebaseHash ([IO.File]::ReadAllBytes($AckPath));watchdogHash=Get-RebaseHash ([IO.File]::ReadAllBytes($specPath));transcriptHash=Get-RebaseHash ([IO.File]::ReadAllBytes($spec.partialReportPath));routeIdentity=Get-RebaseRecordIdentity $route;promptHash=Get-RebaseHash ([IO.File]::ReadAllBytes($spec.originalPromptPath));requestHash=$(if($freshRequest){Get-RebaseRecordIdentity $freshRequest}else{$null})}
+    $record = [ordered]@{schemaVersion='integration-start-observation/v1';requestIdentity=$Identity;launchId=$ack.launchId;requestedHead=[string]$Pr.headRefOid;actualStartHead=$ack.head;observedHead=$native.head;harness=$ack.harness;model=$ack.model;effort=$ack.effort;row=$ack.row;placement=$ack.placement;status='EXITED_START_MISMATCH';nativeExitCode=[long]$spec.exitCode;integrationResult=$false;observedAt=[DateTime]::UtcNow.ToString('o');ackHash=Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $AckPath)));watchdogHash=Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $specPath)));transcriptHash=Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $spec.partialReportPath)));routeIdentity=Get-RebaseRecordIdentity $route;promptHash=Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $spec.originalPromptPath)));requestHash=$(if($freshRequest){Get-RebaseRecordIdentity $freshRequest}else{$null})}
     $observationPath=Join-Path $RuntimeRoot "integration-start-observation-$Identity.json"
     if (Test-Path -LiteralPath $observationPath) {
       $existing=Read-RebaseJson $observationPath
