@@ -159,14 +159,15 @@ function Insert-ProductionPointer($Preserved, [string]$Pointer, $Value) {
   return $copy
 }
 
-function New-ProductionClaim($Mutation) {
+function New-ProductionClaim($Mutation, [string]$ProductionBlob) {
+  if ($ProductionBlob -cnotmatch '^[a-f0-9]{40}$') { throw 'measured production blob required' }
   $pointer = "/productionGuards/$($Mutation.guardId)/clauseEnabled"
   $preserved = [ordered]@{
     batteryCommand = "pwsh -NoProfile -NonInteractive -File .orchestrator/landing-preflight.test.ps1 -RegressionOnly SensitivityRequired"
     controllerRoot = "."
     fixtureSet = "installed-final-16-control-sensitivity"
     parallelism = 1
-    productionBlob = "3cf2824ca386245b5309f6981b75b245ec979175"
+    productionBlob = $ProductionBlob
   }
   $signature = if ($Mutation.mutantId -ceq "D15") {
     "ASSERTION FAILED: a nonzero gh run list exit with valid runs JSON is terminal unreadable with no jobs query"
@@ -275,7 +276,7 @@ try {
         )) "D15 mutant failed through a different clause: $($mutant.output)"
     }
     $killed += 1
-    Write-Host "CLAIM $($mutation.guardId) candidate=PASS mutant=$($mutation.mutantId):FAIL signature=$((New-ProductionClaim $mutation).failureSignature)"
+    Write-Host "CLAIM $($mutation.guardId) candidate=PASS mutant=$($mutation.mutantId):FAIL signature=$((New-ProductionClaim $mutation $candidateBlob).failureSignature)"
   }
 
   Assert-6254Evidence ($applied -eq 16 -and $killed -eq 16) "production summary is not 16/16"
@@ -284,7 +285,7 @@ try {
   Assert-6254Evidence (-not [string]::IsNullOrWhiteSpace($d15Mutant)) "D15 mutant observation missing"
 
   if ($resolvedOut) {
-    $claims = foreach ($mutation in $mutations) { New-ProductionClaim $mutation }
+    $claims = foreach ($mutation in $mutations) { New-ProductionClaim $mutation $candidateBlob }
     $suiteResult = [ordered]@{
       schemaVersion = "fail-closed-guard-suite-result/v1"
       subject = [ordered]@{ controllerHead = $ExpectedControllerHead }
