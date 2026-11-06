@@ -119,10 +119,17 @@ try {
     $c=Get-LedgerReaderCensus -Root $root
     $expected=[int]$cases[$name][0] -gt 0
     $readerRows=@($c.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' })
-    $readerUnknown=@($c.violations | Where-Object path -CEQ 'reader.ps1').Count
-    $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$readerUnknown;allViolations=$c.violations.Count;rows=@($c.rows)})
-    if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readerRows.Count -or (($readerUnknown -gt 0) -ne $expected)) { $failures.Add($name) }
-    Write-Output "PATH-VALUE case=$name violations=$readerUnknown expected=$([int]$expected) globalUnknown=$($c.violations.Count)"
+    $violations=@($c.violations | Where-Object path -CEQ 'reader.ps1')
+    $nativeUnknown=@($violations | Where-Object role -CEQ 'reader').Count
+    $forwarding=@($violations | Where-Object role -CEQ 'path-forwarder')
+    # Keep instance-derived forwarding uncertainty enforced independently of
+    # the native path-value proof; neither inventory nor old mutants disappear.
+    $badForwarding=@($forwarding | Where-Object { $_.family -cne 'get-nondispatchledgerpath' -or $_.authority -cne 'indeterminate' -or $_.handled -or $_.owner -or $_.test })
+    $observed.Add([pscustomobject]@{case=$name;expectedNativeViolation=$expected;nativeViolations=$nativeUnknown;forwardingViolations=$forwarding.Count;violations=$violations.Count;allViolations=$c.violations.Count;rows=@($c.rows)})
+    if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readerRows.Count -or (($nativeUnknown -gt 0) -ne $expected) -or
+        $violations.Count -ne ($nativeUnknown+$forwarding.Count) -or $badForwarding.Count -or
+        ($name -ne 'missingGuardCall' -and $forwarding.Count -ne 1) -or ($name -eq 'missingGuardCall' -and $forwarding.Count -ne 0)) { $failures.Add($name) }
+    Write-Output "PATH-VALUE case=$name nativeViolations=$nativeUnknown forwardingViolations=$($forwarding.Count) expectedNative=$([int]$expected) globalUnknown=$($c.violations.Count)"
   }
   if ($EvidencePath) { $observed.ToArray()|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED path-value controls: $($failures -join ',')" }
