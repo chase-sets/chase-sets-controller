@@ -84,7 +84,9 @@ if($Mode-eq'dead'){[Console]::Error.WriteLine('stream disconnected');exit 17}
 if($Mode-eq'live'){
   $arguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'descendant.ps1'),$Release,$Progress,$Grow)|ForEach-Object{'"'+$_+'"'}
   $child=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WindowStyle Hidden -PassThru
-  @{pid=$child.Id;startIdentity=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath ($Progress+'.child.json')
+  $childRecord=$Progress+'.child.json'
+  [IO.File]::WriteAllText(($childRecord+'.tmp'),(@{pid=$child.Id;startIdentity=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json))
+  [IO.File]::Move(($childRecord+'.tmp'),$childRecord)
   $until=[datetime]::UtcNow.AddSeconds(90)
   while(-not(Test-Path -LiteralPath $Release)-and[datetime]::UtcNow-lt$until){
     Start-Sleep -Milliseconds 20
