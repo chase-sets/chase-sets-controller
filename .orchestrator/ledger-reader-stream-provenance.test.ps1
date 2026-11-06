@@ -204,14 +204,14 @@ $runtime=$PSScriptRoot
   Check ($ledgers.dispatchComplete -and $ledgers.costComplete -and $ledgers.dispatches.Count -eq 1 -and $ledgers.costs.Count -eq 1 -and $ledgers.costs[0].usd -eq 2 -and $script:ScorecardGaps.Count -eq 0) 'actual scorecard mixed reducers complete with last cost row'
   $released=[IO.File]::Open((Join-Path $root '.orchestrator/cost-ledger.jsonl'),'Open','ReadWrite','None')
   $released.Dispose()
-  $scorecardBody=(Get-Item function:Read-ScorecardLedgers).ScriptBlock.ToString()
+  $scorecardBody=$ledgerFunction[0].Extent.Text
   $lifetimeChecks=0;$disposeMutants=0
   try {
     foreach ($mode in @('actual','disposeRemoval')) {
       if ($mode -ceq 'disposeRemoval') {
         $anchor='$costLines.Dispose()'
         Check ($scorecardBody.Contains($anchor) -and $scorecardBody.IndexOf($anchor) -eq $scorecardBody.LastIndexOf($anchor)) 'one explicit cost iterator disposal mutation anchor'
-        Set-Item function:Read-ScorecardLedgers ([scriptblock]::Create($scorecardBody.Replace($anchor,'$null')))
+        . ([scriptblock]::Create($scorecardBody.Replace($anchor,'$null')))
       }
       foreach ($badRow in @('invalid-json','{"usd":1}')) {
         $costPath=Join-Path $root '.orchestrator/cost-ledger.jsonl'
@@ -235,7 +235,7 @@ $runtime=$PSScriptRoot
         }
       }
     }
-  } finally {Set-Item function:Read-ScorecardLedgers ([scriptblock]::Create($scorecardBody))}
+  } finally {. ([scriptblock]::Create($scorecardBody))}
   Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red scorecardOwnerRefusals=$scorecardRefused scorecardGuardRemovalRED=$scorecardMutants exceptionalCostReleases=$lifetimeChecks disposalRemovalRED=$disposeMutants"
 } finally {
   $full = [IO.Path]::GetFullPath($root)
