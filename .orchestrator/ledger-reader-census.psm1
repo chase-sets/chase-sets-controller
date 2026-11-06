@@ -156,7 +156,10 @@ function Get-LedgerReaderCensus {
         $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
         $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) { return $false }
     if ($stream.Expression.TypeName.FullName -match '^(System\.)?IO\.MemoryStream$') {
-      if ($Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 5)) { return $false }
+      # An instance call need not return the mutation: ETS cleanup can change
+      # caller-local bytes after a native snapshot. No effect/dominance proof
+      # exists here, so even calls in other branches/scopes retain uncertainty.
+      if ($Unit.instanceCall -or $Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 5)) { return $false }
       $bytes=$stream.Arguments[0];$writable=$stream.Arguments[1]
       $encoding=$Node.Arguments[1];$detectBom=$Node.Arguments[2]
       return $bytes -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -482,6 +485,7 @@ function Get-LedgerReaderCensus {
     $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
     if ($errors.Count) { throw "LEDGER_CENSUS_PARSE_FAILED:$path" }
     $unit=[pscustomobject]@{path=$path;source=$source;test=$test;ast=$ast
+      instanceCall=[bool]$(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { -not $_.Static } | Select-Object -First 1 })
       assignments=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.AssignmentStatementAst]) })
       parameters=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.ParameterAst]) })
       traps=@(if (-not $test) { Find-LedgerCensusAst $ast ([Management.Automation.Language.TrapStatementAst]) })

@@ -73,6 +73,15 @@ public class LedgerMemoryValueSpoof : MemoryStream {
   $valid='$buffer=[IO.MemoryStream]::new();'+$copy+';'+$decode
   $cases=[ordered]@{
     exact=@($true,$valid)
+    cleanupMemory=@($false,($valid.Replace(';'+$decode,';$buffer.Dispose();'+$decode)))
+    cleanupUnrelated=@($false,($valid.Replace(';'+$decode,';$other.Dispose();'+$decode)))
+    cleanupProperty=@($false,($valid.Replace(';'+$decode,';$other.Value.Dispose();'+$decode)))
+    cleanupReflection=@($false,($valid.Replace(';'+$decode,';$other.GetType().GetMethod("Dispose").Invoke($other,$null);'+$decode)))
+    cleanupConditional=@($false,($valid.Replace(';'+$decode,';if($take){$buffer.Dispose()};'+$decode)))
+    cleanupTransitive=@($false,('function Cleanup {$other.Dispose()};'+$valid.Replace(';'+$decode,';Cleanup;'+$decode)))
+    dataCleanup=@($false,('$bytes=[IO.File]::ReadAllBytes("ordinary.json");$other.Dispose();'+$decode))
+    cleanupBeforeCopy=@($false,('$other.Dispose();'+$valid))
+    cleanupAfterDecode=@($false,($valid+';$other.Dispose()'))
     originalOpaque=@($false,$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer','$buffer.ToArray()'))
     dispatchInput=@($false,('$buffer="dispatch-log.jsonl";'+$valid))
     uncertainInput=@($false,('$buffer=$other.ToArray();'+$valid))
@@ -191,6 +200,29 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     $old=Get-PriorOwnerSnapshot;$new=Get-OwnerSnapshot
     Check (($old|ConvertTo-Json -Depth 10 -Compress) -ceq ($new|ConvertTo-Json -Depth 10 -Compress)) "actual invalid UTF8 parity schema $schema"
     Check (($schema -eq 4 -and $null -ne $new) -or ($schema -eq 6 -and $null -eq $new)) 'legacy replacement and native strict refusal unchanged'
+  }
+  $ordinary='{"schemaVersion":4,"text":"ordinary"}'
+  $replacement='{"schemaVersion":4,"text":"dispatch-log.jsonl"}'
+  [IO.File]::WriteAllText($ownerPath,$ordinary,[Text.UTF8Encoding]::new($false))
+  foreach($typeName in @('System.IO.MemoryStream','System.IO.FileStream')){
+    $priorType=Get-TypeData -TypeName $typeName
+    Check ($null -eq $priorType -or $null -eq $priorType.Members['Dispose']) 'fresh disposal control has no prior member override'
+    $global:LedgerMemoryCleanupCalls=0
+    $global:LedgerMemoryCleanupReplacement=[byte[]][char[]]$replacement
+    Update-TypeData -TypeName $typeName -MemberType ScriptMethod -MemberName Dispose -Force -Value {
+      $global:LedgerMemoryCleanupCalls++
+      Set-Variable -Name bytes -Scope 1 -Value $global:LedgerMemoryCleanupReplacement
+      [IDisposable].GetMethod('Dispose').Invoke($this,$null)
+    }
+    try {
+      $spoofed=Get-OwnerSnapshot
+      Check ($global:LedgerMemoryCleanupCalls -eq 1 -and $spoofed.Raw -ceq $replacement) 'actual cleanup mutates caller bytes after native snapshot without an assignment result'
+      Check ([IO.File]::ReadAllText($ownerPath) -ceq $ordinary) 'cleanup mutation leaves ordinary input unchanged'
+    } finally {
+      Remove-TypeData -TypeName $typeName
+      Remove-Variable -Name LedgerMemoryCleanupCalls,LedgerMemoryCleanupReplacement -Scope Global
+    }
+    Check ((Get-OwnerSnapshot).Raw -ceq $ordinary) 'ordinary snapshot restored after disposal control'
   }
   "PASS memory-value checks=$checks cases=$($cases.Count) moduleMutants=$($mutants.Count) actualEncodingCases=14"
 } finally {
