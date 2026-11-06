@@ -25,6 +25,16 @@ try {
   # An adjacent guarded open does not prove writable, untransformed storage or
   # successful assignment. Variable-fed constructors must remain unhandled.
   $cases = [ordered]@{
+    inlineGuardedFileStream = @($true,('$reader=[IO.StreamReader]::new('+$construct+')'))
+    inlineUnguarded = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace($guard,'$Path')+')'))
+    inlineOpaqueFactory = @($false,('$reader=[IO.StreamReader]::new((Get-Stream '+$guard+'))'))
+    inlineOtherReceiver = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('System.IO.FileStream','Unknown.IO')+')'))
+    inlineVariableMode = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('[System.IO.FileMode]::Open','$Mode')+')'))
+    inlineVariableAccess = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('[System.IO.FileAccess]::Read','$Access')+')'))
+    inlineVariableShare = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('[System.IO.FileShare]::ReadWrite','$Share')+')'))
+    inlineInvokedAccess = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('[System.IO.FileAccess]::Read','[System.IO.FileAccess]::Read()')+')'))
+    inlineGenericConstructor = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace('::new(','::new[int](')+')'))
+    inlineExtraDecoderArgument = @($false,('$reader=[IO.StreamReader]::new('+$construct+',$Encoding)'))
     fileOpen = @($false,('$stream='+$open+';'+$read))
     fileStream = @($false,('$stream='+$construct+';'+$read))
     openRead = @($false,('$stream=[System.IO.File]::OpenRead('+$guard+');'+$read))
@@ -65,14 +75,15 @@ try {
     Check ([bool]$rows[0].handled -eq $cases[$name][0]) "stream provenance $name handled=$($rows[0].handled)"
   }
 
-  # Execute the actual cost-harvest constructor pair, not a lookalike helper.
+  # Execute the actual inline cost constructor, not a lookalike helper. The
+  # previous variable-fed pair stays the text/encoding compatibility control.
   $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'cost-harvest.ps1'),[ref]$null,[ref]$null)
   $function = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-RunFacts'},$true))
   Check ($function.Count -eq 1) 'actual cost function'
   $assignments = @($function[0].Body.EndBlock.Statements | Where-Object {
     $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -cin @('$stream','$reader')
   })
-  Check ($assignments.Count -eq 2) 'actual adjacent constructor assignments'
+  Check ($assignments.Count -eq 1 -and $assignments[0].Left.Extent.Text -ceq '$reader') 'actual inline constructor assignment'
   $actual = ($assignments | ForEach-Object { $_.Extent.Text }) -join "`n"
   Check ($actual.Contains($guard,[StringComparison]::Ordinal)) 'actual path guard operand retained'
   $native = $actual.Replace($guard,'$Path')
@@ -84,6 +95,9 @@ try {
   [IO.File]::WriteAllBytes($positive,$bytes)
   [IO.File]::WriteAllText($probe,$preamble+$native+$drain)
   $expected = & $probe $positive
+  $legacy='$stream='+$construct.Replace($guard,'$Path')+';'+$read
+  [IO.File]::WriteAllText($probe,$preamble+$legacy+$drain)
+  Check ((& $probe $positive) -ceq $expected) 'old variable-fed constructor text/BOM/CRLF/invalidUTF8 equivalent'
   [IO.File]::WriteAllText($probe,$preamble+$actual+$drain)
   Check ((& $probe $positive) -ceq $expected) 'actual cost stream text/BOM/CRLF/invalidUTF8 unchanged'
   $refused = 0; $red = 0

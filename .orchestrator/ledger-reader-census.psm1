@@ -138,6 +138,29 @@ function Get-LedgerReaderCensus {
     }
     return "$($Unit.path)::script"
   }
+  function InlineNonDispatchStreamReader($Node,$Unit) {
+    # No storage/provenance inference: the decoder receives the guarded native
+    # stream directly. Variable-fed constructors remain deliberately refused.
+    if ($Node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $Node.Static -or
+        $Node.GenericTypeArguments.Count -or $Node.NullConditional -or $Node.Member.Value -ine 'new' -or
+        $Node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
+        $Node.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.StreamReader$' -or $Node.Arguments.Count -ne 1) { return $false }
+    $stream=$Node.Arguments[0]
+    if ($stream -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $stream.Static -or
+        $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
+        $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
+        $stream.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.FileStream$' -or $stream.Arguments.Count -ne 4) { return $false }
+    $enumTypes=@('FileMode','FileAccess','FileShare');$enumValues=@('Open','Read','ReadWrite')
+    for ($index=0;$index -lt 3;$index++) {
+      $value=$stream.Arguments[$index+1]
+      if ($value -isnot [Management.Automation.Language.MemberExpressionAst] -or
+          $value -is [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $value.Static -or $value.NullConditional -or
+          $value.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
+          $value.Expression.TypeName.FullName -notmatch ('^(System\.)?IO\.'+$enumTypes[$index]+'$') -or
+          $value.Member.Value -ine $enumValues[$index]) { return $false }
+    }
+    return HasPathGuard $stream $stream.Arguments[0] $Unit
+  }
   function Key($Node,$Unit) {
     if ($variableKeys.ContainsKey($Node)) { return $variableKeys[$Node] }
     $name=$Node.VariablePath.UserPath.ToLowerInvariant()
@@ -692,7 +715,8 @@ function Get-NonDispatchLedgerPath {
       if ($mask -eq 0 -and $role -eq 'path-forwarder' -and $family -ne 'owner-api') { continue }
       # A branch flag (or a mention in its body) does not constrain the path.
       # Mixed helpers stay candidates until an actual path exclusion is proved.
-      $authority=if ($family -eq 'owner-api') {'dispatch'} elseif ($role -eq 'reader' -and (HasPathGuard $node $pathArgument $unit)) {
+      $authority=if ($family -eq 'owner-api') {'dispatch'} elseif ($role -eq 'reader' -and ((HasPathGuard $node $pathArgument $unit) -or
+          ($family -eq 'StreamReader' -and (InlineNonDispatchStreamReader $node $unit)))) {
         if ($mask -eq 2) { 'cost' } else { 'non-ledger' }
       } elseif ($mask -eq 2) {
         if ($role -eq 'reader' -and -not (NonLedgerPath $pathArgument $unit)) { 'indeterminate' } else { 'cost' }

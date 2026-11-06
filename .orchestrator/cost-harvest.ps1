@@ -236,12 +236,11 @@ function Get-RunFacts {
   # FileShare::ReadWrite is REQUIRED: live lanes hold their transcript open for
   # append, and an exclusive handle here would both fail the harvest and risk
   # contending with running work. Harvesting must never disturb a live lane.
-  $stream = [System.IO.FileStream]::new(
+  $reader = [System.IO.StreamReader]::new([System.IO.FileStream]::new(
     (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path),
     [System.IO.FileMode]::Open,
     [System.IO.FileAccess]::Read,
-    [System.IO.FileShare]::ReadWrite)
-  $reader = [System.IO.StreamReader]::new($stream)
+    [System.IO.FileShare]::ReadWrite))
   try {
     while ($null -ne ($line = $reader.ReadLine())) {
       if (-not $line.StartsWith("{")) { continue }
