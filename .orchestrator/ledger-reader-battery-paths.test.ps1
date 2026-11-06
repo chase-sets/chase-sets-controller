@@ -169,10 +169,10 @@ $candidateFile=[pscustomobject]@{FullName=$ProbePath}
     } finally {$held.Dispose()}
   }
   $streams=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Expression.Extent.Text -ceq '[IO.StreamReader]'},$true))
-  Check ($streams.Count -eq 2 -and @($streams|Where-Object {$_.Arguments[0].Extent.Text -cne '$stream'}).Count -eq 0) 'both stream handle roles unchanged and not path-exempted'
+  Check ($streams.Count -eq 2 -and @($streams|Where-Object {$_.Arguments[0].Extent.Text -cne '(dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream)' -or $_.Arguments.Count -ne 3 -or $_.Arguments[1].Extent.Text -cne '[Text.Encoding]::UTF8' -or $_.Arguments[2].Extent.Text -cne '$true'}).Count -eq 0) 'both decoder encodings and BOM roles retained with per-use stream guards'
   $nativeSource=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value.Contains('using (var stream = new FileStream(parent, FileAccess.Write))')},$true))
   Check ($nativeSource.Count -eq 1) 'embedded C# exact writer proof remains present, not a reader exemption'
-  Write-Output "PASS ledger-reader-battery-paths checks=$script:checks dynamicNative=10 fixedNative=1 unresolvedStreamHandle=2 embeddedWriter=1"
+  Write-Output "PASS ledger-reader-battery-paths checks=$script:checks dynamicNative=10 fixedNative=1 guardedStreamHandle=2 embeddedWriter=1"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or

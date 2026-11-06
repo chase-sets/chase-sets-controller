@@ -79,7 +79,7 @@ try {
   $lockText=$asts['controller-install-lock.psm1'].Extent.Text
   Check ($lockText.Contains('([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)')) 'snapshot sharing flags retained'
   Check ($lockText.Contains('$openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 1000')) 'snapshot retry/deadline bound retained'
-  Check ($lockText.Contains('[IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $false, 1024, $true)')) 'claim decoder and handle ownership retained, not blanket-exempted'
+  Check ($lockText.Contains('[IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.UTF8Encoding]::new($false, $true), $false, 1024, $true)')) 'claim decoder strictness and handle ownership retained with per-use stream guard'
 
   # Extract complete production function definitions without running any
   # installer top-level work, admission, shared locks, or release operations.
