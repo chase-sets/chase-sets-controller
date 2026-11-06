@@ -206,9 +206,11 @@ try {
     format='(''{0}{1}'' -f $Path,$suffix)'
   }
   foreach($composition in $ownerCompositions.Keys) {
-    foreach($consumer in @('opaque','memory')) {
+    foreach($consumer in @('opaque','memory','memoryLiteral')) {
       $body='$suffix='''';Read-DispatchLedgerSnapshot -Path '+$ownerCompositions[$composition]+';'
-      $body+=if($consumer -eq 'opaque'){'[Unknown.Factory]::Decode($Path)'}else{'$bytes=[Text.Encoding]::UTF8.GetBytes($Path);[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'}
+      $body+=if($consumer -eq 'opaque'){'[Unknown.Factory]::Decode($Path)'}else{
+        $(if($consumer -eq 'memoryLiteral'){'$bytes=[byte[]][char[]]$Path;'}else{'$bytes=[Text.Encoding]::UTF8.GetBytes($Path);'})+'[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'
+      }
       $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic([string]`$Path){"+$body+'}'
       [IO.File]::WriteAllText($path,$source)
       $errors=$null
@@ -220,22 +222,25 @@ try {
       $owners=@($rows|Where-Object owner)
       $native=@($rows|Where-Object {-not $_.owner})
       $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
-      $expected=if($consumer -eq 'opaque'){1}else{3}
+      $expected=if($consumer -eq 'opaque'){1}elseif($consumer -eq 'memoryLiteral'){2}else{3}
       Check ($owners.Count -eq 1 -and $owners[0].handled -and $owners[0].authority -eq 'dispatch') "owner composition owner retained $composition/$consumer"
       Check ($native.Count -eq $expected -and @($native|Where-Object handled).Count -eq 0 -and $violations.Count -eq $expected) "owner composition native enforcement $composition/$consumer"
-      if($consumer -eq 'memory') {
+      if($consumer -in @('memory','memoryLiteral')) {
         $readers=@($native|Where-Object family -EQ 'StreamReader')
-        Check ($readers.Count -eq 1 -and $readers[0].authority -eq 'dispatch' -and -not $readers[0].handled) "owner composition cannot prove nonledger memory $composition"
+        $authority=if($consumer -eq 'memoryLiteral'){'dispatch'}else{'indeterminate'}
+        Check ($readers.Count -eq 1 -and $readers[0].authority -eq $authority -and -not $readers[0].handled) "owner composition retains literal dispatch provenance and instance uncertainty $composition/$consumer"
       }
       "OWNER-COMPOSITION case=$composition/$consumer owner=$($owners.Count) native=$($native.Count) violations=$($violations.Count)"
     }
   }
   foreach($order in @('forward','reverse')) {
-    foreach($consumer in @('opaque','memory')) {
+    foreach($consumer in @('opaque','memory','memoryLiteral')) {
       $first='Read-DispatchLedgerSnapshot -Path ($Path+''''+$suffix);'
       $second='Read-DispatchLedgerSnapshot -Path (Join-Path $Path $leaf);'
       $body=if($order -eq 'forward'){$first+$second}else{$second+$first}
-      $body+=if($consumer -eq 'opaque'){'[Unknown.Factory]::Decode($leaf)'}else{'$bytes=[Text.Encoding]::UTF8.GetBytes($leaf);[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'}
+      $body+=if($consumer -eq 'opaque'){'[Unknown.Factory]::Decode($leaf)'}else{
+        $(if($consumer -eq 'memoryLiteral'){'$bytes=[byte[]][char[]]$leaf;'}else{'$bytes=[Text.Encoding]::UTF8.GetBytes($leaf);'})+'[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'
+      }
       $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic([string]`$Path,[string]`$suffix,[string]`$leaf){"+$body+'}'
       [IO.File]::WriteAllText($path,$source)
       $errors=$null
@@ -246,12 +251,13 @@ try {
       $rows=@($c.rows|Where-Object path -CEQ 'reader.ps1')
       $owners=@($rows|Where-Object owner)
       $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
-      $expected=if($consumer -eq 'opaque'){1}else{3}
+      $expected=if($consumer -eq 'opaque'){1}elseif($consumer -eq 'memoryLiteral'){2}else{3}
       Check ($owners.Count -eq 2 -and @($owners|Where-Object {-not $_.handled -or $_.authority -ne 'dispatch'}).Count -eq 0) "overlapping owners retained $order/$consumer"
       Check ($rows.Count -eq ($expected+3) -and $violations.Count -eq $expected -and @($violations|Where-Object handled).Count -eq 0) "overlapping owner consumer enforced $order/$consumer"
-      if($consumer -eq 'memory') {
+      if($consumer -in @('memory','memoryLiteral')) {
         $readers=@($rows|Where-Object family -EQ 'StreamReader')
-        Check ($readers.Count -eq 1 -and $readers[0].authority -eq 'dispatch' -and -not $readers[0].handled) "overlapping owner cannot prove nonledger memory $order"
+        $authority=if($consumer -eq 'memoryLiteral'){'dispatch'}else{'indeterminate'}
+        Check ($readers.Count -eq 1 -and $readers[0].authority -eq $authority -and -not $readers[0].handled) "overlapping owner retains literal dispatch provenance and instance uncertainty $order/$consumer"
       }
       "OVERLAPPING-OWNER case=$order/$consumer owners=$($owners.Count) rows=$($rows.Count) violations=$($violations.Count)"
     }
