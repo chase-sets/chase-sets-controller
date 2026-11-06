@@ -38,6 +38,28 @@ try {
     dispatchAliasConstructor=@(1,$false,'$Path=''dispatch-log.jsonl'';$Other=$Path;[Unknown.Factory]::new($Other)')
     dispatchNestedSplit=@(1,$false,'$Path=''dis''+''patch-''+''log.jsonl'';[Unknown.Factory]::new($Path)')
     dispatchEmptySplit=@(1,$false,'$Path=''''+''dispatch-log.jsonl'';[Unknown.Factory]::new($Path)')
+    dispatchGroupedLeft=@(1,$false,'$Path=(''dis''+''patch-'')+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    dispatchGroupedRight=@(1,$false,'$Path=''dispatch-''+(''log''+''.jsonl'');[Unknown.Factory]::new($Path)')
+    dispatchGroupedBoth=@(1,$false,'$Path=(''dis''+''patch-'')+(''log''+''.jsonl'');[Unknown.Factory]::new($Path)')
+    dispatchDoubleGrouped=@(1,$false,'$Path=((''dis''+''patch-''))+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    nonNativeTypeAlias=@(1,$false,'$Decoder=[Text.UTF8Encoding];$Decoder::new($Path)')
+    nonNativeRebound=@(1,$false,'$Decoder=[Text.UTF8Encoding];$Decoder=$Other;$Decoder::new($Path)')
+    nativeThenNonNative=@(1,$false,'$Decoder=[IO.StreamReader];$Decoder=[Text.UTF8Encoding];$Decoder::new($Path)')
+    nonNativeAfterCall=@(1,$false,'$Decoder::new($Path);$Decoder=[Text.UTF8Encoding]')
+    nonNativeConditional=@(1,$false,'if($flag){$Decoder=[Text.UTF8Encoding]};$Decoder::new($Path)')
+    nonNativeScoped=@(1,$false,'$script:Decoder=[Text.UTF8Encoding];$script:Decoder=$Other;$script:Decoder::new($Path)')
+    nonNativeReadAlias=@(1,$false,('$Decoder=[Text.UTF8Encoding];$Decoder=$Other;$Decoder::ReadAllText('+$guard+')'))
+    nonNativeOtherAlias=@(1,$false,'$Decoder=[Text.UTF8Encoding];$Decoder=$Other;$Decoder::Load(''receipt.json'')')
+    unresolvedStaticMethod=@(1,$false,'$Decoder::Load(''receipt.json'')')
+    unresolvedDynamicMember=@(1,$false,'$Decoder::$Method(''dispatch-log.jsonl'')')
+    unresolvedDynamicReceipt=@(1,$false,'$Decoder::$Method(''receipt.json'')')
+    unknownComputedMember=@(1,$false,'[Unknown.Factory]::(''n''+''ew'')(''dispatch-log.jsonl'')')
+    unknownComputedReceipt=@(1,$false,'[Unknown.Factory]::(''n''+''ew'')(''receipt.json'')')
+    unknownDynamicMember=@(1,$false,'[Unknown.Factory]::$Method(''receipt.json'')')
+    nativeComputedMember=@(1,$false,('[IO.StreamReader]::(''n''+''ew'')('+$guard+')'))
+    groupedMemoryDispatch=@(2,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''dis''+''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    rightGroupedMemoryDispatch=@(2,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dispatch-''+(''log''+''.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    groupedMemoryCost=@(1,$true,'$bytes=[Text.Encoding]::UTF8.GetBytes((''cost-''+''ledger'')+''.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     genericNativeMethod=@(1,$false,('[IO.StreamReader]::new[int]('+$guard+')'))
     genericNativeFileMethod=@(1,$false,('[IO.File]::ReadAllText[int]('+$guard+')'))
     dynamicNativeMember=@(1,$false,('[IO.StreamReader]::$Constructor('+$guard+')'))
@@ -52,6 +74,7 @@ try {
     literalMemoryDecoder=@(1,$true,'[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     literalFileWriter=@(1,$true,'[IO.File]::Open($Path,[IO.FileMode]::Create)')
     literalEncoding=@(0,$true,'[Text.UTF8Encoding]::new($false,$true)')
+    literalUnknownReceipt=@(0,$true,'[Unknown.Factory]::new(''receipt.json'')')
   }
   $failures=[Collections.Generic.List[string]]::new()
   foreach($name in $cases.Keys) {
@@ -68,6 +91,7 @@ try {
       @($rows|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
       $violations.Count -eq $(if($cases[$name][1]){0}else{$cases[$name][0]})
     if(-not $valid){$failures.Add($name)}
+    if($name -ceq 'groupedMemoryCost' -and @($rows|Where-Object authority -EQ 'cost').Count -ne 1){$failures.Add('groupedMemoryCostAuthority')}
     $checks++
     "CONSTRUCTOR case=$name rows=$($rows.Count) handled=$(@($rows|Where-Object handled).Count) violations=$($violations.Count) expectedRows=$($cases[$name][0]) expectedHandled=$($cases[$name][1])"
   }

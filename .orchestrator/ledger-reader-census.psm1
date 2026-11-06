@@ -186,6 +186,9 @@ function Get-LedgerReaderCensus {
   function LiteralString($Node,[int]$Depth=0) {
     if ($Depth -ge 12) { return $null }
     if ($Node -is [Management.Automation.Language.StringConstantExpressionAst]) { return $Node.Value }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) {
+      return LiteralString (SingleExpression $Node.Pipeline) ($Depth+1)
+    }
     if ($Node -is [Management.Automation.Language.BinaryExpressionAst] -and $Node.Operator -eq [Management.Automation.Language.TokenKind]::Plus) {
       $left=LiteralString $Node.Left ($Depth+1);$right=LiteralString $Node.Right ($Depth+1)
       if ($null -ne $left -and $null -ne $right) { return ($left+$right) }
@@ -646,14 +649,15 @@ function Get-NonDispatchLedgerPath {
           }
           else { '' }
         if ($type -notmatch '^(System\.)?(IO\.)?(File|FileStream|StreamReader)$') {
-          # Constructor spelling is not a native binding. Report I/O-named,
-          # unresolved-receiver and dispatch-fed constructors even when no
-          # recognized native decoder row can be created.
+          # A mutable receiver's cached type is a hint, never proof of purity.
+          # Dynamic members may perform reads regardless of their spelling.
+          $opaqueStatic=$node.Static -and
+            ($node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
+             $node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst])
           $constructorCandidate=$node.Static -and $node.Member.Value -ieq 'new' -and
             ($type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)' -or
-             (-not $type -and $node.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) -or
              ((Fact $node $unit) -band 1))
-          if ($constructorCandidate -or ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
+          if ($opaqueStatic -or $constructorCandidate -or ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
               (((Fact $node $unit) -band 1) -or ($node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit))))) {
             $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='unknown-static-type';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
           }
