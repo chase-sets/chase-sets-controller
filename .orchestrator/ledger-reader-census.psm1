@@ -625,8 +625,9 @@ function Get-NonDispatchLedgerPath {
             }
           }
           if (-not $argument -and $call.CommandElements.Count -gt 1 -and $call.CommandElements[1] -isnot [Management.Automation.Language.CommandParameterAst]) { $argument=$call.CommandElements[1] }
-          # Uncertainty is not known path authority and cannot suppress seeding.
-          if ($argument -and ((Fact $argument $unit) -band 3) -eq 0) {
+          # Seed every component monotonically. Another component or owner call
+          # acquiring facts must never suppress an unseen path variable.
+          if ($argument) {
             foreach ($variable in (Find-LedgerCensusAst $argument ([Management.Automation.Language.VariableExpressionAst]))) {
               if (AddFact (Key $variable $unit) 1) { $changed=$true }
             }

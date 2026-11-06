@@ -172,6 +172,32 @@ try {
       "OWNER-COMPOSITION case=$composition/$consumer owner=$($owners.Count) native=$($native.Count) violations=$($violations.Count)"
     }
   }
+  foreach($order in @('forward','reverse')) {
+    foreach($consumer in @('opaque','memory')) {
+      $first='Read-DispatchLedgerSnapshot -Path ($Path+''''+$suffix);'
+      $second='Read-DispatchLedgerSnapshot -Path (Join-Path $Path $leaf);'
+      $body=if($order -eq 'forward'){$first+$second}else{$second+$first}
+      $body+=if($consumer -eq 'opaque'){'[Unknown.Factory]::Decode($leaf)'}else{'$bytes=[Text.Encoding]::UTF8.GetBytes($leaf);[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'}
+      $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic([string]`$Path,[string]`$suffix,[string]`$leaf){"+$body+'}'
+      [IO.File]::WriteAllText($path,$source)
+      $errors=$null
+      [void][Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$errors)
+      Check ($errors.Count -eq 0) "overlapping owner source parses $order/$consumer"
+      $c=Get-LedgerReaderCensus -Root $root
+      Check ($c.scanned -eq 2 -and $c.total -eq 2) "overlapping owner complete inventory $order/$consumer"
+      $rows=@($c.rows|Where-Object path -CEQ 'reader.ps1')
+      $owners=@($rows|Where-Object owner)
+      $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
+      $expected=if($consumer -eq 'opaque'){1}else{3}
+      Check ($owners.Count -eq 2 -and @($owners|Where-Object {-not $_.handled -or $_.authority -ne 'dispatch'}).Count -eq 0) "overlapping owners retained $order/$consumer"
+      Check ($rows.Count -eq ($expected+3) -and $violations.Count -eq $expected -and @($violations|Where-Object handled).Count -eq 0) "overlapping owner consumer enforced $order/$consumer"
+      if($consumer -eq 'memory') {
+        $readers=@($rows|Where-Object family -EQ 'StreamReader')
+        Check ($readers.Count -eq 1 -and $readers[0].authority -eq 'dispatch' -and -not $readers[0].handled) "overlapping owner cannot prove nonledger memory $order"
+      }
+      "OVERLAPPING-OWNER case=$order/$consumer owners=$($owners.Count) rows=$($rows.Count) violations=$($violations.Count)"
+    }
+  }
   # A test suffix changes enforcement, never discovery.
   $testPath=Join-Path $root 'reader.test.ps1'
   [IO.File]::WriteAllText($testPath,'[Fake.StreamReader]::new(''dispatch-log.jsonl'')')
