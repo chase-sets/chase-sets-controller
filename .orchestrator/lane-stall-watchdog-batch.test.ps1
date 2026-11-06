@@ -101,13 +101,22 @@ exit 0
   Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness='codex';Model='gpt-6-astra';Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
   [IO.File]::WriteAllText($runner,'$c=Get-Content -LiteralPath '''+$config.Replace("'","''")+''' -Raw|ConvertFrom-Json -AsHashtable;$p=$c.parameters;& $c.script @p;exit $LASTEXITCODE')
   $handle=Begin-Native $runner @() "$Label-producer"
-  $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle}
+  $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle;descendant=$null}
   $workers.Add($caseObject)
   if($Mode-ne'live'){$r=End-Native $handle;Check ($r.exit-eq$(if($Mode-eq'dead'){17}else{0})) "real producer $Mode exit"}
   else{
     $deadline=[datetime]::UtcNow.AddSeconds(30);$ready=$false
     while([datetime]::UtcNow-lt$deadline-and-not$handle.process.HasExited){
-      if(Test-Path -LiteralPath $caseObject.spec){$spec=Get-Content -LiteralPath $caseObject.spec -Raw|ConvertFrom-Json;if($spec.state-eq'running'-and(Test-Path ($progress+'.child.json'))){$ready=$true;break}}
+      try{
+        $spec=[IO.File]::ReadAllText($caseObject.spec)|ConvertFrom-Json -DateKind String
+        if($spec.state-eq'running'){
+          $descendantRecord=[IO.File]::ReadAllText(($progress+'.child.json'))|ConvertFrom-Json -DateKind String
+          if($descendantRecord-and$descendantRecord.pid-and$descendantRecord.startIdentity){$caseObject.descendant=$descendantRecord;$ready=$true;break}
+        }
+      }catch [IO.IOException]{
+        # Own-fixture publication/sharing may still be in flight; retry only
+        # within the existing readiness deadline, never after declaring ready.
+      }
       Start-Sleep -Milliseconds 50
     }
     Check $ready 'real producer published live spec'
@@ -295,7 +304,7 @@ try{
   }
   if($Only-in@('All','AC3','AC4')){
     $live=New-Producer 'synthetic-live' live;$spec=Get-Content $live.spec -Raw|ConvertFrom-Json -DateKind String
-    $script:descendant=Get-Content ($live.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+    $script:descendant=$live.descendant
     if($Only-in@('All','AC3')){
       $before=[IO.File]::ReadAllText($live.spec)
       $r=Batch @((Lane $live)) 'AC3-live-stale-text' @() $entry 4
@@ -361,7 +370,7 @@ try{
       # identity/growth fixture need not outlive another pair of reductions.
       $membershipLive=New-Producer 'synthetic-membership' live
       $membershipSpec=Get-Content $membershipLive.spec -Raw|ConvertFrom-Json -DateKind String
-      $script:descendant=Get-Content ($membershipLive.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+      $script:descendant=$membershipLive.descendant
       $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
       # Reducer work exceeds the unchanged wall window; membership is checked
       # on the next poll, not made dependent on process startup speed.
@@ -464,7 +473,7 @@ try{
         # One live producer per batch: no worker has to outlive more than its own
         # readiness and one two-poll batch, so the worker's 90-second guard stays.
         $live=New-Producer "synthetic-live-8186-$Name" live;$liveSpec=Get-Content $live.spec -Raw|ConvertFrom-Json -DateKind String
-        $script:descendant=Get-Content ($live.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+        $script:descendant=$live.descendant
         $r=Batch (Isolation-Lanes $Order $live) "AC8186-isolation-$Name" @('-ReducerScript',$badStub) $Subject 10
         Same-Worker $liveSpec
         [IO.File]::WriteAllText($live.release,'release');$done=End-Native $live.handle;Check ($done.exit-eq0) "8186 $Name`: cooperative live worker completion"
