@@ -135,6 +135,15 @@ public class LedgerStreamValueSpoof : FileStream {
     Check ($row.Count -eq 1 -and -not $row[0].handled) 'competing initialization binding grants no authority'
     $bindingMutants++
   }
+  foreach($scope in @('script','global','local','private')){
+    foreach($name in @('Get-NonDispatchLedgerStream','Assert-NonDispatchLedgerPath')){
+      $edit='function '+$scope+':'+$name+' {param($Stream,$Path) $Stream}'
+      $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=($import+"`n"+$read);'.orchestrator/dispatch-ledger-reader.psm1'=($module+"`n"+$edit)}
+      $row=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
+      Check ($row.Count -eq 1 -and -not $row[0].handled) "scoped competing binding grants no authority $scope/$name"
+      $bindingMutants++
+    }
+  }
   $actualSites=0;$actualRefusals=0;$actualRemovalReads=0
   foreach($file in @('controller-install-lock.psm1','controller-release-battery.ps1','invoke-heavy-verifier.ps1','landed-integration-evidence.psm1')){
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file),[ref]$null,[ref]$null)

@@ -517,7 +517,7 @@ function Get-LedgerReaderCensus {
         -not $ast.EndBlock -or $ast.EndBlock.Traps.Count) { return $false }
     $definitions=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] })
     $names=@($definitions | ForEach-Object Name)
-    if (@($definitions | Where-Object { $_.IsFilter -or $_.IsWorkflow -or $_.Name -in @('Export-ModuleMember','Import-Module','Join-Path') }).Count) { return $false }
+    if (@($definitions | Where-Object { $_.IsFilter -or $_.IsWorkflow -or $_.Name -match '[:\\/]' -or $_.Name -in @('Export-ModuleMember','Import-Module','Join-Path') }).Count) { return $false }
     $exports=0
     # A matching dormant body is not an executable binding. Refuse arbitrary
     # initialization that could replace a function before the literal export.
