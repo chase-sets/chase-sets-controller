@@ -183,12 +183,22 @@ function Get-LedgerReaderCensus {
     $variableKeys[$Node]=$key
     return $key
   }
+  function LiteralString($Node,[int]$Depth=0) {
+    if ($Depth -ge 12) { return $null }
+    if ($Node -is [Management.Automation.Language.StringConstantExpressionAst]) { return $Node.Value }
+    if ($Node -is [Management.Automation.Language.BinaryExpressionAst] -and $Node.Operator -eq [Management.Automation.Language.TokenKind]::Plus) {
+      $left=LiteralString $Node.Left ($Depth+1);$right=LiteralString $Node.Right ($Depth+1)
+      if ($null -ne $left -and $null -ne $right) { return ($left+$right) }
+    }
+    return $null
+  }
   function Fact($Node,$Unit) {
     if ($null -eq $Node) { return 0 }
     $mask=0
     if (-not $factParts.ContainsKey($Node)) {
       $parts=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],
-          [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst]))
+          [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst],
+          [Management.Automation.Language.BinaryExpressionAst]))
       $factParts[$Node]=@($parts | Where-Object {
         $ancestor=$_;$nested=$false
         while ($ancestor -and $ancestor -ne $Node) {
@@ -207,8 +217,10 @@ function Get-LedgerReaderCensus {
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
         if ($facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
-        if ($part.Value -match '(?i)dispatch-log(?:\\?\.)jsonl') { $mask=$mask -bor 1 }
-        if ($part.Value -match '(?i)cost-ledger(?:\\?\.)jsonl') { $mask=$mask -bor 2 }
+        # Fold only literal string addition, never evaluate inspected code.
+        $value=if ($part -is [Management.Automation.Language.BinaryExpressionAst]) { LiteralString $part } else { $part.Value }
+        if ($value -match '(?i)dispatch-log(?:\\?\.)jsonl') { $mask=$mask -bor 1 }
+        if ($value -match '(?i)cost-ledger(?:\\?\.)jsonl') { $mask=$mask -bor 2 }
       }
     }
     return $mask
@@ -634,12 +646,24 @@ function Get-NonDispatchLedgerPath {
           }
           else { '' }
         if ($type -notmatch '^(System\.)?(IO\.)?(File|FileStream|StreamReader)$') {
-          if ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
-              (((Fact $node $unit) -band 1) -or ($node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit)))) {
+          # Constructor spelling is not a native binding. Report I/O-named,
+          # unresolved-receiver and dispatch-fed constructors even when no
+          # recognized native decoder row can be created.
+          $constructorCandidate=$node.Static -and $node.Member.Value -ieq 'new' -and
+            ($type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)' -or
+             (-not $type -and $node.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) -or
+             ((Fact $node $unit) -band 1))
+          if ($constructorCandidate -or ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
+              (((Fact $node $unit) -band 1) -or ($node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit))))) {
             $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='unknown-static-type';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
           }
           continue
         }
+        # A mutable type alias or nonliteral invocation shape cannot inherit
+        # native reader/writer authority from an earlier assignment or a guard.
+        $unknown=-not $node.Static -or $node.GenericTypeArguments.Count -gt 0 -or $node.NullConditional -or
+          $node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+          $node.Expression -isnot [Management.Automation.Language.TypeExpressionAst]
         $method=$node.Member.Value
         $argument=if ($node.Arguments.Count) { $node.Arguments[0] } else { $node }
         $family=if ($type -match '(FileStream|StreamReader)$') { $Matches[1] } else { "IO.File.$method" }
