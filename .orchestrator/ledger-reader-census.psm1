@@ -370,7 +370,7 @@ function Get-LedgerReaderCensus {
           $return.Pipeline.PipelineElements[0] -is [Management.Automation.Language.CommandExpressionAst] -and
           -not $return.Pipeline.PipelineElements[0].Redirections.Count) {
         $open=$return.Pipeline.PipelineElements[0].Expression
-        if ($open -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $open.Static -and
+        if ($open -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $open.Static -and -not $open.GenericTypeArguments.Count -and
             $open.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $open.Expression.TypeName.FullName -ceq 'IO.File' -and
             $open.Member -is [Management.Automation.Language.StringConstantExpressionAst] -and $open.Member.Value -ceq 'Open' -and
             $open.Arguments.Count -eq 4 -and $open.Arguments[0] -is [Management.Automation.Language.VariableExpressionAst] -and

@@ -24,6 +24,7 @@ try {
   Check ($owned.Count -eq 1 -and $owned[0].handled -and $owned[0].family -ceq 'IO.File.Open' -and $owned[0].authority -ceq 'dispatch') 'actual factory native expression recognized as sole owner'
   $cases=[ordered]@{
     trivia=@(1,$source.Replace('return [IO.File]',"return <# same native operation #> [IO.File]"))
+    genericOpen=@(0,$source.Replace('[IO.File]::Open(','[IO.File]::Open[int]('))
     modeInvocation=@(0,$source.Replace('[IO.FileMode]::Open,','[IO.FileMode]::Open(),'))
     accessInvocation=@(0,$source.Replace('[IO.FileAccess]::Read,','[IO.FileAccess]::Read(),'))
     shareInvocation=@(0,$source.Replace('[IO.FileShare]::ReadWrite)','[IO.FileShare]::ReadWrite())'))
@@ -62,12 +63,13 @@ try {
   # Execute only the extracted real factory against a private synthetic ledger.
   $ledger=Join-Path $root 'dispatch-log.jsonl'
   [IO.File]::WriteAllText($ledger,"one`n")
-  foreach($name in @('modeInvocation','accessInvocation','shareInvocation','scriptDuplicate')){
+  foreach($name in @('modeInvocation','accessInvocation','shareInvocation','scriptDuplicate','genericOpen')){
     $module=New-Module -ScriptBlock ([scriptblock]::Create('$ErrorActionPreference="Stop";'+$cases[$name][1]))
     $failure='';$result=$null
     try {$result=& $module {param($p) Open-DispatchLedgerReadStream -Path $p} $ledger}catch{$failure=$_.FullyQualifiedErrorId}
     try {
       if($name -ceq 'scriptDuplicate'){Check ($result -is [string] -and $result -ceq 'SHADOW') 'script-qualified duplicate replaces actual module-scope factory'}
+      elseif($name -ceq 'genericOpen'){Check ($failure -match 'MethodCountCouldNotFindBestGeneric' -and $null -eq $result) 'explicit generic Open has no native stream'}
       else{Check ($failure -match 'MethodNotFound' -and $null -eq $result) "invocation lookalike has no native stream: $name"}
     } finally {if($result -is [IDisposable]){$result.Dispose()}}
   }
