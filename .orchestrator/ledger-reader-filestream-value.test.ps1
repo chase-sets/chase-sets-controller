@@ -48,11 +48,12 @@ public class LedgerStreamValueSpoof : FileStream {
     Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED') 'CLR type defeats virtual Name and ETS GetType spoof'
   } finally {$subclass.Dispose()}
   $file=[IO.File]::Open((Join-Path $root 'dispatch-log.jsonl'),'Open','Read','ReadWrite')
-  $anonymous=[IO.FileStream]::new($file.SafeFileHandle,[IO.FileAccess]::Read)
+  $handle=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new($file.SafeFileHandle.DangerousGetHandle(),$false)
+  $anonymous=[IO.FileStream]::new($handle,[IO.FileAccess]::Read)
   try {
     $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $anonymous|Out-Null}catch{$failure=$_.Exception.Message}
     Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED' -and $anonymous.Position -eq 0) 'anonymous native handle cannot establish non-dispatch path authority'
-  } finally {$anonymous.Dispose();$file.Dispose()}
+  } finally {$anonymous.Dispose();$handle.Dispose();$file.Dispose()}
   foreach($other in @([IO.MemoryStream]::new(),[pscustomobject]@{Name='ordinary.json'})){
     $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $other|Out-Null}catch{$failure=$_.Exception.Message}
     Check ([bool]$failure) 'non-file stream refuses, not converted to path'
