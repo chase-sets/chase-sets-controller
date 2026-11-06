@@ -47,6 +47,12 @@ public class LedgerStreamValueSpoof : FileStream {
     $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $subclass|Out-Null}catch{$failure=$_.Exception.Message}
     Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED') 'CLR type defeats virtual Name and ETS GetType spoof'
   } finally {$subclass.Dispose()}
+  $file=[IO.File]::Open((Join-Path $root 'dispatch-log.jsonl'),'Open','Read','ReadWrite')
+  $anonymous=[IO.FileStream]::new($file.SafeFileHandle,[IO.FileAccess]::Read)
+  try {
+    $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $anonymous|Out-Null}catch{$failure=$_.Exception.Message}
+    Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED' -and $anonymous.Position -eq 0) 'anonymous native handle cannot establish non-dispatch path authority'
+  } finally {$anonymous.Dispose();$file.Dispose()}
   foreach($other in @([IO.MemoryStream]::new(),[pscustomobject]@{Name='ordinary.json'})){
     $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $other|Out-Null}catch{$failure=$_.Exception.Message}
     Check ([bool]$failure) 'non-file stream refuses, not converted to path'
@@ -94,6 +100,7 @@ public class LedgerStreamValueSpoof : FileStream {
   foreach($mutation in @(
     $module.Replace("[object].GetMethod('GetType').Invoke(`$Stream,`$null)",'$Stream.GetType()'),
     $module.Replace("[IO.FileStream].GetProperty('Name').GetValue(`$Stream)",'$Stream.Name'),
+    $module.Replace("  if (-not [IO.Path]::IsPathFullyQualified(`$path)) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }",'# removed native name completeness'),
     $module.Replace('dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path','# removed stream assertion'),
     $module.Replace(',Get-NonDispatchLedgerStream,',','))){
     Check ($mutation -cne $module) 'authentication mutation changes actual module'
@@ -132,7 +139,7 @@ public class LedgerStreamValueSpoof : FileStream {
       }
     }
   }
-  "PASS file-stream value guard checks=$checks cases=$($cases.Count) nativeNameRefusals=$refusals bodyExportMutants=4 actualSites=$actualSites actualRefusals=$actualRefusals actualGuardRemovalReads=$actualRemovalReads"
+  "PASS file-stream value guard checks=$checks cases=$($cases.Count) nativeNameRefusals=$refusals bodyExportMutants=5 actualSites=$actualSites actualRefusals=$actualRefusals actualGuardRemovalReads=$actualRemovalReads"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or (Split-Path -Leaf $full) -notlike 'ledger-stream-value-*'){throw 'unsafe fixture cleanup'}

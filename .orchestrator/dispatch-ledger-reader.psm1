@@ -348,6 +348,7 @@ function Get-NonDispatchLedgerStream {
   # Bypass ETS members and virtual Name overrides before granting path authority.
   if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.FileStream]) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
   $path=[IO.FileStream].GetProperty('Name').GetValue($Stream)
+  if (-not [IO.Path]::IsPathFullyQualified($path)) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
   dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path
   return $Stream
 }

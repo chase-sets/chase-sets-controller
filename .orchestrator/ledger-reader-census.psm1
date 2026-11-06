@@ -560,6 +560,7 @@ function Get-NonDispatchLedgerStream {
   param([Parameter(Mandatory)][IO.FileStream]$Stream)
   if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.FileStream]) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
   $path=[IO.FileStream].GetProperty('Name').GetValue($Stream)
+  if (-not [IO.Path]::IsPathFullyQualified($path)) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
   dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path
   return $Stream
 }
