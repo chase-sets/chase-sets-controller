@@ -88,6 +88,7 @@ function Get-LedgerReaderCensus {
   foreach ($name in @('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')) { [void]$dataFunctions.Add($name) }
   $rows=[Collections.Generic.List[object]]::new()
   $terminalTrapProof=@{}
+  $memoryBindingProof=@{};$aliasRebindings=@{}
   function TokenShape($Node) {
     $tokens=$null;$errors=$null
     $null=[Management.Automation.Language.Parser]::ParseInput($Node.Extent.Text,[ref]$tokens,[ref]$errors)
@@ -243,7 +244,8 @@ function Get-LedgerReaderCensus {
           # An authenticated native memory copy adds no opaque invocation, but
           # never clears the input's path or uncertainty facts. Unbound/tampered
           # copies remain uncertain; this is not a named data-function exemption.
-          if ((CommandName $part $Unit) -ceq 'get-ledgermemorybytes' -and -not (NativeMemoryBytes $part $Unit)) { $mask=$mask -bor 4 }
+          if ((OpaqueInvocation $part $Unit) -or
+              ((CommandName $part $Unit) -ceq 'get-ledgermemorybytes' -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
         } elseif ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
@@ -380,8 +382,33 @@ function Get-LedgerReaderCensus {
     return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Stream' -and -not $parameter.Argument -and
       $value -isnot [Management.Automation.Language.CommandParameterAst] -and -not ($value -is [Management.Automation.Language.VariableExpressionAst] -and $value.Splatted)
   }
+  function OpaqueInvocation($Node,$Unit) {
+    # A dynamic/call-operator result, or a unit that changes command aliases,
+    # has no authenticated native-operation binding. Preserve that uncertainty
+    # even if another branch of the same RHS calls a known data reader.
+    return $Node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Unknown -or $aliasRebindings.ContainsKey($Unit.path)
+  }
+  function MemoryBindingSafe($Unit) {
+    if ($memoryBindingProof.ContainsKey($Unit.path)) { return $memoryBindingProof[$Unit.path] }
+    $safe=$true
+    foreach ($name in $functions.Keys) {
+      if (($name -split '[:\\/]')[-1] -ieq 'Get-LedgerMemoryBytes' -and $name -cne 'get-ledgermemorybytes') { $safe=$false;break }
+    }
+    foreach ($call in $Unit.calls) {
+      $name=CommandName $call $Unit
+      if ($name -in @('set-item','si','set-alias','sal','new-alias','nal','clear-item','cli','copy-item','cpi','move-item','mi',
+          'rename-item','rni','invoke-expression','iex','remove-module','import-pssession')) { $safe=$false;break }
+      if ($name -in @('new-item','ni')) {
+        $arguments=Arguments $call @()
+        if (-not $arguments.ContainsKey('itemtype') -or $arguments['itemtype'] -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+            $arguments['itemtype'].Value -ine 'Directory') { $safe=$false;break }
+      }
+    }
+    $memoryBindingProof[$Unit.path]=$safe
+    return $safe
+  }
   function NativeMemoryBytes($Node,$Unit) {
-    if (-not $nativeMemoryBytesValid -or -not (TerminalUnitTrap $Unit) -or -not $guardImports.ContainsKey($Unit.path) -or
+    if (-not $nativeMemoryBytesValid -or -not (TerminalUnitTrap $Unit) -or -not (MemoryBindingSafe $Unit) -or -not $guardImports.ContainsKey($Unit.path) -or
         $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
     if ($Node.GetCommandName() -cne 'dispatch-ledger-reader\Get-LedgerMemoryBytes' -or $Node.Redirections.Count -or
         $Node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Unknown -or $Node.CommandElements.Count -ne 3 -or
@@ -477,6 +504,9 @@ function Get-LedgerReaderCensus {
       $functions[$name]+=[pscustomobject]@{unit=$unit;parameters=$parameters;node=$function
         calls=@(Find-LedgerCensusAst $function.Body ([Management.Automation.Language.CommandAst]))}
     }
+  }
+  foreach ($unit in $units | Where-Object { -not $_.test -and $_.ast }) {
+    if (@($unit.calls | Where-Object { (CommandName $_ $unit) -in @('set-alias','new-alias','sal','nal') }).Count) { $aliasRebindings[$unit.path]=$true }
   }
   # The shared native open moved out of the snapshot reducer into a private
   # factory. Prove its signature and single return expression, not a matching
@@ -710,7 +740,7 @@ function Get-LedgerMemoryBytes {
             $assignmentShapes[$assignment]=@{
               dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
               dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
-              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (CommandName $_ $unit) -ceq 'get-ledgermemorybytes' } | Select-Object -First 1
+              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or (CommandName $_ $unit) -ceq 'get-ledgermemorybytes' } | Select-Object -First 1
               type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }

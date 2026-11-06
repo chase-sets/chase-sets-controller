@@ -142,6 +142,7 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   Copy-Item -LiteralPath (Join-Path $runtime 'review-head-contract.psm1') -Destination $isolated
   $reader=[IO.File]::ReadAllText((Join-Path $runtime 'dispatch-ledger-reader.psm1'))
   $pause=@'
+  if ($lineNumber -eq 0) {
   [IO.File]::AppendAllText('__TRACE__',(($length-$prefixLength).ToString())+"`n")
   if (-not [IO.File]::Exists('__STARTED__')) {
     [IO.File]::WriteAllText('__STARTED__','prefix parser entered')
@@ -149,11 +150,12 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
     while (-not [IO.File]::Exists('__RELEASE__') -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
     if (-not [IO.File]::Exists('__RELEASE__')) { throw 'synthetic parse handshake expired' }
   }
+  }
 '@
   $pause=$pause.Replace('__STARTED__',$started.Replace("'","''")).Replace('__RELEASE__',$release.Replace("'","''")).Replace('__TRACE__',$trace.Replace("'","''"))
-  # The streaming owner replaced the snapshot-array loop. Observe the same
-  # logical delta/parser boundary, without changing the lock or parser body.
-  $seam='        $lineNumber=0;$prefixRowIndex=0'
+  # ReadLine has captured the fixture block before the one-shot parser pause,
+  # matching the old snapshot-array seam's captured-prefix rewrite check.
+  $seam='          $lineNumber++'
   Assert-Policy ($reader.Split($seam,[StringSplitOptions]::None).Count -eq 2) 'unique streaming strict parser instrumentation seam exists'
   $reader=$reader.Replace($seam,$pause+"`n"+$seam)
   [IO.File]::WriteAllText((Join-Path $isolated 'dispatch-ledger-reader.psm1'),$reader)
@@ -161,6 +163,7 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
     Case "F2-$mode" {
     Seed 15
     $initialLength=(Get-Item -LiteralPath $historyPath).Length
+    Assert-Policy ($initialLength -le 65536) 'rewrite fixture fits the actual streaming capture block'
     foreach($marker in @($started,$release,$trace)){if(Test-Path -LiteralPath $marker){Remove-Item -LiteralPath $marker}}
     $shell=[powershell]::Create()
     $mutex=[Threading.Mutex]::new($false,$mutexName)
@@ -182,7 +185,11 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
       Write-Output "F2 $mode concurrent writer acquired=$acquired waitMs=$($timer.ElapsedMilliseconds)"
       if($owned -and $mode -ceq 'logger-tail'){Add-Row @{kind='dispatch';issue=908527}}
       if($owned -and $mode -ceq 'query-append'){Add-Row @{kind='dispatch';issue=908527}}
-      if($owned -and $mode -ceq 'logger-rewrite'){[IO.File]::WriteAllText($historyPath,[IO.File]::ReadAllText($historyPath).Replace('synthetic-0','synthetic-X'))}
+      if($owned -and $mode -ceq 'logger-rewrite'){
+        $oldBytes=[IO.File]::ReadAllText($historyPath);$rewritten=$oldBytes.Replace('synthetic-0','synthetic-X')
+        Assert-Policy ($rewritten -cne $oldBytes -and [Text.Encoding]::UTF8.GetByteCount($rewritten) -eq $initialLength) 'same-length rewrite changes captured prefix'
+        [IO.File]::WriteAllText($historyPath,$rewritten)
+      }
       if($owned -and $mode -ceq 'logger-unterminated'){[IO.File]::AppendAllText($historyPath,'{"kind":"dispatch"}')}
       $before=[IO.File]::ReadAllText($historyPath)
       if($owned){$mutex.ReleaseMutex();$owned=$false}

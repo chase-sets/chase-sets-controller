@@ -73,6 +73,14 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     backgroundImport=@($false,($import+" &`n"+$valid))
     missingImport=@($false,$valid)
     lateImport=@($false,($valid+"`n"+$import))
+    qualifiedBefore=@($false,('function global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))}'+"`n"+$import+"`n"+$valid))
+    qualifiedAfter=@($false,('function global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))};'+$valid))
+    providerReplacement=@($false,('Set-Item Function:global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))};'+$valid))
+    dynamic=@($false,('$cmd="dispatch-ledger-reader\Get-LedgerMemoryBytes";'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','& $cmd')))
+    aliasWithoutImport=@($false,('Set-Alias CopyBytes dispatch-ledger-reader\Get-LedgerMemoryBytes;'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','CopyBytes')))
+    aliasBuiltinName=@($false,('Set-Alias Write-Output dispatch-ledger-reader\Get-LedgerMemoryBytes;'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','Write-Output')))
+    dynamicMixedData=@($false,('$cmd="dispatch-ledger-reader\Get-LedgerMemoryBytes";$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{& $cmd -Stream $buffer};'+$decode))
+    aliasMixedData=@($false,('Set-Alias CopyBytes dispatch-ledger-reader\Get-LedgerMemoryBytes;$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{CopyBytes -Stream $buffer};'+$decode))
   }
   function CensusRow([string]$Text,[string]$Module=''){
     $overrides=@{'reader.ps1'=$Text}
@@ -83,7 +91,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     return $row[0]
   }
   foreach($name in $cases.Keys){
-    $prefix=if($name -cin @('backgroundImport','missingImport','lateImport')){''}else{$import+"`n"}
+    $prefix=if($name -cin @('backgroundImport','missingImport','lateImport','qualifiedBefore','aliasWithoutImport')){''}else{$import+"`n"}
     $row=CensusRow ($prefix+$cases[$name][1])
     Check ([bool]$row.handled -eq $cases[$name][0]) "memory operation proof preserves uncertainty $name"
   }
