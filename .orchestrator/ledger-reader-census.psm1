@@ -396,13 +396,8 @@ function Get-LedgerReaderCensus {
     }
     foreach ($call in $Unit.calls) {
       $name=CommandName $call $Unit
-      if ($name -in @('set-item','si','set-alias','sal','new-alias','nal','clear-item','cli','copy-item','cpi','move-item','mi',
+      if ($name -in @('set-item','si','new-item','ni','set-alias','sal','new-alias','nal','clear-item','cli','copy-item','cpi','move-item','mi',
           'rename-item','rni','invoke-expression','iex','remove-module','import-pssession')) { $safe=$false;break }
-      if ($name -in @('new-item','ni')) {
-        $arguments=Arguments $call @()
-        if (-not $arguments.ContainsKey('itemtype') -or $arguments['itemtype'] -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
-            $arguments['itemtype'].Value -ine 'Directory') { $safe=$false;break }
-      }
     }
     $memoryBindingProof[$Unit.path]=$safe
     return $safe

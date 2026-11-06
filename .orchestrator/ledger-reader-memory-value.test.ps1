@@ -76,6 +76,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     qualifiedBefore=@($false,('function global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))}'+"`n"+$import+"`n"+$valid))
     qualifiedAfter=@($false,('function global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))};'+$valid))
     providerReplacement=@($false,('Set-Item Function:global:dispatch-ledger-reader\Get-LedgerMemoryBytes {param($Stream) return ,([byte[]]@(99))};'+$valid))
+    directoryProviderReplacement=@($false,('New-Item -Path Function:global:dispatch-ledger-reader\Get-LedgerMemoryBytes -ItemType Directory -Value {param($Stream) return ,([byte[]]@(99))};'+$valid))
     dynamic=@($false,('$cmd="dispatch-ledger-reader\Get-LedgerMemoryBytes";'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','& $cmd')))
     aliasWithoutImport=@($false,('Set-Alias CopyBytes dispatch-ledger-reader\Get-LedgerMemoryBytes;'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','CopyBytes')))
     aliasBuiltinName=@($false,('Set-Alias Write-Output dispatch-ledger-reader\Get-LedgerMemoryBytes;'+$valid.Replace('dispatch-ledger-reader\Get-LedgerMemoryBytes','Write-Output')))
