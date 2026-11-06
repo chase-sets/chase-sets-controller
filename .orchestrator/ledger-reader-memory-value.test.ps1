@@ -57,6 +57,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
   $import='Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-reader.psm1'') -Global -DisableNameChecking'
   $copy='$bytes=dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer'
   $decode='$reader=[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'
+  $reflection='[IO.File].GetMethod(''ReadAllBytes'',[type[]]@([string])).Invoke($null,[object[]]@([string]$Path))'
   $valid='$buffer=[IO.MemoryStream]::new();'+$copy+';'+$decode
   $cases=[ordered]@{
     exact=@($true,$valid)
@@ -73,6 +74,11 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     mixedOwnerReceiver=@($false,('$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{[Text.Encoding]::UTF8.GetBytes($Text)};'+$decode))
     mixedVariableReceiver=@($false,('$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{$other.ToArray()};'+$decode))
     pureNativeData=@($true,('$bytes=[IO.File]::ReadAllBytes("ordinary.json");'+$decode))
+    pureOwnerWrapper=@($true,('function Wrapper {Read-DispatchLedgerBytes -Path "ordinary.json"};$bytes=Wrapper;'+$decode))
+    pureTransitiveWrapper=@($true,('function Inner {Read-DispatchLedgerBytes -Path "ordinary.json"};function Wrapper {Inner};$bytes=Wrapper;'+$decode))
+    wrapperProperty=@($false,('function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{[Text.Encoding]::UTF8.GetBytes($Text)}};$bytes=Wrapper;'+$decode))
+    wrapperReflection=@($false,('function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{'+$reflection+'}};$bytes=Wrapper;'+$decode))
+    wrapperInstanceTransitive=@($false,('function Inner {'+$reflection+'};function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{Inner}};$bytes=Wrapper;'+$decode))
     mixedDataRead=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
     mixedOwnerCall=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
     unqualified=@($false,$valid.Replace('dispatch-ledger-reader\',''))
@@ -106,6 +112,10 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     aliasMixedData=@($false,('Set-Alias CopyBytes dispatch-ledger-reader\Get-LedgerMemoryBytes;$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{CopyBytes -Stream $buffer};'+$decode))
   }
   foreach($scope in @('global','script','local','private')){
+    $instanceWrapper='function '+$scope+':Inner {'+$reflection+'};function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{Inner}};$bytes=Wrapper;'+$decode
+    $cases['instanceScopeWrapper'+$scope]=@($false,$instanceWrapper)
+    $cases['instanceScopeCall'+$scope]=@($false,$instanceWrapper.Replace('else{Inner}','else{'+$scope+':Inner}'))
+    $cases['instanceScopeUnscopedDefinition'+$scope]=@($false,$instanceWrapper.Replace(('function '+$scope+':Inner'),'function Inner').Replace('else{Inner}','else{'+$scope+':Inner}'))
     $wrapper='function '+$scope+':Inner($buffer){dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};function Outer($buffer){if($choose){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{Inner $buffer}};$buffer="dispatch-log.jsonl";$bytes=Outer $buffer;'+$decode
     $cases['scopeWrapper'+$scope]=@($false,$wrapper)
     $cases['scopeCall'+$scope]=@($false,$wrapper.Replace('else{Inner $buffer}','else{'+$scope+':Inner $buffer}'))

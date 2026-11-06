@@ -504,7 +504,8 @@ function Get-LedgerReaderCensus {
       if (-not $functions.ContainsKey($name)) { $functions[$name]=@() }
       $parameters=@($(if ($function.Parameters) { $function.Parameters } elseif ($function.Body.ParamBlock) { $function.Body.ParamBlock.Parameters }) | Where-Object { $null -ne $_ })
       $functions[$name]+=[pscustomobject]@{unit=$unit;parameters=$parameters;node=$function
-        calls=@(Find-LedgerCensusAst $function.Body ([Management.Automation.Language.CommandAst]))}
+        calls=@(Find-LedgerCensusAst $function.Body ([Management.Automation.Language.CommandAst]))
+        instanceCall=[bool](Find-LedgerCensusAst $function.Body ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { -not $_.Static } | Select-Object -First 1)}
     }
   }
   foreach ($unit in $units | Where-Object { -not $_.test -and $_.ast }) {
@@ -724,10 +725,10 @@ function Get-LedgerMemoryBytes {
       foreach ($target in $functions[$name]) {
         $calls=$target.calls
         if (@($calls | Where-Object { $dataFunctions.Contains((CommandName $_ $target.unit)) }).Count -and $dataFunctions.Add($name)) { $changed=$true }
-        # A wrapper mixing row data with a native copy or opaque command has
+        # A wrapper mixing row data with a native copy or opaque result has
         # no proved return partition. Preserve uncertainty transitively rather
         # than granting the generic data-function assignment exemption.
-        if (@($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or (MemoryFactCommand $_ $target.unit) }).Count -and
+        if (($target.instanceCall -or @($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or (MemoryFactCommand $_ $target.unit) }).Count) -and
             $memoryFactFunctions.Add($name)) { $changed=$true }
         # Scope-qualified declarations are callable by their unscoped names.
         # Add only uncertainty aliases, never function/data/purity authority.
