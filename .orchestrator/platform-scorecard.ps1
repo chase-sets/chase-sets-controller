@@ -285,7 +285,7 @@ function Read-ScorecardLedgers([string]$Container) {
         }
     } catch {$dispatchComplete=$false;Add-ScorecardGap 'dispatch-ledger-unavailable'}
     try {
-        foreach($line in [IO.File]::ReadLines((Join-Path $runtime 'cost-ledger.jsonl'))){
+        foreach($line in [IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $runtime 'cost-ledger.jsonl')))){
             if(-not $line.Trim()){continue}
             $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
             if(-not $row.transcript){throw 'cost transcript missing'}

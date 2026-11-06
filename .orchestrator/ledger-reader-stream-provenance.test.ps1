@@ -142,7 +142,69 @@ try {
     } finally { $held.Dispose() }
     Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToHexString($bytes)) "canonical alias unchanged $alias"
   }
-  Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red"
+  $scorecardPath = Join-Path $PSScriptRoot 'platform-scorecard.ps1'
+  $scorecardAst = [Management.Automation.Language.Parser]::ParseFile($scorecardPath,[ref]$null,[ref]$null)
+  $ledgerFunction = @($scorecardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Read-ScorecardLedgers'},$true))
+  Check ($ledgerFunction.Count -eq 1) 'actual mixed scorecard ledger function'
+  $costRead = @($ledgerFunction[0].FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Expression.Extent.Text -ceq '[IO.File]' -and $n.Member.Value -ceq 'ReadLines'},$true))
+  Check ($costRead.Count -eq 1) 'actual scorecard native cost reader'
+  $costGuard = '(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $runtime ''cost-ledger.jsonl''))'
+  $actualCost = $costRead[0].Extent.Text
+  Check ($actualCost.Contains($costGuard,[StringComparison]::Ordinal)) 'actual scorecard cost operand guarded'
+  $nativeCost = $actualCost.Replace($costGuard,'(Join-Path $runtime ''cost-ledger.jsonl'')')
+  # Only redirect the path construction in the isolated probe. The exact native
+  # expression, owner guard and deferred ReadLines enumeration stay production code.
+  $costPreamble = 'param([string]$ProbePath)'+"`n"+$import+@'
+
+function Join-Path([string]$Path,[string]$ChildPath) {
+  if ($ChildPath -ceq 'cost-ledger.jsonl') { return $ProbePath }
+  return Microsoft.PowerShell.Management\Join-Path $Path $ChildPath
+}
+$runtime=$PSScriptRoot
+'@
+  [IO.File]::WriteAllText($probe,$costPreamble+"`n@("+$nativeCost+')')
+  $nativeLines = @(& $probe $positive)
+  [IO.File]::WriteAllText($probe,$costPreamble+"`n@("+$actualCost+')')
+  Check ((ConvertTo-Json -Compress -InputObject @(& $probe $positive)) -ceq (ConvertTo-Json -Compress -InputObject $nativeLines)) 'scorecard ReadLines BOM/CRLF/invalidUTF8 unchanged'
+  $scorecardRefused=0;$scorecardMutants=0
+  foreach ($alias in @('dispatch-log.jsonl','DISPATCH-LOG.JSONL','./dispatch-log.jsonl','dispatch-log.jsonl.','dispatch-log.jsonl ','dispatch-log.jsonl:stream','dispatch-log.jsonl.:stream')) {
+    $target=Join-Path $root $alias
+    [IO.File]::WriteAllBytes($target,$bytes)
+    $held=[IO.File]::Open($target,'Open','ReadWrite','None')
+    try {
+      foreach ($body in @($actualCost,$nativeCost)) {
+        [IO.File]::WriteAllText($probe,$costPreamble+"`n@("+$body+')')
+        $failure='';try { & $probe $target | Out-Null } catch { $failure=$_.Exception.Message }
+        if ($body -ceq $actualCost) {
+          Check ($failure -match 'DISPATCH_LEDGER_OWNER_REQUIRED') "scorecard owner refusal before native acquisition $alias"
+          $scorecardRefused++
+        } else {
+          Check ($failure -notmatch 'DISPATCH_LEDGER_OWNER_REQUIRED' -and $failure -match 'used by another process|sharing violation|Could not open the.*alternate data stream') "scorecard guard-removal native failure $alias"
+          $scorecardMutants++
+        }
+      }
+    } finally { $held.Dispose() }
+    Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToHexString($bytes)) "scorecard alias untouched $alias"
+  }
+  foreach ($guarded in @($true,$false)) {
+    $body=$ledgerFunction[0].Extent.Text
+    if (-not $guarded) { $body=$body.Replace($costGuard,'(Join-Path $runtime ''cost-ledger.jsonl'')') }
+    [IO.File]::WriteAllText($sourcePath,$import+"`n"+$body)
+    $census=Get-LedgerReaderCensus -Root $root
+    $rows=@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'IO.File.ReadLines' })
+    Check ($rows.Count -eq 1) "actual scorecard native row guarded=$guarded"
+    Check ([bool]$rows[0].handled -eq $guarded) "actual scorecard per-use census proof guarded=$guarded"
+    Check (@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'owner-api' -and $_.owner -and $_.handled }).Count -eq 1) "canonical scorecard API retained guarded=$guarded"
+  }
+  . $scorecardPath -FunctionsOnly
+  $script:ScorecardGaps=[Collections.Generic.List[string]]::new()
+  [IO.File]::WriteAllText((Join-Path $root '.orchestrator/dispatch-log.jsonl'),'{"kind":"dispatch","issue":101}'+"`n")
+  [IO.File]::WriteAllText((Join-Path $root '.orchestrator/cost-ledger.jsonl'),'{"transcript":"same","usd":1}'+"`n"+'{"transcript":"same","usd":2}'+"`n")
+  $ledgers=Read-ScorecardLedgers $root
+  Check ($ledgers.dispatchComplete -and $ledgers.costComplete -and $ledgers.dispatches.Count -eq 1 -and $ledgers.costs.Count -eq 1 -and $ledgers.costs[0].usd -eq 2 -and $script:ScorecardGaps.Count -eq 0) 'actual scorecard mixed reducers complete with last cost row'
+  $released=[IO.File]::Open((Join-Path $root '.orchestrator/cost-ledger.jsonl'),'Open','ReadWrite','None')
+  $released.Dispose()
+  Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red scorecardOwnerRefusals=$scorecardRefused scorecardGuardRemovalRED=$scorecardMutants"
 } finally {
   $full = [IO.Path]::GetFullPath($root)
   if ((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or
