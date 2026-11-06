@@ -42,6 +42,13 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     Check ([bool]$failure) 'non-native memory input refuses'
     if($value -is [IDisposable]){$value.Dispose()}
   }
+  $encoding=[Text.Encoding]::UTF8
+  $encoding|Add-Member -MemberType ScriptMethod -Name GetBytes -Value {return ,([byte[]]@(99))} -Force
+  try {
+    Check ([Convert]::ToHexString([Text.Encoding]::UTF8.GetBytes('cost-ledger.jsonl')) -ceq '63') 'instance encoding result can be replaced by ETS'
+  } finally {$encoding.PSObject.Members.Remove('GetBytes')}
+  $literalCost=[byte[]][char[]](('cost-'+'ledger')+'.jsonl')
+  Check ([Text.Encoding]::UTF8.GetString($literalCost) -ceq 'cost-ledger.jsonl') 'literal cost byte composition preserves decoded text'
   [IO.File]::WriteAllText((Join-Path $root 'reader.ps1'),'# synthetic native memory operation')
   & git -C $root init -q
   & git -C $root add reader.ps1 .orchestrator/dispatch-ledger-reader.psm1
@@ -62,6 +69,10 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     propertyReceiver=@($false,('$bytes=[Text.Encoding]::UTF8.GetBytes($Text);'+$decode))
     factoryReceiver=@($false,('$bytes=[Text.Encoding]::GetEncoding(''utf-8'').GetBytes($Text);'+$decode))
     convertedReceiver=@($false,('$bytes=([Text.Encoding][Text.Encoding]::UTF8).GetBytes($Text);'+$decode))
+    mixedNativeReceiver=@($false,('$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{[Text.Encoding]::UTF8.GetBytes($Text)};'+$decode))
+    mixedOwnerReceiver=@($false,('$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{[Text.Encoding]::UTF8.GetBytes($Text)};'+$decode))
+    mixedVariableReceiver=@($false,('$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{$other.ToArray()};'+$decode))
+    pureNativeData=@($true,('$bytes=[IO.File]::ReadAllBytes("ordinary.json");'+$decode))
     mixedDataRead=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
     mixedOwnerCall=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
     unqualified=@($false,$valid.Replace('dispatch-ledger-reader\',''))

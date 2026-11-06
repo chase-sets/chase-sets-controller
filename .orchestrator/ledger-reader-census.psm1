@@ -755,10 +755,11 @@ function Get-LedgerMemoryBytes {
             }
           }
           $dataCall=$assignmentShapes[$assignment].dataCall;$dataRead=$assignmentShapes[$assignment].dataRead
-          # Mixed data reads or a tampered transitive data function must never
-          # suppress authentication/input facts for this native operation.
-          if (($assignmentShapes[$assignment].memoryCopy -or (-not $dataCall -and -not $dataRead)) -and
-              (AddFact (Key $assignment.Left $unit) (Fact $assignment.Right $unit))) { $changed=$true }
+          # A data partition cannot suppress opaque values on another branch.
+          # Preserve uncertainty as well as every native-copy input fact.
+          $mask=Fact $assignment.Right $unit
+          if (($assignmentShapes[$assignment].memoryCopy -or (-not $dataCall -and -not $dataRead) -or ($mask -band 4)) -and
+              (AddFact (Key $assignment.Left $unit) $mask)) { $changed=$true }
           $type=$assignmentShapes[$assignment].type
           # Only a type-valued alias has static members. The result of
           # [IO.File]::Open(...) is a stream, not an alias for IO.File.

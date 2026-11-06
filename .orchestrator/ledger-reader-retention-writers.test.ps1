@@ -37,13 +37,18 @@ try {
   }
   foreach($open in $opens) {
     $row=@($census.rows|Where-Object {$_.path -ceq '.orchestrator/runtime-retention.ps1' -and $_.line -eq $open.Extent.StartLineNumber -and $_.family -ceq 'IO.File.Open'})[0]
-    $uncertain=$open.Arguments[0].Extent.Text -ceq "(`$stem+'.manifest.json.partial')"
-    Check ($row.role -ceq 'writer' -and $row.handled -eq (-not $uncertain) -and -not $row.test -and -not $row.owner -and
-      $row.authority -ceq $(if($uncertain){'indeterminate'}else{'non-ledger'})) 'actual writer preserves unresolved concatenation uncertainty, without owner or test exemption'
+    Check ($row.role -ceq 'writer' -and -not $row.handled -and -not $row.test -and -not $row.owner -and
+      $row.authority -ceq 'indeterminate') 'actual writers preserve instance-derived and concatenation uncertainty, without owner or test exemption'
     $enforced=@($census.violations|Where-Object {$_.path -ceq $row.path -and $_.line -eq $row.line -and $_.family -ceq $row.family -and $_.role -ceq 'writer' -and -not $_.handled})
-    Check ($enforced.Count -eq [int]$uncertain) 'uncertain actual writer remains in global enforcement'
+    Check ($enforced.Count -eq 1) 'each uncertain actual writer remains in global enforcement'
     Check ($open.Arguments.Count -eq 4 -and $open.Arguments[1].Extent.Text -ceq '[IO.FileMode]::CreateNew' -and
       $open.Arguments[2].Extent.Text -ceq '[IO.FileAccess]::Write' -and $open.Arguments[3].Extent.Text -ceq '[IO.FileShare]::None') 'explicit exclusive CreateNew/write-only enums'
+
+    $operand=$open.Arguments[0]
+    $literalSource=$source.Remove($operand.Extent.StartOffset,$operand.Extent.Text.Length).Insert($operand.Extent.StartOffset,"'ordinary.zip.partial'")
+    $literal=Get-LedgerReaderCensus -Root $root -SourceOverride @{'.orchestrator/runtime-retention.ps1'=$literalSource}
+    $positive=@($literal.rows|Where-Object {$_.path -ceq $row.path -and $_.line -eq $row.line -and $_.family -ceq $row.family})
+    Check ($positive.Count -eq 1 -and $positive[0].role -ceq 'writer' -and $positive[0].handled -and $positive[0].authority -ceq 'non-ledger' -and -not $positive[0].owner -and -not $positive[0].test) 'literal operand writer remains a positive at each actual native site'
 
     # Compare the AST-derived native call with its previous string-enum form.
     $legacy=$open.Extent.Text

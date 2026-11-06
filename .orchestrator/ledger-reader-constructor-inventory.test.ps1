@@ -59,7 +59,8 @@ try {
     nativeComputedMember=@(1,$false,('[IO.StreamReader]::(''n''+''ew'')('+$guard+')'))
     groupedMemoryDispatch=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''dis''+''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     rightGroupedMemoryDispatch=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dispatch-''+(''log''+''.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
-    groupedMemoryCost=@(1,$true,'$bytes=[Text.Encoding]::UTF8.GetBytes((''cost-''+''ledger'')+''.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    groupedMemoryCost=@(1,$true,'$bytes=[byte[]][char[]]((''cost-''+''ledger'')+''.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    opaqueGroupedMemoryCost=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''cost-''+''ledger'')+''.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     literalUnknownLoad=@(1,$false,'[Unknown.Factory]::Load(''dispatch-log.jsonl'')')
     literalUnknownDecode=@(1,$false,'[Unknown.Factory]::Decode(''dispatch-log.jsonl'')')
     unknownInstance=@(1,$false,'$Decoder.Load(''dispatch-log.jsonl'')')
@@ -188,6 +189,10 @@ try {
       # inventoried refusals; added uncertainty must not hide either shape.
       Check (@($rows|Where-Object {$_.family -ceq 'unknown-static-type' -and $_.role -ceq 'unclassified' -and -not $_.handled}).Count -eq 1) 'scriptblock composition retains constructor refusal'
       Check (@($rows|Where-Object {-not $_.family -and $_.role -ceq 'unclassified' -and -not $_.handled}).Count -eq 1) 'scriptblock composition inventories opaque invocation refusal'
+    }
+    if($name -ceq 'opaqueGroupedMemoryCost') {
+      Check (@($rows|Where-Object {$_.family -ceq 'StreamReader' -and $_.authority -ceq 'indeterminate' -and -not $_.handled}).Count -eq 1) 'opaque cost encoding retains decoder refusal'
+      Check (@($rows|Where-Object {$_.family -ceq 'unknown-instance-type' -and -not $_.handled}).Count -eq 1) 'opaque cost encoding inventories replaceable instance method'
     }
     if(-not $valid){$failures.Add($name)}
     if($name -ceq 'groupedMemoryCost' -and @($rows|Where-Object authority -EQ 'cost').Count -ne 1){$failures.Add('groupedMemoryCostAuthority')}
