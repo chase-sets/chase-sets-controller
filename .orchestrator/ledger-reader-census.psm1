@@ -214,7 +214,8 @@ function Get-LedgerReaderCensus {
     if (-not $factParts.ContainsKey($Node)) {
       $parts=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],
           [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst],
-          [Management.Automation.Language.BinaryExpressionAst],[Management.Automation.Language.UnaryExpressionAst]))
+          [Management.Automation.Language.BinaryExpressionAst],[Management.Automation.Language.UnaryExpressionAst],
+          [Management.Automation.Language.InvokeMemberExpressionAst]))
       $factParts[$Node]=@($parts | Where-Object {
         $ancestor=$_;$nested=$false
         while ($ancestor -and $ancestor -ne $Node) {
@@ -250,6 +251,14 @@ function Get-LedgerReaderCensus {
         } elseif ($part -is [Management.Automation.Language.UnaryExpressionAst]) {
           $value=$null
           if ($part.TokenKind -eq [Management.Automation.Language.TokenKind]::Join) { $mask=$mask -bor 4 }
+        } elseif ($part -is [Management.Automation.Language.InvokeMemberExpressionAst]) {
+          $value=$null
+          # String methods can compose a ledger path from non-ledger fragments.
+          # This syntax adds uncertainty only; it never proves a method pure.
+          if (($part.Static -and $part.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+               $part.Expression.TypeName.FullName -match '^(System\.)?String$') -or
+              $part.Expression -is [Management.Automation.Language.StringConstantExpressionAst] -or
+              $part.Expression -is [Management.Automation.Language.ExpandableStringExpressionAst]) { $mask=$mask -bor 4 }
         } else {
           $value=$part.Value
           if ($part -is [Management.Automation.Language.ExpandableStringExpressionAst] -and $part.NestedExpressions.Count) { $mask=$mask -bor 4 }
