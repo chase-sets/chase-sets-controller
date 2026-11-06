@@ -228,11 +228,27 @@ function Read-DispatchCountHistory {
         }
         $reader=[DispatchHistoryStreaming.ReaderV1]::new($stream,$length,$prefixLength)
         $metrics.readPasses=1
-        $lineNumber=0
+        $lineNumber=0;$prefixRowIndex=0
         while ($null -ne ($line=$reader.ReadLine())) {
           $lineNumber++
-          if ($lineNumber -gt $MaxRows) { $audit.truncated=$true;continue }
-          if ($lineNumber -le $prefixLines) { continue }
+          if ($lineNumber -gt $MaxRows) { $audit.truncated=$true }
+          if ($lineNumber -le $prefixLines) {
+            if ($prefixValid -and $null -ne $PrefixHistory) {
+              if (-not [string]::IsNullOrWhiteSpace($line)) {
+                if ($prefixRowIndex -ge $rows.Count) { $prefixValid=$false }
+                else {
+                  $cached=$rows[$prefixRowIndex]
+                  $rawBytes=[Text.UTF8Encoding]::new($false).GetBytes($line)
+                  $rawHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+                  if ($cached.line -ne $lineNumber -or $cached.raw -cne $line -or
+                      $cached.byteLength -ne $rawBytes.Length -or $cached.rawSha256 -cne $rawHash) { $prefixValid=$false }
+                }
+                $prefixRowIndex++
+              } elseif ($prefixRowIndex -lt $rows.Count -and $rows[$prefixRowIndex].line -le $lineNumber) { $prefixValid=$false }
+            }
+            continue
+          }
+          if ($lineNumber -gt $MaxRows) { continue }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $audit.rows++
         try {
@@ -281,6 +297,7 @@ function Read-DispatchCountHistory {
           }
           if ($reader.DecodeFailed) { throw 'history UTF8 invalid' }
           if ($null -ne $PrefixHistory -and (-not $prefixValid -or
+              $prefixRowIndex -ne @($PrefixHistory.rows).Count -or
               $reader.PrefixHash -cne $PrefixHistory.snapshotHash -or -not $reader.PrefixTerminated -or
               $reader.PrefixLines -ne $prefixLines)) {
             $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='moved'
