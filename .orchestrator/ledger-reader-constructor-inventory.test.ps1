@@ -124,6 +124,8 @@ try {
     Check ($errors.Count -eq 0) "source parses $name"
     $c=Get-LedgerReaderCensus -Root $root
     Check ($c.scanned -eq 2 -and $c.total -eq 2) "complete tracked inventory $name"
+    $canonicalOwner=@($c.rows|Where-Object {$_.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $_.family -ceq 'IO.File.Open' -and $_.owner})
+    Check ($canonicalOwner.Count -eq 1 -and $canonicalOwner[0].handled -and $canonicalOwner[0].authority -eq 'dispatch') "authenticated native owner retained $name"
     $rows=@($c.rows|Where-Object path -CEQ 'reader.ps1')
     $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
     $valid=$rows.Count -eq $cases[$name][0] -and @($rows|Where-Object owner).Count -eq 0 -and

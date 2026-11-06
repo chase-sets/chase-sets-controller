@@ -788,7 +788,7 @@ function Get-NonDispatchLedgerPath {
       if ($mask -eq 0 -and $role -eq 'path-forwarder' -and $family -ne 'owner-api') { continue }
       # A branch flag (or a mention in its body) does not constrain the path.
       # Mixed helpers stay candidates until an actual path exclusion is proved.
-      $authority=if ($family -eq 'owner-api') {'dispatch'} elseif ($role -eq 'reader' -and ((HasPathGuard $node $pathArgument $unit) -or
+      $authority=if ($owner) {'dispatch'} elseif ($role -eq 'reader' -and ((HasPathGuard $node $pathArgument $unit) -or
           ($family -eq 'StreamReader' -and (InlineNonDispatchStreamReader $node $unit)))) {
         if ($mask -eq 2) { 'cost' } else { 'non-ledger' }
       } elseif ($mask -eq 2) {
