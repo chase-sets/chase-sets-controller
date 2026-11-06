@@ -506,7 +506,9 @@ try {
   $largeEarly = Invoke-Pacing $caseEarly
   Assert-Pacing ($largeEarly.raw -ceq $smallEarly.raw) 'actual pacing CLI retains the early fact in complete large history'
   $tailLog = Join-Path $caseEarly.dir 'last-50000.jsonl'
-  [IO.File]::WriteAllLines($tailLog, [string[]]@(Get-Content -LiteralPath $caseEarly.log -Tail 50000), $utf8)
+  $tailRows = @([IO.File]::ReadLines($caseEarly.log) | Select-Object -Last 50000)
+  Assert-Pacing ($tailRows.Count -eq 50000) 'early caller negative control contains exactly the physical suffix'
+  [IO.File]::WriteAllLines($tailLog, [string[]]$tailRows, $utf8)
   $tailEarly = Invoke-Pacing $caseEarly @{DispatchLogPath=$tailLog}
   Assert-Pacing ($tailEarly.raw -cne $smallEarly.raw -and $tailEarly.data.laneHours.rows -eq 1 -and
     $tailEarly.data.laneHours.counted -eq 1 -and $tailEarly.data.providers.claude.laneHours -eq 0 -and
