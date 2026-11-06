@@ -188,6 +188,62 @@ try {
       }
     }
   }
+  $queryScript=Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+  $claim=[ordered]@{schemaVersion='dispatch-count-decision/v1';id="dispatch-count-$issue-v1";
+    phase='CLAIMED';count=16;lane='synthetic-large-decision';transcript='synthetic-large-decision.jsonl'}
+  $claimJson=$claim | ConvertTo-Json -Compress
+  Check-Large 'query-cli/large/due' {
+    $beforeHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    $decision=& $queryScript -DispatchIssue $issue -DispatchCandidateState open -DispatchAuthority clear `
+      -DispatchLogPath $path -RuntimeRoot $PSScriptRoot | ConvertFrom-Json
+    Assert-Large ($decision.schemaVersion -ceq 'dispatch-count-query/v1' -and $decision.issue -eq $issue -and
+      $decision.state -ceq 'DUE' -and $decision.action -ceq 'CLAIM_DECISION' -and
+      $decision.reason -ceq 'DISPATCH_THRESHOLD' -and $decision.dispatchCount -eq 16 -and
+      $null -eq $decision.decision) 'actual query CLI lost the above-cliff count decision'
+    Assert-Large ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ceq $beforeHash) 'query CLI mutated the ledger'
+  }
+  Check-Large 'logger/large/claimed-once' {
+    # This executes the real decision writer's pre-lock read and under-lock
+    # PrefixHistory fold, rather than only invoking their reader functions.
+    $beforeLength=(Get-Item -LiteralPath $path).Length
+    $raw=& (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind decision-filed -Issue $issue `
+      -DispatchDecision $claimJson -OutFile $path -NoBoard
+    Assert-Large ($raw -is [string]) 'decision logger did not return exactly one raw JSON row'
+    $expectedTail=$raw+[Environment]::NewLine
+    $tail=[byte[]]::new([Text.Encoding]::UTF8.GetByteCount($expectedTail))
+    Assert-Large ((Get-Item -LiteralPath $path).Length -eq $beforeLength+$tail.Length) 'claim append length mismatch'
+    $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    try {
+      [void]$stream.Seek($beforeLength,[IO.SeekOrigin]::Begin)
+      $stream.ReadExactly($tail,0,$tail.Length)
+      Assert-Large ([Text.Encoding]::UTF8.GetString($tail) -ceq $expectedTail) 'claim was not persisted byte-for-byte'
+    } finally { $stream.Dispose() }
+    $row=$raw | ConvertFrom-Json
+    Assert-Large ($row.kind -ceq 'decision-filed' -and $row.issue -eq $issue -and
+      ($row.dispatchDecision | ConvertTo-Json -Compress) -ceq $claimJson) 'persisted claim differs from requested transition'
+    $beforeHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    $decision=& $queryScript -DispatchIssue $issue -DispatchCandidateState open -DispatchAuthority clear `
+      -DispatchLogPath $path -RuntimeRoot $PSScriptRoot | ConvertFrom-Json
+    Assert-Large ($decision.state -ceq 'PENDING' -and $decision.action -ceq 'RECONCILE_DECISION' -and
+      $decision.reason -ceq 'EXISTING_DECISION' -and $decision.dispatchCount -eq 16 -and
+      ($decision.decision | ConvertTo-Json -Compress) -ceq $claimJson) 'actual CLI did not observe exactly one claim'
+    Assert-Large ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ceq $beforeHash) 'post-claim query CLI mutated the ledger'
+  }
+  Check-Large 'logger/large/duplicate-claim-refused' {
+    $beforeHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    $beforeLength=(Get-Item -LiteralPath $path).Length
+    $refused=$false
+    try {
+      & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind decision-filed -Issue $issue `
+        -DispatchDecision $claimJson -OutFile $path -NoBoard | Out-Null
+    } catch {
+      if($_.Exception.Message -cne 'DISPATCH_DECISION_TRANSITION_INVALID') { throw }
+      $refused=$true
+    }
+    Assert-Large $refused 'duplicate claim was not refused'
+    Assert-Large ((Get-Item -LiteralPath $path).Length -eq $beforeLength -and
+      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ceq $beforeHash) 'refused duplicate claim mutated the ledger'
+  }
   if($failures.Count) { throw "FAILED $($failures.Count) checks: $($failures -join '; ')" }
   Write-Output "PASS private large-history readers=$($readers -join ',') identity and two-append count continuity"
 } finally {
