@@ -2568,8 +2568,7 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
     }
     $buffer = [IO.MemoryStream]::new()
     try { $stream.CopyTo($buffer); $bytes = $buffer.ToArray() } finally { $stream.Dispose(); $buffer.Dispose() }
-    $buffer = [IO.MemoryStream]::new($bytes, $false)
-    $reader = [IO.StreamReader]::new($buffer, [Text.Encoding]::UTF8, $true)
+    $reader = [IO.StreamReader]::new([IO.MemoryStream]::new($bytes, $false), [Text.Encoding]::UTF8, $true)
     try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($record.schemaVersion -eq 6) {

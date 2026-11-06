@@ -139,17 +139,31 @@ function Get-LedgerReaderCensus {
     return "$($Unit.path)::script"
   }
   function InlineNonDispatchStreamReader($Node,$Unit) {
-    # No storage/provenance inference: the decoder receives the guarded native
-    # stream directly. Variable-fed constructors remain deliberately refused.
+    # No stream-storage inference: accept only a directly constructed guarded
+    # file stream or an exact data-only memory decoder. Native reads that feed
+    # the bytes remain independently censused; this grants no path authority.
     if ($Node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $Node.Static -or
         $Node.GenericTypeArguments.Count -or $Node.NullConditional -or $Node.Member.Value -ine 'new' -or
         $Node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
-        $Node.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.StreamReader$' -or $Node.Arguments.Count -ne 1) { return $false }
+        $Node.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.StreamReader$' -or $Node.Arguments.Count -notin @(1,3)) { return $false }
     $stream=$Node.Arguments[0]
     if ($stream -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $stream.Static -or
         $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
-        $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
-        $stream.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.FileStream$' -or $stream.Arguments.Count -ne 4) { return $false }
+        $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) { return $false }
+    if ($stream.Expression.TypeName.FullName -match '^(System\.)?IO\.MemoryStream$') {
+      if ($Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 1)) { return $false }
+      $bytes=$stream.Arguments[0];$writable=$stream.Arguments[1]
+      $encoding=$Node.Arguments[1];$detectBom=$Node.Arguments[2]
+      return $bytes -is [Management.Automation.Language.VariableExpressionAst] -and
+        $bytes.VariablePath.UserPath -match '^[a-zA-Z_][a-zA-Z0-9_]*$' -and
+        $writable -is [Management.Automation.Language.VariableExpressionAst] -and $writable.VariablePath.UserPath -ieq 'false' -and
+        $encoding -is [Management.Automation.Language.MemberExpressionAst] -and
+        $encoding -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -and $encoding.Static -and -not $encoding.NullConditional -and
+        $encoding.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+        $encoding.Expression.TypeName.FullName -match '^(System\.)?Text\.Encoding$' -and $encoding.Member.Value -ieq 'UTF8' -and
+        $detectBom -is [Management.Automation.Language.VariableExpressionAst] -and $detectBom.VariablePath.UserPath -ieq 'true'
+    }
+    if ($Node.Arguments.Count -ne 1 -or $stream.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.FileStream$' -or $stream.Arguments.Count -ne 4) { return $false }
     $enumTypes=@('FileMode','FileAccess','FileShare');$enumValues=@('Open','Read','ReadWrite')
     for ($index=0;$index -lt 3;$index++) {
       $value=$stream.Arguments[$index+1]

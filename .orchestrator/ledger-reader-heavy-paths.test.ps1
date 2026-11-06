@@ -106,6 +106,34 @@ try {
   [IO.File]::WriteAllBytes($ownerPath,$expected)
   $snapshot=Get-OwnerSnapshot
   Check ($snapshot.Raw -ceq [Text.Encoding]::UTF8.GetString($expected) -and $snapshot.Record.synthetic) 'actual owner snapshot body and BOM-aware decoder'
+  $snapshotFunction=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-OwnerSnapshot'},$true))[0]
+  $inline='$reader = [IO.StreamReader]::new([IO.MemoryStream]::new($bytes, $false), [Text.Encoding]::UTF8, $true)'
+  Check ($snapshotFunction.Extent.Text.Contains($inline,[StringComparison]::Ordinal)) 'actual owner snapshot directly constructs data-only decoder'
+  $legacy=$snapshotFunction.Extent.Text.Replace('function Get-OwnerSnapshot(', 'function Get-LegacyOwnerSnapshot(').Replace($inline,
+    '$buffer = [IO.MemoryStream]::new($bytes, $false); $reader = [IO.StreamReader]::new($buffer, [Text.Encoding]::UTF8, $true)')
+  . ([scriptblock]::Create($legacy))
+  $text="{`r`n  `"schemaVersion`":4,`"synthetic`":true,`"text`":`"caf$([char]0xe9)`"`r`n}"
+  $encodings=@([Text.UTF8Encoding]::new($false),[Text.UTF8Encoding]::new($true),
+    [Text.UnicodeEncoding]::new($false,$true),[Text.UnicodeEncoding]::new($true,$true),
+    [Text.UTF32Encoding]::new($false,$true),[Text.UTF32Encoding]::new($true,$true))
+  foreach($encoding in $encodings) {
+    foreach($schema in @(4,6)) {
+      $content=$text.Replace('"schemaVersion":4',('"schemaVersion":'+$schema))
+      [IO.File]::WriteAllBytes($ownerPath,([byte[]]($encoding.GetPreamble()+$encoding.GetBytes($content))))
+      $before=Get-LegacyOwnerSnapshot; $after=Get-OwnerSnapshot
+      Check (($null -eq $before) -eq ($null -eq $after)) "owner snapshot refusal unchanged $($encoding.CodePage)/$schema"
+      Check (($before|ConvertTo-Json -Depth 10 -Compress) -ceq ($after|ConvertTo-Json -Depth 10 -Compress)) "owner snapshot raw/record encoding unchanged $($encoding.CodePage)/$schema"
+    }
+  }
+  $invalid=[Text.Encoding]::UTF8.GetBytes('{"schemaVersion":4,"text":"x"}')
+  $invalid[$invalid.Length-3]=0xff
+  foreach($schema in @(4,6)) {
+    if($schema -eq 6){$invalid[17]=[byte][char]'6'}
+    [IO.File]::WriteAllBytes($ownerPath,$invalid)
+    $before=Get-LegacyOwnerSnapshot; $after=Get-OwnerSnapshot
+    Check (($before|ConvertTo-Json -Depth 10 -Compress) -ceq ($after|ConvertTo-Json -Depth 10 -Compress)) "owner snapshot invalid UTF8 behavior unchanged schema $schema"
+    Check (($schema -eq 4 -and $null -ne $after) -or ($schema -eq 6 -and $null -eq $after)) "legacy replacement/schema6 strict refusal retained $schema"
+  }
   $queueMaximumBytes=65536
   $queue=Read-QueueContent $positive
   Check ($queue.Size -eq $expected.Length -and $queue.Hash -ceq (Get-QueueSha256 $expected) -and

@@ -22,9 +22,31 @@ try {
   $open = '[IO.File]::Open('+$guard+',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)'
   $construct = '[System.IO.FileStream]::new('+$guard+',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)'
   $read = '$reader=[IO.StreamReader]::new($stream)'
+  $memory = '[IO.MemoryStream]::new($bytes,$false)'
+  $memoryRead = '$reader=[IO.StreamReader]::new('+$memory+',[Text.Encoding]::UTF8,$true)'
   # An adjacent guarded open does not prove writable, untransformed storage or
   # successful assignment. Variable-fed constructors must remain unhandled.
   $cases = [ordered]@{
+    inlineMemory = @($true,$memoryRead)
+    inlineSystemMemory = @($true,$memoryRead.Replace('[IO.','[System.IO.').Replace('[Text.','[System.Text.'))
+    inlineMemoryOtherBytes = @($true,$memoryRead.Replace('$bytes','$payload'))
+    inlineMemoryDispatchBytes = @($false,('$bytes=[Text.Encoding]::UTF8.GetBytes(''dispatch-log.jsonl'');'+$memoryRead))
+    inlineMemoryVariableStream = @($false,$memoryRead.Replace($memory,'$buffer'))
+    inlineMemoryFactory = @($false,$memoryRead.Replace($memory,'(Get-Buffer $bytes)'))
+    inlineMemoryOtherReceiver = @($false,$memoryRead.Replace('[IO.MemoryStream]','[Unknown.IO]'))
+    inlineMemoryGeneric = @($false,$memoryRead.Replace('MemoryStream]::new(','MemoryStream]::new[int]('))
+    inlineMemoryExtraArgument = @($false,$memoryRead.Replace('$bytes,$false','$bytes,$false,0'))
+    inlineMemoryWritable = @($false,$memoryRead.Replace('$false','$true'))
+    inlineMemoryVariableWritable = @($false,$memoryRead.Replace('$false','$writable'))
+    inlineMemoryScopedBytes = @($false,$memoryRead.Replace('$bytes','$script:bytes'))
+    inlineMemoryTransformedBytes = @($false,$memoryRead.Replace('$bytes','([byte[]]$bytes)'))
+    inlineMemoryOpaqueBytes = @($false,$memoryRead.Replace('$bytes','(Get-Bytes)'))
+    inlineMemoryVariableEncoding = @($false,$memoryRead.Replace('[Text.Encoding]::UTF8','$encoding'))
+    inlineMemoryInvokedEncoding = @($false,$memoryRead.Replace('[Text.Encoding]::UTF8','[Text.Encoding]::UTF8()'))
+    inlineMemoryOtherEncoding = @($false,$memoryRead.Replace('[Text.Encoding]','[Unknown.Encoding]'))
+    inlineMemoryNoBomDetection = @($false,$memoryRead.Replace('$true)','$false)'))
+    inlineMemoryVariableBomDetection = @($false,$memoryRead.Replace('$true)','$detectBom)'))
+    inlineMemoryExtraDecoderArgument = @($false,$memoryRead.Replace('$true)','$true,4096)'))
     inlineGuardedFileStream = @($true,('$reader=[IO.StreamReader]::new('+$construct+')'))
     inlineUnguarded = @($false,('$reader=[IO.StreamReader]::new('+$construct.Replace($guard,'$Path')+')'))
     inlineOpaqueFactory = @($false,('$reader=[IO.StreamReader]::new((Get-Stream '+$guard+'))'))
