@@ -211,7 +211,7 @@ $runtime=$PSScriptRoot
       if ($mode -ceq 'disposeRemoval') {
         $anchor='$costLines.Dispose()'
         Check ($scorecardBody.Contains($anchor) -and $scorecardBody.IndexOf($anchor) -eq $scorecardBody.LastIndexOf($anchor)) 'one explicit cost iterator disposal mutation anchor'
-        . ([scriptblock]::Create($scorecardBody.Replace($anchor,'$null')))
+        . ([scriptblock]::Create($scorecardBody.Replace($anchor,'$null=0')))
       }
       foreach ($badRow in @('invalid-json','{"usd":1}')) {
         $costPath=Join-Path $root '.orchestrator/cost-ledger.jsonl'
