@@ -795,7 +795,8 @@ function Get-NonDispatchLedgerPath {
         if ($role -eq 'reader' -and -not (NonLedgerPath $pathArgument $unit)) { 'indeterminate' } else { 'cost' }
       } elseif ($mask -eq 0) {
         if ($role -eq 'reader' -and -not (NonLedgerPath $pathArgument $unit)) { 'indeterminate' } else { 'non-ledger' }
-      } elseif ($mask -band 1) {'dispatch'} else {'indeterminate'}
+      } elseif ($mask -band 4) {'indeterminate'}
+      elseif ($mask -band 1) {'dispatch'} else {'indeterminate'}
       if ($role -eq 'path-forwarder' -and $family -eq 'new-object' -and ($mask -band 1)) { $role='unclassified';$unknown=$true }
       if ($role -eq 'path-forwarder' -and $family -in @('invoke-expression','iex') -and ($mask -band 1)) { $role='unclassified';$unknown=$true }
       if ($role -eq 'path-forwarder' -and -not $functions.ContainsKey($family) -and -not $knownCommands.Contains($family) -and -not $trackedScripts.Contains($family)) { $role='unclassified';$unknown=$true }

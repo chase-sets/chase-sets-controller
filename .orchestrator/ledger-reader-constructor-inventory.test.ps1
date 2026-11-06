@@ -198,6 +198,32 @@ try {
       "OVERLAPPING-OWNER case=$order/$consumer owners=$($owners.Count) rows=$($rows.Count) violations=$($violations.Count)"
     }
   }
+  foreach($consumer in @('writer','forwarder','guardedReader')) {
+    $body='$joined=$Path+$suffix;Read-DispatchLedgerSnapshot -Path $Path;'
+    $body+=switch($consumer) {
+      writer {'[IO.File]::WriteAllText($joined,''x'')'}
+      forwarder {'Write-Output $joined'}
+      guardedReader {'[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $joined))'}
+    }
+    $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic([string]`$Path,[string]`$suffix){"+$body+'}'
+    [IO.File]::WriteAllText($path,$source)
+    $errors=$null
+    [void][Management.Automation.Language.Parser]::ParseFile($path,[ref]$null,[ref]$errors)
+    Check ($errors.Count -eq 0) "mixed-mask source parses $consumer"
+    $c=Get-LedgerReaderCensus -Root $root
+    Check ($c.scanned -eq 2 -and $c.total -eq 2) "mixed-mask complete inventory $consumer"
+    $rows=@($c.rows|Where-Object path -CEQ 'reader.ps1')
+    $owners=@($rows|Where-Object owner)
+    $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
+    Check ($owners.Count -eq 1 -and $owners[0].handled) "mixed-mask owner retained $consumer"
+    $expected=if($consumer -eq 'guardedReader'){3}else{2}
+    Check ($rows.Count -eq $expected -and $violations.Count -eq 1 -and -not $violations[0].handled -and $violations[0].authority -eq 'indeterminate') "uncertainty cannot become positive authority $consumer"
+    if($consumer -eq 'guardedReader') {
+      $native=@($rows|Where-Object family -EQ 'IO.File.ReadAllText')
+      Check ($native.Count -eq 1 -and $native[0].handled -and $native[0].authority -eq 'non-ledger') 'actual value guard retains independent authority'
+    }
+    "MIXED-MASK case=$consumer rows=$($rows.Count) violations=$($violations.Count)"
+  }
   # A test suffix changes enforcement, never discovery.
   $testPath=Join-Path $root 'reader.test.ps1'
   [IO.File]::WriteAllText($testPath,'[Fake.StreamReader]::new(''dispatch-log.jsonl'')')
