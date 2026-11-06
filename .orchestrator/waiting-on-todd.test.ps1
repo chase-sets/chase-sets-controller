@@ -79,6 +79,54 @@ try{
   Write-Output 'SYNTHETIC identities only: synthetic/chase-sets, issues 909001-909229, login synthetic-todd'
   $t0=[datetimeoffset]::UtcNow
 
+  # Execute the actual caller with synthetic GitHub effects beyond both former
+  # history cliffs. The same fixed clock makes the small ledger an exact oracle.
+  $largeCase=New-WotCase 'large-history' @{909001=@();909002=@()}
+  Add-WotAction $largeCase 'synthetic-large-now' 909001 'now'
+  Add-WotAction $largeCase 'synthetic-large-later' 909002 'later'
+  $largeNow=[datetimeoffset]::UtcNow.ToString('o')
+  $smallDry=Invoke-WotCycle $largeCase -Now $largeNow -DryRun
+  Assert-Wot ($null -eq $smallDry.err -and $smallDry.out.now -eq 1 -and $smallDry.out.later -eq 1 -and
+    (@($smallDry.out.adds)-join',') -ceq '909001') 'large caller small-control plan'
+  $largeSeed=[IO.File]::ReadAllText($largeCase.ledger)
+  $largeWriter=[IO.StreamWriter]::new($largeCase.ledger,$false,[Text.UTF8Encoding]::new($false),65536)
+  try{
+    for($i=0;$i -lt 50000;$i++){$largeWriter.Write("{}`n")}
+    $largeWriter.Write('{"padding":"'+('x'*33554432)+'"}');$largeWriter.Write("`n")
+    $largeWriter.Write($largeSeed)
+  }finally{$largeWriter.Dispose()}
+  $largeRows=0
+  foreach($line in [IO.File]::ReadLines($largeCase.ledger)){$largeRows++}
+  Assert-Wot ($largeRows -eq 50003 -and (Get-Item -LiteralPath $largeCase.ledger).Length -gt 33554432) 'large caller facts follow row and byte cliffs'
+  $largeHash=(Get-FileHash -LiteralPath $largeCase.ledger -Algorithm SHA256).Hash
+  $largeDry=Invoke-WotCycle $largeCase -Now $largeNow -DryRun
+  Assert-Wot ($null -eq $largeDry.err -and
+    ($largeDry.out|ConvertTo-Json -Depth 8 -Compress) -ceq ($smallDry.out|ConvertTo-Json -Depth 8 -Compress)) 'actual large caller dry-run differs from small control'
+  Assert-Wot ($largeDry.mutations.Count -eq 0 -and (Get-WotStateBytes $largeCase) -ceq '<absent>' -and
+    (Get-FileHash -LiteralPath $largeCase.ledger -Algorithm SHA256).Hash -ceq $largeHash) 'large dry-run changed ledger, state or synthetic GitHub'
+  $largeApply=Invoke-WotCycle $largeCase -Now $largeNow
+  Assert-Wot ($null -eq $largeApply.err -and ($largeApply.mutations-join',') -ceq "POST 909001,PATCH $script:pinned" -and
+    (Get-WotOwned $largeCase) -ceq '909001' -and (Get-WotPending $largeCase) -ceq '' -and
+    (Get-WotIssue $largeCase $script:pinned).body -ceq $largeDry.out.body) 'large caller failed synthetic assignment/body publication'
+  Assert-Wot ((Get-FileHash -LiteralPath $largeCase.ledger -Algorithm SHA256).Hash -ceq $largeHash) 'large caller publication mutated ledger'
+  Add-WotAction $largeCase 'synthetic-large-now' 909001 'later'
+  $largeHash=(Get-FileHash -LiteralPath $largeCase.ledger -Algorithm SHA256).Hash
+  $largeState=Get-WotStateBytes $largeCase
+  $largeDry=Invoke-WotCycle $largeCase -Now $largeNow -DryRun
+  Assert-Wot ($null -eq $largeDry.err -and $largeDry.out.now -eq 0 -and $largeDry.out.later -eq 2 -and
+    @($largeDry.out.adds).Count -eq 0 -and (@($largeDry.out.removes)-join',') -ceq '909001' -and
+    $largeDry.mutations.Count -eq 0 -and (Get-WotStateBytes $largeCase) -ceq $largeState) 'large caller lost append supersession or dry-run isolation'
+  $largeApply=Invoke-WotCycle $largeCase -Now $largeNow
+  Assert-Wot ($null -eq $largeApply.err -and ($largeApply.mutations-join',') -ceq "DELETE 909001,PATCH $script:pinned" -and
+    (Get-WotOwned $largeCase) -ceq '' -and (Get-WotPending $largeCase) -ceq '' -and
+    (Get-WotIssue $largeCase $script:pinned).body -ceq $largeDry.out.body) 'large caller append failed synthetic removal/body update'
+  $largeState=Get-WotStateBytes $largeCase
+  $largeReplay=Invoke-WotCycle $largeCase -Now $largeNow
+  Assert-Wot ($null -eq $largeReplay.err -and $largeReplay.mutations.Count -eq 0 -and -not $largeReplay.out.bodyWritten -and
+    (Get-WotStateBytes $largeCase) -ceq $largeState -and
+    (Get-FileHash -LiteralPath $largeCase.ledger -Algorithm SHA256).Hash -ceq $largeHash) 'large caller replay changed state, ledger or synthetic GitHub'
+  Write-Output 'PASS actual Waiting-on-Todd caller beyond both cliffs: physicalRows50003, synthetic publication, append supersession and read-only replay'
+
   # --- AC1: two actions on one issue, superseded state, manual assignment, done aging ---
   $a=New-WotCase 'lifecycle' @{909001=@();909002=@();909004=@($script:todd);909005=@($script:todd)}
   foreach($row in @(@('synthetic-a1',909001,'now'),@('synthetic-a2',909001,'now'),@('synthetic-b1',909002,'now'),@('synthetic-m1',909004,'now'))){Add-WotAction $a $row[0] $row[1] $row[2]}
