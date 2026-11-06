@@ -3383,7 +3383,7 @@ function Remove-ClaimedOwnerLock([string]$ClaimPath, [string]$ExpectedRaw, [swit
     }
     try {
       $encoding = if ($nativeOwner) { [Text.UTF8Encoding]::new($false, $true) } else { [Text.Encoding]::UTF8 }
-      $reader = [IO.StreamReader]::new($stream, $encoding, (-not $nativeOwner), 1024, $true)
+      $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), $encoding, (-not $nativeOwner), 1024, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
       if ($raw -cne $ExpectedRaw) { return $false }
       try { $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch { return $false }

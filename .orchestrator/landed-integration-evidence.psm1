@@ -1056,7 +1056,7 @@ function Get-FleetLoadObservation([string]$Container) {
         if ($openDeadline.ElapsedMilliseconds -ge 1000) { throw }
       }
     }
-    try { $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true); try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() } } finally { $stream.Dispose() }
+    try { $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true); try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() } } finally { $stream.Dispose() }
     $owner = ConvertFrom-RebaseJson $raw
   } catch { $owner = $null }
   if ($null -eq $owner -or $owner -isnot [pscustomobject]) { $observation.reason = 'unparseable'; return [pscustomobject]$observation }

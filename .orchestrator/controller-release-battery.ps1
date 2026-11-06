@@ -308,7 +308,7 @@ function Get-BatteryFleetLoad([switch]$Holder) {
       }
     }
     try {
-      $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+      $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
@@ -527,7 +527,7 @@ function Assert-BatteryAdmission {
           }
         }
         try {
-          $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+          $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true)
           try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
         } finally { $stream.Dispose() }
         $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop

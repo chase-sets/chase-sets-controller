@@ -139,13 +139,15 @@ function Get-LedgerReaderCensus {
     return "$($Unit.path)::script"
   }
   function InlineNonDispatchStreamReader($Node,$Unit) {
-    # No stream-storage inference: accept only a directly constructed guarded
-    # file stream or an exact data-only memory decoder. Native reads that feed
-    # the bytes remain independently censused; this grants no path authority.
+    # Prove the actual constructor operand, never earlier mutable storage.
+    # The value guard authenticates the returned native stream at this use.
+    # Native reads feeding an exact memory decoder remain separately censused.
     if ($Node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $Node.Static -or
         $Node.GenericTypeArguments.Count -or $Node.NullConditional -or $Node.Member.Value -ine 'new' -or
         $Node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
-        $Node.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.StreamReader$' -or $Node.Arguments.Count -notin @(1,3)) { return $false }
+        $Node.Expression.TypeName.FullName -notmatch '^(System\.)?IO\.StreamReader$') { return $false }
+    if ($Node.Arguments.Count -in @(1,3,5) -and (NonDispatchValueStream $Node.Arguments[0] $Unit)) { return $true }
+    if ($Node.Arguments.Count -notin @(1,3)) { return $false }
     $stream=$Node.Arguments[0]
     if ($stream -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $stream.Static -or
         $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
@@ -363,6 +365,15 @@ function Get-LedgerReaderCensus {
     return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Path' -and -not $parameter.Argument -and
       $value -isnot [Management.Automation.Language.CommandParameterAst] -and -not ($value -is [Management.Automation.Language.VariableExpressionAst] -and $value.Splatted)
   }
+  function NonDispatchValueStream($Node,$Unit) {
+    if (-not $nonDispatchStreamValid -or -not $Node -or -not (TerminalUnitTrap $Unit) -or -not $guardImports.ContainsKey($Unit.path) -or $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return NonDispatchValueStream $Node.Pipeline $Unit }
+    if ($Node -is [Management.Automation.Language.PipelineAst] -and -not $Node.Background -and $Node.PipelineElements.Count -eq 1) { return NonDispatchValueStream $Node.PipelineElements[0] $Unit }
+    if ($Node -isnot [Management.Automation.Language.CommandAst] -or $Node.Redirections.Count -or $Node.GetCommandName() -cne 'dispatch-ledger-reader\Get-NonDispatchLedgerStream' -or $Node.CommandElements.Count -ne 3) { return $false }
+    $parameter=$Node.CommandElements[1];$value=$Node.CommandElements[2]
+    return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Stream' -and -not $parameter.Argument -and
+      $value -isnot [Management.Automation.Language.CommandParameterAst] -and -not ($value -is [Management.Automation.Language.VariableExpressionAst] -and $value.Splatted)
+  }
   function CommandName($Node,$Unit) {
     $name=$Node.GetCommandName()
     if ($null -eq $name) {
@@ -497,6 +508,7 @@ function Get-LedgerReaderCensus {
   # fail-closed body and an unconditional import of that tracked module.
   $nonDispatchGuardValid=$false
   $nonDispatchValueValid=$false
+  $nonDispatchStreamValid=$false
   $guardImports=@{}
   $expectedGuard=@'
 function Assert-NonDispatchLedgerPath {
@@ -514,7 +526,7 @@ function Assert-NonDispatchLedgerPath {
   if ($functions.ContainsKey('assert-nondispatchledgerpath') -and $functions['assert-nondispatchledgerpath'].Count -eq 1) {
     $target=$functions['assert-nondispatchledgerpath'][0]
     $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
-    $exported=$false;$valueExported=$false
+    $exported=$false;$valueExported=$false;$streamExported=$false
     foreach ($statement in $target.unit.ast.EndBlock.Statements) {
       if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
       $call=$statement.PipelineElements[0]
@@ -524,6 +536,7 @@ function Assert-NonDispatchLedgerPath {
       $values=if ($names -is [Management.Automation.Language.ArrayLiteralAst]) { @($names.Elements) } else { @($names) }
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Assert-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $exported=$true }
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $valueExported=$true }
+      if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-NonDispatchLedgerStream' -cin @($values | ForEach-Object Value)) { $streamExported=$true }
     }
     $nonDispatchGuardValid=$nonDispatchGuardValid -and $exported
   }
@@ -540,6 +553,22 @@ function Get-NonDispatchLedgerPath {
     $target=$functions['get-nondispatchledgerpath'][0]
     $nonDispatchValueValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
       (TokenShape $target.node.Body) -ceq (TokenShape $valueAst.EndBlock.Statements[0].Body)
+  }
+  $expectedStream=@'
+function Get-NonDispatchLedgerStream {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][IO.FileStream]$Stream)
+  if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.FileStream]) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
+  $path=[IO.FileStream].GetProperty('Name').GetValue($Stream)
+  dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path
+  return $Stream
+}
+'@
+  $streamAst=[Management.Automation.Language.Parser]::ParseInput($expectedStream,[ref]$tokens,[ref]$errors)
+  if ($nonDispatchGuardValid -and $streamExported -and $functions.ContainsKey('get-nondispatchledgerstream') -and $functions['get-nondispatchledgerstream'].Count -eq 1) {
+    $target=$functions['get-nondispatchledgerstream'][0]
+    $nonDispatchStreamValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
+      (TokenShape $target.node.Body) -ceq (TokenShape $streamAst.EndBlock.Statements[0].Body)
   }
   if ($nonDispatchGuardValid) {
     $ownerPath=[IO.Path]::GetFullPath((Join-Path $Root '.orchestrator/dispatch-ledger-reader.psm1'))

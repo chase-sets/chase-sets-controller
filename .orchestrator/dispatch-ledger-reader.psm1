@@ -342,4 +342,14 @@ function Read-DispatchCountHistory {
     cursor=$snapshotLength;partialTrailingRow=$partial}
 }
 
-Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
+function Get-NonDispatchLedgerStream {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][IO.FileStream]$Stream)
+  # Bypass ETS members and virtual Name overrides before granting path authority.
+  if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.FileStream]) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
+  $path=[IO.FileStream].GetProperty('Name').GetValue($Stream)
+  dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path
+  return $Stream
+}
+
+Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Get-NonDispatchLedgerStream,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
