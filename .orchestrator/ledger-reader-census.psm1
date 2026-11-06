@@ -274,9 +274,9 @@ function Get-LedgerReaderCensus {
             while ($receiver -is [Management.Automation.Language.ParenExpressionAst] -and $depth -lt 12) {
               $receiver=SingleExpression $receiver.Pipeline;$depth++
             }
-            # Mutable receivers and exhausted/opaque wrappers are not purity
-            # proofs. Cache syntax only; this can add uncertainty, never safety.
-            $uncertain=$null -eq $receiver -or $receiver -is [Management.Automation.Language.ParenExpressionAst] -or
+            # Instance results, including property/factory/reflection receivers,
+            # are not purity proofs. Cache syntax only; never clear input facts.
+            $uncertain=-not $part.Static -or $null -eq $receiver -or $receiver -is [Management.Automation.Language.ParenExpressionAst] -or
               $receiver -is [Management.Automation.Language.VariableExpressionAst] -or
               ($part.Static -and $receiver -is [Management.Automation.Language.TypeExpressionAst] -and
                $receiver.TypeName.FullName -match '^(System\.)?String$') -or
