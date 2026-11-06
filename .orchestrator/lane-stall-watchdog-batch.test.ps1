@@ -158,6 +158,19 @@ function Stub([string]$Name,[string]$Body){
   $path=Join-Path $root "$Name.ps1"
   [IO.File]::WriteAllText($path,'param($Label,$RuntimeRoot,$HistoryPath,$TranscriptPath,$ObservedAt)'+"`n"+$Body);return $path
 }
+function Poll-Clock([string]$Name,[int]$Polls,[string]$Subject=$entry){
+  # Inject a clock into a test-only copy. Expiry follows complete polls,
+  # never the wall time spent starting/reducing each lane in those polls.
+  $text=[IO.File]::ReadAllText($Subject)
+  $clock='$clock=[Diagnostics.Stopwatch]::StartNew()'
+  $loop='while($clock.Elapsed.TotalSeconds-lt$WindowSeconds){'
+  foreach($anchor in @($clock,$loop)){
+    Check (([regex]::Matches($text,[regex]::Escape($anchor))).Count-eq1) "poll clock anchor $Name"
+  }
+  $text=$text.Replace($clock,('$testClockStep=$WindowSeconds/'+$Polls+';$clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalSeconds=-$testClockStep}}'))
+  $text=$text.Replace($loop,($loop+"`r`n"+'    $clock.Elapsed.TotalSeconds+=$testClockStep'))
+  $path=Join-Path $root "$Name.clock.ps1";[IO.File]::WriteAllText($path,$text);return $path
+}
 function Same-Worker($Spec){
   foreach($pair in @(@($Spec.launcherPid,$Spec.launcherStartIdentity),@($Spec.childPid,$Spec.childStartIdentity))){
     $process=Get-Process -Id $pair[0] -ErrorAction Stop
@@ -323,10 +336,14 @@ try{
       Check ($m.exit-eq0-and$m.events[-1].reason-ceq'ALL_TERMINAL') 'AC4 first-observation mutant must reach the premature terminal exit'
       Reject-Mutant 'exit-on-first-observation' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED'-and@($m.events|Where-Object status -eq LIVE_SLOW).Count-eq2) 'AC4 steady multi-lane oracle'}
       $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
-      $membershipStub=Stub 'change-membership' ('[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
-      $r=Batch @((Lane $live)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $entry 3
+      # Reducer work exceeds the unchanged wall window; membership is checked
+      # on the next complete poll, not made dependent on process startup speed.
+      $membershipStub=Stub 'change-membership' ('Start-Sleep -Milliseconds 3500;[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
+      $membershipEntry=Poll-Clock 'AC4-membership-exit' 2
+      $r=Batch @((Lane $live)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $membershipEntry 3
       Check ($r.exit-eq0-and$r.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 changed snapshot must release watcher for re-arm'
       $mutant=Mutate 'ignore-membership-change' '$exitReason=''MEMBERSHIP_CHANGED'';break' '$null=$null'
+      $mutant=Poll-Clock 'AC4-membership-mutant' 2 $mutant
       $mutantManifest=Join-Path $root 'AC4-membership-mutant.lanes.json'
       $mutantStub=Stub 'change-membership-mutant-input' ([IO.File]::ReadAllText($membershipStub).Split("`n",2)[1].Replace($membershipManifest,$mutantManifest))
       $m=Batch @((Lane $live)) 'AC4-membership-mutant' @('-ReducerScript',$mutantStub) $mutant 2
@@ -407,19 +424,6 @@ try{
       }
       $body+='default{& '''+$reducer.Replace("'","''")+''' @PSBoundParameters;exit $LASTEXITCODE}'+"`n}"
       return Stub $Name $body
-    }
-    function Poll-Clock([string]$Name,[int]$Polls,[string]$Subject=$entry){
-      # Inject a clock into a test-only copy. Expiry follows complete polls,
-      # never the wall time spent starting/reducing each lane in those polls.
-      $text=[IO.File]::ReadAllText($Subject)
-      $clock='$clock=[Diagnostics.Stopwatch]::StartNew()'
-      $loop='while($clock.Elapsed.TotalSeconds-lt$WindowSeconds){'
-      foreach($anchor in @($clock,$loop)){
-        Check (([regex]::Matches($text,[regex]::Escape($anchor))).Count-eq1) "poll clock anchor $Name"
-      }
-      $text=$text.Replace($clock,('$testClockStep=$WindowSeconds/'+$Polls+';$clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalSeconds=-$testClockStep}}'))
-      $text=$text.Replace($loop,($loop+"`r`n"+'    $clock.Elapsed.TotalSeconds+=$testClockStep'))
-      $path=Join-Path $root "$Name.clock.ps1";[IO.File]::WriteAllText($path,$text);return $path
     }
     if('mixed-role-isolation'-in$run8186){
       $calls8186=Join-Path $root 'stub-dispatches-8186.txt';$dispatch8186=Join-Path $root 'safe-dispatch-8186.ps1'
