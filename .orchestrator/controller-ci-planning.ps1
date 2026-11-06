@@ -155,8 +155,7 @@ function Set-CiBalancedShards([object[]]$Tasks, [int]$ShardCount=10) {
   return ,@($order)
 }
 
-# The hosted shard bound ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts
-# within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
+# The hosted shard bound ([#123 [controller] Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
 # every shard estimate is a hosted observation of its own execution identity
 # and the largest shard fits the 300 s job bound. Fallback, equal-weight split
 # and whole-item stale estimates are not observations of the planned bytes; a

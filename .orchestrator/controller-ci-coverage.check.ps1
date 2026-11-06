@@ -397,8 +397,7 @@ foreach($switchMutant in @(
 }
 Write-Output 'PASS dispatch legacy switch conditions: base if-conditions kept exactly; verification-policy and publication under the base outer condition; 4 condition and 2 hoist mutants refused'
 # Whole-run (no -Part / -Part all) dispatch-lane keeps the base carrier shape:
-# the test of [chase-sets#8102 Classify a fleet-load miss of the controller
-# battery's timed fixtures as MEASURED_LOAD, never FAIL or PASS](https://github.com/chase-sets/chase-sets/issues/8102)
+# the test of [chase-sets#8102 Classify a fleet-load miss of the controller battery's timed fixtures as MEASURED_LOAD, never FAIL or PASS](https://github.com/chase-sets/chase-sets/issues/8102)
 # owns both literal dispatch carrier calls, guarded by the
 # whole-run selector with a DEFERRED single-part branch, and the base top-level
 # sequence. Single parts call carriers only through Invoke-7963ResumeCarriers

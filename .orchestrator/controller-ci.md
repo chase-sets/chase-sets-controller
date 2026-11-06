@@ -10,7 +10,7 @@ target, the cap is used if its predicted maximum is at most 300000 ms. Each
 execution shard must finish within 300000 ms. The workflow input `role`
 (`candidate`, the default, or `baseline`) is passed to Plan mode and decides
 enforcement; the runner ref and checkout are not consulted
-([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
+([#123 [controller] Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
 Unless the role is `baseline`, Plan refuses a plan whose largest shard
 `estimatedMs` exceeds 300000 or whose items use `fallback`, whole-item
 `stale-recorded` or `*-split-estimate` timings; `stale-recorded-part` is
@@ -37,7 +37,7 @@ not by editing duration records. The default prediction target above remains
 Run these in the controller author worktree, not the product checkout:
 
 ```powershell
-gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref main -f controller_head=controller-8478-f2 -f product_sha=0f3e27ce77289a8dbc5c96d3889946a101dc3cea -f scope=full -f role=candidate
+gh workflow run controller-battery.yml -R chase-sets/chase-sets-controller --ref <candidate-branch> -f controller_head=<source-sha> -f product_sha=<immutable-product-sha> -f scope=full -f role=baseline
 gh run list -R chase-sets/chase-sets-controller --workflow controller-battery.yml --limit 5 --json databaseId,headSha,status,conclusion,url
 gh run view <run-id> -R chase-sets/chase-sets-controller --json status,conclusion,jobs
 gh run download <run-id> -R chase-sets/chase-sets-controller -n controller-battery-result -D <empty-result-directory>
@@ -83,6 +83,16 @@ shard sizes cannot fail its plan. The candidate passes `-f role=candidate`
 (also the default) and must satisfy the bound. Keep every run ID, exact plan bytes,
 raw item logs, shard receipts and final receipt. A green shard job is not proof
 that its items passed.
+
+Before accepting a run as candidate evidence, inspect its exact downloaded
+`plan.json`: `planning.bound.role` must be the string `candidate` and
+`planning.bound.enforced` must be the JSON boolean `true`. Refuse candidate
+evidence if either field is absent, has another type or value, or belongs to
+a different plan than the digest bound by the shard and final receipts. A
+`role=baseline` plan always remains comparison/recording evidence, even if
+all its items pass. Do not infer candidate enforcement from the workflow ref,
+checkout head, run conclusion or the final receipt alone. This is a required
+evidence-acceptance step, not a claim that Merge enforces the plan role.
 
 ## Calibration
 
