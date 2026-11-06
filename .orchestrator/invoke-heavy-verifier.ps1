@@ -2567,7 +2567,7 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
       }
     }
     $buffer = [IO.MemoryStream]::new()
-    try { $stream.CopyTo($buffer); $bytes = $buffer.ToArray() } finally { $stream.Dispose(); $buffer.Dispose() }
+    try { $stream.CopyTo($buffer); $bytes = dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer } finally { $stream.Dispose(); $buffer.Dispose() }
     $reader = [IO.StreamReader]::new([IO.MemoryStream]::new($bytes, $false), [Text.Encoding]::UTF8, $true)
     try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop

@@ -217,7 +217,7 @@ function Get-LedgerReaderCensus {
       $parts=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],
           [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst],
           [Management.Automation.Language.BinaryExpressionAst],[Management.Automation.Language.UnaryExpressionAst],
-          [Management.Automation.Language.InvokeMemberExpressionAst]))
+          [Management.Automation.Language.InvokeMemberExpressionAst],[Management.Automation.Language.CommandAst]))
       $factParts[$Node]=@($parts | Where-Object {
         $ancestor=$_;$nested=$false
         while ($ancestor -and $ancestor -ne $Node) {
@@ -238,7 +238,13 @@ function Get-LedgerReaderCensus {
       } else {
         # Unresolved composition is uncertainty, not a safety proof.
         # Cache immutable syntax only; variable facts still flow to a fixed point.
-        if ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
+        if ($part -is [Management.Automation.Language.CommandAst]) {
+          $value=$null
+          # An authenticated native memory copy adds no opaque invocation, but
+          # never clears the input's path or uncertainty facts. Unbound/tampered
+          # copies remain uncertain; this is not a named data-function exemption.
+          if ((CommandName $part $Unit) -ceq 'get-ledgermemorybytes' -and -not (NativeMemoryBytes $part $Unit)) { $mask=$mask -bor 4 }
+        } elseif ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
             $uncertain=$part.Operator -in @([Management.Automation.Language.TokenKind]::Format,
@@ -373,6 +379,17 @@ function Get-LedgerReaderCensus {
     $parameter=$Node.CommandElements[1];$value=$Node.CommandElements[2]
     return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Stream' -and -not $parameter.Argument -and
       $value -isnot [Management.Automation.Language.CommandParameterAst] -and -not ($value -is [Management.Automation.Language.VariableExpressionAst] -and $value.Splatted)
+  }
+  function NativeMemoryBytes($Node,$Unit) {
+    if (-not $nativeMemoryBytesValid -or -not (TerminalUnitTrap $Unit) -or -not $guardImports.ContainsKey($Unit.path) -or
+        $guardImports[$Unit.path] -ge $Node.Extent.StartOffset) { return $false }
+    if ($Node.GetCommandName() -cne 'dispatch-ledger-reader\Get-LedgerMemoryBytes' -or $Node.Redirections.Count -or
+        $Node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Unknown -or $Node.CommandElements.Count -ne 3 -or
+        $Node.Parent -isnot [Management.Automation.Language.PipelineAst] -or $Node.Parent.Background -or $Node.Parent.PipelineElements.Count -ne 1) { return $false }
+    $parameter=$Node.CommandElements[1];$value=$Node.CommandElements[2]
+    return $parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'Stream' -and -not $parameter.Argument -and
+      $value -is [Management.Automation.Language.VariableExpressionAst] -and -not $value.Splatted -and
+      $value.VariablePath.UserPath -match '^[a-zA-Z_][a-zA-Z0-9_]*$'
   }
   function CommandName($Node,$Unit) {
     $name=$Node.GetCommandName()
@@ -509,6 +526,7 @@ function Get-LedgerReaderCensus {
   $nonDispatchGuardValid=$false
   $nonDispatchValueValid=$false
   $nonDispatchStreamValid=$false
+  $nativeMemoryBytesValid=$false
   $guardImports=@{}
   function GuardModuleInitialization($Unit) {
     $ast=$Unit.ast
@@ -552,7 +570,7 @@ function Assert-NonDispatchLedgerPath {
     $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
       $target.node.Parent -eq $target.unit.ast.EndBlock -and (GuardModuleInitialization $target.unit) -and
       (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
-    $exported=$false;$valueExported=$false;$streamExported=$false
+    $exported=$false;$valueExported=$false;$streamExported=$false;$memoryExported=$false
     foreach ($statement in $target.unit.ast.EndBlock.Statements) {
       if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
       $call=$statement.PipelineElements[0]
@@ -563,6 +581,7 @@ function Assert-NonDispatchLedgerPath {
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Assert-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $exported=$true }
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-NonDispatchLedgerPath' -cin @($values | ForEach-Object Value)) { $valueExported=$true }
       if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-NonDispatchLedgerStream' -cin @($values | ForEach-Object Value)) { $streamExported=$true }
+      if (@($values | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] }).Count -eq 0 -and 'Get-LedgerMemoryBytes' -cin @($values | ForEach-Object Value)) { $memoryExported=$true }
     }
     $nonDispatchGuardValid=$nonDispatchGuardValid -and $exported
   }
@@ -596,6 +615,20 @@ function Get-NonDispatchLedgerStream {
     $target=$functions['get-nondispatchledgerstream'][0]
     $nonDispatchStreamValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $target.node.Parent -eq $target.unit.ast.EndBlock -and
       (TokenShape $target.node.Body) -ceq (TokenShape $streamAst.EndBlock.Statements[0].Body)
+  }
+  $expectedMemory=@'
+function Get-LedgerMemoryBytes {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][IO.MemoryStream]$Stream)
+  if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.MemoryStream]) { throw 'NATIVE_MEMORY_STREAM_REQUIRED' }
+  return ,([IO.MemoryStream].GetMethod('ToArray', [type[]]@()).Invoke($Stream,$null))
+}
+'@
+  $memoryAst=[Management.Automation.Language.Parser]::ParseInput($expectedMemory,[ref]$tokens,[ref]$errors)
+  if ($nonDispatchGuardValid -and $memoryExported -and $functions.ContainsKey('get-ledgermemorybytes') -and $functions['get-ledgermemorybytes'].Count -eq 1) {
+    $target=$functions['get-ledgermemorybytes'][0]
+    $nativeMemoryBytesValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $target.node.Parent -eq $target.unit.ast.EndBlock -and
+      (TokenShape $target.node.Body) -ceq (TokenShape $memoryAst.EndBlock.Statements[0].Body)
   }
   if ($nonDispatchGuardValid) {
     $ownerPath=[IO.Path]::GetFullPath((Join-Path $Root '.orchestrator/dispatch-ledger-reader.psm1'))

@@ -353,4 +353,12 @@ function Get-NonDispatchLedgerStream {
   return $Stream
 }
 
-Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Get-NonDispatchLedgerStream,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
+function Get-LedgerMemoryBytes {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][IO.MemoryStream]$Stream)
+  # Only the native byte-copy operation, never ETS or a virtual override.
+  if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.MemoryStream]) { throw 'NATIVE_MEMORY_STREAM_REQUIRED' }
+  return ,([IO.MemoryStream].GetMethod('ToArray', [type[]]@()).Invoke($Stream,$null))
+}
+
+Export-ModuleMember -Function Assert-NonDispatchLedgerPath,Get-NonDispatchLedgerPath,Get-NonDispatchLedgerStream,Get-LedgerMemoryBytes,Read-DispatchLedgerSnapshot,Read-DispatchLedgerLines,Read-DispatchLedgerBytes,Read-DispatchCountHistory
