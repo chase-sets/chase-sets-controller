@@ -335,21 +335,6 @@ try{
       $m=Batch @((Lane $terminal),(Lane $live)) 'AC4-first-observation-mutant' @('-ReducerScript',$steadyMutant) $mutant 7200
       Check ($m.exit-eq0-and$m.events[-1].reason-ceq'ALL_TERMINAL') 'AC4 first-observation mutant must reach the premature terminal exit'
       Reject-Mutant 'exit-on-first-observation' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED'-and@($m.events|Where-Object status -eq LIVE_SLOW).Count-eq2) 'AC4 steady multi-lane oracle'}
-      $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
-      # Reducer work exceeds the unchanged wall window; membership is checked
-      # on the next complete poll, not made dependent on process startup speed.
-      $membershipStub=Stub 'change-membership' ('Start-Sleep -Milliseconds 3500;[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
-      $membershipEntry=Poll-Clock 'AC4-membership-exit' 2
-      $r=Batch @((Lane $live)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $membershipEntry 3
-      Check ($r.exit-eq0-and$r.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 changed snapshot must release watcher for re-arm'
-      $mutant=Mutate 'ignore-membership-change' '$exitReason=''MEMBERSHIP_CHANGED'';break' '$null=$null'
-      $mutant=Poll-Clock 'AC4-membership-mutant' 2 $mutant
-      $mutantManifest=Join-Path $root 'AC4-membership-mutant.lanes.json'
-      $mutantStub=Stub 'change-membership-mutant-input' ([IO.File]::ReadAllText($membershipStub).Split("`n",2)[1].Replace($membershipManifest,$mutantManifest))
-      $m=Batch @((Lane $live)) 'AC4-membership-mutant' @('-ReducerScript',$mutantStub) $mutant 2
-      Check ($m.exit-eq0-and$m.events[-1].reason-ceq'WINDOW_EXPIRED') 'AC4 membership mutant must reach expiry, not an unrelated failure'
-      Check ([IO.File]::ReadAllText($mutantManifest).EndsWith(' ')) 'membership mutant did not receive the changed input'
-      Reject-Mutant 'ignore-membership-change' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 membership oracle'}
       $r=Batch @((Lane $live)) 'AC4-failure-keeps-worker' @('-ReducerScript',(Stub 'AC4-failure' "throw 'SYNTHETIC_SECRET_8136'"))
       # 8186: the throwing reducer is a contained, secret-free lane failure; the watcher still exits nonzero and never touches the worker.
       Reducer-Failure $r 'REDUCER_EXIT' 'AC4 failure is contained, nonzero, and secret-free' 'WINDOW_EXPIRED' $live.label
@@ -370,6 +355,31 @@ try{
       $follow=Stub 'synthetic-relaunch-result' ('if($Label-ceq''synthetic-terminal''){''{"schemaVersion":"watchdog-observation-result/v1","status":"RELAUNCHED","relaunch":true,"label":"synthetic-replacement"}''}else{& '''+$reducer.Replace("'","''")+''' @PSBoundParameters}')
       $r=Batch @((Lane $terminal)) 'AC4-follow-replacement' @('-ReducerScript',$follow) $entry 8
       Check ($r.exit-eq0-and$r.events[-1].reason-ceq'ALL_TERMINAL'-and@($r.events|Where-Object event -eq MEMBERSHIP_CHANGED).Count-eq1-and@($r.events|Where-Object {$_.event-eq'OBSERVATION'-and$_.label-ceq$replacement.label-and$_.status-ceq'TERMINAL_SUCCESS'}).Count-eq1) 'AC4 synthetic relaunch result follows real replacement spec'
+      # Slow membership controls get their own bounded worker, so the earlier
+      # identity/growth fixture need not outlive another pair of reductions.
+      $membershipLive=New-Producer 'synthetic-membership' live
+      $membershipSpec=Get-Content $membershipLive.spec -Raw|ConvertFrom-Json -DateKind String
+      $script:descendant=Get-Content ($membershipLive.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+      $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
+      # Reducer work exceeds the unchanged wall window; membership is checked
+      # on the next poll, not made dependent on process startup speed.
+      $membershipStub=Stub 'change-membership' ('Start-Sleep -Milliseconds 3500;[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
+      $membershipEntry=Poll-Clock 'AC4-membership-exit' 2
+      $r=Batch @((Lane $membershipLive)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $membershipEntry 3
+      Check ($r.exit-eq0-and$r.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 changed snapshot must release watcher for re-arm'
+      Same-Worker $membershipSpec
+      $mutant=Mutate 'ignore-membership-change' '$exitReason=''MEMBERSHIP_CHANGED'';break' '$null=$null'
+      $mutant=Poll-Clock 'AC4-membership-mutant' 2 $mutant
+      $mutantManifest=Join-Path $root 'AC4-membership-mutant.lanes.json'
+      $mutantStub=Stub 'change-membership-mutant-input' ([IO.File]::ReadAllText($membershipStub).Split("`n",2)[1].Replace($membershipManifest,$mutantManifest))
+      $m=Batch @((Lane $membershipLive)) 'AC4-membership-mutant' @('-ReducerScript',$mutantStub) $mutant 2
+      Check ($m.exit-eq0-and$m.events[-1].reason-ceq'WINDOW_EXPIRED') 'AC4 membership mutant must reach expiry, not an unrelated failure'
+      Check ([IO.File]::ReadAllText($mutantManifest).EndsWith(' ')) 'membership mutant did not receive the changed input'
+      Reject-Mutant 'ignore-membership-change' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 membership oracle'}
+      Same-Worker $membershipSpec
+      [IO.File]::WriteAllText($membershipLive.release,'release');$membershipDone=End-Native $membershipLive.handle
+      Check ($membershipDone.exit-eq0) 'membership cooperative worker completion'
+      Check (@(Get-Process -Id $script:descendant.pid -ErrorAction SilentlyContinue).Count-eq0) 'membership cooperative descendant survived completion'
       Write-Output 'PASS AC4 defaults / multiple-lanes / steady-monitoring / session-growth / expiry-only / membership-rearm / all-terminal / no-surviving-helpers'
     }
   }
