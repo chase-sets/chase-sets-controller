@@ -142,7 +142,7 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   Copy-Item -LiteralPath (Join-Path $runtime 'review-head-contract.psm1') -Destination $isolated
   $reader=[IO.File]::ReadAllText((Join-Path $runtime 'dispatch-ledger-reader.psm1'))
   $pause=@'
-  [IO.File]::AppendAllText('__TRACE__',(($snapshot.snapshotLength-$prefixLength).ToString())+"`n")
+  [IO.File]::AppendAllText('__TRACE__',(($length-$prefixLength).ToString())+"`n")
   if (-not [IO.File]::Exists('__STARTED__')) {
     [IO.File]::WriteAllText('__STARTED__','prefix parser entered')
     $deadline=[datetime]::UtcNow.AddSeconds(10)
@@ -151,8 +151,10 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   }
 '@
   $pause=$pause.Replace('__STARTED__',$started.Replace("'","''")).Replace('__RELEASE__',$release.Replace("'","''")).Replace('__TRACE__',$trace.Replace("'","''"))
-  $seam='      for ($index=$prefixLines;$index -lt $snapshot.lines.Count;$index++) {'
-  Assert-Policy ($reader.Contains($seam)) 're-homed strict parser instrumentation seam exists'
+  # The streaming owner replaced the snapshot-array loop. Observe the same
+  # logical delta/parser boundary, without changing the lock or parser body.
+  $seam='        $lineNumber=0;$prefixRowIndex=0'
+  Assert-Policy ($reader.Split($seam,[StringSplitOptions]::None).Count -eq 2) 'unique streaming strict parser instrumentation seam exists'
   $reader=$reader.Replace($seam,$pause+"`n"+$seam)
   [IO.File]::WriteAllText((Join-Path $isolated 'dispatch-ledger-reader.psm1'),$reader)
   foreach ($mode in @('query','query-append','logger','logger-tail','logger-rewrite','logger-unterminated')) {

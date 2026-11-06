@@ -58,6 +58,8 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     uncertainInput=@($false,('$buffer=$other.ToArray();'+$valid))
     taintedResult=@($false,('$bytes="dispatch-log.jsonl";'+$valid))
     uncertainResult=@($false,('$bytes=$other.ToArray();'+$valid))
+    mixedDataRead=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
+    mixedOwnerCall=@($false,('$buffer="dispatch-log.jsonl";$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};'+$decode))
     unqualified=@($false,$valid.Replace('dispatch-ledger-reader\',''))
     wrongModule=@($false,$valid.Replace('dispatch-ledger-reader\','other\'))
     wrongParameter=@($false,$valid.Replace('-Stream','-Path'))
@@ -93,6 +95,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     $module.Replace("[IO.MemoryStream].GetMethod('ToArray', [type[]]@()).Invoke(`$Stream,`$null)",'$Stream.ToArray()'),
     $module.Replace(',Get-LedgerMemoryBytes,',','),
     $module.Replace($definition,('function Dormant {'+$definition+'}')),
+    $module.Replace($definition,('function Get-LedgerMemoryBytes {param($Stream) Read-DispatchLedgerSnapshot -Path "ordinary.json"; return ,([byte[]]@(1))}')),
     ($module+"`n"+'Set-Item -Path Function:Get-LedgerMemoryBytes -Value {param($Stream) [byte[]]@(1)}'))
   foreach($scope in @('script','global','local','private')){$mutants+=($module+"`n"+'function '+$scope+':Get-LedgerMemoryBytes {param($Stream) [byte[]]@(1)}')}
   foreach($mutation in $mutants){

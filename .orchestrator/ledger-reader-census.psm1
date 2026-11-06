@@ -710,11 +710,15 @@ function Get-LedgerMemoryBytes {
             $assignmentShapes[$assignment]=@{
               dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
               dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
+              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (CommandName $_ $unit) -ceq 'get-ledgermemorybytes' } | Select-Object -First 1
               type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }
           $dataCall=$assignmentShapes[$assignment].dataCall;$dataRead=$assignmentShapes[$assignment].dataRead
-          if (-not $dataCall -and -not $dataRead -and (AddFact (Key $assignment.Left $unit) (Fact $assignment.Right $unit))) { $changed=$true }
+          # Mixed data reads or a tampered transitive data function must never
+          # suppress authentication/input facts for this native operation.
+          if (($assignmentShapes[$assignment].memoryCopy -or (-not $dataCall -and -not $dataRead)) -and
+              (AddFact (Key $assignment.Left $unit) (Fact $assignment.Right $unit))) { $changed=$true }
           $type=$assignmentShapes[$assignment].type
           # Only a type-valued alias has static members. The result of
           # [IO.File]::Open(...) is a stream, not an alias for IO.File.

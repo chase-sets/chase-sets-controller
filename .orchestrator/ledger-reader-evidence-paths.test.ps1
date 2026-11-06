@@ -109,7 +109,7 @@ function Join-Path { param($Path,$ChildPath) $ProbePath }
     $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
     $node.Expression.Extent.Text -ceq '[IO.StreamReader]'
   },$true))
-  Check ($streamReaders.Count -eq 1 -and $streamReaders[0].Arguments[0].Extent.Text -ceq '$stream') 'handle constructor unchanged; no path claim for stream'
+  Check ($streamReaders.Count -eq 1 -and $streamReaders[0].Extent.Text -ceq '[IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true)') 'exact native stream guard; encoding and BOM constructor arguments unchanged'
   $history=@($ast.FindAll({param($node)
     $node -is [Management.Automation.Language.CommandAst] -and
     $node.GetCommandName() -ceq 'Read-RebaseJsonLines' -and
