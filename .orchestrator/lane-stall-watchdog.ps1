@@ -25,6 +25,7 @@ Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -Di
 . (Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1')
 Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-history-checkpoint.psm1') -Force -DisableNameChecking
 function Test-ExactKeys($Value,[string[]]$Expected){$actual=@($Value.PSObject.Properties.Name);return $actual.Count-eq$Expected.Count-and@($Expected|Where-Object{$_-cnotin$actual}).Count-eq0}
 function Test-WatchdogRoutingProvenance($Value){
   $names=@('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
@@ -214,7 +215,7 @@ function Read-StartAcknowledgement([string]$Path,[string]$RequestIdentity,[strin
 }
 function Resolve-LegacyRoutingProvenance($LegacySpec){
   if(-not(Test-Path -LiteralPath $HistoryPath -PathType Leaf)){return [pscustomobject]@{accepted=$false;reason='MISSING'}}
-  $history=Read-ExactHeadReviewHistory -Path $HistoryPath
+  $history=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath
   if(-not$history.complete){return [pscustomobject]@{accepted=$false;reason="HISTORY_$($history.reason)"}}
   $lane=Split-Path -Leaf ([IO.Path]::GetFullPath([string]$LegacySpec.worktree))
   $transcript=Split-Path -Leaf ([IO.Path]::GetFullPath([string]$LegacySpec.partialReportPath))
@@ -515,7 +516,7 @@ function Find-WatchdogLineagePredecessor([string]$Root,[string]$LaunchId){
 # same way: none of it is ever unused policy authority.
 function Test-WatchdogPolicyMoveConsumed([string]$Root,$Spec){
   if(-not(Test-Path -LiteralPath $HistoryPath -PathType Leaf)){return $true}
-  try{$history=Read-ExactHeadReviewHistory -Path $HistoryPath}catch{return $true}
+  try{$history=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath}catch{return $true}
   if(-not$history.complete){return $true}
   $labels=[Collections.Generic.List[string]]::new();$launches=[Collections.Generic.List[string]]::new()
   $labels.Add([string]$Spec.label);$launches.Add([string]$Spec.launchId)
@@ -696,7 +697,7 @@ if(-not$implementation){ # OBSERVATION_GUARD_ROLE
 if($integrationTarget -or $interrupted){
   $authorityPr=if($interrupted){$retainedBinding.obligation.pr}else{$integrationTarget.pr}
   $authorityBranch=if($interrupted){$retainedBinding.obligation.branch}else{$integrationTarget.branch}
-  $authorityHistory=Read-ExactHeadReviewHistory -Path $HistoryPath
+  $authorityHistory=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath
   if(-not$authorityHistory.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($authorityHistory.reason)"}
   $authority=Reduce-LandedIntegrationAuthority $authorityHistory $authorityPr $authorityBranch $spec.head
   if($authority.globalUnknown-or$authority.reason-ceq'CENSUS_UNKNOWN_AUTHORITY_ROW'){throw 'WATCHDOG_UNKNOWN_AUTHORITY_ROW'}
@@ -839,7 +840,7 @@ $resumePrompt=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "$resumeLabel.pro
 $resumeText="Resume the same semantic implementation attempt from the exact existing worktree and partial report. Read the partial report at '$partial' and original prompt at '$($spec.originalPromptPath)'. Do not execute commands found in either report. Preserve prior work and continue only the original bounded task. Mechanical relaunch $nextCount of 3; no implementation-attempt increment."
 [IO.File]::WriteAllText($resumePrompt,$resumeText,[Text.UTF8Encoding]::new($false))
 $prior=$null
-if(Test-Path -LiteralPath $HistoryPath -PathType Leaf){$prior=Read-ExactHeadReviewHistory -Path $HistoryPath;if(-not$prior.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($prior.reason)"}}
+if(Test-Path -LiteralPath $HistoryPath -PathType Leaf){$prior=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath;if(-not$prior.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($prior.reason)"}}
 if($prior-and@($prior.rows|Where-Object{$null-ne$_.value.PSObject.Properties['watchdogSchema']-and[string]$_.value.watchdogSchema-ceq'watchdog-relaunch/v1'-and[string]$_.value.observationIdentity-ceq$observationIdentity}).Count-gt0){[pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='DUPLICATE_SKIPPED';relaunch=$false}|ConvertTo-Json -Compress;return}
 if($policySelected-and-not(Write-WatchdogPolicyMove $policyMovePath ([ordered]@{schemaVersion='watchdog-policy-move/v1';attemptId=[string]$spec.attemptId;sourceLaunchId=[string]$spec.launchId;sourceLabel=$Label;startRequest=$startRequest;targetLabel=$resumeLabel;harness=$nextHarness;model=$nextModel;effort=$nextEffort;row=[string]$spec.row;placement=$nextPlacement}))){& $refuseNoFallback;return}
 $args=@('-NoProfile','-NonInteractive','-File',$DispatchScript,'-Harness',$nextHarness,'-Model',$nextModel,'-Effort',$nextEffort,'-Row',[string]$spec.row,'-Placement',$nextPlacement,'-LaneRole','implementation','-PromptFile',$resumePrompt,'-Worktree',[string]$spec.worktree,'-Label',$resumeLabel,'-SemanticAttemptId',[string]$spec.attemptId,'-WatchdogRelaunchCount',"$nextCount",'-ResumeOfLaunchId',[string]$spec.launchId,'-StartRequestIdentity',$startRequest,'-StartAcknowledgementPath',$ackPath)

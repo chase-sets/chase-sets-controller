@@ -1,8 +1,9 @@
 [CmdletBinding()]
-param([switch]$UpperBoundDiagnostic)
+param([switch]$UpperBoundDiagnostic,[switch]$CheckpointOnly)
 $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
+if($CheckpointOnly){Import-Module (Join-Path $PSScriptRoot 'dispatch-history-checkpoint.psm1') -DisableNameChecking}
 . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library -RuntimeRoot $PSScriptRoot
 $temporary=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $root=Join-Path $temporary ('dispatch-history-large-'+[guid]::NewGuid().ToString('N'))
@@ -30,13 +31,24 @@ function Read-LargeHistory([string]$Reader,[string]$Path,[switch]$RequireTermina
       return $history
     }
     'exact-head' { Read-ExactHeadReviewHistory -Path $Path -RequireTerminated:$RequireTerminated }
+    'checkpoint' {
+      $metrics=$null
+      $history=Read-CheckpointedDispatchHistory -Path $Path -RequireTerminated:$RequireTerminated -ReadMetrics ([ref]$metrics)
+      if($history.complete -and $history.audit.bytes -gt 33554432){
+        Assert-Large ($metrics.readPasses -eq 1 -and $metrics.bytesRead -eq $history.audit.bytes -and
+          $metrics.rebuilds -eq [int]($phase -eq 0) -and $metrics.publications -eq 1 -and
+          $metrics.tailParsedRows -eq $(if($phase -eq 0){50001}else{1})) 'checkpoint reread, reparsed prefix or failed durable publication'
+        Write-Output "METRICS checkpoint bytesRead=$($metrics.bytesRead) passes=$($metrics.readPasses) tailParsedRows=$($metrics.tailParsedRows) rebuilds=$($metrics.rebuilds) publications=$($metrics.publications)" | Write-Host
+      }
+      return $history
+    }
     'query' { Read-DispatchCountHistory -Path $Path -RequireTerminated:$RequireTerminated }
     default { throw 'unknown real reader entrypoint' }
   }
 }
 try {
   [void][IO.Directory]::CreateDirectory($root)
-  $readers=@('owner','exact-head','query')
+  $readers=if($CheckpointOnly){@('checkpoint')}else{@('owner','exact-head','query')}
   $issue=908126
   $negativePath=Join-Path $root 'negative.jsonl'
   foreach($reader in $readers) {
@@ -177,7 +189,7 @@ try {
     }
   }
   if($failures.Count) { throw "FAILED $($failures.Count) checks: $($failures -join '; ')" }
-  Write-Output 'PASS private large-history owner/exact-head/query identity and two-append count continuity'
+  Write-Output "PASS private large-history readers=$($readers -join ',') identity and two-append count continuity"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne $temporary.TrimEnd('\','/') -or

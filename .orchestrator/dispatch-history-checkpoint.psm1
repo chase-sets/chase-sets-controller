@@ -143,8 +143,8 @@ function Assert-CheckpointEnvelope {
 
 function Read-CheckpointFile {
   param($Identity)
-  $result = [pscustomobject]@{state='invalid';checkpoint=$null;path=$Identity.path;reason='CHECKPOINT_INVALID'}
-  $stream = $null; $reader = $null; $document = $null
+  $result = [pscustomobject]@{state='invalid';checkpoint=$null;path=$Identity.path;reason='CHECKPOINT_INVALID';token=$null}
+  $stream = $null; $buffer = $null; $document = $null
   try {
     # Replacement can hold a write-access handle. Read access remains read-only;
     # symmetric read/write/delete sharing permits its atomic rename transition.
@@ -161,8 +161,14 @@ function Read-CheckpointFile {
         [Threading.Thread]::Sleep(5)
       }
     }
-    $reader = [IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false,$true),$false)
-    $json = $reader.ReadToEnd()
+    # Identity belongs to the captured bytes, including undecodable corruption.
+    # Hash before strict decoding so invalid UTF-8 can be safely quarantined too.
+    $buffer = [IO.MemoryStream]::new()
+    $stream.CopyTo($buffer)
+    $bytes = $buffer.ToArray()
+    $result.token = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $json = [Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+    if ($json.StartsWith([string][char]0xfeff,[StringComparison]::Ordinal)) { $json=$json.Substring(1) }
     $options = [System.Text.Json.JsonDocumentOptions]::new(); $options.MaxDepth = $script:CheckpointMaxDepth
     $document = [System.Text.Json.JsonDocument]::Parse($json,$options)
     $result.state = Assert-CheckpointEnvelope $document.RootElement $Identity
@@ -180,7 +186,8 @@ function Read-CheckpointFile {
   } catch { $result.state='invalid'; $result.checkpoint=$null; $result.reason='CHECKPOINT_INVALID'
   } finally {
     if ($null -ne $document) { $document.Dispose() }
-    if ($null -ne $reader) { $reader.Dispose() } elseif ($null -ne $stream) { $stream.Dispose() }
+    if ($null -ne $buffer) { $buffer.Dispose() }
+    if ($null -ne $stream) { $stream.Dispose() }
   }
   return $result
 }
@@ -257,4 +264,97 @@ function Publish-DispatchHistoryCheckpoint {
   return $result
 }
 
-Export-ModuleMember -Function Get-DispatchHistoryCheckpointPath,Read-DispatchHistoryCheckpoint,Publish-DispatchHistoryCheckpoint
+function Move-CheckpointAside {
+  param($Identity,[string]$ExpectedToken)
+  $result=[pscustomobject]@{moved=$false;reason='CHECKPOINT_QUARANTINE_FAILED'}
+  $mutex=$null;$locked=$false
+  try {
+    $name='ChaseSets.DispatchHistoryCheckpoint.'+$Identity.sourceKey
+    if ($IsWindows) { $name='Local\'+$name }
+    $mutex=[Threading.Mutex]::new($false,$name)
+    try { $locked=$mutex.WaitOne($script:CheckpointMutexWaitMs) }
+    catch [Threading.AbandonedMutexException] { $locked=$true }
+    if (-not $locked) { $result.reason='CHECKPOINT_MUTEX_TIMEOUT';return $result }
+    $current=Read-CheckpointFile $Identity
+    if ($current.state -ceq 'missing') { $result.reason='CHECKPOINT_MISSING';return $result }
+    if (-not $ExpectedToken -or $current.token -cne $ExpectedToken) { $result.reason='CHECKPOINT_CHANGED';return $result }
+    $destination=$Identity.path+'.'+[guid]::NewGuid().ToString('N')+'.quarantine'
+    [IO.File]::Move((dispatch-ledger-reader\Get-NonDispatchLedgerPath $Identity.path),
+      (dispatch-ledger-reader\Get-NonDispatchLedgerPath $destination))
+    $result.moved=$true;$result.reason='CHECKPOINT_QUARANTINED'
+  } catch { $result.reason='CHECKPOINT_QUARANTINE_FAILED'
+  } finally {
+    if ($locked) { $mutex.ReleaseMutex() }
+    if ($null -ne $mutex) { $mutex.Dispose() }
+  }
+  return $result
+}
+
+function New-CheckpointHistoryRefusal {
+  param([string]$Reason,$History=$null)
+  if ($null -eq $History) {
+    $History=[pscustomobject][ordered]@{complete=$false;rows=@();audit=[ordered]@{pathStatus='checkpoint';bytes=0;rows=0;parsedRows=0;malformedRows=0;truncated=$false;malformedLineNumbers=@()}
+      reason=$Reason;snapshotLength=0L;snapshotLines=0;snapshotHash=$null;cursor=0L;partialTrailingRow=$false}
+  }
+  $History.complete=$false;$History.reason=$Reason;$History.rows=@()
+  $History.audit.rows=0;$History.audit.parsedRows=0
+  return $History
+}
+
+function Read-CheckpointedDispatchHistory {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Path,[string]$ReducerVersion='dispatch-count/v1',[string]$ContractVersion='dispatch-history/v1',
+    [ValidateRange(0,[long]::MaxValue)][long]$MaxDeltaBytes=33554432,
+    [ValidateRange(0,[int]::MaxValue)][int]$MaxDeltaRows=50000,[switch]$RequireTerminated,[ref]$ReadMetrics)
+  $metrics=[ordered]@{readPasses=0;bytesRead=0L;tailParsedRows=0;rebuilds=0;publications=0;quarantines=0;publicationRetries=0;state='unknown';quarantineReason=$null}
+  $identity=Get-CheckpointIdentity $Path
+  try {
+    # Publication races retry against the newly published prefix, never trust a
+    # lower cursor or silently turn an unsuccessful read into empty authority.
+    for ($attempt=0;$attempt -lt 2;$attempt++) {
+      $stored=Read-DispatchHistoryCheckpoint $Path -ReducerVersion $ReducerVersion -ContractVersion $ContractVersion
+      if ($stored.reason -ceq 'CHECKPOINT_UNREADABLE') { return New-CheckpointHistoryRefusal 'CHECKPOINT_UNREADABLE' }
+      $prefix=$null
+      if ($stored.state -ceq 'valid') { $prefix=$stored.checkpoint;$metrics.state='steady' }
+      else {
+        if ($stored.state -cne 'missing') {
+          $discard=Move-CheckpointAside $identity $stored.token
+          if ($discard.moved) { $metrics.quarantines++ }
+          elseif ($discard.reason -ceq 'CHECKPOINT_CHANGED') { $metrics.publicationRetries++;continue }
+          elseif ($discard.reason -cne 'CHECKPOINT_MISSING') { return New-CheckpointHistoryRefusal $discard.reason }
+        }
+        $metrics.state=$stored.state+'-rebuild';$metrics.rebuilds++
+      }
+      $read=$null
+      $history=dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -PrefixHistory $prefix -RequireTerminated:$RequireTerminated `
+        -MaxDeltaBytes $MaxDeltaBytes -MaxDeltaRows $MaxDeltaRows -ReadMetrics ([ref]$read)
+      foreach ($field in @('readPasses','bytesRead','tailParsedRows')) { $metrics[$field]+=$read.$field }
+      if (-not $history.complete) {
+        if ($null -ne $prefix -and $read.prefixStatus -in @('rewound','digest-mismatch')) {
+          $reason=if ($read.prefixStatus -ceq 'rewound') {'CHECKPOINT_REWOUND'} else {'CHECKPOINT_DIGEST_MISMATCH'}
+          $quarantine=Move-CheckpointAside $identity $stored.token
+          $metrics.quarantineReason=$quarantine.reason
+          if ($quarantine.moved) { $metrics.quarantines++ }
+          $metrics.state='quarantined'
+          # This observation refuses; only a subsequent observation may rebuild.
+          return New-CheckpointHistoryRefusal $reason $history
+        }
+        return $history
+      }
+      # New trailing bytes without LF do not advance the committed cursor. The
+      # current observation still reports its captured partial tail accurately.
+      if ($null -ne $prefix -and $history.cursor -eq $prefix.cursor) { return $history }
+      $published=Publish-DispatchHistoryCheckpoint $Path $history -ReducerVersion $ReducerVersion -ContractVersion $ContractVersion
+      if ($published.published) { $metrics.publications++;return $history }
+      if ($published.reason -notin @('CHECKPOINT_CURSOR_REGRESSION','CHECKPOINT_EQUAL_CURSOR_CONFLICT')) {
+        return New-CheckpointHistoryRefusal $published.reason $history
+      }
+      $metrics.publicationRetries++
+    }
+    return New-CheckpointHistoryRefusal 'CHECKPOINT_CHANGED'
+  } finally {
+    if ($null -ne $ReadMetrics) { $ReadMetrics.Value=[pscustomobject]$metrics }
+  }
+}
+
+Export-ModuleMember -Function Get-DispatchHistoryCheckpointPath,Read-DispatchHistoryCheckpoint,Publish-DispatchHistoryCheckpoint,Read-CheckpointedDispatchHistory

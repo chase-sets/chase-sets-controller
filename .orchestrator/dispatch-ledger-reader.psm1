@@ -198,10 +198,12 @@ function Read-DispatchLedgerBytes {
 function Read-DispatchCountHistory {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path,$PrefixHistory=$null,[int]$MaxRows=[int]::MaxValue,
-    [long]$MaxBytes=[long]::MaxValue,[switch]$RequireTerminated,[ref]$ReadMetrics)
+    [long]$MaxBytes=[long]::MaxValue,[switch]$RequireTerminated,[ref]$ReadMetrics,
+    [ValidateRange(0,[long]::MaxValue)][long]$MaxDeltaBytes=[long]::MaxValue,
+    [ValidateRange(0,[int]::MaxValue)][int]$MaxDeltaRows=[int]::MaxValue)
   if ($null -ne $PrefixHistory -and -not $PrefixHistory.complete) { return $PrefixHistory }
   $audit=[ordered]@{pathStatus='unknown';bytes=0;rows=0;parsedRows=0;malformedRows=0;truncated=$false;malformedLineNumbers=@()}
-  $metrics=[ordered]@{readPasses=0;bytesRead=0L;readOperations=0L;boundaryProbes=0;tailParsedRows=0;prefixRows=0}
+  $metrics=[ordered]@{readPasses=0;bytesRead=0L;readOperations=0L;boundaryProbes=0;tailParsedRows=0;prefixRows=0;capturedLength=0L;prefixStatus='none'}
   $rows=[Collections.Generic.List[object]]::new()
   $reason='HISTORY_UNREADABLE';$complete=$false
   $snapshotLength=0L;$snapshotLines=0;$snapshotHash=$null;$partial=$false
@@ -212,14 +214,18 @@ function Read-DispatchCountHistory {
     } else {
       Initialize-DispatchHistoryStream
       $stream=Open-DispatchLedgerReadStream -Path $Path
-      $length=$stream.Length;$audit.bytes=$length
+      $length=$stream.Length;$audit.bytes=$length;$metrics.capturedLength=$length
       if ($length -gt $MaxBytes) {
         $audit.pathStatus='oversize';$audit.truncated=$true;$reason='HISTORY_TRUNCATED'
       } else {
-        $prefixLength=0L;$prefixLines=0;$prefixValid=$true
+        $prefixLength=0L;$prefixLines=0;$prefixValid=$true;$deltaTruncated=$false
         if ($null -ne $PrefixHistory) {
+          $metrics.prefixStatus='pending'
           $prefixLength=[long]$PrefixHistory.snapshotLength;$prefixLines=[int]$PrefixHistory.snapshotLines
           $prefixValid=$prefixLength -ge 0 -and $prefixLength -le $length -and $prefixLines -ge 0
+          if ($prefixLength -gt $length) { $metrics.prefixStatus='rewound' }
+          $deltaTruncated=$prefixValid -and ($length-$prefixLength) -gt $MaxDeltaBytes
+          if ($deltaTruncated) { $audit.truncated=$true }
           if ($prefixValid) {
             foreach ($row in $PrefixHistory.rows) { $rows.Add($row) }
             $audit.rows=$PrefixHistory.audit.rows;$audit.parsedRows=$PrefixHistory.audit.parsedRows
@@ -249,6 +255,8 @@ function Read-DispatchCountHistory {
             continue
           }
           if ($lineNumber -gt $MaxRows) { continue }
+          if ($null -ne $PrefixHistory -and ($deltaTruncated -or -not $prefixValid -or
+              ([long]$lineNumber-$prefixLines) -gt $MaxDeltaRows)) { $audit.truncated=$true;continue }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $audit.rows++
         try {
@@ -282,6 +290,18 @@ function Read-DispatchCountHistory {
         $metrics.bytesRead=$reader.BytesRead;$metrics.readOperations=$reader.ReadOperations
         $audit.pathStatus=if ($audit.truncated) {'truncated'} elseif ($audit.malformedRows) {'malformed'} else {'ok'}
         $complete=$true;$reason='HISTORY_COMPLETE'
+        $prefixByteMismatch=$null -ne $PrefixHistory -and (
+          $reader.PrefixHash -cne $PrefixHistory.snapshotHash -or -not $reader.PrefixTerminated)
+        $prefixMismatch=$null -ne $PrefixHistory -and (-not $prefixValid -or
+          $prefixRowIndex -ne @($PrefixHistory.rows).Count -or
+          $prefixByteMismatch -or $reader.PrefixLines -ne $prefixLines)
+        if ($null -ne $PrefixHistory -and $metrics.prefixStatus -cne 'rewound') {
+          # A later invalid UTF-8 row can suppress decoded rows from the same
+          # block. Missing decoded prefix rows then prove neither binding nor
+          # corruption; only captured raw bytes can prove a mismatch here.
+          $metrics.prefixStatus=if ($reader.DecodeFailed -and -not $prefixByteMismatch) {'unverified'}
+            elseif ($prefixMismatch) {'digest-mismatch'} else {'valid'}
+        }
         if ($RequireTerminated -and $partial) {
           $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='unterminated'
           $rows.Clear();$audit.rows=0;$audit.parsedRows=0;$audit.malformedRows=0;$audit.malformedLineNumbers=@()
@@ -296,14 +316,13 @@ function Read-DispatchCountHistory {
             if ($stream.ReadByte() -ne 10) { throw 'history boundary changed' }
           }
           if ($reader.DecodeFailed) { throw 'history UTF8 invalid' }
-          if ($null -ne $PrefixHistory -and (-not $prefixValid -or
-              $prefixRowIndex -ne @($PrefixHistory.rows).Count -or
-              $reader.PrefixHash -cne $PrefixHistory.snapshotHash -or -not $reader.PrefixTerminated -or
-              $reader.PrefixLines -ne $prefixLines)) {
+          if ($prefixMismatch) {
             $complete=$false;$reason='HISTORY_UNTERMINATED_OR_MOVED';$audit.pathStatus='moved'
             $rows.Clear();$audit.rows=0;$audit.parsedRows=0;$audit.malformedRows=0;$audit.malformedLineNumbers=@();$audit.truncated=$false
-          } elseif ($audit.truncated) { $complete=$false;$reason='HISTORY_TRUNCATED' }
-          elseif ($audit.malformedRows) { $complete=$false;$reason='HISTORY_MALFORMED' }
+          } else {
+            if ($audit.truncated) { $complete=$false;$reason='HISTORY_TRUNCATED' }
+            elseif ($audit.malformedRows) { $complete=$false;$reason='HISTORY_MALFORMED' }
+          }
         }
       }
     }
