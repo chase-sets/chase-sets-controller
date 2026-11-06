@@ -285,12 +285,16 @@ function Read-ScorecardLedgers([string]$Container) {
         }
     } catch {$dispatchComplete=$false;Add-ScorecardGap 'dispatch-ledger-unavailable'}
     try {
-        foreach($line in [IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $runtime 'cost-ledger.jsonl')))){
-            if(-not $line.Trim()){continue}
-            $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
-            if(-not $row.transcript){throw 'cost transcript missing'}
-            $latest[$row.transcript] = $row
-        }
+        $costLines=[IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $runtime 'cost-ledger.jsonl'))).GetEnumerator()
+        try {
+            while($costLines.MoveNext()){
+                $line=$costLines.Current
+                if(-not $line.Trim()){continue}
+                $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
+                if(-not $row.transcript){throw 'cost transcript missing'}
+                $latest[$row.transcript] = $row
+            }
+        } finally {$costLines.Dispose()}
     } catch {$costComplete=$false;Add-ScorecardGap 'cost-ledger-unavailable'}
     return @{dispatches=@($dispatches);costs=@($latest.Values);dispatchComplete=$dispatchComplete;costComplete=$costComplete}
 }

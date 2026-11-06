@@ -204,7 +204,39 @@ $runtime=$PSScriptRoot
   Check ($ledgers.dispatchComplete -and $ledgers.costComplete -and $ledgers.dispatches.Count -eq 1 -and $ledgers.costs.Count -eq 1 -and $ledgers.costs[0].usd -eq 2 -and $script:ScorecardGaps.Count -eq 0) 'actual scorecard mixed reducers complete with last cost row'
   $released=[IO.File]::Open((Join-Path $root '.orchestrator/cost-ledger.jsonl'),'Open','ReadWrite','None')
   $released.Dispose()
-  Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red scorecardOwnerRefusals=$scorecardRefused scorecardGuardRemovalRED=$scorecardMutants"
+  $scorecardBody=(Get-Item function:Read-ScorecardLedgers).ScriptBlock.ToString()
+  $lifetimeChecks=0;$disposeMutants=0
+  try {
+    foreach ($mode in @('actual','disposeRemoval')) {
+      if ($mode -ceq 'disposeRemoval') {
+        $anchor='$costLines.Dispose()'
+        Check ($scorecardBody.Contains($anchor) -and $scorecardBody.IndexOf($anchor) -eq $scorecardBody.LastIndexOf($anchor)) 'one explicit cost iterator disposal mutation anchor'
+        Set-Item function:Read-ScorecardLedgers ([scriptblock]::Create($scorecardBody.Replace($anchor,'$null')))
+      }
+      foreach ($badRow in @('invalid-json','{"usd":1}')) {
+        $costPath=Join-Path $root '.orchestrator/cost-ledger.jsonl'
+        [IO.File]::WriteAllText($costPath,'{"transcript":"prefix","usd":1}'+"`n"+$badRow+"`n"+'{"transcript":"unread","usd":2}'+"`n")
+        $script:ScorecardGaps=[Collections.Generic.List[string]]::new()
+        # Exclude finalizer timing from the actual-function postcondition. GC is
+        # test cleanup only, after recording/checking the immediate native open.
+        [GC]::Collect();[GC]::WaitForPendingFinalizers()
+        $noGc=[GC]::TryStartNoGCRegion(64MB)
+        Check $noGc 'admit bounded test-only no-GC lifetime observation'
+        try {
+          $ledgers=Read-ScorecardLedgers $root
+          $writable=$false
+          try {$writer=[IO.File]::Open($costPath,'Open','ReadWrite','None');$writer.Dispose();$writable=$true} catch [IO.IOException] {}
+          Check ($ledgers.dispatchComplete -and -not $ledgers.costComplete -and $ledgers.dispatches.Count -eq 1 -and $ledgers.costs.Count -eq 1 -and $ledgers.costs[0].transcript -ceq 'prefix' -and $script:ScorecardGaps.Count -eq 1 -and $script:ScorecardGaps[0] -ceq 'cost-ledger-unavailable') "actual scorecard partial reducer/named failure gap $mode $badRow"
+          Check ($writable -eq ($mode -ceq 'actual')) "scorecard exceptional cost handle release without finalizers $mode $badRow writable=$writable"
+          if ($mode -ceq 'actual') {$lifetimeChecks++} else {$disposeMutants++}
+        } finally {
+          if ($noGc) {[GC]::EndNoGCRegion()}
+          [GC]::Collect();[GC]::WaitForPendingFinalizers()
+        }
+      }
+    }
+  } finally {Set-Item function:Read-ScorecardLedgers ([scriptblock]::Create($scorecardBody))}
+  Write-Output "PASS stream provenance checks=$checks cases=$($cases.Count) actualCostOwnerRefusals=$refused actualGuardRemovalRED=$red scorecardOwnerRefusals=$scorecardRefused scorecardGuardRemovalRED=$scorecardMutants exceptionalCostReleases=$lifetimeChecks disposalRemovalRED=$disposeMutants"
 } finally {
   $full = [IO.Path]::GetFullPath($root)
   if ((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or
