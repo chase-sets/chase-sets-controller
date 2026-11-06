@@ -214,7 +214,7 @@ function Get-LedgerReaderCensus {
     if (-not $factParts.ContainsKey($Node)) {
       $parts=@(Find-LedgerCensusAst $Node @([Management.Automation.Language.StringConstantExpressionAst],
           [Management.Automation.Language.ExpandableStringExpressionAst],[Management.Automation.Language.VariableExpressionAst],
-          [Management.Automation.Language.BinaryExpressionAst]))
+          [Management.Automation.Language.BinaryExpressionAst],[Management.Automation.Language.UnaryExpressionAst]))
       $factParts[$Node]=@($parts | Where-Object {
         $ancestor=$_;$nested=$false
         while ($ancestor -and $ancestor -ne $Node) {
@@ -238,13 +238,18 @@ function Get-LedgerReaderCensus {
         if ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
-            $uncertain=$part.Operator -eq [Management.Automation.Language.TokenKind]::Format -or
+            $uncertain=$part.Operator -in @([Management.Automation.Language.TokenKind]::Format,
+                [Management.Automation.Language.TokenKind]::Join,[Management.Automation.Language.TokenKind]::Ireplace,
+                [Management.Automation.Language.TokenKind]::Creplace) -or
               ($null -eq $literal -and $part.Operator -eq [Management.Automation.Language.TokenKind]::Plus -and
                -not (LiteralNumericPlus $part))
             $literalFacts[$part]=@{value=$literal;uncertain=$uncertain}
           }
           $value=$literalFacts[$part].value
           if ($literalFacts[$part].uncertain) { $mask=$mask -bor 4 }
+        } elseif ($part -is [Management.Automation.Language.UnaryExpressionAst]) {
+          $value=$null
+          if ($part.TokenKind -eq [Management.Automation.Language.TokenKind]::Join) { $mask=$mask -bor 4 }
         } else {
           $value=$part.Value
           if ($part -is [Management.Automation.Language.ExpandableStringExpressionAst] -and $part.NestedExpressions.Count) { $mask=$mask -bor 4 }
