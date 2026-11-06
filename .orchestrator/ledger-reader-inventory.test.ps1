@@ -15,6 +15,9 @@ try {
     'lower-native.cs'='class Synthetic { string Read() => System.IO.File.ReadAllText("dispatch-log.jsonl"); }'
     'UPPER-NATIVE.CS'='class Synthetic { string Read() => System.IO.File.ReadAllText("dispatch-log.jsonl"); }'
     'Mixed-Native.Cs'='class Synthetic { string Read() => System.IO.File.ReadAllText("dispatch-log.jsonl"); }'
+    'split-lower.cs'='class Native { string Read() => System.IO.File.ReadAllText("dispatch-" + "log.jsonl"); }'
+    'SPLIT-UPPER.CS'='class Native { string Read() => System.IO.File.ReadAllText("dispatch-" + "log.jsonl"); }'
+    'dynamic.Cs'='class Native { string Read(string p) => System.IO.File.ReadAllText(p); }'
     'REPORT.TEST.PS1'='[IO.File]::ReadAllText(''dispatch-log.jsonl'')'
     'RECEIPT.PSM1'='[IO.File]::ReadAllText(''receipt.json'')'
   }
@@ -41,7 +44,7 @@ try {
       if($path -match '(?i)\.cs$'){Check ($rows[0].family -ceq 'native-source') "C# is not misparsed as PowerShell: $path"}
     }
   }
-  Check ($c.violations.Count -eq 9) 'all nine production readers refuse across case variants'
+  Check ($c.violations.Count -eq 12) 'all twelve production readers refuse across case and path-expression variants'
   "PASS native inventory checks=$checks sources=$($c.scanned) productionRefusals=$($c.violations.Count) reportOnly=1 perUseExclusion=1 noInspectedExecution=true"
 } finally {
   $full=[IO.Path]::GetFullPath($root)

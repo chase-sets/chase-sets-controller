@@ -714,8 +714,9 @@ function Get-NonDispatchLedgerPath {
       if ($role -eq 'path-forwarder' -and -not $family) { $role='unclassified';$handled=$false }
       $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$family;role=$role;authority=$authority;owner=$owner;test=$unit.test;handled=$handled})
     }
-    if (-not $unit.ast -and $unit.source -match 'dispatch-log(?:\\?\.)jsonl') {
-      # A newly tracked native source cannot evade the PowerShell grammar.
+    if (-not $unit.ast) {
+      # Standalone native sources have no proven I/O/provenance model here.
+      # Missing literal ledger text cannot exclude split or runtime paths.
       $rows.Add([pscustomobject]@{path=$unit.path;line=1;family='native-source';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
     }
   }
