@@ -86,7 +86,8 @@ try {
     content=@(0,"$import;function Read-Synthetic {param(`$Path);Get-Content -LiteralPath ($value)}")
     expression=@(0,"$import;function Read-Synthetic {param(`$Item);[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path `$Item.path))}")
     dispatchLiteral=@(0,"$import;[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path 'dispatch-log.jsonl'))")
-    assigned=@(0,"$import;function Read-Synthetic {param(`$Path);`$safe=($value);[IO.File]::ReadAllText(`$safe)}")
+    assigned=@(1,"$import;function Read-Synthetic {param(`$Path);`$safe=($value);[IO.File]::ReadAllText(`$safe)}")
+    literalAssigned=@(0,"$import;function Read-Synthetic {`$safe='receipt.json';[IO.File]::ReadAllText(`$safe)}")
     originalObject=@(1,"$import;function Read-Synthetic {param(`$Path);$value;[IO.File]::ReadAllText(`$Path)}")
     interveningCommand=@(1,"$import;function Read-Synthetic {param(`$Path);`$safe=($value);Invoke-Synthetic;[IO.File]::ReadAllText(`$safe)}")
     pipelineMutation=@(1,"$import;function Read-Synthetic {param(`$Path);[IO.File]::ReadAllText(($value | ForEach-Object {'dispatch-log.jsonl'}))}")
@@ -122,13 +123,17 @@ try {
     $violations=@($c.violations | Where-Object path -CEQ 'reader.ps1')
     $nativeUnknown=@($violations | Where-Object role -CEQ 'reader').Count
     $forwarding=@($violations | Where-Object role -CEQ 'path-forwarder')
+    $opaque=@($violations | Where-Object role -CEQ 'unclassified')
     # Keep instance-derived forwarding uncertainty enforced independently of
     # the native path-value proof; neither inventory nor old mutants disappear.
     $badForwarding=@($forwarding | Where-Object { $_.family -cne 'get-nondispatchledgerpath' -or $_.authority -cne 'indeterminate' -or $_.handled -or $_.owner -or $_.test })
-    $observed.Add([pscustomobject]@{case=$name;expectedNativeViolation=$expected;nativeViolations=$nativeUnknown;forwardingViolations=$forwarding.Count;violations=$violations.Count;allViolations=$c.violations.Count;rows=@($c.rows)})
+    $badOpaque=@($opaque | Where-Object { $_.family -cne 'unknown-static-type' -or $_.authority -cne 'indeterminate' -or $_.handled -or $_.owner -or $_.test })
+    $expectedForwarding=if($name -in @('missingGuardCall','literalAssigned')){0}else{1}
+    $expectedOpaque=if($name -eq 'changedLeaf'){1}else{0}
+    $observed.Add([pscustomobject]@{case=$name;expectedNativeViolation=$expected;nativeViolations=$nativeUnknown;forwardingViolations=$forwarding.Count;opaqueViolations=$opaque.Count;violations=$violations.Count;allViolations=$c.violations.Count;rows=@($c.rows)})
     if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readerRows.Count -or (($nativeUnknown -gt 0) -ne $expected) -or
-        $violations.Count -ne ($nativeUnknown+$forwarding.Count) -or $badForwarding.Count -or
-        ($name -ne 'missingGuardCall' -and $forwarding.Count -ne 1) -or ($name -eq 'missingGuardCall' -and $forwarding.Count -ne 0)) { $failures.Add($name) }
+        $violations.Count -ne ($nativeUnknown+$forwarding.Count+$opaque.Count) -or $badForwarding.Count -or $badOpaque.Count -or
+        $forwarding.Count -ne $expectedForwarding -or $opaque.Count -ne $expectedOpaque) { $failures.Add($name) }
     Write-Output "PATH-VALUE case=$name nativeViolations=$nativeUnknown forwardingViolations=$($forwarding.Count) expectedNative=$([int]$expected) globalUnknown=$($c.violations.Count)"
   }
   if ($EvidencePath) { $observed.ToArray()|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $EvidencePath -Encoding utf8 }

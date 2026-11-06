@@ -95,6 +95,16 @@ try {
     # The copied real owner is separately fail-closed by the global contract;
     # this control classifies the synthetic reader's trap, not that baseline.
     $bad=@($census.violations | Where-Object path -CEQ 'reader.ps1').Count -gt 0
+    $nativeUnknown=@($census.violations | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' })
+    if(-not $cases[$name][0]) {
+      # The terminal trap still proves the native read guard. Separately keep
+      # the instance-bearing guard's forwarding UNKNOWN in the full inventory.
+      $forwarded=@($census.violations | Where-Object path -CEQ 'reader.ps1')
+      Check ($forwarded.Count -eq 1 -and $forwarded[0].family -ceq 'get-nondispatchledgerpath' -and
+        $forwarded[0].role -ceq 'path-forwarder' -and $forwarded[0].authority -ceq 'indeterminate' -and
+        -not $forwarded[0].handled -and -not $forwarded[0].owner -and -not $forwarded[0].test) "guard forwarding refusal $name"
+      $bad=$nativeUnknown.Count -gt 0
+    } else {Check ($nativeUnknown.Count -gt 0) "opaque trap still refuses the native reader $name"}
     Check ($census.scanned -eq 2 -and $census.total -eq 2) "complete census $name"
     Check (@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' }).Count -gt 0) "actual reader inventory $name"
     if($bad -ne $cases[$name][0]){$failures.Add($name)}
