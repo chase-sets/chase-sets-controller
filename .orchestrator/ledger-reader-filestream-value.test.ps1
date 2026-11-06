@@ -88,10 +88,15 @@ public class LedgerStreamValueSpoof : FileStream {
     rethrowTrap=@($true,('trap {throw $_.Exception};'+$read))
     missingImport=@($false,$read)
     lateImport=@($false,$read)
+    backgroundImport=@($false,($import+" &`n"+$read))
+    backgroundImportPath=@($false,($import.Replace(') -Global',' &) -Global')+"`n"+$read))
+    redirectedImport=@($false,($import+" 2>`$null`n"+$read))
+    redirectedImportPath=@($false,($import.Replace(') -Global',' 2>$null) -Global')+"`n"+$read))
   }
   foreach($name in $cases.Keys){
-    $prefix=if($name -cin @('missingImport','lateImport')){''}else{$import+"`n"}
+    $prefix=if($name -cin @('missingImport','lateImport','backgroundImport','backgroundImportPath','redirectedImport','redirectedImportPath')){''}else{$import+"`n"}
     $text=$prefix+$cases[$name][1]+$(if($name -ceq 'lateImport'){"`n"+$import}else{''})
+    if($name -cin @('backgroundImport','backgroundImportPath','redirectedImport','redirectedImportPath')){Check ($text -cne ($import+"`n"+$read)) 'import mutation changes exact consumer source'}
     $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=$text}
     $rows=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
     Check ($c.scanned -eq 2 -and $c.total -eq 2 -and $rows.Count -eq 1) "complete exact native inventory $name"
@@ -108,6 +113,27 @@ public class LedgerStreamValueSpoof : FileStream {
     $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=($import+"`n"+$read);'.orchestrator/dispatch-ledger-reader.psm1'=$mutation}
     $row=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
     Check ($row.Count -eq 1 -and -not $row[0].handled) 'tampered body/export never grants authority'
+  }
+  $moduleAst=[Management.Automation.Language.Parser]::ParseInput($module,[ref]$null,[ref]$null)
+  $bindingMutants=0
+  foreach($name in @('Get-NonDispatchLedgerStream','Assert-NonDispatchLedgerPath','Get-NonDispatchLedgerPath')){
+    $definition=@($moduleAst.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq $name})[0].Extent.Text
+    $consumer=if($name -ceq 'Get-NonDispatchLedgerPath'){'$reader=[IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))'}else{$read}
+    foreach($wrapper in @('function Never-Called {','{','if($false) {')){
+      $mutation=$module.Replace($definition,($wrapper+$definition+'}'))
+      Check ($mutation -cne $module) 'definition-context mutation changes actual helper'
+      $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=($import+"`n"+$consumer);'.orchestrator/dispatch-ledger-reader.psm1'=$mutation}
+      $row=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
+      Check ($row.Count -eq 1 -and -not $row[0].handled) "dormant definition grants no authority $name/$wrapper"
+      $bindingMutants++
+    }
+  }
+  foreach($edit in @('Set-Item -Path Function:Get-NonDispatchLedgerStream -Value {param($Stream) $Stream}',
+    'Set-Item -Path Function:Assert-NonDispatchLedgerPath -Value {param($Path)}')){
+    $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=($import+"`n"+$read);'.orchestrator/dispatch-ledger-reader.psm1'=($module+"`n"+$edit)}
+    $row=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
+    Check ($row.Count -eq 1 -and -not $row[0].handled) 'competing initialization binding grants no authority'
+    $bindingMutants++
   }
   $actualSites=0;$actualRefusals=0;$actualRemovalReads=0
   foreach($file in @('controller-install-lock.psm1','controller-release-battery.ps1','invoke-heavy-verifier.ps1','landed-integration-evidence.psm1')){
@@ -140,7 +166,7 @@ public class LedgerStreamValueSpoof : FileStream {
       }
     }
   }
-  "PASS file-stream value guard checks=$checks cases=$($cases.Count) nativeNameRefusals=$refusals bodyExportMutants=5 actualSites=$actualSites actualRefusals=$actualRefusals actualGuardRemovalReads=$actualRemovalReads"
+  "PASS file-stream value guard checks=$checks cases=$($cases.Count) nativeNameRefusals=$refusals bodyExportMutants=5 bindingMutants=$bindingMutants actualSites=$actualSites actualRefusals=$actualRefusals actualGuardRemovalReads=$actualRemovalReads"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or (Split-Path -Leaf $full) -notlike 'ledger-stream-value-*'){throw 'unsafe fixture cleanup'}

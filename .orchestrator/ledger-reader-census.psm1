@@ -510,6 +510,30 @@ function Get-LedgerReaderCensus {
   $nonDispatchValueValid=$false
   $nonDispatchStreamValid=$false
   $guardImports=@{}
+  function GuardModuleInitialization($Unit) {
+    $ast=$Unit.ast
+    if ($ast.ParamBlock -or $ast.Attributes.Count -or $ast.UsingStatements.Count -or $ast.ScriptRequirements -or
+        $ast.BeginBlock -or $ast.ProcessBlock -or $ast.CleanBlock -or $ast.DynamicParamBlock -or
+        -not $ast.EndBlock -or $ast.EndBlock.Traps.Count) { return $false }
+    $definitions=@($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.FunctionDefinitionAst] })
+    $names=@($definitions | ForEach-Object Name)
+    if (@($definitions | Where-Object { $_.IsFilter -or $_.IsWorkflow -or $_.Name -in @('Export-ModuleMember','Import-Module','Join-Path') }).Count) { return $false }
+    $exports=0
+    # A matching dormant body is not an executable binding. Refuse arbitrary
+    # initialization that could replace a function before the literal export.
+    foreach ($statement in $ast.EndBlock.Statements) {
+      if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) { continue }
+      if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.Background -or $statement.PipelineElements.Count -ne 1) { return $false }
+      $call=$statement.PipelineElements[0]
+      if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.Redirections.Count -or $call.GetCommandName() -cne 'Export-ModuleMember' -or $call.CommandElements.Count -ne 3) { return $false }
+      $parameter=$call.CommandElements[1];$values=$call.CommandElements[2]
+      if ($parameter -isnot [Management.Automation.Language.CommandParameterAst] -or $parameter.ParameterName -cne 'Function' -or $parameter.Argument) { return $false }
+      $members=if ($values -is [Management.Automation.Language.ArrayLiteralAst]) { @($values.Elements) } else { @($values) }
+      if (-not $members.Count -or @($members | Where-Object { $_ -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $_.Value -cnotin $names }).Count) { return $false }
+      $exports++
+    }
+    return $exports -eq 1
+  }
   $expectedGuard=@'
 function Assert-NonDispatchLedgerPath {
   [CmdletBinding()]
@@ -525,7 +549,9 @@ function Assert-NonDispatchLedgerPath {
   $expectedBody=$expectedAst.EndBlock.Statements[0].Body
   if ($functions.ContainsKey('assert-nondispatchledgerpath') -and $functions['assert-nondispatchledgerpath'].Count -eq 1) {
     $target=$functions['assert-nondispatchledgerpath'][0]
-    $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
+    $nonDispatchGuardValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
+      $target.node.Parent -eq $target.unit.ast.EndBlock -and (GuardModuleInitialization $target.unit) -and
+      (TokenShape $target.node.Body) -ceq (TokenShape $expectedBody)
     $exported=$false;$valueExported=$false;$streamExported=$false
     foreach ($statement in $target.unit.ast.EndBlock.Statements) {
       if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
@@ -551,7 +577,7 @@ function Get-NonDispatchLedgerPath {
   $valueAst=[Management.Automation.Language.Parser]::ParseInput($expectedValue,[ref]$tokens,[ref]$errors)
   if ($nonDispatchGuardValid -and $valueExported -and $functions.ContainsKey('get-nondispatchledgerpath') -and $functions['get-nondispatchledgerpath'].Count -eq 1) {
     $target=$functions['get-nondispatchledgerpath'][0]
-    $nonDispatchValueValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
+    $nonDispatchValueValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $target.node.Parent -eq $target.unit.ast.EndBlock -and
       (TokenShape $target.node.Body) -ceq (TokenShape $valueAst.EndBlock.Statements[0].Body)
   }
   $expectedStream=@'
@@ -568,16 +594,16 @@ function Get-NonDispatchLedgerStream {
   $streamAst=[Management.Automation.Language.Parser]::ParseInput($expectedStream,[ref]$tokens,[ref]$errors)
   if ($nonDispatchGuardValid -and $streamExported -and $functions.ContainsKey('get-nondispatchledgerstream') -and $functions['get-nondispatchledgerstream'].Count -eq 1) {
     $target=$functions['get-nondispatchledgerstream'][0]
-    $nonDispatchStreamValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and
+    $nonDispatchStreamValid=$target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $target.node.Parent -eq $target.unit.ast.EndBlock -and
       (TokenShape $target.node.Body) -ceq (TokenShape $streamAst.EndBlock.Statements[0].Body)
   }
   if ($nonDispatchGuardValid) {
     $ownerPath=[IO.Path]::GetFullPath((Join-Path $Root '.orchestrator/dispatch-ledger-reader.psm1'))
     foreach ($unit in $units | Where-Object { -not $_.test -and $_.ast }) {
       foreach ($statement in $unit.ast.EndBlock.Statements) {
-        if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1) { continue }
+        if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.Background -or $statement.PipelineElements.Count -ne 1) { continue }
         $call=$statement.PipelineElements[0]
-        if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -ine 'Import-Module' -or $call.CommandElements.Count -lt 2) { continue }
+        if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.Redirections.Count -or $call.GetCommandName() -ine 'Import-Module' -or $call.CommandElements.Count -lt 2) { continue }
         $options=@($call.CommandElements | Select-Object -Skip 2)
         $validOptions=$true
         $seenOptions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -596,9 +622,9 @@ function Get-NonDispatchLedgerStream {
         }
         if (-not $validOptions) { continue }
         $argument=$call.CommandElements[1]
-        if ($argument -isnot [Management.Automation.Language.ParenExpressionAst] -or $argument.Pipeline.PipelineElements.Count -ne 1) { continue }
+        if ($argument -isnot [Management.Automation.Language.ParenExpressionAst] -or $argument.Pipeline.Background -or $argument.Pipeline.PipelineElements.Count -ne 1) { continue }
         $join=$argument.Pipeline.PipelineElements[0]
-        if ($join -isnot [Management.Automation.Language.CommandAst] -or $join.GetCommandName() -ine 'Join-Path' -or $join.CommandElements.Count -ne 3) { continue }
+        if ($join -isnot [Management.Automation.Language.CommandAst] -or $join.Redirections.Count -or $join.GetCommandName() -ine 'Join-Path' -or $join.CommandElements.Count -ne 3) { continue }
         $base=$join.CommandElements[1];$leaf=$join.CommandElements[2]
         if ($base -isnot [Management.Automation.Language.VariableExpressionAst] -or $base.VariablePath.UserPath -ine 'PSScriptRoot' -or $leaf -isnot [Management.Automation.Language.StringConstantExpressionAst]) { continue }
         $directory=Split-Path -Parent (Join-Path $Root $unit.path)
