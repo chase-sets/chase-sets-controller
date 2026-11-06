@@ -120,6 +120,18 @@ try {
     expandableStringReplace=@(2,$false,'$Path="disXpatch-log.jsonl".Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
     stringCostMemory=@(4,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes([string]::Concat(''cost-'',''ledger.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     stringCaseInsensitiveType=@(2,$false,'$Path=[sYsTeM.sTrInG]::Concat(''dis'',''patch-log.jsonl'');[Unknown.Factory]::Decode($Path)')
+    wrappedStringLiteral=@(2,$false,'$Path=(''disXpatch-log.jsonl'').Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
+    wrappedStringMemory=@(4,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''disXpatch-log.jsonl'').Replace(''X'',''''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    wrappedStringType=@(2,$false,'$Path=([string])::Concat(''dis'',''patch-log.jsonl'');[Unknown.Factory]::Decode($Path)')
+    variableStringReceiver=@(2,$false,'$piece=''disXpatch-log.jsonl'';$Path=$piece.Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
+    variableStringMemory=@(4,$false,'$piece=''disXpatch-log.jsonl'';$bytes=[Text.Encoding]::UTF8.GetBytes($piece.Replace(''X'',''''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    unresolvedInstanceResult=@(2,$false,'$Path=$Other.Compose();[Unknown.Factory]::Decode($Path)')
+    variableStringType=@(2,$false,'$type=[string];$Path=$type::Concat(''dis'',''patch-log.jsonl'');[Unknown.Factory]::Decode($Path)')
+    variableStringTypeMemory=@(4,$false,'$type=[string];$bytes=[Text.Encoding]::UTF8.GetBytes($type::Concat(''dis'',''patch-log.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    wrappedVariableReceiver=@(2,$false,'$Path=($Other).Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
+    castStringReceiver=@(2,$false,'$Path=([string]$Other).Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
+    castStringMemory=@(4,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(([string]$Other).Replace(''X'',''''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    concatStringReceiver=@(2,$false,'$Path=(''disX''+''patch-log.jsonl'').Replace(''X'','''');[Unknown.Factory]::Decode($Path)')
     knownNumericMultiply=@(0,$true,'$count=2*3;[Unknown.Factory]::new($count)')
     knownNumericNegation=@(0,$true,'$count=-2;[Unknown.Factory]::new($count)')
     genericNativeMethod=@(1,$false,('[IO.StreamReader]::new[int]('+$guard+')'))
@@ -142,6 +154,11 @@ try {
     $expression=('('*$depth)+'''dis''+''patch-'''+(')'*$depth)+'+''log.jsonl'''
     $cases["depthConstructor$depth"]=@(1,$false,('$Path='+$expression+';[Unknown.Factory]::new($Path)'))
     $cases["depthMemory$depth"]=@(3,$false,('$bytes=[Text.Encoding]::UTF8.GetBytes('+$expression+');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'))
+  }
+  foreach($depth in @(12,20)) {
+    $receiver=('('*$depth)+'''disXpatch-log.jsonl'''+(')'*$depth)
+    $cases["depthMethod$depth"]=@(2,$false,('$Path='+$receiver+'.Replace(''X'','''');[Unknown.Factory]::Decode($Path)'))
+    $cases["depthMethodMemory$depth"]=@(4,$false,('$bytes=[Text.Encoding]::UTF8.GetBytes('+$receiver+'.Replace(''X'',''''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'))
   }
   $failures=[Collections.Generic.List[string]]::new()
   foreach($name in $cases.Keys) {

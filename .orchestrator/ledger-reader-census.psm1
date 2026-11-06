@@ -253,12 +253,24 @@ function Get-LedgerReaderCensus {
           if ($part.TokenKind -eq [Management.Automation.Language.TokenKind]::Join) { $mask=$mask -bor 4 }
         } elseif ($part -is [Management.Automation.Language.InvokeMemberExpressionAst]) {
           $value=$null
-          # String methods can compose a ledger path from non-ledger fragments.
-          # This syntax adds uncertainty only; it never proves a method pure.
-          if (($part.Static -and $part.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
-               $part.Expression.TypeName.FullName -match '^(System\.)?String$') -or
-              $part.Expression -is [Management.Automation.Language.StringConstantExpressionAst] -or
-              $part.Expression -is [Management.Automation.Language.ExpandableStringExpressionAst]) { $mask=$mask -bor 4 }
+          if (-not $literalFacts.ContainsKey($part)) {
+            $receiver=$part.Expression;$depth=0
+            while ($receiver -is [Management.Automation.Language.ParenExpressionAst] -and $depth -lt 12) {
+              $receiver=SingleExpression $receiver.Pipeline;$depth++
+            }
+            # Mutable receivers and exhausted/opaque wrappers are not purity
+            # proofs. Cache syntax only; this can add uncertainty, never safety.
+            $uncertain=$null -eq $receiver -or $receiver -is [Management.Automation.Language.ParenExpressionAst] -or
+              $receiver -is [Management.Automation.Language.VariableExpressionAst] -or
+              ($part.Static -and $receiver -is [Management.Automation.Language.TypeExpressionAst] -and
+               $receiver.TypeName.FullName -match '^(System\.)?String$') -or
+              ($receiver -is [Management.Automation.Language.ConvertExpressionAst] -and
+               $receiver.Type.TypeName.FullName -match '^(System\.)?String$') -or
+              $receiver -is [Management.Automation.Language.ExpandableStringExpressionAst] -or
+              $null -ne (LiteralString $receiver)
+            $literalFacts[$part]=@{uncertain=$uncertain}
+          }
+          if ($literalFacts[$part].uncertain) { $mask=$mask -bor 4 }
         } else {
           $value=$part.Value
           if ($part -is [Management.Automation.Language.ExpandableStringExpressionAst] -and $part.NestedExpressions.Count) { $mask=$mask -bor 4 }
