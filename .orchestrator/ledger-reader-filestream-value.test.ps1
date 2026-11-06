@@ -36,7 +36,7 @@ public class LedgerStreamValueSpoof : FileStream {
     try {
       $stream|Add-Member -MemberType NoteProperty -Name Name -Value 'ordinary.json' -Force
       $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream|Out-Null}catch{$failure=$_.Exception.Message}
-      Check ($failure -match 'DISPATCH_LEDGER_OWNER_REQUIRED') "actual native Name defeats ETS spoof $alias"
+      Check ($failure -match 'DISPATCH_LEDGER_OWNER_REQUIRED') "guard reads CLR Name, ignoring an instance Name member $alias"
       Check ($stream.Position -eq 0 -and $stream.CanRead) 'refusal neither reads nor disposes'
       $refusals++
     } finally {$stream.Dispose()}
@@ -45,7 +45,7 @@ public class LedgerStreamValueSpoof : FileStream {
   try {
     $subclass|Add-Member -MemberType ScriptMethod -Name GetType -Value {[IO.FileStream]} -Force
     $failure='';try {dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $subclass|Out-Null}catch{$failure=$_.Exception.Message}
-    Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED') 'CLR type defeats virtual Name and ETS GetType spoof'
+    Check ($failure -match 'NON_DISPATCH_FILE_STREAM_REQUIRED') 'exact-type check refuses a FileStream subclass'
   } finally {$subclass.Dispose()}
   $file=[IO.File]::Open((Join-Path $root 'dispatch-log.jsonl'),'Open','Read','ReadWrite')
   $handle=[Microsoft.Win32.SafeHandles.SafeFileHandle]::new($file.SafeFileHandle.DangerousGetHandle(),$false)
@@ -109,10 +109,10 @@ public class LedgerStreamValueSpoof : FileStream {
     $module.Replace("  if (-not [IO.Path]::IsPathFullyQualified(`$path)) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }",'# removed native name completeness'),
     $module.Replace('dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $path','# removed stream assertion'),
     $module.Replace(',Get-NonDispatchLedgerStream,',','))){
-    Check ($mutation -cne $module) 'authentication mutation changes actual module'
+    Check ($mutation -cne $module) 'guard-body mutation changes actual module'
     $c=Get-LedgerReaderCensus -Root $root -SourceOverride @{'reader.ps1'=($import+"`n"+$read);'.orchestrator/dispatch-ledger-reader.psm1'=$mutation}
     $row=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.family -ceq 'StreamReader'})
-    Check ($row.Count -eq 1 -and -not $row[0].handled) 'tampered body/export never grants authority'
+    Check ($row.Count -eq 1 -and -not $row[0].handled) 'mutated guard body/export earns no census credit'
   }
   $moduleAst=[Management.Automation.Language.Parser]::ParseInput($module,[ref]$null,[ref]$null)
   $bindingMutants=0

@@ -345,7 +345,8 @@ function Read-DispatchCountHistory {
 function Get-NonDispatchLedgerStream {
   [CmdletBinding()]
   param([Parameter(Mandatory)][IO.FileStream]$Stream)
-  # Bypass ETS members and virtual Name overrides before granting path authority.
+  # Read the exact CLR type and FileStream.Name for ordinary classification.
+  # In-process code is trusted; these reads are not a security boundary.
   if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.FileStream]) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
   $path=[IO.FileStream].GetProperty('Name').GetValue($Stream)
   if (-not [IO.Path]::IsPathFullyQualified($path)) { throw 'NON_DISPATCH_FILE_STREAM_REQUIRED' }
@@ -356,7 +357,8 @@ function Get-NonDispatchLedgerStream {
 function Get-LedgerMemoryBytes {
   [CmdletBinding()]
   param([Parameter(Mandatory)][IO.MemoryStream]$Stream)
-  # Only the native byte-copy operation, never ETS or a virtual override.
+  # Copy through CLR ToArray rather than an ordinary instance member override.
+  # This is a correctness control, not a boundary against trusted in-process code.
   if ([object].GetMethod('GetType').Invoke($Stream,$null) -ne [IO.MemoryStream]) { throw 'NATIVE_MEMORY_STREAM_REQUIRED' }
   return ,([IO.MemoryStream].GetMethod('ToArray', [type[]]@()).Invoke($Stream,$null))
 }

@@ -143,7 +143,7 @@ function Get-LedgerReaderCensus {
   }
   function InlineNonDispatchStreamReader($Node,$Unit) {
     # Prove the actual constructor operand, never earlier mutable storage.
-    # The value guard authenticates the returned native stream at this use.
+    # The value guard binds the returned native stream at this use.
     # Native reads feeding an exact memory decoder remain separately censused.
     if ($Node -isnot [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $Node.Static -or
         $Node.GenericTypeArguments.Count -or $Node.NullConditional -or $Node.Member.Value -ine 'new' -or
@@ -156,9 +156,9 @@ function Get-LedgerReaderCensus {
         $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
         $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) { return $false }
     if ($stream.Expression.TypeName.FullName -match '^(System\.)?IO\.MemoryStream$') {
-      # An instance call need not return the mutation: ETS cleanup can change
-      # caller-local bytes after a native snapshot. No effect/dominance proof
-      # exists here, so even calls in other branches/scopes retain uncertainty.
+      # An instance call's effects are unproven. Without an effect/dominance
+      # proof, calls in other branches/scopes conservatively retain uncertainty.
+      # This is static-analysis conservatism, not an in-process security boundary.
       if ($Unit.instanceCall -or $Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 5)) { return $false }
       $bytes=$stream.Arguments[0];$writable=$stream.Arguments[1]
       $encoding=$Node.Arguments[1];$detectBom=$Node.Arguments[2]
@@ -250,8 +250,8 @@ function Get-LedgerReaderCensus {
         # Cache immutable syntax only; variable facts still flow to a fixed point.
         if ($part -is [Management.Automation.Language.CommandAst]) {
           $value=$null
-          # An authenticated native memory copy adds no opaque invocation, but
-          # never clears the input's path or uncertainty facts. Unbound/tampered
+          # A proven native memory-copy binding adds no opaque invocation, but
+          # never clears the input's path or uncertainty facts. Unbound/altered
           # copies remain uncertain; this is not a named data-function exemption.
           if ((OpaqueInvocation $part $Unit) -or
               ((MemoryFactCommand $part $Unit) -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
@@ -393,7 +393,7 @@ function Get-LedgerReaderCensus {
   }
   function OpaqueInvocation($Node,$Unit) {
     # A dynamic/call-operator result, or a unit that changes command aliases,
-    # has no authenticated native-operation binding. Preserve that uncertainty
+    # has no proven native-operation binding. Preserve that uncertainty
     # even if another branch of the same RHS calls a known data reader.
     return $Node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Unknown -or $aliasRebindings.ContainsKey($Unit.path)
   }
@@ -558,7 +558,7 @@ function Get-LedgerReaderCensus {
       }
     }
   }
-  # A guard name alone is not authority. Authenticate the actual owner's
+  # A guard name alone earns no census credit. Bind the actual owner's
   # fail-closed body and an unconditional import of that tracked module.
   $nonDispatchGuardValid=$false
   $nonDispatchValueValid=$false

@@ -19,7 +19,7 @@ try {
       if($copied.Length){$copied[0]=$copied[0] -bxor 1;Check ($stream.ToArray()[0] -eq $bytes[0]) 'independent snapshot allocation'}
       $stream|Add-Member -MemberType ScriptMethod -Name ToArray -Value {throw 'ETS ToArray must not execute'} -Force
       $copied=dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $stream
-      Check ([Convert]::ToHexString($copied) -ceq [Convert]::ToHexString($bytes)) 'native operation bypasses ETS method spoof'
+      Check ([Convert]::ToHexString($copied) -ceq [Convert]::ToHexString($bytes)) 'copy uses CLR ToArray, not an instance ToArray member'
       $stream.Dispose()
       $copied=dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $stream
       Check ([Convert]::ToHexString($copied) -ceq [Convert]::ToHexString($bytes)) 'native ToArray remains valid after disposal'
@@ -35,7 +35,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
   try {
     $subclass|Add-Member -MemberType ScriptMethod -Name GetType -Value {[IO.MemoryStream]} -Force
     $failure='';try {dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $subclass|Out-Null}catch{$failure=$_.Exception.Message}
-    Check ($failure -match 'NATIVE_MEMORY_STREAM_REQUIRED') 'exact CLR type rejects virtual method and ETS type spoof'
+    Check ($failure -match 'NATIVE_MEMORY_STREAM_REQUIRED') 'exact-type check refuses a MemoryStream subclass'
   } finally {$subclass.Dispose()}
   foreach($value in @($null,[pscustomobject]@{ToArray='inert'},[IO.StringReader]::new('inert'))){
     $failure='';try {dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $value|Out-Null}catch{$failure=$_.Exception.Message}
@@ -171,7 +171,7 @@ public class LedgerMemoryValueSpoof : MemoryStream {
   foreach($mutation in $mutants){
     Check ($mutation -cne $module) 'module mutant changes actual source'
     $row=CensusRow ($import+"`n"+$valid) $mutation
-    Check (-not $row.handled) 'tampered operation/export/binding retains decoder refusal'
+    Check (-not $row.handled) 'mutated operation/export/binding earns no decoder credit'
   }
   $entry=Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'
   $heavy=[Management.Automation.Language.Parser]::ParseFile($entry,[ref]$null,[ref]$null)
@@ -215,6 +215,8 @@ public class LedgerMemoryValueSpoof : MemoryStream {
       [IDisposable].GetMethod('Dispose').Invoke($this,$null)
     }
     try {
+      # In-process type data is outside the trust boundary. This existing
+      # control documents why instance calls receive no decoder credit.
       $spoofed=Get-OwnerSnapshot
       Check ($global:LedgerMemoryCleanupCalls -eq 1 -and $spoofed.Raw -ceq $replacement) 'actual cleanup mutates caller bytes after native snapshot without an assignment result'
       Check ([IO.File]::ReadAllText($ownerPath) -ceq $ordinary) 'cleanup mutation leaves ordinary input unchanged'
