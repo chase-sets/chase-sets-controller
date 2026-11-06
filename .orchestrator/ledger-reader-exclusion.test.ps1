@@ -65,9 +65,13 @@ try {
     [IO.File]::WriteAllText($owner,$(if($cases[$name].Count -gt 2){$cases[$name][2]}else{$guard}))
     $c=Get-LedgerReaderCensus -Root $root
     $expected=[int]$cases[$name][0] -gt 0
-    $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$c.violations.Count;rows=@($c.rows)})
-    if ($c.scanned -ne 2 -or $c.total -ne 2 -or (($c.violations.Count -gt 0) -ne $expected)) { $failures.Add($name) }
-    Write-Output "EXCLUSION case=$name violations=$($c.violations.Count) expected=$([int]$expected)"
+    # These controls prove the subject reader's guard, not helper purity.
+    # Additional opaque helper calls remain inventoried and globally enforced.
+    $readers=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.role -eq 'reader'})
+    $refused=@($readers|Where-Object {-not $_.handled})
+    $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$c.violations.Count;subjectReaders=$readers.Count;subjectRefusals=$refused.Count;rows=@($c.rows)})
+    if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readers.Count -or (($refused.Count -gt 0) -ne $expected)) { $failures.Add($name) }
+    Write-Output "EXCLUSION case=$name violations=$($c.violations.Count) subjectRefusals=$($refused.Count) expected=$([int]$expected)"
   }
   if ($EvidencePath) { $observed.ToArray() | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED exclusion controls: $($failures -join ',')" }

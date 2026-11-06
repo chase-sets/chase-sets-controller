@@ -80,7 +80,7 @@ function Get-LedgerReaderCensus {
   if ($LASTEXITCODE -ne 0 -or -not $paths.Count) { throw 'LEDGER_CENSUS_INVENTORY_MISSING' }
   Write-Verbose "Ledger census: parsing $($paths.Count) tracked sources"
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
-  $variableKeys=@{};$factParts=@{};$scriptParts=@{};$assignmentShapes=@{}
+  $variableKeys=@{};$factParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
   $pathAssignments=@{};$pathParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -151,7 +151,7 @@ function Get-LedgerReaderCensus {
         $stream.GenericTypeArguments.Count -or $stream.NullConditional -or $stream.Member.Value -ine 'new' -or
         $stream.Expression -isnot [Management.Automation.Language.TypeExpressionAst]) { return $false }
     if ($stream.Expression.TypeName.FullName -match '^(System\.)?IO\.MemoryStream$') {
-      if ($Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 1)) { return $false }
+      if ($Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 5)) { return $false }
       $bytes=$stream.Arguments[0];$writable=$stream.Arguments[1]
       $encoding=$Node.Arguments[1];$detectBom=$Node.Arguments[2]
       return $bytes -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -220,8 +220,18 @@ function Get-LedgerReaderCensus {
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
         if ($facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
-        # Fold only literal string addition, never evaluate inspected code.
-        $value=if ($part -is [Management.Automation.Language.BinaryExpressionAst]) { LiteralString $part } else { $part.Value }
+        # Failed string addition analysis is uncertainty, not a safety proof.
+        # Cache immutable syntax only; variable facts still flow to a fixed point.
+        if ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
+          if (-not $literalFacts.ContainsKey($part)) {
+            $literal=LiteralString $part
+            $uncertain=$null -eq $literal -and $part.Operator -eq [Management.Automation.Language.TokenKind]::Plus -and
+              @(Find-LedgerCensusAst $part ([Management.Automation.Language.StringConstantExpressionAst])).Count -gt 0
+            $literalFacts[$part]=@{value=$literal;uncertain=$uncertain}
+          }
+          $value=$literalFacts[$part].value
+          if ($literalFacts[$part].uncertain) { $mask=$mask -bor 4 }
+        } else { $value=$part.Value }
         if ($value -match '(?i)dispatch-log(?:\\?\.)jsonl') { $mask=$mask -bor 1 }
         if ($value -match '(?i)cost-ledger(?:\\?\.)jsonl') { $mask=$mask -bor 2 }
       }
@@ -654,12 +664,14 @@ function Get-NonDispatchLedgerPath {
           $opaqueStatic=$node.Static -and
             ($node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
              $node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst])
+          $invocationMask=Fact $node $unit
           $constructorCandidate=$node.Static -and $node.Member.Value -ieq 'new' -and
-            ($type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)' -or
-             ((Fact $node $unit) -band 1))
-          if ($opaqueStatic -or $constructorCandidate -or ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
-              (((Fact $node $unit) -band 1) -or ($node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit))))) {
-            $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='unknown-static-type';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
+            $type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)'
+          if ($opaqueStatic -or ($invocationMask -band 5) -or $constructorCandidate -or
+              ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
+               $node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit))) {
+            $unknownFamily=if ($node.Static) {'unknown-static-type'} else {'unknown-instance-type'}
+            $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$unknownFamily;role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
           }
           continue
         }

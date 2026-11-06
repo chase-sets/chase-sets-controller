@@ -57,9 +57,27 @@ try {
     unknownComputedReceipt=@(1,$false,'[Unknown.Factory]::(''n''+''ew'')(''receipt.json'')')
     unknownDynamicMember=@(1,$false,'[Unknown.Factory]::$Method(''receipt.json'')')
     nativeComputedMember=@(1,$false,('[IO.StreamReader]::(''n''+''ew'')('+$guard+')'))
-    groupedMemoryDispatch=@(2,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''dis''+''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
-    rightGroupedMemoryDispatch=@(2,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dispatch-''+(''log''+''.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    groupedMemoryDispatch=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes((''dis''+''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    rightGroupedMemoryDispatch=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dispatch-''+(''log''+''.jsonl''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     groupedMemoryCost=@(1,$true,'$bytes=[Text.Encoding]::UTF8.GetBytes((''cost-''+''ledger'')+''.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    literalUnknownLoad=@(1,$false,'[Unknown.Factory]::Load(''dispatch-log.jsonl'')')
+    literalUnknownDecode=@(1,$false,'[Unknown.Factory]::Decode(''dispatch-log.jsonl'')')
+    unknownInstance=@(1,$false,'$Decoder.Load(''dispatch-log.jsonl'')')
+    unknownInstanceDynamic=@(1,$false,'$Decoder.$Method(''dispatch-log.jsonl'')')
+    unknownInstanceComputed=@(1,$false,'$Decoder.(''Lo''+''ad'')(''dispatch-log.jsonl'')')
+    literalUnknownGroupedLoad=@(1,$false,'$Path=(''dis''+''patch-'')+''log.jsonl'';[Unknown.Factory]::Load($Path)')
+    unresolvedPlus=@(1,$false,'$Path=''rece''+$Other+''ipt.json'';[Unknown.Factory]::new($Path)')
+    unresolvedPlusInstance=@(1,$false,'$Path=''rece''+$Other+''ipt.json'';$Decoder.Load($Path)')
+    commandPlus=@(1,$false,'$Path=''dis''+(Write-Output ''patch-'')+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    pipelinePlus=@(1,$false,'$Path=''dis''+(''patch-''|Write-Output)+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    backgroundPlus=@(1,$false,'$Path=''dis''+(''patch-'' &)+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    redirectedPlus=@(1,$false,'$Path=''dis''+(''patch-'' > ''unused'')+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    scriptBlockPlus=@(1,$false,'$Path=''dis''+(&{throw ''never execute''})+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    uncertainMemory=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dis''+(Write-Output ''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
+    uncertainAliasMemory=@(3,$false,'$text=''dis''+$Other+''log.jsonl'';$bytes=[Text.Encoding]::UTF8.GetBytes($text);$copy=$bytes;[IO.StreamReader]::new([IO.MemoryStream]::new($copy,$false),[Text.Encoding]::UTF8,$true)')
+    uncertainGuardedFile=@(2,$false,('$Path=''rece''+$Other+''ipt.json'';[IO.File]::ReadAllText('+$guard+')'))
+    knownReceiptPlus=@(0,$true,'$Path=(''rece''+''ipt'')+''.json'';[Unknown.Factory]::new($Path)')
+    knownNumericPlus=@(0,$true,'$count=1+2;[Unknown.Factory]::new($count)')
     genericNativeMethod=@(1,$false,('[IO.StreamReader]::new[int]('+$guard+')'))
     genericNativeFileMethod=@(1,$false,('[IO.File]::ReadAllText[int]('+$guard+')'))
     dynamicNativeMember=@(1,$false,('[IO.StreamReader]::$Constructor('+$guard+')'))
@@ -76,6 +94,11 @@ try {
     literalEncoding=@(0,$true,'[Text.UTF8Encoding]::new($false,$true)')
     literalUnknownReceipt=@(0,$true,'[Unknown.Factory]::new(''receipt.json'')')
   }
+  foreach($depth in @(10,12,20)) {
+    $expression=('('*$depth)+'''dis''+''patch-'''+(')'*$depth)+'+''log.jsonl'''
+    $cases["depthConstructor$depth"]=@(1,$false,('$Path='+$expression+';[Unknown.Factory]::new($Path)'))
+    $cases["depthMemory$depth"]=@(3,$false,('$bytes=[Text.Encoding]::UTF8.GetBytes('+$expression+');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'))
+  }
   $failures=[Collections.Generic.List[string]]::new()
   foreach($name in $cases.Keys) {
     $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic { param([string]`$Path,`$Other,`$flag) "+$cases[$name][2]+' }'
@@ -90,6 +113,13 @@ try {
     $valid=$rows.Count -eq $cases[$name][0] -and @($rows|Where-Object owner).Count -eq 0 -and
       @($rows|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
       $violations.Count -eq $(if($cases[$name][1]){0}else{$cases[$name][0]})
+    if($name -ceq 'uncertainGuardedFile') {
+      # The actual native value guard retains authority; its uncertain input
+      # forwarding command is additionally inventoried, not silently discarded.
+      $valid=$rows.Count -eq 2 -and @($rows|Where-Object owner).Count -eq 0 -and
+        @($rows|Where-Object {$_.family -eq 'IO.File.ReadAllText' -and $_.handled -and $_.authority -eq 'non-ledger'}).Count -eq 1 -and
+        $violations.Count -eq 1 -and $violations[0].family -eq 'get-nondispatchledgerpath'
+    }
     if(-not $valid){$failures.Add($name)}
     if($name -ceq 'groupedMemoryCost' -and @($rows|Where-Object authority -EQ 'cost').Count -ne 1){$failures.Add('groupedMemoryCostAuthority')}
     $checks++
