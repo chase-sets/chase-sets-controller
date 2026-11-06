@@ -49,6 +49,18 @@ public class LedgerMemoryValueSpoof : MemoryStream {
   } finally {$encoding.PSObject.Members.Remove('GetBytes')}
   $literalCost=[byte[]][char[]](('cost-'+'ledger')+'.jsonl')
   Check ([Text.Encoding]::UTF8.GetString($literalCost) -ceq 'cost-ledger.jsonl') 'literal cost byte composition preserves decoded text'
+  $replacementBytes=[byte[]][char[]]"dispatch-log.jsonl`n"
+  $ordinaryBytes=[byte[]]::new($replacementBytes.Length)
+  $ordinaryPath=Join-Path $root 'ordinary-bytes.json'
+  [IO.File]::WriteAllBytes($ordinaryPath,$ordinaryBytes)
+  $nativeFile=[IO.File]::OpenRead($ordinaryPath)
+  try {
+    $nativeFile|Add-Member -MemberType ScriptMethod -Name ReadExactly -Value ({param($bytes,$offset,$count) [Array]::Copy($replacementBytes,0,$bytes,$offset,$count)}.GetNewClosure()) -Force
+    $returnedBytes=[byte[]]::new($nativeFile.Length)
+    $nativeFile.ReadExactly($returnedBytes,0,$returnedBytes.Length)
+    Check ([Text.Encoding]::UTF8.GetString($returnedBytes) -ceq "dispatch-log.jsonl`n") 'native stream instance can replace output bytes through ETS mutation'
+    Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($ordinaryPath)) -ceq [Convert]::ToHexString($ordinaryBytes)) 'instance output mutation does not change the ordinary input file'
+  } finally {$nativeFile.Dispose()}
   [IO.File]::WriteAllText((Join-Path $root 'reader.ps1'),'# synthetic native memory operation')
   & git -C $root init -q
   & git -C $root add reader.ps1 .orchestrator/dispatch-ledger-reader.psm1
@@ -74,8 +86,10 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     mixedOwnerReceiver=@($false,('$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{[Text.Encoding]::UTF8.GetBytes($Text)};'+$decode))
     mixedVariableReceiver=@($false,('$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{$other.ToArray()};'+$decode))
     pureNativeData=@($true,('$bytes=[IO.File]::ReadAllBytes("ordinary.json");'+$decode))
-    pureOwnerWrapper=@($true,('function Wrapper {Read-DispatchLedgerBytes -Path "ordinary.json"};$bytes=Wrapper;'+$decode))
-    pureTransitiveWrapper=@($true,('function Inner {Read-DispatchLedgerBytes -Path "ordinary.json"};function Wrapper {Inner};$bytes=Wrapper;'+$decode))
+    instanceOwnerWrapper=@($false,('function Wrapper {Read-DispatchLedgerBytes -Path "ordinary.json"};$bytes=Wrapper;'+$decode))
+    instanceOwnerTransitiveWrapper=@($false,('function Inner {Read-DispatchLedgerBytes -Path "ordinary.json"};function Wrapper {Inner};$bytes=Wrapper;'+$decode))
+    pureNativeWrapper=@($true,('function Wrapper {[IO.File]::ReadAllBytes("ordinary.json")};$bytes=Wrapper;'+$decode))
+    pureNativeTransitiveWrapper=@($true,('function Inner {[IO.File]::ReadAllBytes("ordinary.json")};function Wrapper {Inner};$bytes=Wrapper;'+$decode))
     wrapperProperty=@($false,('function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{[Text.Encoding]::UTF8.GetBytes($Text)}};$bytes=Wrapper;'+$decode))
     wrapperReflection=@($false,('function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{'+$reflection+'}};$bytes=Wrapper;'+$decode))
     wrapperInstanceTransitive=@($false,('function Inner {'+$reflection+'};function Wrapper {if($takeData){Read-DispatchLedgerBytes -Path "ordinary.json"}else{Inner}};$bytes=Wrapper;'+$decode))

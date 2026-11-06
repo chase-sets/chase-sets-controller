@@ -177,6 +177,16 @@ try {
     $valid=$rows.Count -eq $cases[$name][0] -and @($rows|Where-Object owner).Count -eq 0 -and
       @($rows|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
       $violations.Count -eq $(if($cases[$name][1]){0}else{$cases[$name][0]})
+    if($name -cin @('fakeReaderGuarded','nonNativeReadAlias','nativeComputedMember','genericNativeMethod','genericNativeFileMethod','dynamicNativeMember','nativeTypeAlias','reboundTypeAlias','nativeFileAlias','nativeAliasAfterCall','nativeAliasConditional','literalReaderGuarded','literalFileGuarded')) {
+      # Instance-bearing guard implementations add a forwarding refusal, not
+      # authority for their opaque output. Keep every original native control.
+      $forwarded=@($rows|Where-Object family -CEQ 'get-nondispatchledgerpath')
+      $native=@($rows|Where-Object family -CNE 'get-nondispatchledgerpath')
+      Check ($forwarded.Count -eq 1 -and -not $forwarded[0].handled -and $forwarded[0].authority -ceq 'indeterminate' -and $forwarded[0].role -ceq 'path-forwarder') "guard forwarding uncertainty retained $name"
+      $valid=$rows.Count -eq ($cases[$name][0]+1) -and @($rows|Where-Object owner).Count -eq 0 -and
+        $native.Count -eq $cases[$name][0] -and @($native|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
+        $violations.Count -eq $(if($cases[$name][1]){1}else{$cases[$name][0]+1})
+    }
     if($name -ceq 'uncertainGuardedFile') {
       # The actual native value guard retains authority; its uncertain input
       # forwarding command is additionally inventoried, not silently discarded.
