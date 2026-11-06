@@ -195,6 +195,19 @@ function Get-LedgerReaderCensus {
     }
     return $null
   }
+  function LiteralNumericPlus($Node,[int]$Depth=0) {
+    if ($Depth -ge 12 -or $null -eq $Node) { return $false }
+    if ($Node -is [Management.Automation.Language.ConstantExpressionAst] -and $null -ne $Node.Value) {
+      return [Type]::GetTypeCode($Node.Value.GetType()) -in @('Byte','SByte','Int16','UInt16','Int32','UInt32','Int64','UInt64','Single','Double','Decimal')
+    }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) {
+      return LiteralNumericPlus (SingleExpression $Node.Pipeline) ($Depth+1)
+    }
+    if ($Node -is [Management.Automation.Language.BinaryExpressionAst] -and $Node.Operator -eq [Management.Automation.Language.TokenKind]::Plus) {
+      return (LiteralNumericPlus $Node.Left ($Depth+1)) -and (LiteralNumericPlus $Node.Right ($Depth+1))
+    }
+    return $false
+  }
   function Fact($Node,$Unit) {
     if ($null -eq $Node) { return 0 }
     $mask=0
@@ -220,18 +233,22 @@ function Get-LedgerReaderCensus {
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
         if ($facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
-        # Failed string addition analysis is uncertainty, not a safety proof.
+        # Unresolved composition is uncertainty, not a safety proof.
         # Cache immutable syntax only; variable facts still flow to a fixed point.
         if ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
-            $uncertain=$null -eq $literal -and $part.Operator -eq [Management.Automation.Language.TokenKind]::Plus -and
-              @(Find-LedgerCensusAst $part ([Management.Automation.Language.StringConstantExpressionAst])).Count -gt 0
+            $uncertain=$part.Operator -eq [Management.Automation.Language.TokenKind]::Format -or
+              ($null -eq $literal -and $part.Operator -eq [Management.Automation.Language.TokenKind]::Plus -and
+               -not (LiteralNumericPlus $part))
             $literalFacts[$part]=@{value=$literal;uncertain=$uncertain}
           }
           $value=$literalFacts[$part].value
           if ($literalFacts[$part].uncertain) { $mask=$mask -bor 4 }
-        } else { $value=$part.Value }
+        } else {
+          $value=$part.Value
+          if ($part -is [Management.Automation.Language.ExpandableStringExpressionAst] -and $part.NestedExpressions.Count) { $mask=$mask -bor 4 }
+        }
         if ($value -match '(?i)dispatch-log(?:\\?\.)jsonl') { $mask=$mask -bor 1 }
         if ($value -match '(?i)cost-ledger(?:\\?\.)jsonl') { $mask=$mask -bor 2 }
       }
