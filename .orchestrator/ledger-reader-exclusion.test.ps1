@@ -18,6 +18,18 @@ $import='Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-
 $assert='dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path'
 $observed=[Collections.Generic.List[object]]::new()
 $failures=[Collections.Generic.List[string]]::new()
+function Test-SubjectExclusion($Census,[bool]$Expected) {
+  $readers=@($Census.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.role -eq 'reader' -and $_.family -ne 'owner-api'})
+  $refused=@($readers|Where-Object {-not $_.handled})
+  $enforced=@($Census.violations|Where-Object {$_.path -ceq 'reader.ps1' -and $_.role -eq 'reader' -and $_.family -ne 'owner-api'})
+  $key={"$($_.path)|$($_.line)|$($_.family)|$($_.role)|$($_.authority)|$($_.owner)|$($_.test)|$($_.handled)"}
+  $actual=@($enforced|ForEach-Object $key|Sort-Object)
+  $required=@($refused|ForEach-Object $key|Sort-Object)
+  return $Census.scanned -eq 2 -and $Census.total -eq 2 -and $readers.Count -gt 0 -and
+    (($refused.Count -gt 0) -eq $Expected) -and $actual.Count -eq $required.Count -and
+    ($actual -join "`n") -ceq ($required -join "`n")
+}
+$assertionMutants=0
 try {
   [void][IO.Directory]::CreateDirectory((Join-Path $root '.orchestrator'))
   $reader=Join-Path $root 'reader.ps1';$owner=Join-Path $root '.orchestrator/dispatch-ledger-reader.psm1'
@@ -67,15 +79,22 @@ try {
     $expected=[int]$cases[$name][0] -gt 0
     # These controls prove the subject reader's guard, not helper purity.
     # Additional opaque helper calls remain inventoried and globally enforced.
-    $readers=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.role -eq 'reader'})
+    $readers=@($c.rows|Where-Object {$_.path -ceq 'reader.ps1' -and $_.role -eq 'reader' -and $_.family -ne 'owner-api'})
     $refused=@($readers|Where-Object {-not $_.handled})
     $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$c.violations.Count;subjectReaders=$readers.Count;subjectRefusals=$refused.Count;rows=@($c.rows)})
-    if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readers.Count -or (($refused.Count -gt 0) -ne $expected)) { $failures.Add($name) }
+    if (-not (Test-SubjectExclusion $c $expected)) { $failures.Add($name) }
+    $missing=$c.PSObject.Copy()
+    $missing.rows=@($c.rows|Where-Object {$_ -notin $readers})
+    if(Test-SubjectExclusion $missing $expected){$failures.Add("missingSubject:$name")};$assertionMutants++
+    if($expected){
+      $unenforced=$c.PSObject.Copy();$unenforced.violations=@()
+      if(Test-SubjectExclusion $unenforced $expected){$failures.Add("missingEnforcement:$name")};$assertionMutants++
+    }
     Write-Output "EXCLUSION case=$name violations=$($c.violations.Count) subjectRefusals=$($refused.Count) expected=$([int]$expected)"
   }
   if ($EvidencePath) { $observed.ToArray() | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED exclusion controls: $($failures -join ',')" }
-  Write-Output "PASS ledger exclusion controls=$($cases.Count) realTrackedInventory=true"
+  Write-Output "PASS ledger exclusion controls=$($cases.Count) assertionMutants=$assertionMutants realTrackedInventory=true enforcementBound=true"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if ((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or (Split-Path -Leaf $full) -cnotlike 'ledger-exclusion-*') { throw 'unsafe exclusion fixture cleanup' }
