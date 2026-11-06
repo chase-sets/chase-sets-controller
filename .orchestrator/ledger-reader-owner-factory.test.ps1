@@ -24,6 +24,14 @@ try {
   Check ($owned.Count -eq 1 -and $owned[0].handled -and $owned[0].family -ceq 'IO.File.Open' -and $owned[0].authority -ceq 'dispatch') 'actual factory native expression recognized as sole owner'
   $cases=[ordered]@{
     trivia=@(1,$source.Replace('return [IO.File]',"return <# same native operation #> [IO.File]"))
+    modeInvocation=@(0,$source.Replace('[IO.FileMode]::Open,','[IO.FileMode]::Open(),'))
+    accessInvocation=@(0,$source.Replace('[IO.FileAccess]::Read,','[IO.FileAccess]::Read(),'))
+    shareInvocation=@(0,$source.Replace('[IO.FileShare]::ReadWrite)','[IO.FileShare]::ReadWrite())'))
+    scriptDuplicate=@(0,($source+"`n"+'function script:Open-DispatchLedgerReadStream([string]$Path) { return ''SHADOW'' }'))
+    localDuplicate=@(0,($source+"`n"+'function local:Open-DispatchLedgerReadStream([string]$Path) { return ''SHADOW'' }'))
+    globalDuplicate=@(0,($source+"`n"+'function global:Open-DispatchLedgerReadStream([string]$Path) { return ''SHADOW'' }'))
+    privateDuplicate=@(0,($source+"`n"+'function private:Open-DispatchLedgerReadStream([string]$Path) { return ''SHADOW'' }'))
+    qualifiedOnly=@(0,$source.Replace('function Open-','function script:Open-'))
     readWrite=@(0,$source.Replace('[IO.FileAccess]::Read,','[IO.FileAccess]::ReadWrite,'))
     write=@(0,$source.Replace('[IO.FileAccess]::Read,','[IO.FileAccess]::Write,'))
     shareRead=@(0,$source.Replace('[IO.FileShare]::ReadWrite','[IO.FileShare]::Read'))
@@ -54,6 +62,15 @@ try {
   # Execute only the extracted real factory against a private synthetic ledger.
   $ledger=Join-Path $root 'dispatch-log.jsonl'
   [IO.File]::WriteAllText($ledger,"one`n")
+  foreach($name in @('modeInvocation','accessInvocation','shareInvocation','scriptDuplicate')){
+    $module=New-Module -ScriptBlock ([scriptblock]::Create('$ErrorActionPreference="Stop";'+$cases[$name][1]))
+    $failure='';$result=$null
+    try {$result=& $module {param($p) Open-DispatchLedgerReadStream -Path $p} $ledger}catch{$failure=$_.FullyQualifiedErrorId}
+    try {
+      if($name -ceq 'scriptDuplicate'){Check ($result -is [string] -and $result -ceq 'SHADOW') 'script-qualified duplicate replaces actual module-scope factory'}
+      else{Check ($failure -match 'MethodNotFound' -and $null -eq $result) "invocation lookalike has no native stream: $name"}
+    } finally {if($result -is [IDisposable]){$result.Dispose()}}
+  }
   $streams=& ([scriptblock]::Create($source+"`n"+'@(Open-DispatchLedgerReadStream -Path $args[0];Open-DispatchLedgerReadStream -Path $args[0])')) $ledger
   try {
     Check ($streams.Count -eq 2 -and @($streams|Where-Object {$_.CanRead -and -not $_.CanWrite}).Count -eq 2) 'two actual read-only native owners retained'

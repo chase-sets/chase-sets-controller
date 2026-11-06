@@ -349,10 +349,13 @@ function Get-LedgerReaderCensus {
   # factory. Prove its signature and single return expression, not a matching
   # function name, file name, or ReadWrite mention elsewhere in a body.
   $factoryOpen=$null
-  if ($functions.ContainsKey('open-dispatchledgerreadstream') -and $functions['open-dispatchledgerreadstream'].Count -eq 1) {
-    $target=$functions['open-dispatchledgerreadstream'][0];$factory=$target.node
+  $factoryDefinitions=@(foreach ($name in $functions.Keys) {
+    if (($name -split ':')[-1] -ieq 'Open-DispatchLedgerReadStream') { $functions[$name] }
+  })
+  if ($factoryDefinitions.Count -eq 1) {
+    $target=$factoryDefinitions[0];$factory=$target.node
     $parameters=@($factory.Parameters)
-    if ($target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $factory.Parent -eq $target.unit.ast.EndBlock -and
+    if ($factory.Name -ieq 'Open-DispatchLedgerReadStream' -and $target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $factory.Parent -eq $target.unit.ast.EndBlock -and
         -not $target.unit.traps.Count -and -not $factory.IsFilter -and -not $factory.IsWorkflow -and
         $parameters.Count -eq 1 -and $parameters[0].Name.VariablePath.UserPath -ceq 'Path' -and
         -not $parameters[0].DefaultValue -and $parameters[0].Attributes.Count -eq 1 -and
@@ -376,7 +379,7 @@ function Get-LedgerReaderCensus {
           $enumTypes=@('IO.FileMode','IO.FileAccess','IO.FileShare');$members=@('Open','Read','ReadWrite')
           for ($i=0;$i -lt 3;$i++) {
             $value=$open.Arguments[$i+1]
-            if ($value -isnot [Management.Automation.Language.MemberExpressionAst] -or -not $value.Static -or
+            if ($value -isnot [Management.Automation.Language.MemberExpressionAst] -or $value -is [Management.Automation.Language.InvokeMemberExpressionAst] -or -not $value.Static -or
                 $value.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or $value.Expression.TypeName.FullName -cne $enumTypes[$i] -or
                 $value.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $value.Member.Value -cne $members[$i]) { $valid=$false;break }
           }
