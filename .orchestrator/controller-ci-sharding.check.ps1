@@ -103,8 +103,7 @@ try{
   Assert-Ci ((Split-Path -Parent $resolved)-ceq[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')) 'unsafe stale-part fixture cleanup'
   Remove-Item -LiteralPath $resolved -Recurse -Force
 }
-# Plan-mode bound ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within
-# the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
+# Plan-mode bound ([#123 [controller] Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)):
 # a candidate plan refuses a largest shard estimate over 300 s and any
 # fallback, equal-split or whole-item stale estimate; a split part's own stale
 # record stays accepted.

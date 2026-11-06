@@ -91,9 +91,9 @@ if($Mode-eq'dead'){[Console]::Error.WriteLine('stream disconnected');exit 17}
 if($Mode-eq'live'){
   $arguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'descendant.ps1'),$Release,$Progress,$Grow,$OwnerPid,$OwnerStart)|ForEach-Object{'"'+$_+'"'}
   $child=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WindowStyle Hidden -PassThru
-  $childIdentity=@{pid=$child.Id;startIdentity=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json
-  [IO.File]::WriteAllText(($Progress+'.child.tmp'),$childIdentity,[Text.UTF8Encoding]::new($false))
-  [IO.File]::Move(($Progress+'.child.tmp'),($Progress+'.child.json'))
+  $childRecord=$Progress+'.child.json'
+  [IO.File]::WriteAllText(($childRecord+'.tmp'),(@{pid=$child.Id;startIdentity=$child.StartTime.ToUniversalTime().ToString('o')}|ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+  [IO.File]::Move(($childRecord+'.tmp'),$childRecord)
   while(-not(Test-Path -LiteralPath $Release)-and(Test-Owner)){
     Start-Sleep -Milliseconds 20
   }
@@ -109,17 +109,25 @@ exit 0
   Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness='codex';Model='gpt-6-astra';Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PriorityClass='Normal';PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
   [IO.File]::WriteAllText($runner,'$c=Get-Content -LiteralPath '''+$config.Replace("'","''")+''' -Raw|ConvertFrom-Json -AsHashtable;$p=$c.parameters;& $c.script @p;exit $LASTEXITCODE')
   $handle=Begin-Native $runner @() "$Label-producer"
-  $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle}
+  $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle;descendant=$null}
   $workers.Add($caseObject)
   if($Mode-ne'live'){$r=End-Native $handle;Check ($r.exit-eq$(if($Mode-eq'dead'){17}else{0})) "real producer $Mode exit"}
   else{
     $deadline=[datetime]::UtcNow.AddSeconds(30);$ready=$false
     while([datetime]::UtcNow-lt$deadline-and-not$handle.process.HasExited){
-      if(Test-Path -LiteralPath $caseObject.spec){$spec=Get-Content -LiteralPath $caseObject.spec -Raw|ConvertFrom-Json;if($spec.state-eq'running'-and(Test-Path ($progress+'.child.json'))){
-        $descendant=Get-Content -LiteralPath ($progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
-        $child=Get-Process -Id $descendant.pid -ErrorAction SilentlyContinue
-        if($child-and$child.StartTime.ToUniversalTime().Ticks-eq[datetimeoffset]::Parse($descendant.startIdentity).UtcTicks){$ready=$true;break}
-      }}
+      try{
+        $spec=[IO.File]::ReadAllText($caseObject.spec)|ConvertFrom-Json -DateKind String
+        if($spec.state-eq'running'){
+          $descendantRecord=[IO.File]::ReadAllText(($progress+'.child.json'))|ConvertFrom-Json -DateKind String
+          if($descendantRecord-and$descendantRecord.pid-and$descendantRecord.startIdentity){
+            $child=Get-Process -Id $descendantRecord.pid -ErrorAction SilentlyContinue
+            if($child-and$child.StartTime.ToUniversalTime().Ticks-eq[datetimeoffset]::Parse($descendantRecord.startIdentity).UtcTicks){$caseObject.descendant=$descendantRecord;$ready=$true;break}
+          }
+        }
+      }catch [IO.IOException]{
+        # Own-fixture publication/sharing may still be in flight; retry only
+        # within the existing readiness deadline, never after declaring ready.
+      }
       Start-Sleep -Milliseconds 50
     }
     Check $ready 'real producer published live spec'
@@ -171,6 +179,19 @@ function Reject-Mutant([string]$Name,[scriptblock]$Probe){
 function Stub([string]$Name,[string]$Body){
   $path=Join-Path $root "$Name.ps1"
   [IO.File]::WriteAllText($path,'param($Label,$RuntimeRoot,$HistoryPath,$TranscriptPath,$ObservedAt)'+"`n"+$Body);return $path
+}
+function Poll-Clock([string]$Name,[int]$Polls,[string]$Subject=$entry){
+  # Inject a clock into a test-only copy. Expiry follows complete polls,
+  # never the wall time spent starting/reducing each lane in those polls.
+  $text=[IO.File]::ReadAllText($Subject)
+  $clock='$clock=[Diagnostics.Stopwatch]::StartNew()'
+  $loop='while($clock.Elapsed.TotalSeconds-lt$WindowSeconds){'
+  foreach($anchor in @($clock,$loop)){
+    Check (([regex]::Matches($text,[regex]::Escape($anchor))).Count-eq1) "poll clock anchor $Name"
+  }
+  $text=$text.Replace($clock,('$testClockStep=$WindowSeconds/'+$Polls+';$clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalSeconds=-$testClockStep}}'))
+  $text=$text.Replace($loop,($loop+"`r`n"+'    $clock.Elapsed.TotalSeconds+=$testClockStep'))
+  $path=Join-Path $root "$Name.clock.ps1";[IO.File]::WriteAllText($path,$text);return $path
 }
 function Same-Worker($Spec){
   foreach($pair in @(@($Spec.launcherPid,$Spec.launcherStartIdentity),@($Spec.childPid,$Spec.childStartIdentity))){
@@ -307,7 +328,7 @@ try{
   }
   if($Only-in@('All','AC3','AC4')){
     $live=New-Producer 'synthetic-live' live;$spec=Get-Content $live.spec -Raw|ConvertFrom-Json -DateKind String
-    $script:descendant=Get-Content ($live.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+    $script:descendant=$live.descendant
     if($Only-in@('All','AC3')){
       $before=[IO.File]::ReadAllText($live.spec)
       $r=Batch @((Lane $live)) 'AC3-live-stale-text' @() $entry 4
@@ -349,17 +370,6 @@ try{
       $m=Batch @((Lane $terminal),(Lane $live)) 'AC4-first-observation-mutant' @('-ReducerScript',$steadyMutant) $mutant 7200
       Check ($m.exit-eq0-and$m.events[-1].reason-ceq'ALL_TERMINAL') 'AC4 first-observation mutant must reach the premature terminal exit'
       Reject-Mutant 'exit-on-first-observation' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED'-and@($m.events|Where-Object status -eq LIVE_SLOW).Count-eq2) 'AC4 steady multi-lane oracle'}
-      $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
-      $membershipStub=Stub 'change-membership' ('[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
-      $r=Batch @((Lane $live)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $entry 3
-      Check ($r.exit-eq0-and$r.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 changed snapshot must release watcher for re-arm'
-      $mutant=Mutate 'ignore-membership-change' '$exitReason=''MEMBERSHIP_CHANGED'';break' '$null=$null'
-      $mutantManifest=Join-Path $root 'AC4-membership-mutant.lanes.json'
-      $mutantStub=Stub 'change-membership-mutant-input' ([IO.File]::ReadAllText($membershipStub).Split("`n",2)[1].Replace($membershipManifest,$mutantManifest))
-      $m=Batch @((Lane $live)) 'AC4-membership-mutant' @('-ReducerScript',$mutantStub) $mutant 2
-      Check ($m.exit-eq0-and$m.events[-1].reason-ceq'WINDOW_EXPIRED') 'AC4 membership mutant must reach expiry, not an unrelated failure'
-      Check ([IO.File]::ReadAllText($mutantManifest).EndsWith(' ')) 'membership mutant did not receive the changed input'
-      Reject-Mutant 'ignore-membership-change' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 membership oracle'}
       $r=Batch @((Lane $live)) 'AC4-failure-keeps-worker' @('-ReducerScript',(Stub 'AC4-failure' "throw 'SYNTHETIC_SECRET_8136'"))
       # 8186: the throwing reducer is a contained, secret-free lane failure; the watcher still exits nonzero and never touches the worker.
       Reducer-Failure $r 'REDUCER_EXIT' 'AC4 failure is contained, nonzero, and secret-free' 'WINDOW_EXPIRED' $live.label
@@ -384,6 +394,31 @@ try{
       $follow=Stub 'synthetic-relaunch-result' ('if($Label-ceq''synthetic-terminal''){''{"schemaVersion":"watchdog-observation-result/v1","status":"RELAUNCHED","relaunch":true,"label":"synthetic-replacement"}''}else{& '''+$reducer.Replace("'","''")+''' @PSBoundParameters}')
       $r=Batch @((Lane $terminal)) 'AC4-follow-replacement' @('-ReducerScript',$follow) $entry 8
       Check ($r.exit-eq0-and$r.events[-1].reason-ceq'ALL_TERMINAL'-and@($r.events|Where-Object event -eq MEMBERSHIP_CHANGED).Count-eq1-and@($r.events|Where-Object {$_.event-eq'OBSERVATION'-and$_.label-ceq$replacement.label-and$_.status-ceq'TERMINAL_SUCCESS'}).Count-eq1) 'AC4 synthetic relaunch result follows real replacement spec'
+      # Slow membership controls get their own bounded worker, so the earlier
+      # identity/growth fixture need not outlive another pair of reductions.
+      $membershipLive=New-Producer 'synthetic-membership' live
+      $membershipSpec=Get-Content $membershipLive.spec -Raw|ConvertFrom-Json -DateKind String
+      $script:descendant=$membershipLive.descendant
+      $membershipManifest=Join-Path $root 'AC4-membership-exit.lanes.json'
+      # Reducer work exceeds the unchanged wall window; membership is checked
+      # on the next poll, not made dependent on process startup speed.
+      $membershipStub=Stub 'change-membership' ('Start-Sleep -Milliseconds 3500;[IO.File]::AppendAllText('''+$membershipManifest.Replace("'","''")+'''," ");''{"schemaVersion":"watchdog-observation-result/v1","status":"LIVE_SLOW","relaunch":false}''')
+      $membershipEntry=Poll-Clock 'AC4-membership-exit' 2
+      $r=Batch @((Lane $membershipLive)) 'AC4-membership-exit' @('-ReducerScript',$membershipStub) $membershipEntry 3
+      Check ($r.exit-eq0-and$r.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 changed snapshot must release watcher for re-arm'
+      Same-Worker $membershipSpec
+      $mutant=Mutate 'ignore-membership-change' '$exitReason=''MEMBERSHIP_CHANGED'';break' '$null=$null'
+      $mutant=Poll-Clock 'AC4-membership-mutant' 2 $mutant
+      $mutantManifest=Join-Path $root 'AC4-membership-mutant.lanes.json'
+      $mutantStub=Stub 'change-membership-mutant-input' ([IO.File]::ReadAllText($membershipStub).Split("`n",2)[1].Replace($membershipManifest,$mutantManifest))
+      $m=Batch @((Lane $membershipLive)) 'AC4-membership-mutant' @('-ReducerScript',$mutantStub) $mutant 2
+      Check ($m.exit-eq0-and$m.events[-1].reason-ceq'WINDOW_EXPIRED') 'AC4 membership mutant must reach expiry, not an unrelated failure'
+      Check ([IO.File]::ReadAllText($mutantManifest).EndsWith(' ')) 'membership mutant did not receive the changed input'
+      Reject-Mutant 'ignore-membership-change' {Check ($m.events[-1].reason-ceq'MEMBERSHIP_CHANGED') 'AC4 membership oracle'}
+      Same-Worker $membershipSpec
+      [IO.File]::WriteAllText($membershipLive.release,'release');$membershipDone=End-Native $membershipLive.handle
+      Check ($membershipDone.exit-eq0) 'membership cooperative worker completion'
+      Check (@(Get-Process -Id $script:descendant.pid -ErrorAction SilentlyContinue).Count-eq0) 'membership cooperative descendant survived completion'
       Write-Output 'PASS AC4 defaults / multiple-lanes / steady-monitoring / session-growth / expiry-only / membership-rearm / all-terminal / no-surviving-helpers'
     }
   }
@@ -439,19 +474,6 @@ try{
       $body+='default{& '''+$reducer.Replace("'","''")+''' @PSBoundParameters;exit $LASTEXITCODE}'+"`n}"
       return Stub $Name $body
     }
-    function Poll-Clock([string]$Name,[int]$Polls,[string]$Subject=$entry){
-      # Inject a clock into a test-only copy. Expiry follows complete polls,
-      # never the wall time spent starting/reducing each lane in those polls.
-      $text=[IO.File]::ReadAllText($Subject)
-      $clock='$clock=[Diagnostics.Stopwatch]::StartNew()'
-      $loop='while($clock.Elapsed.TotalSeconds-lt$WindowSeconds){'
-      foreach($anchor in @($clock,$loop)){
-        Check (([regex]::Matches($text,[regex]::Escape($anchor))).Count-eq1) "poll clock anchor $Name"
-      }
-      $text=$text.Replace($clock,('$testClockStep=$WindowSeconds/'+$Polls+';$clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalSeconds=-$testClockStep}}'))
-      $text=$text.Replace($loop,($loop+"`r`n"+'    $clock.Elapsed.TotalSeconds+=$testClockStep'))
-      $path=Join-Path $root "$Name.clock.ps1";[IO.File]::WriteAllText($path,$text);return $path
-    }
     if('mixed-role-isolation'-in$run8186){
       $calls8186=Join-Path $root 'stub-dispatches-8186.txt';$dispatch8186=Join-Path $root 'safe-dispatch-8186.ps1'
       [IO.File]::WriteAllText($dispatch8186,'[IO.File]::AppendAllText('''+$calls8186.Replace("'","''")+''',"stub dispatch`n");exit 19')
@@ -479,7 +501,7 @@ try{
         # One live producer per batch: no worker has to outlive more than its own
         # readiness and one two-poll batch, so the worker's 90-second guard stays.
         $live=New-Producer "synthetic-live-8186-$Name" live;$liveSpec=Get-Content $live.spec -Raw|ConvertFrom-Json -DateKind String
-        $script:descendant=Get-Content ($live.progress+'.child.json') -Raw|ConvertFrom-Json -DateKind String
+        $script:descendant=$live.descendant
         $r=Batch (Isolation-Lanes $Order $live) "AC8186-isolation-$Name" @('-ReducerScript',$badStub) $Subject 10
         Same-Worker $liveSpec
         [IO.File]::WriteAllText($live.release,'release');$done=End-Native $live.handle;Check ($done.exit-eq0) "8186 $Name`: cooperative live worker completion"

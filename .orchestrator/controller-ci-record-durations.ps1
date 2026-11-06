@@ -133,8 +133,7 @@ function New-CiDurationRecords($Plan,$Result,[string]$PlanDigest,[string]$Root) 
 
 # Appending merges records (first copy of identity/run/plan wins) and keeps the
 # profile's chosen shardCount; dropping it would silently replan the 18-shard
-# fallback ([#123 Run dispatch-lane.test.ps1 on hosted CI in parts within the
-# shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
+# fallback ([#123 [controller] Run dispatch-lane.test.ps1 on hosted CI in parts within the shard bound](https://github.com/chase-sets/chase-sets-controller/issues/123)).
 # A fresh (non-append) profile has no shardCount until prediction writes one.
 function New-CiDurationProfile($Existing,[object[]]$Records) {
   $all=@(if($null-ne$Existing){@($Existing.records)})+@($Records)
