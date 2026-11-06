@@ -401,7 +401,22 @@ function Get-NonDispatchLedgerPath {
         $call=$statement.PipelineElements[0]
         if ($call -isnot [Management.Automation.Language.CommandAst] -or $call.GetCommandName() -ine 'Import-Module' -or $call.CommandElements.Count -lt 2) { continue }
         $options=@($call.CommandElements | Select-Object -Skip 2)
-        if (@($options | Where-Object { $_ -isnot [Management.Automation.Language.CommandParameterAst] -or $_.Argument -or $_.ParameterName -notin @('Global','Force','DisableNameChecking') }).Count) { continue }
+        $validOptions=$true
+        $seenOptions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        for ($i=0;$i -lt $options.Count;$i++) {
+          $option=$options[$i]
+          if ($option -isnot [Management.Automation.Language.CommandParameterAst] -or $option.Argument -or
+              -not $seenOptions.Add($option.ParameterName)) { $validOptions=$false;break }
+          if ($option.ParameterName -in @('Global','Force','DisableNameChecking')) { continue }
+          # Literal Stop preserves fail-closed imports; other common-parameter
+          # values and dynamic/inline arguments are not provenance evidence.
+          if ($option.ParameterName -ieq 'ErrorAction' -and $i+1 -lt $options.Count -and
+              $options[$i+1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $options[$i+1].Value -ieq 'Stop') {
+            $i++;continue
+          }
+          $validOptions=$false;break
+        }
+        if (-not $validOptions) { continue }
         $argument=$call.CommandElements[1]
         if ($argument -isnot [Management.Automation.Language.ParenExpressionAst] -or $argument.Pipeline.PipelineElements.Count -ne 1) { continue }
         $join=$argument.Pipeline.PipelineElements[0]

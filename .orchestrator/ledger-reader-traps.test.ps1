@@ -92,10 +92,13 @@ try {
     $source=$import+"`n"+$cases[$name][1]+"`n"+$(if($cases[$name].Count -gt 2){$cases[$name][2]}else{$body})
     [IO.File]::WriteAllText($reader,$source,[Text.UTF8Encoding]::new($false))
     $census=Get-LedgerReaderCensus -Root $root
-    $bad=$census.violations.Count -gt 0
+    # The copied real owner is separately fail-closed by the global contract;
+    # this control classifies the synthetic reader's trap, not that baseline.
+    $bad=@($census.violations | Where-Object path -CEQ 'reader.ps1').Count -gt 0
     Check ($census.scanned -eq 2 -and $census.total -eq 2) "complete census $name"
+    Check (@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' }).Count -gt 0) "actual reader inventory $name"
     if($bad -ne $cases[$name][0]){$failures.Add($name)}
-    Write-Output "TRAP case=$name violation=$bad expected=$($cases[$name][0])"
+    Write-Output "TRAP case=$name violation=$bad expected=$($cases[$name][0]) globalUnknown=$($census.violations.Count)"
   }
   $dispatch=Join-Path $root 'dispatch-log.jsonl'
   $positive=Join-Path $root 'receipt.json'

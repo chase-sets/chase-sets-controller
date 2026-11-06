@@ -63,10 +63,24 @@ try {
   if ($LASTEXITCODE) { throw 'path-value fixture track failed' }
   & git -C $root -c user.name=Synthetic -c user.email=synthetic@example.invalid commit -qm value
   if ($LASTEXITCODE) { throw 'path-value fixture commit failed' }
+  $baseline=Get-LedgerReaderCensus -Root $root
+  $ownerUnknown=@($baseline.violations | Where-Object path -CEQ '.orchestrator/dispatch-ledger-reader.psm1').Count
+  Write-Output "PATH-VALUE fixture owner UNKNOWN=$ownerUnknown; production owner provenance remains a separate global contract gate"
   $native="$import;function Read-Synthetic {param(`$Path);[IO.File]::ReadAllText(($value))}"
   $cases=[ordered]@{
     native=@(0,$native)
     globalImport=@(0,$native.Replace($import,"$import -Global"))
+    stopImport=@(0,$native.Replace($import,"$import -ErrorAction Stop"))
+    quotedStopImport=@(0,$native.Replace($import,"$import -ErrorAction 'Stop'"))
+    checkpointImport=@(0,$native.Replace($import,"$import -Global -DisableNameChecking -ErrorAction Stop"))
+    continueImport=@(1,$native.Replace($import,"$import -ErrorAction Continue"))
+    numericStopImport=@(1,$native.Replace($import,"$import -ErrorAction 1"))
+    dynamicStopImport=@(1,$native.Replace($import,"$import -ErrorAction `$action"))
+    missingStopImport=@(1,$native.Replace($import,"$import -ErrorAction"))
+    inlineStopImport=@(1,$native.Replace($import,"$import -ErrorAction:Stop"))
+    changedStopImport=@(1,$native.Replace($import,"$import -ErrorAction Stop -ErrorAction Continue"))
+    duplicateStopImport=@(1,$native.Replace($import,"$import -ErrorAction Stop -eRrOrAcTiOn Stop"))
+    duplicateSwitchImport=@(1,$native.Replace($import,"$import -Global -global"))
     scopedImport=@(1,$native.Replace($import,"$import -Scope Global"))
     globalArgument=@(1,$native.Replace($import,"$import -Global:`$false"))
     content=@(0,"$import;function Read-Synthetic {param(`$Path);Get-Content -LiteralPath ($value)}")
@@ -104,9 +118,11 @@ try {
     [IO.File]::WriteAllText($owner,$(if($cases[$name].Count -gt 2){$cases[$name][2]}else{$ownerSource}))
     $c=Get-LedgerReaderCensus -Root $root
     $expected=[int]$cases[$name][0] -gt 0
-    $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$c.violations.Count;rows=@($c.rows)})
-    if ($c.scanned -ne 2 -or $c.total -ne 2 -or (($c.violations.Count -gt 0) -ne $expected)) { $failures.Add($name) }
-    Write-Output "PATH-VALUE case=$name violations=$($c.violations.Count) expected=$([int]$expected)"
+    $readerRows=@($c.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' })
+    $readerUnknown=@($c.violations | Where-Object path -CEQ 'reader.ps1').Count
+    $observed.Add([pscustomobject]@{case=$name;expectedViolation=$expected;violations=$readerUnknown;allViolations=$c.violations.Count;rows=@($c.rows)})
+    if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readerRows.Count -or (($readerUnknown -gt 0) -ne $expected)) { $failures.Add($name) }
+    Write-Output "PATH-VALUE case=$name violations=$readerUnknown expected=$([int]$expected) globalUnknown=$($c.violations.Count)"
   }
   if ($EvidencePath) { $observed.ToArray()|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED path-value controls: $($failures -join ',')" }
