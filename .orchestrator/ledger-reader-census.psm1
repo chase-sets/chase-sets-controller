@@ -76,7 +76,7 @@ function Get-LedgerEmbeddedFileStreams([string]$Text) {
 function Get-LedgerReaderCensus {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Root,[hashtable]$SourceOverride=@{})
-  $paths=@(& git -C $Root ls-files -- '*.ps1' '*.psm1' '*.cs')
+  $paths=@(& git -C $Root ls-files -- ':(icase)*.ps1' ':(icase)*.psm1' ':(icase)*.cs')
   if ($LASTEXITCODE -ne 0 -or -not $paths.Count) { throw 'LEDGER_CENSUS_INVENTORY_MISSING' }
   Write-Verbose "Ledger census: parsing $($paths.Count) tracked sources"
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
@@ -315,7 +315,7 @@ function Get-LedgerReaderCensus {
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "LEDGER_CENSUS_PATH_MISSING:$path" }
     $source=if ($SourceOverride.ContainsKey($path)) { $SourceOverride[$path] } else { [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $full)) }
     $test=$path -match '(?i)(^|/)(fixtures|diagnostics)/|(?:\.test|\.check|\.test-support|-test-support|-fixture-harness|-test-fixture)\.ps1$|/issue-\d+-(?:discriminator|live-readonly-proof)\.ps1$'
-    if ($path.EndsWith('.cs')) { $units.Add([pscustomobject]@{path=$path;source=$source;test=$test;ast=$null});continue }
+    if ($path.EndsWith('.cs',[StringComparison]::OrdinalIgnoreCase)) { $units.Add([pscustomobject]@{path=$path;source=$source;test=$test;ast=$null});continue }
     $tokens=$null;$errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
     if ($errors.Count) { throw "LEDGER_CENSUS_PARSE_FAILED:$path" }

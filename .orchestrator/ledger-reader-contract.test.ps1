@@ -4,6 +4,7 @@ $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'ledger-reader-census.psm1') -Force
 function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { throw "ASSERTION FAILED: $Message" } }
 & (Join-Path $PSScriptRoot 'ledger-reader-ast-selection.test.ps1')
+& (Join-Path $PSScriptRoot 'ledger-reader-inventory.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-owner-factory.test.ps1')
 & (Join-Path $PSScriptRoot 'dispatch-history-callers.test.ps1') -ControllerRoot $ControllerRoot
 & (Join-Path $PSScriptRoot 'ledger-reader-provenance.test.ps1')
