@@ -90,6 +90,12 @@ public class LedgerMemoryValueSpoof : MemoryStream {
     dynamicMixedData=@($false,('$cmd="dispatch-ledger-reader\Get-LedgerMemoryBytes";$bytes=if($takeData){[IO.File]::ReadAllBytes("ordinary.json")}else{& $cmd -Stream $buffer};'+$decode))
     aliasMixedData=@($false,('Set-Alias CopyBytes dispatch-ledger-reader\Get-LedgerMemoryBytes;$bytes=if($takeData){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{CopyBytes -Stream $buffer};'+$decode))
   }
+  foreach($scope in @('global','script','local','private')){
+    $wrapper='function '+$scope+':Inner($buffer){dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer};function Outer($buffer){if($choose){Read-DispatchLedgerSnapshot -Path "ordinary.json"}else{Inner $buffer}};$buffer="dispatch-log.jsonl";$bytes=Outer $buffer;'+$decode
+    $cases['scopeWrapper'+$scope]=@($false,$wrapper)
+    $cases['scopeCall'+$scope]=@($false,$wrapper.Replace('else{Inner $buffer}','else{'+$scope+':Inner $buffer}'))
+    $cases['scopeCallUnscopedDefinition'+$scope]=@($false,$wrapper.Replace(('function '+$scope+':Inner'),'function Inner').Replace('else{Inner $buffer}','else{'+$scope+':Inner $buffer}'))
+  }
   function CensusRow([string]$Text,[string]$Module=''){
     $overrides=@{'reader.ps1'=$Text}
     if($Module){$overrides['.orchestrator/dispatch-ledger-reader.psm1']=$Module}

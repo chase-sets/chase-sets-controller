@@ -72,7 +72,7 @@ try {
     pipelinePlus=@(1,$false,'$Path=''dis''+(''patch-''|Write-Output)+''log.jsonl'';[Unknown.Factory]::new($Path)')
     backgroundPlus=@(1,$false,'$Path=''dis''+(''patch-'' &)+''log.jsonl'';[Unknown.Factory]::new($Path)')
     redirectedPlus=@(1,$false,'$Path=''dis''+(''patch-'' > ''unused'')+''log.jsonl'';[Unknown.Factory]::new($Path)')
-    scriptBlockPlus=@(1,$false,'$Path=''dis''+(&{throw ''never execute''})+''log.jsonl'';[Unknown.Factory]::new($Path)')
+    scriptBlockPlus=@(2,$false,'$Path=''dis''+(&{throw ''never execute''})+''log.jsonl'';[Unknown.Factory]::new($Path)')
     uncertainMemory=@(3,$false,'$bytes=[Text.Encoding]::UTF8.GetBytes(''dis''+(Write-Output ''patch-'')+''log.jsonl'');[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)')
     uncertainAliasMemory=@(3,$false,'$text=''dis''+$Other+''log.jsonl'';$bytes=[Text.Encoding]::UTF8.GetBytes($text);$copy=$bytes;[IO.StreamReader]::new([IO.MemoryStream]::new($copy,$false),[Text.Encoding]::UTF8,$true)')
     uncertainGuardedFile=@(2,$false,('$Path=''rece''+$Other+''ipt.json'';[IO.File]::ReadAllText('+$guard+')'))
@@ -182,6 +182,12 @@ try {
       $valid=$rows.Count -eq 2 -and @($rows|Where-Object owner).Count -eq 0 -and
         @($rows|Where-Object {$_.family -eq 'IO.File.ReadAllText' -and $_.handled -and $_.authority -eq 'non-ledger'}).Count -eq 1 -and
         $violations.Count -eq 1 -and $violations[0].family -eq 'get-nondispatchledgerpath'
+    }
+    if($name -ceq 'scriptBlockPlus') {
+      # Both the original constructor and the opaque call operator must remain
+      # inventoried refusals; added uncertainty must not hide either shape.
+      Check (@($rows|Where-Object {$_.family -ceq 'unknown-static-type' -and $_.role -ceq 'unclassified' -and -not $_.handled}).Count -eq 1) 'scriptblock composition retains constructor refusal'
+      Check (@($rows|Where-Object {-not $_.family -and $_.role -ceq 'unclassified' -and -not $_.handled}).Count -eq 1) 'scriptblock composition inventories opaque invocation refusal'
     }
     if(-not $valid){$failures.Add($name)}
     if($name -ceq 'groupedMemoryCost' -and @($rows|Where-Object authority -EQ 'cost').Count -ne 1){$failures.Add('groupedMemoryCostAuthority')}

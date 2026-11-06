@@ -213,6 +213,10 @@ function Get-LedgerReaderCensus {
     }
     return $false
   }
+  function MemoryFactCommand($Node,$Unit) {
+    $name=CommandName $Node $Unit
+    return $memoryFactFunctions.Contains($name) -or $memoryFactFunctions.Contains(($name -split ':')[-1])
+  }
   function Fact($Node,$Unit) {
     if ($null -eq $Node) { return 0 }
     $mask=0
@@ -247,7 +251,7 @@ function Get-LedgerReaderCensus {
           # never clears the input's path or uncertainty facts. Unbound/tampered
           # copies remain uncertain; this is not a named data-function exemption.
           if ((OpaqueInvocation $part $Unit) -or
-              ($memoryFactFunctions.Contains((CommandName $part $Unit)) -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
+              ((MemoryFactCommand $part $Unit) -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
         } elseif ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
@@ -723,8 +727,11 @@ function Get-LedgerMemoryBytes {
         # A wrapper mixing row data with a native copy or opaque command has
         # no proved return partition. Preserve uncertainty transitively rather
         # than granting the generic data-function assignment exemption.
-        if (@($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or $memoryFactFunctions.Contains((CommandName $_ $target.unit)) }).Count -and
+        if (@($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or (MemoryFactCommand $_ $target.unit) }).Count -and
             $memoryFactFunctions.Add($name)) { $changed=$true }
+        # Scope-qualified declarations are callable by their unscoped names.
+        # Add only uncertainty aliases, never function/data/purity authority.
+        if ($memoryFactFunctions.Contains($name) -and $memoryFactFunctions.Add(($name -split ':')[-1])) { $changed=$true }
       }
     }
   }
@@ -743,7 +750,7 @@ function Get-LedgerMemoryBytes {
             $assignmentShapes[$assignment]=@{
               dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
               dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
-              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or $memoryFactFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
+              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or (MemoryFactCommand $_ $unit) } | Select-Object -First 1
               type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }
