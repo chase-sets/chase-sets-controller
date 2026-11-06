@@ -345,6 +345,46 @@ function Get-LedgerReaderCensus {
         calls=@(Find-LedgerCensusAst $function.Body ([Management.Automation.Language.CommandAst]))}
     }
   }
+  # The shared native open moved out of the snapshot reducer into a private
+  # factory. Prove its signature and single return expression, not a matching
+  # function name, file name, or ReadWrite mention elsewhere in a body.
+  $factoryOpen=$null
+  if ($functions.ContainsKey('open-dispatchledgerreadstream') -and $functions['open-dispatchledgerreadstream'].Count -eq 1) {
+    $target=$functions['open-dispatchledgerreadstream'][0];$factory=$target.node
+    $parameters=@($factory.Parameters)
+    if ($target.unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $factory.Parent -eq $target.unit.ast.EndBlock -and
+        -not $target.unit.traps.Count -and -not $factory.IsFilter -and -not $factory.IsWorkflow -and
+        $parameters.Count -eq 1 -and $parameters[0].Name.VariablePath.UserPath -ceq 'Path' -and
+        -not $parameters[0].DefaultValue -and $parameters[0].Attributes.Count -eq 1 -and
+        $parameters[0].Attributes[0] -is [Management.Automation.Language.TypeConstraintAst] -and
+        $parameters[0].Attributes[0].TypeName.FullName -ceq 'string' -and
+        -not $factory.Body.ParamBlock -and -not $factory.Body.DynamicParamBlock -and -not $factory.Body.BeginBlock -and
+        -not $factory.Body.ProcessBlock -and -not $factory.Body.CleanBlock -and $factory.Body.EndBlock.Statements.Count -eq 1) {
+      $return=$factory.Body.EndBlock.Statements[0]
+      if ($return -is [Management.Automation.Language.ReturnStatementAst] -and
+          $return.Pipeline -is [Management.Automation.Language.PipelineAst] -and -not $return.Pipeline.Background -and
+          $return.Pipeline.PipelineElements.Count -eq 1 -and
+          $return.Pipeline.PipelineElements[0] -is [Management.Automation.Language.CommandExpressionAst] -and
+          -not $return.Pipeline.PipelineElements[0].Redirections.Count) {
+        $open=$return.Pipeline.PipelineElements[0].Expression
+        if ($open -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $open.Static -and
+            $open.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $open.Expression.TypeName.FullName -ceq 'IO.File' -and
+            $open.Member -is [Management.Automation.Language.StringConstantExpressionAst] -and $open.Member.Value -ceq 'Open' -and
+            $open.Arguments.Count -eq 4 -and $open.Arguments[0] -is [Management.Automation.Language.VariableExpressionAst] -and
+            $open.Arguments[0].VariablePath.UserPath -ceq 'Path') {
+          $valid=$true
+          $enumTypes=@('IO.FileMode','IO.FileAccess','IO.FileShare');$members=@('Open','Read','ReadWrite')
+          for ($i=0;$i -lt 3;$i++) {
+            $value=$open.Arguments[$i+1]
+            if ($value -isnot [Management.Automation.Language.MemberExpressionAst] -or -not $value.Static -or
+                $value.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or $value.Expression.TypeName.FullName -cne $enumTypes[$i] -or
+                $value.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $value.Member.Value -cne $members[$i]) { $valid=$false;break }
+          }
+          if ($valid) { $factoryOpen=$open }
+        }
+      }
+    }
+  }
   # A guard name alone is not authority. Authenticate the actual owner's
   # fail-closed body and an unconditional import of that tracked module.
   $nonDispatchGuardValid=$false
@@ -576,11 +616,7 @@ function Get-NonDispatchLedgerPath {
             if ($writeMode -or $writeAccess) { $role='writer' }
           }
         } else { $role='unclassified';$unknown=$true }
-        $container=$node.Parent
-        while ($container -and $container -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $container=$container.Parent }
-        $owner=$unit.path -ceq '.orchestrator/dispatch-ledger-reader.psm1' -and $container -and
-          $container.Name -ceq 'Read-DispatchLedgerSnapshot' -and $family -ceq 'IO.File.Open' -and
-          $node.Extent.Text -match 'FileShare\]\s*::\s*ReadWrite'
+        $owner=$null -ne $factoryOpen -and $node -eq $factoryOpen
       } elseif ($node -is [Management.Automation.Language.CommandAst]) {
         $name=CommandName $node $unit
         if ($name -in $contentNames) { $family='Get-Content';$role='reader' }
