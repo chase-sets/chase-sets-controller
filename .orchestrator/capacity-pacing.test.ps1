@@ -482,6 +482,49 @@ try {
   Assert-Pacing ((Invoke-Pacing $caseLarge).raw -ceq $after.raw) 'large caller replay is byte-identical after append'
   Assert-Pacing ((Get-FileHash -LiteralPath $caseLarge.log -Algorithm SHA256).Hash -ceq $beforeHash) 'large pacing append queries leave ledger unchanged'
   Write-Output "PASS large pacing caller physicalRows=$physicalRows appendedDispatches=1 claudeHours=28 codexHours=56"
+  # A suffix-only reader must not pass by seeing all meaningful facts after
+  # the padding. Keep an unsuperseded dispatch before both former cliffs.
+  $caseEarly = New-Case 'ac3-early-large-history' $mixed
+  Add-DispatchRow $caseEarly 'fable' 30 'early-claude' 2
+  Add-DispatchRow $caseEarly 'sol' 35 'late-codex' 3
+  $smallEarly = Invoke-Pacing $caseEarly
+  Assert-Near $smallEarly.data.providers.claude.laneHours 28 'early caller small control claude hours'
+  Assert-Near $smallEarly.data.providers.codex.laneHours 32 'early caller small control codex hours'
+  $seedRows = @([IO.File]::ReadLines($caseEarly.log))
+  $writer = [IO.StreamWriter]::new($caseEarly.log, $false, $utf8, 65536)
+  try {
+    $writer.WriteLine($seedRows[0])
+    for ($i=0; $i -lt 50000; $i++) { $writer.Write("{}`n") }
+    $writer.Write('{"padding":"' + ('x' * 33554432) + '"}'); $writer.Write("`n")
+    $writer.WriteLine($seedRows[1])
+  } finally { $writer.Dispose() }
+  $earlyPhysicalRows = 0
+  foreach ($line in [IO.File]::ReadLines($caseEarly.log)) { $earlyPhysicalRows += 1 }
+  Assert-Pacing ($earlyPhysicalRows -eq 50003 -and (Get-Item -LiteralPath $caseEarly.log).Length -gt 33554432) 'early caller fixture separates current facts across both cliffs'
+  $earlyHash = (Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash
+  $earlyStamp = [IO.File]::GetLastWriteTimeUtc($caseEarly.log)
+  $largeEarly = Invoke-Pacing $caseEarly
+  Assert-Pacing ($largeEarly.raw -ceq $smallEarly.raw) 'actual pacing CLI retains the early fact in complete large history'
+  $tailLog = Join-Path $caseEarly.dir 'last-50000.jsonl'
+  [IO.File]::WriteAllLines($tailLog, [string[]]@(Get-Content -LiteralPath $caseEarly.log -Tail 50000), $utf8)
+  $tailEarly = Invoke-Pacing $caseEarly @{DispatchLogPath=$tailLog}
+  Assert-Pacing ($tailEarly.raw -cne $smallEarly.raw -and $tailEarly.data.laneHours.rows -eq 1 -and
+    $tailEarly.data.laneHours.counted -eq 1 -and $tailEarly.data.providers.claude.laneHours -eq 0 -and
+    $tailEarly.data.providers.codex.laneHours -eq 32) 'actual last50000rows negative control loses only the early dispatch'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash -ceq $earlyHash -and
+    [IO.File]::GetLastWriteTimeUtc($caseEarly.log) -eq $earlyStamp) 'early full and tail queries do not rewrite the canonical fixture'
+  Add-DispatchRow $caseEarly 'sol' 24 'early-case-append' 0
+  $earlyHash = (Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash
+  $earlyStamp = [IO.File]::GetLastWriteTimeUtc($caseEarly.log)
+  $afterEarly = Invoke-Pacing $caseEarly
+  Assert-Near $afterEarly.data.providers.claude.laneHours 28 'early caller append retains the early claude dispatch'
+  Assert-Near $afterEarly.data.providers.codex.laneHours 56 'early caller append adds late codex hours'
+  Assert-Pacing ($afterEarly.data.laneHours.rows -eq 3 -and $afterEarly.data.laneHours.counted -eq 3 -and
+    $afterEarly.data.laneHours.duplicates -eq 0 -and $afterEarly.data.laneHours.transcriptsMissing -eq 0) 'early caller append retains all three dispatches'
+  Assert-Pacing ((Invoke-Pacing $caseEarly).raw -ceq $afterEarly.raw) 'early caller replay is byte-identical after append'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash -ceq $earlyHash -and
+    [IO.File]::GetLastWriteTimeUtc($caseEarly.log) -eq $earlyStamp) 'early append queries do not rewrite the canonical fixture'
+  Write-Output "PASS early pacing caller physicalRows=$earlyPhysicalRows tailCounted=1 fullCounted=2 appendedCounted=3"
   Set-Forecast 0.01 0.02 20 14
   $r = (Invoke-Pacing $caseBurn).data
   Assert-Pacing ($r.forecastStatus -ceq 'stale' -and $r.providers.claude.burnSource -ceq 'default' -and $r.providers.claude.burnReason -ceq 'FORECAST_STALE' -and $r.providers.claude.burnPerLaneHour -eq 0.015) 'AC3 stale forecast uses the default'
