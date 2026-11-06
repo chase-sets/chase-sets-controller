@@ -58,6 +58,14 @@ try {
   $declaration.rows=@($row,$row)
   [IO.File]::WriteAllText($manifest,($declaration|ConvertTo-Json -Depth 8))
   Refuses {Get-DispatchHistoryCallerCensus -Root $root -ManifestPath $manifest} 'duplicate declaration refuses'
+  [IO.File]::WriteAllText($manifest,$json)
+  [IO.File]::WriteAllText((Join-Path $root 'PRODUCTION.PS1'),'Read-DispatchLedgerBytes -Path $Path')
+  [IO.File]::WriteAllText((Join-Path $root 'PRODUCTION.PsM1'),'Read-DispatchLedgerLines -Path $Path')
+  & git -C $root add PRODUCTION.PS1 PRODUCTION.PsM1
+  if($LASTEXITCODE){throw 'mixed-case fixture track failed'}
+  $mixedCase=Get-DispatchHistoryCallerCensus -Root $root -ManifestPath $manifest
+  Check (@($mixedCase.sourceDigests|Where-Object {$_.path -cin @('PRODUCTION.PS1','PRODUCTION.PsM1')}).Count -eq 2) 'uppercase and mixed-case extensions included in source digests'
+  Check (-not $mixedCase.complete -and @($mixedCase.violations|Where-Object {$_.reason -ceq 'CALLER_UNCENSUSED' -and $_.caller.path -cin @('PRODUCTION.PS1','PRODUCTION.PsM1')}).Count -eq 2) 'undeclared uppercase and mixed-case direct calls fail closed'
   $real=Get-DispatchHistoryCallerCensus -Root $ControllerRoot
   Check ($real.complete -and $real.rows.Count -gt 0 -and $real.scanned -eq $real.total) 'actual tracked caller manifest matches'
   $watch=@($real.rows|Where-Object path -CEQ '.orchestrator/lane-stall-watchdog.ps1')

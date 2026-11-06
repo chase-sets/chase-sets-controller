@@ -78,9 +78,9 @@ try {
       } finally {$held.Dispose()}
     }
     if($name -ceq 'lane-stall-watchdog.ps1') {
-      $history=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Read-ExactHeadReviewHistory'},$true))
+      $history=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'dispatch-history-checkpoint\Read-CheckpointedDispatchHistory'},$true))
       Check ($history.Count -eq 4) 'all four canonical history owner calls retained'
-      foreach($call in $history){Check ($call.Extent.Text -ceq 'Read-ExactHeadReviewHistory -Path $HistoryPath') 'history not relabeled non-dispatch'}
+      foreach($call in $history){Check ($call.Extent.Text -ceq 'dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath') 'history not relabeled non-dispatch'}
       $tail=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-Tail'},$true))
       Check ($tail.Count -eq 1) 'complete actual tail function'
       [IO.File]::WriteAllText($probe,$import+"`n"+$tail[0].Extent.Text)

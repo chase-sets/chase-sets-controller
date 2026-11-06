@@ -70,7 +70,7 @@ function Get-DispatchHistoryCallerCensus {
     $key="$($row.path)`n$($row.scope)`n$($row.api)`n$($row.ordinal)"
     if(-not $expected.TryAdd($key,$row)){throw 'CALLER_MANIFEST_DUPLICATE'}
   }
-  $paths=@(& git -C $Root ls-files -- '*.ps1' '*.psm1')
+  $paths=@(& git -C $Root ls-files -- ':(icase)*.ps1' ':(icase)*.psm1')
   if($LASTEXITCODE -ne 0 -or -not $paths.Count){throw 'CALLER_INVENTORY_MISSING'}
   foreach($key in $SourceOverride.Keys){if($key -cnotin $paths){throw "CALLER_OVERRIDE_UNTRACKED:$key"}}
   $apis=@('read-exactheadreviewhistory','read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-checkpointeddispatchhistory')
