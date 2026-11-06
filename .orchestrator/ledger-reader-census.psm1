@@ -85,6 +85,8 @@ function Get-LedgerReaderCensus {
   $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $dataFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $memoryFactFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  [void]$memoryFactFunctions.Add('get-ledgermemorybytes')
   foreach ($name in @('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')) { [void]$dataFunctions.Add($name) }
   $rows=[Collections.Generic.List[object]]::new()
   $terminalTrapProof=@{}
@@ -245,7 +247,7 @@ function Get-LedgerReaderCensus {
           # never clears the input's path or uncertainty facts. Unbound/tampered
           # copies remain uncertain; this is not a named data-function exemption.
           if ((OpaqueInvocation $part $Unit) -or
-              ((CommandName $part $Unit) -ceq 'get-ledgermemorybytes' -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
+              ($memoryFactFunctions.Contains((CommandName $part $Unit)) -and -not (NativeMemoryBytes $part $Unit))) { $mask=$mask -bor 4 }
         } elseif ($part -is [Management.Automation.Language.BinaryExpressionAst]) {
           if (-not $literalFacts.ContainsKey($part)) {
             $literal=LiteralString $part
@@ -396,8 +398,9 @@ function Get-LedgerReaderCensus {
     }
     foreach ($call in $Unit.calls) {
       $name=CommandName $call $Unit
-      if ($name -in @('set-item','si','new-item','ni','set-alias','sal','new-alias','nal','clear-item','cli','copy-item','cpi','move-item','mi',
-          'rename-item','rni','invoke-expression','iex','remove-module','import-pssession')) { $safe=$false;break }
+      if ((OpaqueInvocation $call $Unit) -or
+          $name -in @('set-item','si','new-item','ni','set-alias','sal','new-alias','nal','clear-item','cli','copy-item','cpi','cp','copy','move-item','mi','mv','move',
+          'rename-item','rni','ren','remove-item','ri','rm','rmdir','rd','del','erase','invoke-expression','iex','remove-module','import-pssession')) { $safe=$false;break }
     }
     $memoryBindingProof[$Unit.path]=$safe
     return $safe
@@ -717,6 +720,11 @@ function Get-LedgerMemoryBytes {
       foreach ($target in $functions[$name]) {
         $calls=$target.calls
         if (@($calls | Where-Object { $dataFunctions.Contains((CommandName $_ $target.unit)) }).Count -and $dataFunctions.Add($name)) { $changed=$true }
+        # A wrapper mixing row data with a native copy or opaque command has
+        # no proved return partition. Preserve uncertainty transitively rather
+        # than granting the generic data-function assignment exemption.
+        if (@($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or $memoryFactFunctions.Contains((CommandName $_ $target.unit)) }).Count -and
+            $memoryFactFunctions.Add($name)) { $changed=$true }
       }
     }
   }
@@ -735,7 +743,7 @@ function Get-LedgerMemoryBytes {
             $assignmentShapes[$assignment]=@{
               dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
               dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
-              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or (CommandName $_ $unit) -ceq 'get-ledgermemorybytes' } | Select-Object -First 1
+              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or $memoryFactFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
               type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }
