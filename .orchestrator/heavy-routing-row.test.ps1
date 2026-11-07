@@ -12,7 +12,19 @@ function Read-Source([string]$Name) {
   if ($LASTEXITCODE -ne 0) { throw "cannot read $Name at $GuardRevision" }
   return $lines -join "`n"
 }
+try {
 . ([scriptblock]::Create((Read-Source 'dispatch-ownership.ps1')))
+} catch {
+  # ScriptBlock.Create has no file identity for the owner's literal import.
+  # Retain the original load and repair only that specific source-load failure.
+  if ($_.FullyQualifiedErrorId -cne 'ParameterArgumentValidationErrorEmptyStringNotAllowed,Microsoft.PowerShell.Commands.JoinPathCommand' -or
+      $_.InvocationInfo.Line -notlike '*Import-Module (Join-Path $PSScriptRoot*') { throw }
+  $ownerTokens = $null; $ownerErrors = $null
+  $ownerAst = [Management.Automation.Language.Parser]::ParseInput((Read-Source 'dispatch-ownership.ps1'),
+    (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), [ref]$ownerTokens, [ref]$ownerErrors)
+  Assert-True ($ownerErrors.Count -eq 0) 'ownership source retains file identity'
+  . $ownerAst.GetScriptBlock()
+}
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput((Read-Source 'invoke-heavy-verifier.ps1'), [ref]$tokens, [ref]$errors)
 Assert-True ($errors.Count -eq 0) 'guard source parses'
@@ -94,6 +106,134 @@ try {
   }
   Assert-True ($failures.Count -eq 0) "routing fixtures failed: $($failures -join '; ')"
   Write-Output "PASS heavy routing-row fixtures revision=$GuardRevision cases=$($cases.Count); no heavy reservation or command body executed"
+
+  # Small cardinality, real physical cliffs: only A/B (then C) are routing rows.
+  # Every read below still invokes the complete AST-extracted production caller.
+  $ledger = Join-Path $root 'dispatch-log.jsonl'
+  $utf8 = [Text.UTF8Encoding]::new($false)
+  function Get-PrivateHistoryIdentity {
+    $file = Get-Item -LiteralPath $ledger
+    return [pscustomobject][ordered]@{
+      length = $file.Length; lastWriteUtcTicks = $file.LastWriteTimeUtc.Ticks
+      sha256 = (Get-FileHash -LiteralPath $ledger -Algorithm SHA256).Hash
+    }
+  }
+  function Assert-PrivateRoutingRead($Launch, $Expected, [string]$ExpectedReason, [string]$Phase) {
+    $before = Get-PrivateHistoryIdentity | ConvertTo-Json -Compress
+    $reason = ''; $actual = $null
+    try { $actual = Get-HeavyRoutingRow $Launch $root } catch { $reason = $_.Exception.Message }
+    finally {
+      [GC]::Collect()
+      [GC]::WaitForPendingFinalizers()
+    }
+    $after = Get-PrivateHistoryIdentity | ConvertTo-Json -Compress
+    Assert-True ($before -ceq $after) "$Phase preserves hash/length/lastwrite per read"
+    Assert-True ($reason -ceq $ExpectedReason) "$Phase exact reason: expected='$ExpectedReason' actual='$reason'"
+    $actualJson = ConvertTo-Json -InputObject $actual -Depth 10 -Compress
+    $expectedJson = ConvertTo-Json -InputObject $Expected -Depth 10 -Compress
+    Assert-True ($actualJson -ceq $expectedJson) "$Phase complete Row/Raw result equals exact oracle"
+    Write-Host "PASS $Phase input=$before reason='$reason' complete=$actualJson"
+    return ,$actual
+  }
+  $launches = @(); $rawRows = @(); $oracles = @()
+  for ($index = 0; $index -lt 3; $index++) {
+    $name = 'synthetic-history-' + @('A','B','C')[$index]
+    $launchInstant = $instant.AddMinutes($index + 1)
+    $launch = [pscustomobject]@{
+      launcherStartIdentity = $launchInstant.AddSeconds(-2).ToString('o')
+      recordedAt = $launchInstant.AddSeconds(-1).ToString('o')
+      childStartIdentity = $launchInstant.ToString('o')
+      label = $name; lane = $name; worktree = $root
+      transcriptPath = (Join-Path $root "$name.jsonl")
+      branch = 'synthetic/routing'; head = ('a' * 40)
+      policyGeneration = 1; registryAuthorityDigest = 'synthetic-digest'
+      family = 'astra'; slot = 'explicit'; usedLastKnownGood = $false
+    }
+    $routingRow = [ordered]@{
+      ts = $launchInstant.AddMilliseconds(-1500).ToString('o')
+      kind = 'dispatch'; dispatchRoutingSchema = 'watchdog-dispatch-routing/v2'
+      attemptId = $name; label = $name; lane = $name; laneRole = 'implementation'
+      transcript = "$name.jsonl"; harness = 'codex'; model = 'gpt-6-astra'; effort = 'high'
+      row = [string](7 + $index); placement = 'override-Todd'
+      worktree = $launch.worktree; branch = $launch.branch; head = $launch.head
+      policyGeneration = $launch.policyGeneration; registryAuthorityDigest = $launch.registryAuthorityDigest
+      family = $launch.family; slot = $launch.slot; usedLastKnownGood = $launch.usedLastKnownGood
+    }
+    $raw = $routingRow | ConvertTo-Json -Compress
+    $launches += $launch; $rawRows += $raw
+    $oracles += [pscustomobject]@{ Row = (7 + $index); Raw = $raw }
+  }
+  [IO.File]::WriteAllText($ledger, ($rawRows[0..1] -join "`n") + "`n", $utf8)
+  $smallResults = @()
+  for ($index = 0; $index -lt 2; $index++) {
+    $smallResults += Assert-PrivateRoutingRead $launches[$index] $oracles[$index] '' "small-$index"
+  }
+  $writer = [IO.StreamWriter]::new($ledger, $false, $utf8)
+  try {
+    $writer.NewLine = "`n"
+    $writer.WriteLine($rawRows[0])
+    $padding = ' ' * 672
+    for ($line = 0; $line -lt 51000; $line++) { $writer.WriteLine($padding) }
+    $writer.WriteLine($rawRows[1])
+  } finally { $writer.Dispose() }
+  $fullBytes = [IO.File]::ReadAllBytes($ledger)
+  $physicalLines = 0
+  foreach ($line in [IO.File]::ReadLines($ledger)) { $physicalLines++ }
+  Assert-True ($physicalLines -gt 50000 -and $fullBytes.Length -gt 32MB -and
+    $fullBytes[-1] -eq 10) 'private history exceeds both physical LF and byte cliffs'
+  $originalIdentity = Get-PrivateHistoryIdentity
+  Write-Output "PASS abovecliff physicalLF=$physicalLines bytes=$($fullBytes.Length) routingRows=2 identity=$($originalIdentity | ConvertTo-Json -Compress)"
+  $fullResults = @()
+  for ($index = 0; $index -lt 2; $index++) {
+    $fullResults += Assert-PrivateRoutingRead $launches[$index] $smallResults[$index] '' "full-$index"
+  }
+  # Slice the actual full fixture, not a model of either former bound.
+  $suffixStart = 0
+  for ($line = 0; $line -lt $physicalLines - 50000; $line++) {
+    $suffixStart = [Array]::IndexOf($fullBytes, [byte]10, $suffixStart) + 1
+  }
+  $suffixBytes = [byte[]]::new($fullBytes.Length - $suffixStart)
+  [Array]::Copy($fullBytes, $suffixStart, $suffixBytes, 0, $suffixBytes.Length)
+  $prefixLength = [Array]::LastIndexOf($fullBytes, [byte]10, (32MB - 1), 32MB) + 1
+  Assert-True ($prefixLength -gt 0 -and $prefixLength -le 32MB -and
+    [Array]::IndexOf($fullBytes, [byte]10, $prefixLength) + 1 -gt 32MB) '32MiB prefix is maximal and line-complete'
+  $prefixBytes = [byte[]]::new($prefixLength)
+  [Array]::Copy($fullBytes, $prefixBytes, $prefixLength)
+  try {
+    [IO.File]::WriteAllBytes($ledger, $suffixBytes)
+    $suffixLines = 0
+    foreach ($line in [IO.File]::ReadLines($ledger)) { $suffixLines++ }
+    Assert-True ($suffixLines -eq 50000) 'actual suffix contains exactly last 50000 LF rows'
+    $null = Assert-PrivateRoutingRead $launches[0] $null $missing 'suffix-loses-A'
+    $null = Assert-PrivateRoutingRead $launches[1] $fullResults[1] '' 'suffix-retains-B'
+    [IO.File]::WriteAllBytes($ledger, $prefixBytes)
+    $null = Assert-PrivateRoutingRead $launches[0] $fullResults[0] '' 'prefix-retains-A'
+    $null = Assert-PrivateRoutingRead $launches[1] $null $missing 'prefix-loses-B'
+    Write-Output "PASS actual controls suffixLF=$suffixLines suffixBytes=$($suffixBytes.Length) maximalPrefixBytes=$prefixLength missing='$missing'"
+  } finally {
+    [IO.File]::WriteAllBytes($ledger, $fullBytes)
+    [IO.File]::SetLastWriteTimeUtc($ledger, [datetime]::new($originalIdentity.lastWriteUtcTicks, [DateTimeKind]::Utc))
+  }
+  Assert-True (($originalIdentity | ConvertTo-Json -Compress) -ceq
+    (Get-PrivateHistoryIdentity | ConvertTo-Json -Compress)) 'full original hash/length/lastwrite restored after controls'
+  for ($index = 0; $index -lt 2; $index++) {
+    $null = Assert-PrivateRoutingRead $launches[$index] $fullResults[$index] '' "restored-$index"
+  }
+  [IO.File]::WriteAllText($ledger, ($rawRows -join "`n") + "`n", $utf8)
+  $smallAppended = @()
+  for ($index = 0; $index -lt 3; $index++) {
+    $smallAppended += Assert-PrivateRoutingRead $launches[$index] $oracles[$index] '' "small-appended-$index"
+  }
+  [IO.File]::WriteAllBytes($ledger, $fullBytes)
+  [IO.File]::AppendAllText($ledger, $rawRows[2] + "`n", $utf8)
+  $appendedResults = @()
+  for ($index = 0; $index -lt 3; $index++) {
+    $appendedResults += Assert-PrivateRoutingRead $launches[$index] $smallAppended[$index] '' "full-appended-$index"
+  }
+  for ($index = 0; $index -lt 3; $index++) {
+    $null = Assert-PrivateRoutingRead $launches[$index] $appendedResults[$index] '' "replay-$index"
+  }
+  Write-Output 'PASS bounded ordinary routing history: whole Row/Raw small/full A/B/C, actual suffix/prefix, restoration, append and deterministic replay; no heavy execution'
 } finally {
   $resolved = [IO.Path]::GetFullPath($root)
   Assert-True ((Split-Path -Parent $resolved) -ceq $temp -and
