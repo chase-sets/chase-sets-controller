@@ -2,6 +2,7 @@
 param(
   [ValidateSet(
     "All",
+    "OrdinaryReviewHistoryOnly",
     "BreakerClearOnly",
     "DeployResolverOnly",
     "DeployCompletionOnly",
@@ -1732,7 +1733,178 @@ function Test-FrontierCollectionBoundaries {
   Write-Output "PASS collaborators REST lifecycle reaches complete frontier configuration"
 }
 
+function Get-OrdinaryReviewHistoryIdentity([string]$Path) {
+  $item = Get-Item -LiteralPath $Path
+  [ordered]@{ path = $item.FullName; sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash; bytes = $item.Length; lastwriteTicks = $item.LastWriteTimeUtc.Ticks }
+}
+
+function Get-OrdinaryReviewHistoryDifferences($Actual, $Expected, [string]$Path = '$') {
+  if ($Actual -is [pscustomobject] -and $Expected -is [pscustomobject]) {
+    $actualNames = @($Actual.PSObject.Properties.Name)
+    $expectedNames = @($Expected.PSObject.Properties.Name)
+    foreach ($name in @($actualNames + $expectedNames | Sort-Object -Unique)) {
+      if ($name -cnotin $actualNames -or $name -cnotin $expectedNames) { "$Path.$name (missing member)"; continue }
+      Get-OrdinaryReviewHistoryDifferences $Actual.$name $Expected.$name "$Path.$name"
+    }
+  } elseif ($Actual -is [Array] -and $Expected -is [Array]) {
+    if ($Actual.Count -ne $Expected.Count) { "$Path (array length $($Actual.Count) != $($Expected.Count))" }
+    for ($index = 0; $index -lt [Math]::Min($Actual.Count, $Expected.Count); $index++) {
+      Get-OrdinaryReviewHistoryDifferences $Actual[$index] $Expected[$index] "$Path[$index]"
+    }
+  } else {
+    $actualJson = ConvertTo-Json -InputObject $Actual -Compress -Depth 100
+    $expectedJson = ConvertTo-Json -InputObject $Expected -Compress -Depth 100
+    if ($actualJson -cne $expectedJson) { "$Path actual=$actualJson expected=$expectedJson" }
+  }
+}
+
+function Invoke-OrdinaryReviewHistoryCli([string]$Path, [string]$FixturePath, [string]$Label) {
+  $before = @((Get-OrdinaryReviewHistoryIdentity $Path), (Get-OrdinaryReviewHistoryIdentity $FixturePath)) | ConvertTo-Json -Compress
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  # The real Report entrypoint, with neither history bound overridden. The
+  # private fixture supplies all authority; the provider command cannot run.
+  $output = @(& pwsh -NoProfile -NonInteractive -File $preflight -Pr 6254 -Action Report -MutationDisabled -HistoryPath $Path -AuthorityFixture $FixturePath -AuthorityScenario eligible -GhCommand (Join-Path $testRoot 'provider-sentinel-must-not-run.exe') 2>&1) -join "`n"
+  $nativeExit = $LASTEXITCODE
+  $watch.Stop()
+  $after = @((Get-OrdinaryReviewHistoryIdentity $Path), (Get-OrdinaryReviewHistoryIdentity $FixturePath)) | ConvertTo-Json -Compress
+  Write-Host "CLI ordinary preflight label=$Label nativeExit=$nativeExit seconds=$($watch.Elapsed.TotalSeconds) identity=$before after=$after output=$output"
+  Assert-True ($nativeExit -eq 0) "ordinary preflight $Label native exit=$nativeExit"
+  Assert-True ($before -ceq $after) "ordinary preflight $Label preserves input and private fixture hash/length/mtime"
+  $result = $output | ConvertFrom-Json -DateKind String
+  Assert-True ($result.action -ceq 'report' -and $result.mutationDisabled -eq $true -and $result.mutationCount -eq 0) "ordinary preflight $Label is mutation-disabled Report only"
+  $result
+}
+
+function Assert-OrdinaryReviewHistoryWhole($Actual, $Oracle, [string]$Path, [string]$OraclePath, [string]$Label) {
+  $bytes = (Get-Item -LiteralPath $Path).Length
+  $oracleBytes = (Get-Item -LiteralPath $OraclePath).Length
+  Assert-True ($Actual.review.audit.bytes -eq $bytes -and $Oracle.review.audit.bytes -eq $oracleBytes) "$Label both true physical review.audit.bytes"
+  # Whitespace changes only physical bytes. Retain every observed leaf and
+  # adjust that one justified leaf in a deep EXPECTED copy, never the actual.
+  $expected = $Oracle | ConvertTo-Json -Compress -Depth 100 | ConvertFrom-Json -DateKind String
+  $expected.review.audit.bytes = $bytes
+  $differences = @(Get-OrdinaryReviewHistoryDifferences $Actual $expected)
+  Assert-True ($differences.Count -eq 0 -and
+    ($Actual | ConvertTo-Json -Compress -Depth 100) -ceq ($expected | ConvertTo-Json -Compress -Depth 100)) "$Label entire result differs at: $($differences -join '; ')"
+}
+
+function Test-OrdinaryReviewHistory {
+  $privateRoot = Join-Path $testRoot ('ordinary-review-history-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($privateRoot)
+  $privateFixture = Join-Path $privateRoot 'authority.fixture.json'
+  Copy-Item -LiteralPath $fixture -Destination $privateFixture
+  Assert-True ((Get-FileHash -LiteralPath $privateFixture).Hash -ceq (Get-FileHash -LiteralPath $fixture).Hash) 'ordinary private authority fixture is an exact existing fixture copy'
+  $fullPath = Join-Path $privateRoot 'physical-history.jsonl'
+  $backupPath = Join-Path $privateRoot 'original-history.jsonl'
+  $smallPath = Join-Path $privateRoot 'complete-small-oracle.jsonl'
+  # Historical model IDs in New-Pass are immutable evidence, not dispatches.
+  $early = New-Pass $headA
+  $early.ts = '2030-01-01T00:00:01Z'
+  $early.reviewerAttempt = 'ordinary-preflight-early-review'
+  $early.authorAttempt = 'ordinary-preflight-author'
+  $late = New-Pass $headA
+  $late.ts = '2030-01-01T00:00:02Z'
+  $late.reviewerAttempt = 'ordinary-preflight-late-review'
+  $late.authorAttempt = 'ordinary-preflight-author'
+  $late.outcome = 'BLOCK_FIXABLE'
+  $late.findingIds = @('ORDINARY_PREFLIGHT_LATE')
+  $late.findings = [ordered]@{ blocking = 1; candidates = 1; nonBlocking = 0 }
+  $append = New-Pass $headA
+  $append.ts = '2030-01-01T00:00:03Z'
+  $append.reviewerAttempt = 'ordinary-preflight-append-review'
+  $append.authorAttempt = 'ordinary-preflight-author'
+  $earlyJson = $early | ConvertTo-Json -Compress -Depth 10
+  $lateJson = $late | ConvertTo-Json -Compress -Depth 10
+  $appendJson = $append | ConvertTo-Json -Compress -Depth 10
+  $utf8 = [Text.UTF8Encoding]::new($false, $true)
+  $writer = [IO.StreamWriter]::new($fullPath, $false, $utf8)
+  $writer.NewLine = "`n"
+  try {
+    $writer.WriteLine($earlyJson)
+    for ($index = 0; $index -lt 51000; $index++) { $writer.WriteLine(' ' * 700) }
+    $writer.WriteLine($lateJson)
+  } finally { $writer.Dispose() }
+  $reader = [IO.StreamReader]::new($fullPath, $utf8)
+  $physicalLines = 0; $physicalBytes = 0L
+  try {
+    while ($null -ne ($line = $reader.ReadLine())) { $physicalLines++; $physicalBytes += $utf8.GetByteCount($line) + 1 }
+  } finally { $reader.Dispose() }
+  $original = Get-OrdinaryReviewHistoryIdentity $fullPath
+  Assert-True ($physicalLines -eq 51002 -and $physicalBytes -eq $original.bytes -and $physicalBytes -gt 33554432) 'ordinary preflight actual LF geometry exceeds both cliffs, with only two events'
+  Copy-Item -LiteralPath $fullPath -Destination $backupPath
+  [IO.File]::WriteAllText($smallPath, $earlyJson + "`n" + $lateJson + "`n", $utf8)
+  $small = Invoke-OrdinaryReviewHistoryCli $smallPath $privateFixture 'complete-small'
+  $whole = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture 'complete-full'
+  Assert-OrdinaryReviewHistoryWhole $whole $small $fullPath $smallPath 'ordinary full/small'
+  Assert-True ($whole.status -ceq 'refused' -and $whole.reason -ceq 'REVIEW_BLOCKED_LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and
+    $whole.review.state -ceq 'blocked' -and $whole.review.reason -ceq 'LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and
+    $whole.review.latest.reviewerAttempt -ceq $late.reviewerAttempt -and $whole.review.latest.receiptIdentity -cmatch '^[a-f0-9]{64}$' -and
+    $whole.review.audit.validRelevantReceipts -eq 2 -and $whole.review.audit.rows -eq 2 -and $whole.review.audit.parsedRows -eq 2 -and
+    -not $whole.review.audit.truncated) 'ordinary full retains early PASS and latest exact-head BLOCK with complete audits'
+  $replay = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture 'complete-replay'
+  Assert-True (($replay | ConvertTo-Json -Compress -Depth 100) -ceq ($whole | ConvertTo-Json -Compress -Depth 100)) 'ordinary complete deterministic whole-result replay'
+  foreach ($control in @('last50000', 'prefix32MiB')) {
+    $reader = [IO.StreamReader]::new($backupPath, $utf8)
+    try {
+      $writer = [IO.StreamWriter]::new($fullPath, $false, $utf8)
+      $writer.NewLine = "`n"
+      $lineNumber = 0; $writtenBytes = 0L; $writtenLines = 0; $nextBytes = 0
+      try {
+        while ($null -ne ($line = $reader.ReadLine())) {
+          $lineNumber++; $nextBytes = $utf8.GetByteCount($line) + 1
+          if ($control -ceq 'last50000' -and $lineNumber -le ($physicalLines - 50000)) { continue }
+          if ($control -ceq 'prefix32MiB' -and $writtenBytes + $nextBytes -gt 33554432) { break }
+          $writer.WriteLine($line); $writtenBytes += $nextBytes; $writtenLines++
+        }
+      } finally { $writer.Dispose() }
+    } finally { $reader.Dispose() }
+    Assert-True ((Get-Item -LiteralPath $fullPath).Length -eq $writtenBytes -and
+      $(if ($control -ceq 'last50000') { $writtenLines -eq 50000 } else { $writtenBytes -le 33554432 -and $writtenBytes + $nextBytes -gt 33554432 })) "ordinary $control actual maximal line-complete geometry"
+    $controlJson = if ($control -ceq 'last50000') { $lateJson } else { $earlyJson }
+    [IO.File]::WriteAllText($smallPath, $controlJson + "`n", $utf8)
+    $cut = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture $control
+    $cutSmall = Invoke-OrdinaryReviewHistoryCli $smallPath $privateFixture "$control-small"
+    Assert-OrdinaryReviewHistoryWhole $cut $cutSmall $fullPath $smallPath "ordinary $control full/small"
+    Assert-True ($cut.review.audit.validRelevantReceipts -eq 1 -and $cut.review.audit.rows -eq 1 -and $cut.review.audit.parsedRows -eq 1 -and
+      -not $cut.review.audit.truncated) "ordinary $control loses a receipt rather than only physical bytes"
+    if ($control -ceq 'last50000') {
+      Assert-True ($cut.status -ceq 'refused' -and $cut.reason -ceq 'REVIEW_BLOCKED_LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and
+        $cut.review.state -ceq 'blocked' -and $cut.review.reason -ceq 'LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and
+        $cut.review.latest.receiptIdentity -ceq $whole.review.latest.receiptIdentity) 'ordinary suffix loses early PASS even though late BLOCK still refuses'
+    } else {
+      Assert-True ($cut.status -ceq 'eligible' -and $cut.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+        $cut.review.state -ceq 'authorized' -and $cut.review.reason -ceq 'LATEST_EXACT_HEAD_PASS' -and
+        $cut.review.latest.reviewerAttempt -ceq $early.reviewerAttempt -and
+        $cut.review.latest.receiptIdentity -cne $whole.review.latest.receiptIdentity) 'ordinary prefix loses late BLOCK and admits only read-only Report'
+    }
+    Copy-Item -LiteralPath $backupPath -Destination $fullPath -Force
+    [IO.File]::SetLastWriteTimeUtc($fullPath, [datetime]::new($original.lastwriteTicks, [DateTimeKind]::Utc))
+    Assert-True ((Get-OrdinaryReviewHistoryIdentity $fullPath | ConvertTo-Json -Compress) -ceq ($original | ConvertTo-Json -Compress)) "ordinary $control restores original bytes/hash/length/mtime"
+    $restored = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture "$control-restored"
+    Assert-True (($restored | ConvertTo-Json -Compress -Depth 100) -ceq ($whole | ConvertTo-Json -Compress -Depth 100)) "ordinary $control restores whole original output"
+    Write-Output "PASS ordinary preflight $control physicalLF=$writtenLines bytes=$writtenBytes status=$($cut.status) reason=$($cut.reason) validRelevantReceipts=1 restored=hash,length,mtime,whole-result"
+  }
+  [IO.File]::WriteAllText($smallPath, $earlyJson + "`n" + $lateJson + "`n", $utf8)
+  foreach ($path in @($fullPath, $smallPath)) { [IO.File]::AppendAllText($path, $appendJson + "`n", $utf8) }
+  $appended = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture 'append-full'
+  $appendSmall = Invoke-OrdinaryReviewHistoryCli $smallPath $privateFixture 'append-small'
+  Assert-OrdinaryReviewHistoryWhole $appended $appendSmall $fullPath $smallPath 'ordinary appended full/small'
+  Assert-True ($appended.status -ceq 'eligible' -and $appended.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+    $appended.review.state -ceq 'authorized' -and $appended.review.reason -ceq 'LATEST_EXACT_HEAD_PASS' -and
+    $appended.review.latest.reviewerAttempt -ceq $append.reviewerAttempt -and $appended.review.latest.ts -ceq $append.ts -and
+    $appended.review.latest.receiptIdentity -cmatch '^[a-f0-9]{64}$' -and $appended.review.latest.receiptIdentity -cne $whole.review.latest.receiptIdentity -and
+    $appended.review.audit.validRelevantReceipts -eq 3 -and $appended.review.audit.rows -eq 3 -and $appended.review.audit.parsedRows -eq 3 -and
+    -not $appended.review.audit.truncated) 'ordinary appended distinct valid PASS supersedes BLOCK with three receipts'
+  $appendReplay = Invoke-OrdinaryReviewHistoryCli $fullPath $privateFixture 'append-replay'
+  Assert-True (($appendReplay | ConvertTo-Json -Compress -Depth 100) -ceq ($appended | ConvertTo-Json -Compress -Depth 100)) 'ordinary append deterministic whole-result read-only replay'
+  Write-Output "PASS ordinary preflight Get-ReviewReduction actual Report default bounds physicalLF=$physicalLines bytes=$physicalBytes paddingLF=51000 parsedEvents=2 appendEvents=3 difference=review.audit.bytes-only; other preflight readers and rich-event/memory/release qualification remain UNKNOWN"
+}
+
 try {
+  if ($RegressionOnly -in @('All', 'OrdinaryReviewHistoryOnly')) {
+    Test-OrdinaryReviewHistory
+    if ($RegressionOnly -eq 'OrdinaryReviewHistoryOnly') { return }
+  }
   $mockGh = New-MockGh
   $env:LANDING_PREFLIGHT_MOCK_GRAPH = Write-JsonFixture "graph.json" (New-ProductionGraphFixture)
   $env:LANDING_PREFLIGHT_MOCK_RUNS = Write-JsonFixture "runs.json" (New-RealDeployRunFixture)
