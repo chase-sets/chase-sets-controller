@@ -526,6 +526,77 @@ Assert-True $mutantRejected "ambiguity-check-bypass fails the same expected-unkn
 Assert-True ((Get-FileHash -LiteralPath $conflictTranscript).Hash -ceq $conflictHashes[0] -and (Get-FileHash -LiteralPath $conflictDispatch).Hash -ceq $conflictHashes[1]) "candidate and ambiguity-check-bypass used identical inputs"
 Write-Output "PASS cost-harvest exact-transcript conflict discriminator rejects ambiguity-check-bypass"
 
+# --- actual harvest retains conflicting prefix across both history cliffs ---
+$largeOriginal=[IO.File]::ReadAllBytes($conflictDispatch)
+$largeUtf8=[Text.UTF8Encoding]::new($false)
+function Get-LargeHarvestOracle($Row) {
+  $Row|ConvertTo-Json -Depth 64 -Compress
+}
+try {
+  $largeSmallOracle=Get-LargeHarvestOracle $conflictCandidate
+  $largeWriter=[IO.StreamWriter]::new($conflictDispatch,$false,$largeUtf8,65536)
+  try {
+    $largeWriter.WriteLine(($dispatchRows[0]|ConvertTo-Json -Compress))
+    for($largeIndex=0;$largeIndex -lt 50000;$largeIndex++){$largeWriter.Write("{}`n")}
+    $largeWriter.Write('{"padding":"'+('x'*33554432)+'"}');$largeWriter.Write("`n")
+    $largeWriter.WriteLine(($dispatchRows[1]|ConvertTo-Json -Compress))
+  } finally {$largeWriter.Dispose()}
+  $largePhysicalRows=0
+  foreach($largeLine in [IO.File]::ReadLines($conflictDispatch)){$largePhysicalRows++}
+  Assert-True ($largePhysicalRows -eq 50003 -and (Get-Item -LiteralPath $conflictDispatch).Length -gt 33554432) "actual harvest binding conflict spans both history cliffs"
+  $largeHash=(Get-FileHash -LiteralPath $conflictDispatch).Hash
+  $largeStamp=[IO.File]::GetLastWriteTimeUtc($conflictDispatch)
+  $largeLedger=Join-Path $testRoot 'synthetic-large-harvest-ledger.jsonl'
+  & $harvestScript -TranscriptDir $conflictRoot -Ledger $largeLedger -Backfill | Out-Null
+  $largeRows=@(Get-Content -LiteralPath $largeLedger|ConvertFrom-Json)
+  Assert-True ($largeRows.Count -eq 1) "actual large harvest emits exactly the existing transcript"
+  Assert-UnknownDispatchModel $largeRows[0]
+  Assert-True ((Get-LargeHarvestOracle $largeRows[0]) -ceq $largeSmallOracle) "actual large harvest preserves every small-control field including transcript timestamp"
+  $largeSuffixRoot=Join-Path $testRoot 'synthetic-large-harvest-suffix'
+  [void][IO.Directory]::CreateDirectory($largeSuffixRoot)
+  $largeSuffixTranscript=Join-Path $largeSuffixRoot $conflictName
+  Copy-Item -LiteralPath $conflictTranscript -Destination $largeSuffixTranscript
+  [IO.File]::SetLastWriteTimeUtc($largeSuffixTranscript,[IO.File]::GetLastWriteTimeUtc($conflictTranscript))
+  $largeSuffixRows=@([IO.File]::ReadLines($conflictDispatch)|Select-Object -Last 50000)
+  [IO.File]::WriteAllLines((Join-Path $largeSuffixRoot 'dispatch-log.jsonl'),[string[]]$largeSuffixRows,$largeUtf8)
+  $largeSuffixLedger=Join-Path $testRoot 'synthetic-large-harvest-suffix-ledger.jsonl'
+  & $harvestScript -TranscriptDir $largeSuffixRoot -Ledger $largeSuffixLedger -Backfill | Out-Null
+  $largeSuffixResult=@(Get-Content -LiteralPath $largeSuffixLedger|ConvertFrom-Json)
+  Assert-True ($largeSuffixRows.Count -eq 50000 -and $largeSuffixResult.Count -eq 1 -and
+    $largeSuffixResult[0].model -ceq 'gpt-6-astra' -and $largeSuffixResult[0].costSource -ceq 'token-derived-short-exact' -and
+    $null -ne $largeSuffixResult[0].usd -and (Get-FileHash -LiteralPath $largeSuffixTranscript).Hash -ceq (Get-FileHash -LiteralPath $conflictTranscript).Hash) "actual suffix harvest loses the early conflict and wrongly attributes the identical transcript"
+  Assert-True ((Get-FileHash -LiteralPath $conflictDispatch).Hash -ceq $largeHash -and
+    [IO.File]::GetLastWriteTimeUtc($conflictDispatch) -eq $largeStamp) "large and suffix harvests do not rewrite the canonical dispatch fixture"
+  $largeAddedName='synthetic-collector-added.jsonl'
+  $largeAddedTranscript=Join-Path $conflictRoot $largeAddedName
+  Copy-Item -LiteralPath $conflictTranscript -Destination $largeAddedTranscript
+  [IO.File]::SetLastWriteTimeUtc($largeAddedTranscript,[IO.File]::GetLastWriteTimeUtc($conflictTranscript))
+  $largeAppend=[ordered]@{};foreach($largeKey in $dispatchRows[0].Keys){$largeAppend[$largeKey]=$dispatchRows[0][$largeKey]}
+  $largeAppend.transcript=$largeAddedName;$largeAppend.ts='2026-09-16T00:00:02.000Z'
+  [IO.File]::AppendAllText($conflictDispatch,($largeAppend|ConvertTo-Json -Compress)+"`n",$largeUtf8)
+  $largeHash=(Get-FileHash -LiteralPath $conflictDispatch).Hash
+  $largeStamp=[IO.File]::GetLastWriteTimeUtc($conflictDispatch)
+  & $harvestScript -TranscriptDir $conflictRoot -Ledger $largeLedger -Backfill | Out-Null
+  $largeAfter=@(Get-Content -LiteralPath $largeLedger|ConvertFrom-Json)
+  $largeOld=@($largeAfter|Where-Object transcript -CEQ $conflictName)
+  $largeAdded=@($largeAfter|Where-Object transcript -CEQ $largeAddedName)
+  Assert-True ($largeAfter.Count -eq 2 -and $largeOld.Count -eq 1 -and $largeAdded.Count -eq 1 -and
+    $largeAdded[0].model -ceq 'gpt-5.6-sol' -and $largeAdded[0].costSource -ceq 'token-derived-short-exact' -and
+    $null -ne $largeAdded[0].usd -and $largeAdded[0].dispatchBindingIdentity -cne $largeOld[0].dispatchBindingIdentity) "actual append harvest persists the newly bound transcript without reharvesting the old conflict"
+  Assert-UnknownDispatchModel $largeOld[0]
+  Assert-True ((Get-LargeHarvestOracle $largeOld[0]) -ceq $largeSmallOracle) "actual append retains all original unknown-conflict facts"
+  $largeCostHash=(Get-FileHash -LiteralPath $largeLedger).Hash
+  $largeCostStamp=[IO.File]::GetLastWriteTimeUtc($largeLedger)
+  & $harvestScript -TranscriptDir $conflictRoot -Ledger $largeLedger -Backfill | Out-Null
+  Assert-True ((Get-FileHash -LiteralPath $largeLedger).Hash -ceq $largeCostHash -and
+    [IO.File]::GetLastWriteTimeUtc($largeLedger) -eq $largeCostStamp -and
+    (Get-FileHash -LiteralPath $conflictDispatch).Hash -ceq $largeHash -and
+    [IO.File]::GetLastWriteTimeUtc($conflictDispatch) -eq $largeStamp) "actual append replay leaves cost output and canonical dispatch fixture byte-identical"
+} finally {[IO.File]::WriteAllBytes($conflictDispatch,$largeOriginal)}
+Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($conflictDispatch)) -ceq
+  [Convert]::ToBase64String($largeOriginal)) "large harvest fixture restores original dispatch bytes"
+Write-Output "PASS cost-harvest actual CLI retains prefix conflict above both cliffs, defeats suffix control, appends and replays"
+
 Write-Output "ALL cost-harvest tests passed"
 } finally {
   $env:CHASE_SETS_ROUTING_DATA_ROOT=$oldRoutingRoot;$env:CHASE_SETS_ROUTING_LKG_PATH=$oldRoutingLkg
