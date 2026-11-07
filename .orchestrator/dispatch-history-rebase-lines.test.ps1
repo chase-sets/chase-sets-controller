@@ -183,20 +183,30 @@ try {
     Assert-RebaseHistoryWhole (Invoke-RebaseHistoryNative "$cut-restored-replay" $path) $full "$cut restored deterministic replay"
   }
   $later = '{"id":"appended-epsilon","instant":"2026-11-07T00:00:00Z","nested":{"map":{"later":null},"array":[5,"05",null,{"final":[true,{}]}]},"empty":[]}'
-  [IO.File]::AppendAllText($path, $later + "`n", $utf8)
-  $appended = [IO.File]::ReadAllBytes($path)
-  Assert-RebaseHistory ($appended.Length -eq $original.Length + $utf8.GetByteCount($later + "`n")) 'append adds exactly one complete LF record'
-  $prefixBytes = [byte[]]::new($original.Length)
-  [Array]::Copy($appended, $prefixBytes, $prefixBytes.Length)
-  Assert-RebaseHistory ([Convert]::ToBase64String($prefixBytes) -ceq [Convert]::ToBase64String($original)) 'append preserves every original byte'
-  Write-RebaseHistorySmall $small @($raw + $later)
-  $updatedOracle = Invoke-RebaseHistoryNative 'append-small-complete' $small
-  $updatedIndependent = ConvertFrom-Json -InputObject ('[' + (@($raw + $later) -join ',') + ']') -DateKind String -Depth 100
-  Assert-RebaseHistory ($updatedOracle.resultJson -ceq (ConvertTo-Json -InputObject $updatedIndependent -Depth 100 -Compress)) 'updated small oracle equals entire independent appended sequence'
-  $updated = Invoke-RebaseHistoryNative 'append-full' $path
-  Assert-RebaseHistoryWhole $updated $updatedOracle 'append full versus updated small complete'
-  Assert-RebaseHistory ($updated.resultJson -cne $full.resultJson -and $updated.result.Count -eq $full.result.Count + 1) 'append changes whole output with one distinct later object'
-  Assert-RebaseHistoryWhole (Invoke-RebaseHistoryNative 'append-replay' $path) $updated 'deterministic append replay'
+  try {
+    [IO.File]::AppendAllText($path, $later + "`n", $utf8)
+    $appended = [IO.File]::ReadAllBytes($path)
+    Assert-RebaseHistory ($appended.Length -eq $original.Length + $utf8.GetByteCount($later + "`n")) 'append adds exactly one complete LF record'
+    $prefixBytes = [byte[]]::new($original.Length)
+    [Array]::Copy($appended, $prefixBytes, $prefixBytes.Length)
+    Assert-RebaseHistory ([Convert]::ToBase64String($prefixBytes) -ceq [Convert]::ToBase64String($original)) 'append preserves every original byte'
+    Write-RebaseHistorySmall $small @($raw + $later)
+    $updatedOracle = Invoke-RebaseHistoryNative 'append-small-complete' $small
+    $updatedIndependent = ConvertFrom-Json -InputObject ('[' + (@($raw + $later) -join ',') + ']') -DateKind String -Depth 100
+    Assert-RebaseHistory ($updatedOracle.resultJson -ceq (ConvertTo-Json -InputObject $updatedIndependent -Depth 100 -Compress)) 'updated small oracle equals entire independent appended sequence'
+    $updated = Invoke-RebaseHistoryNative 'append-full' $path
+    Assert-RebaseHistoryWhole $updated $updatedOracle 'append full versus updated small complete'
+    Assert-RebaseHistory ($updated.resultJson -cne $full.resultJson -and $updated.result.Count -eq $full.result.Count + 1) 'append changes whole output with one distinct later object'
+    Assert-RebaseHistoryWhole (Invoke-RebaseHistoryNative 'append-replay' $path) $updated 'deterministic append replay'
+  } finally {
+    [IO.File]::WriteAllBytes($path, $original)
+    [IO.File]::SetLastWriteTimeUtc($path, $originalTime)
+    $restored = Get-RebaseHistoryIdentity $path | ConvertTo-Json -Compress
+    Write-Output "RESTORE append identity=$restored"
+    Assert-RebaseHistory ($restored -ceq $originalIdentityJson) 'append exact original bytes/hash/length/mtime restored'
+  }
+  Assert-RebaseHistoryWhole (Invoke-RebaseHistoryNative 'append-restored-full' $path) $full 'append restored full output'
+  Assert-RebaseHistoryWhole (Invoke-RebaseHistoryNative 'append-restored-replay' $path) $full 'append restored deterministic replay'
   $sourceAfter = ConvertTo-Json -InputObject @($sourcePaths | ForEach-Object { Get-RebaseHistoryIdentity $_ }) -Depth 10 -Compress
   Assert-RebaseHistory ($sourceBefore -ceq $sourceAfter) 'all source identities preserved across qualification'
   Write-Output "PASS literalRow=22 checks=$checks nativeCalls=$nativeCalls physicalLines=$physicalLines bytes=$($original.Length) sparseSyntheticGeometry=true NOT_RICH_EVENT_OR_MEMORY_ENVELOPE_PROOF"
