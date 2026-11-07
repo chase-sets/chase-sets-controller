@@ -3,6 +3,7 @@ param(
   [ValidateSet(
     "All",
     "OrdinaryReviewHistoryOnly",
+    "OrdinaryProductionHistoryOnly",
     "BreakerClearOnly",
     "DeployResolverOnly",
     "DeployCompletionOnly",
@@ -1900,6 +1901,186 @@ function Test-OrdinaryReviewHistory {
   Write-Output "PASS ordinary preflight Get-ReviewReduction actual Report default bounds physicalLF=$physicalLines bytes=$physicalBytes paddingLF=51000 parsedEvents=2 appendEvents=3 difference=review.audit.bytes-only; other preflight readers and rich-event/memory/release qualification remain UNKNOWN"
 }
 
+function Get-OrdinaryProductionHistoryGeometry([string]$Path) {
+  $utf8 = [Text.UTF8Encoding]::new($false, $true)
+  $reader = [IO.StreamReader]::new($Path, $utf8)
+  $lines = 0; $bytes = 0L
+  $rows = [Collections.Generic.List[object]]::new()
+  try {
+    while ($null -ne ($raw = $reader.ReadLine())) {
+      $lines++; $length = $utf8.GetByteCount($raw); $bytes += $length + 1
+      if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        $rows.Add([pscustomobject][ordered]@{ raw = $raw; line = $lines; rowSha256 = Get-TestSha256 $raw; byteLength = $length })
+      }
+    }
+  } finally { $reader.Dispose() }
+  Assert-True ($bytes -eq (Get-Item -LiteralPath $Path).Length) 'ordinary production geometry accounts for exact LF-terminated UTF-8 bytes'
+  [pscustomobject][ordered]@{ lines = $lines; bytes = $bytes; rows = @($rows) }
+}
+
+function Invoke-OrdinaryProductionHistoryCli([string]$Path, [string[]]$ProviderPaths, [string]$Label) {
+  $before = @(@($Path) + $ProviderPaths | ForEach-Object { Get-OrdinaryReviewHistoryIdentity $_ }) | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText($env:LANDING_PREFLIGHT_MOCK_LOG, '')
+  $psi = [Diagnostics.ProcessStartInfo]::new('pwsh')
+  $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+  # No AuthorityFixture: reach the literal Get-ProductionObservation reader.
+  # Neither history limit is supplied. Every provider request uses New-MockGh.
+  foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $preflight, '-Pr', '6254', '-Action', 'Report', '-MutationDisabled', '-HistoryPath', $Path, '-GhCommand', $mockGh)) {
+    [void]$psi.ArgumentList.Add($argument)
+  }
+  $watch = [Diagnostics.Stopwatch]::StartNew()
+  $process = [Diagnostics.Process]::Start($psi)
+  try {
+    $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $output = $stdout.GetAwaiter().GetResult(); $errorOutput = $stderr.GetAwaiter().GetResult(); $nativeExit = $process.ExitCode
+  } finally { $process.Dispose() }
+  $watch.Stop()
+  $after = @(@($Path) + $ProviderPaths | ForEach-Object { Get-OrdinaryReviewHistoryIdentity $_ }) | ConvertTo-Json -Compress
+  $calls = @([IO.File]::ReadAllLines($env:LANDING_PREFLIGHT_MOCK_LOG))
+  Write-Host "CLI ordinary production label=$Label nativeExit=$nativeExit seconds=$($watch.Elapsed.TotalSeconds) identity=$before after=$after providerCalls=$($calls | ConvertTo-Json -Compress) stdout=$output stderr=$errorOutput"
+  Assert-True ($nativeExit -eq 0 -and [string]::IsNullOrWhiteSpace($errorOutput)) "ordinary production $Label native exit=$nativeExit stderr=$errorOutput"
+  Assert-True ($before -ceq $after) "ordinary production $Label preserves history and private provider fixtures hash/length/mtime"
+  Assert-True ($calls.Count -ge 4 -and @($calls | Where-Object { $_ -notmatch '^(api\x1f|run\x1flist\x1f)' }).Count -eq 0) "ordinary production $Label private provider received only observation commands"
+  $result = $output | ConvertFrom-Json -DateKind String
+  Assert-True ($result.action -ceq 'report' -and $result.mutationDisabled -eq $true -and $result.mutationCount -eq 0 -and $result.observations.initial.complete -eq $true) "ordinary production $Label complete mutation-disabled Report"
+  $result
+}
+
+function Assert-OrdinaryProductionHistoryWhole($Actual, $Oracle, [string]$Path, [string]$OraclePath, [string]$OpenRaw, [string]$Label) {
+  $physical = Get-OrdinaryProductionHistoryGeometry $Path
+  $compact = Get-OrdinaryProductionHistoryGeometry $OraclePath
+  Assert-True ($Actual.review.audit.bytes -eq $physical.bytes -and $Oracle.review.audit.bytes -eq $compact.bytes) "$Label both own true review.audit.bytes before expected adjustment"
+  Assert-True (($physical.rows.raw | ConvertTo-Json -Compress) -ceq ($compact.rows.raw | ConvertTo-Json -Compress)) "$Label exact nonblank fixture bytes in original order"
+  $expected = $Oracle | ConvertTo-Json -Compress -Depth 100 | ConvertFrom-Json -DateKind String
+  $expected.review.audit.bytes = $physical.bytes
+  $adjustments = @('$.review.audit.bytes')
+  if (-not [string]::IsNullOrEmpty($OpenRaw)) {
+    $source = @($compact.rows | Where-Object raw -CEQ $OpenRaw)
+    $target = @($physical.rows | Where-Object raw -CEQ $OpenRaw)
+    Assert-True ($source.Count -eq 1 -and $target.Count -eq 1) "$Label unique compact and physical open identity from exact fixture bytes"
+    $event = $OpenRaw | ConvertFrom-Json -DateKind String
+    Assert-True ($event.kind -ceq 'breaker-open' -and $source[0].rowSha256 -ceq $target[0].rowSha256 -and $source[0].byteLength -eq $target[0].byteLength) "$Label same raw SHA256 and byteLength across geometry"
+    Assert-True ($expected.observations.initial.breaker.openRows.Count -eq 1 -and $expected.openBreaker.rows.Count -eq 1) "$Label oracle has exactly the two retained open-row identities"
+    # These are the ONLY physical-line leaves exposed by this fixture. Require
+    # each original oracle identity before changing the deep expected copy.
+    foreach ($row in @($expected.observations.initial.breaker.openRows[0], $expected.openBreaker.rows[0])) {
+      Assert-True ($row.key -ceq "$($event.issue)/$($event.pr)" -and $row.openTs -ceq $event.ts -and
+        $row.line -eq $source[0].line -and $row.rowSha256 -ceq $source[0].rowSha256 -and $row.byteLength -eq $source[0].byteLength) "$Label original complete compact open-row identity before adjustment"
+      $row.line = $target[0].line
+    }
+    $adjustments += @('$.observations.initial.breaker.openRows[0].line', '$.openBreaker.rows[0].line')
+  } else {
+    Assert-True ($expected.observations.initial.breaker.openRows.Count -eq 0 -and $null -eq $expected.openBreaker) "$Label healthy oracle has no physical-line adjustments"
+  }
+  $differences = @(Get-OrdinaryReviewHistoryDifferences $Actual $expected)
+  Assert-True ($differences.Count -eq 0 -and
+    ($Actual | ConvertTo-Json -Compress -Depth 100) -ceq ($expected | ConvertTo-Json -Compress -Depth 100)) "$Label entire native Report differs at: $($differences -join '; ')"
+  Write-Output "PASS ordinary production whole label=$Label physicalLF=$($physical.lines) bytes=$($physical.bytes) compactLF=$($compact.lines) compactBytes=$($compact.bytes) expected-only=$($adjustments -join ',')"
+}
+
+function Test-OrdinaryProductionHistory {
+  $privateRoot = Join-Path $testRoot ('ordinary-production-history-' + [guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($privateRoot)
+  $fullPath = Join-Path $privateRoot 'physical-history.jsonl'
+  $backupPath = Join-Path $privateRoot 'original-history.jsonl'
+  $smallPath = Join-Path $privateRoot 'complete-small-oracle.jsonl'
+  $providerPaths = @($mockGh, (Join-Path $testRoot 'mock-gh.cs'), $env:LANDING_PREFLIGHT_MOCK_GRAPH, $env:LANDING_PREFLIGHT_MOCK_RUNS, $env:LANDING_PREFLIGHT_MOCK_JOBS_30420209472, $env:LANDING_PREFLIGHT_MOCK_JOBS_30420203201)
+  foreach ($path in $providerPaths) {
+    Assert-True ([IO.Path]::GetFullPath($path).StartsWith($testRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) 'ordinary production provider fixtures are suite-private'
+  }
+  $utf8 = [Text.UTF8Encoding]::new($false, $true)
+  $early = New-BreakerEvent 'breaker-open' 12601 12601 ([datetimeoffset]'2030-01-01T00:00:01Z')
+  $pass = New-Pass $headA
+  $pass.ts = '2030-01-01T00:00:02Z'; $pass.reviewerAttempt = 'ordinary-production-review'; $pass.authorAttempt = 'ordinary-production-author'
+  $clear = New-BreakerEvent 'breaker-clear' 12601 12601 ([datetimeoffset]'2030-01-01T00:00:03Z')
+  $late = New-BreakerEvent 'breaker-open' 12602 12602 ([datetimeoffset]'2030-01-01T00:00:04Z')
+  $append = New-BreakerEvent 'breaker-clear' 12602 12602 ([datetimeoffset]'2030-01-01T00:00:05Z')
+  $earlyJson, $passJson, $clearJson, $lateJson, $appendJson = @($early, $pass, $clear, $late, $append | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 })
+  $smallText = (@($earlyJson, $passJson, $clearJson, $lateJson) -join "`n") + "`n"
+  # Minimal integer crossings, not rich-event/memory evidence: four rows,
+  # 49997 whitespace LF lines, exactly one byte beyond 32MiB.
+  $lastPaddingSpaces = 33554433L - $utf8.GetByteCount($smallText) - (49996L * 671) - 1
+  Assert-True ($lastPaddingSpaces -gt 0 -and $lastPaddingSpaces -lt 20000) 'ordinary production bounded final whitespace line'
+  $writer = [IO.StreamWriter]::new($fullPath, $false, $utf8); $writer.NewLine = "`n"
+  try {
+    $writer.WriteLine($earlyJson); $writer.WriteLine($passJson)
+    for ($index = 0; $index -lt 49996; $index++) { $writer.WriteLine(' ' * 670) }
+    $writer.WriteLine(' ' * [int]$lastPaddingSpaces)
+    $writer.WriteLine($clearJson); $writer.WriteLine($lateJson)
+  } finally { $writer.Dispose() }
+  $geometry = Get-OrdinaryProductionHistoryGeometry $fullPath
+  Assert-True ($geometry.lines -eq 50001 -and $geometry.bytes -eq 33554433 -and $geometry.rows.Count -eq 4 -and
+    ($geometry.rows.line -join ',') -ceq '1,2,50000,50001') 'ordinary production exact minimal above-cliff LF geometry'
+  $original = Get-OrdinaryReviewHistoryIdentity $fullPath
+  Copy-Item -LiteralPath $fullPath -Destination $backupPath
+  [IO.File]::WriteAllText($smallPath, $smallText, $utf8)
+  $small = Invoke-OrdinaryProductionHistoryCli $smallPath $providerPaths 'complete-small'
+  $whole = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths 'complete-full'
+  Assert-OrdinaryProductionHistoryWhole $whole $small $fullPath $smallPath $lateJson 'complete'
+  Assert-True ($whole.status -ceq 'refused' -and $whole.reason -ceq 'PIPELINE_BREAKER_OPEN' -and
+    $whole.observations.initial.breaker.healthy -eq $false -and ($whole.observations.initial.breaker.open -join ',') -ceq '12602/12602' -and
+    $whole.observations.initial.breaker.unpairedClears -eq 0 -and $whole.review.state -ceq 'authorized' -and
+    $whole.review.latest.reviewerAttempt -ceq $pass.reviewerAttempt -and $whole.review.audit.rows -eq 4 -and
+    $whole.review.audit.parsedRows -eq 4 -and $whole.review.audit.validRelevantReceipts -eq 1 -and -not $whole.review.audit.truncated) 'ordinary production earliest open pairs late clear and later different-key open remains'
+  $replay = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths 'complete-replay'
+  Assert-True (($replay | ConvertTo-Json -Compress -Depth 100) -ceq ($whole | ConvertTo-Json -Compress -Depth 100)) 'ordinary production complete whole-output replay'
+  foreach ($control in @('last50000', 'prefix32MiB')) {
+    $reader = [IO.StreamReader]::new($backupPath, $utf8)
+    try {
+      $writer = [IO.StreamWriter]::new($fullPath, $false, $utf8); $writer.NewLine = "`n"
+      $lineNumber = 0; $writtenBytes = 0L; $writtenLines = 0; $nextBytes = 0
+      try {
+        while ($null -ne ($line = $reader.ReadLine())) {
+          $lineNumber++; $nextBytes = $utf8.GetByteCount($line) + 1
+          if ($control -ceq 'last50000' -and $lineNumber -le ($geometry.lines - 50000)) { continue }
+          if ($control -ceq 'prefix32MiB' -and $writtenBytes + $nextBytes -gt 33554432) { break }
+          $writer.WriteLine($line); $writtenBytes += $nextBytes; $writtenLines++
+        }
+      } finally { $writer.Dispose() }
+    } finally { $reader.Dispose() }
+    Assert-True ((Get-Item -LiteralPath $fullPath).Length -eq $writtenBytes -and
+      $(if ($control -ceq 'last50000') { $writtenLines -eq 50000 } else { $writtenBytes -le 33554432 -and $writtenBytes + $nextBytes -gt 33554432 })) "ordinary production $control actual maximal complete-line geometry"
+    $controlRows = if ($control -ceq 'last50000') { @($passJson, $clearJson, $lateJson) } else { @($earlyJson, $passJson, $clearJson) }
+    [IO.File]::WriteAllText($smallPath, ($controlRows -join "`n") + "`n", $utf8)
+    $cut = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths $control
+    $cutSmall = Invoke-OrdinaryProductionHistoryCli $smallPath $providerPaths "$control-small"
+    $openRaw = if ($control -ceq 'last50000') { $lateJson } else { '' }
+    Assert-OrdinaryProductionHistoryWhole $cut $cutSmall $fullPath $smallPath $openRaw $control
+    Assert-True (($cut | ConvertTo-Json -Compress -Depth 100) -cne ($whole | ConvertTo-Json -Compress -Depth 100) -and
+      $cut.review.latest.receiptIdentity -ceq $whole.review.latest.receiptIdentity -and $cut.review.audit.rows -eq 3 -and
+      $cut.review.audit.parsedRows -eq 3 -and $cut.review.audit.validRelevantReceipts -eq 1 -and -not $cut.review.audit.truncated) "ordinary production $control causally changes whole result without changing review authority"
+    if ($control -ceq 'last50000') {
+      Assert-True ($cut.status -ceq 'refused' -and $cut.reason -ceq 'PIPELINE_BREAKER_OPEN' -and
+        ($cut.observations.initial.breaker.open -join ',') -ceq '12602/12602' -and $cut.observations.initial.breaker.unpairedClears -eq 1) 'ordinary production suffix loses earliest open and exposes unpaired late clear'
+    } else {
+      Assert-True ($cut.status -ceq 'eligible' -and $cut.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+        $cut.observations.initial.breaker.healthy -eq $true -and $cut.observations.initial.breaker.open.Count -eq 0 -and
+        $cut.observations.initial.breaker.unpairedClears -eq 0) 'ordinary production prefix retains paired early open/late clear but loses final open'
+    }
+    Copy-Item -LiteralPath $backupPath -Destination $fullPath -Force
+    [IO.File]::SetLastWriteTimeUtc($fullPath, [datetime]::new($original.lastwriteTicks, [DateTimeKind]::Utc))
+    Assert-True ((Get-OrdinaryReviewHistoryIdentity $fullPath | ConvertTo-Json -Compress) -ceq ($original | ConvertTo-Json -Compress)) "ordinary production $control exact original hash/length/mtime restore"
+    $restored = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths "$control-restored"
+    Assert-True (($restored | ConvertTo-Json -Compress -Depth 100) -ceq ($whole | ConvertTo-Json -Compress -Depth 100)) "ordinary production $control restores entire original native output"
+    Write-Output "PASS ordinary production $control physicalLF=$writtenLines bytes=$writtenBytes unpairedClears=$($cut.observations.initial.breaker.unpairedClears) status=$($cut.status) restored=hash,length,mtime,whole-result"
+  }
+  [IO.File]::WriteAllText($smallPath, $smallText, $utf8)
+  foreach ($path in @($fullPath, $smallPath)) { [IO.File]::AppendAllText($path, $appendJson + "`n", $utf8) }
+  $appended = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths 'append-full'
+  $appendSmall = Invoke-OrdinaryProductionHistoryCli $smallPath $providerPaths 'append-small'
+  Assert-OrdinaryProductionHistoryWhole $appended $appendSmall $fullPath $smallPath '' 'append'
+  Assert-True ($appended.status -ceq 'eligible' -and $appended.reason -ceq 'REPORT_ONLY_ELIGIBLE' -and
+    $appended.observations.initial.breaker.healthy -eq $true -and $appended.observations.initial.breaker.open.Count -eq 0 -and
+    $appended.observations.initial.breaker.unpairedClears -eq 0 -and $appended.review.latest.receiptIdentity -ceq $whole.review.latest.receiptIdentity -and
+    $appended.review.audit.rows -eq 5 -and $appended.review.audit.parsedRows -eq 5 -and $appended.review.audit.validRelevantReceipts -eq 1 -and
+    -not $appended.review.audit.truncated -and ($appended | ConvertTo-Json -Compress -Depth 100) -cne ($whole | ConvertTo-Json -Compress -Depth 100)) 'ordinary production distinct later same-key clear causally closes retained breaker'
+  $appendReplay = Invoke-OrdinaryProductionHistoryCli $fullPath $providerPaths 'append-replay'
+  Assert-True (($appendReplay | ConvertTo-Json -Compress -Depth 100) -ceq ($appended | ConvertTo-Json -Compress -Depth 100)) 'ordinary production appended whole-output deterministic replay'
+  Write-Output 'PASS ordinary production Get-ProductionObservation literal history caller actual native Report default bounds physicalLF=50001 bytes=33554433 parsedEvents=4 appendEvents=5; row24/rich-event/memory/global/release qualification remain UNKNOWN'
+}
+
 try {
   if ($RegressionOnly -in @('All', 'OrdinaryReviewHistoryOnly')) {
     Test-OrdinaryReviewHistory
@@ -1910,6 +2091,11 @@ try {
   $env:LANDING_PREFLIGHT_MOCK_RUNS = Write-JsonFixture "runs.json" (New-RealDeployRunFixture)
   $env:LANDING_PREFLIGHT_MOCK_LOG = Join-Path $testRoot "mock-gh.log"
   Set-RealDeployJobFixtures
+
+  if ($RegressionOnly -in @('All', 'OrdinaryProductionHistoryOnly')) {
+    Test-OrdinaryProductionHistory
+    if ($RegressionOnly -eq 'OrdinaryProductionHistoryOnly') { return }
+  }
 
   # #8526: synthetic queued, pre-merge observation through the real Report adapter.
   $queuedGraph=New-ProductionGraphFixture
