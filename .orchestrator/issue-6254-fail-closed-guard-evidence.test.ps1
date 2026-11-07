@@ -235,8 +235,11 @@ try {
   # blob; the same 16-mutation manifest remains the guard against regressions.
   # Shared-reader path guards change the blob, not the mutation manifest.
   # Qualification below must still execute the candidate and all 16 mutants.
+  # History bounds: MaxHistoryRows default/range now int MaxValue and
+  # MaxHistoryBytes default now long MaxValue. Requalify this exact blob with
+  # candidate sensitivity, complete landing, and all 16 unchanged mutations.
   Assert-6254Evidence ($LASTEXITCODE -eq 0 -and
-    $candidateBlob -ceq "71cddb563d971165f833a31f098c963a48c0c3b5") `
+    $candidateBlob -ceq "e1b5e5edd397fab5357718dd5392060789cf5fbe") `
     "production landing-preflight blob changed (observed=$candidateBlob)"
 
   $applied = 0
