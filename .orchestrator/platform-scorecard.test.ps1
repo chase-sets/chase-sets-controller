@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ScriptPath = (Join-Path $PSScriptRoot 'platform-scorecard.ps1'),
-    [ValidateSet('all','attribution','cohort','interventions')][string]$Suite = 'all',
+    [ValidateSet('all','attribution','cohort','interventions','history')][string]$Suite = 'all',
     [ValidateSet('none','branch-prefix','participant-dedup','ledger-final','local-date','omit-manifests','api-cap')]
     [string]$Mutant = 'none',
     [string]$EvidenceRoot = ''
@@ -145,6 +145,102 @@ try {
             originalSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($source)));
             mutantSha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($changed)))}
         Write-Output "MUTANT $Mutant applied one source change"
+    }
+    if ($Suite -in @('all','history')) {
+        Check 'platform-scorecard-history complete CLI JSON and Markdown above both cliffs' {
+            $f=Fixture 'full-history';$p=Pr 8100 @(30);$platform=Pr 8101 @(31)
+            $global:ScorecardTestApi.prs=@($p,$platform)
+            $global:ScorecardTestApi.histories[30]=@($p);$global:ScorecardTestApi.histories[31]=@($platform)
+            Add-Witness $f $platform | Out-Null;Add-Participant $f 31 'history-participant' 'cs-31:1'
+            $dispatch=Join-Path $f '.orchestrator/dispatch-log.jsonl';$cost=Join-Path $f '.orchestrator/cost-ledger.jsonl'
+            $saved=@{}
+            foreach($path in @($dispatch,$cost)){$saved[$path]=@{bytes=[IO.File]::ReadAllBytes($path);at=[IO.File]::GetLastWriteTimeUtc($path)}}
+            # Existing ConvertTo-TestCanonicalNode convention: ordinal object
+            # keys only; preserve all array order, nulls, property names/values.
+            function ConvertTo-HistoryCanonical($Value) {
+                if($null -eq $Value){return $null}
+                if($Value -is [Collections.IDictionary]) {
+                    $result=[ordered]@{};$keys=[string[]]@($Value.Keys);[Array]::Sort($keys,[StringComparer]::Ordinal)
+                    foreach($key in $keys){$result[$key]=ConvertTo-HistoryCanonical $Value[$key]}
+                    return $result
+                }
+                if($Value -is [array]){return ,@($Value|ForEach-Object{ConvertTo-HistoryCanonical $_})}
+                return $Value
+            }
+            function Invoke-HistoryScorecard {
+                $output=Join-Path $f 'history-out.json'
+                $dispatchHash=(Get-FileHash -LiteralPath $dispatch).Hash;$costHash=(Get-FileHash -LiteralPath $cost).Hash
+                $dispatchAt=[IO.File]::GetLastWriteTimeUtc($dispatch)
+                $started=[DateTimeOffset]::UtcNow
+                & $ScriptPath -Since '2026-09-29' -Until '2026-10-06' -Out $output -ContainerRoot $f `
+                    -RuntimeRoots @((Join-Path $f 'm2'),(Join-Path $f 'm1')) | Out-Null
+                $report=Get-Content -LiteralPath $output -Raw|ConvertFrom-Json -AsHashtable -DateKind String
+                # generatedAt is the existing UTC wall-clock generation leaf.
+                # Check its real value before normalizing only this metadata.
+                $at=ConvertTo-ScorecardUtc $report.generatedAt
+                Assert-Scorecard ($at -ge $started -and $at -le [DateTimeOffset]::UtcNow) 'scorecard generation timestamp belongs to this invocation'
+                $report.generatedAt='<generation-time>'
+                Assert-Scorecard ((Get-FileHash -LiteralPath $dispatch).Hash -ceq $dispatchHash -and
+                    [IO.File]::GetLastWriteTimeUtc($dispatch) -eq $dispatchAt -and
+                    (Get-FileHash -LiteralPath $cost).Hash -ceq $costHash) 'scorecard history/cost inputs unchanged by actual CLI'
+                return @{report=$report;whole=(ConvertTo-HistoryCanonical $report|ConvertTo-Json -Depth 100 -Compress);
+                    markdown=[IO.File]::ReadAllText([IO.Path]::ChangeExtension($output,'.md'))}
+            }
+            try {
+                $early='{"ts":"2026-09-30T12:00:00Z","kind":"dispatch","issue":30,"transcript":"early"}'
+                $late='{"ts":"2026-09-30T12:01:00Z","kind":"dispatch","issue":30,"transcript":"late"}'
+                [IO.File]::WriteAllLines($dispatch,[string[]]@($early,$late))
+                [IO.File]::WriteAllLines($cost,[string[]]@(
+                    '{"issue":30,"transcript":"early","usd":2,"inputTokens":10,"outputTokens":3}',
+                    '{"issue":30,"transcript":"late","usd":3,"inputTokens":20,"outputTokens":6}'))
+                $oracle=Invoke-HistoryScorecard
+                Assert-Scorecard ($oracle.report.systems.incumbent.dispatches -eq 2 -and
+                    $oracle.report.systems.incumbent.usd -eq 5 -and $oracle.report.systems.platform.launches -eq 1 -and
+                    $oracle.report.gaps -notcontains 'dispatch-ledger-unavailable') 'small complete-history oracle has known dispatch, cost and native cohorts'
+                $full=Join-Path $f 'history-full.jsonl';$suffix=Join-Path $f 'history-suffix.jsonl';$prefix=Join-Path $f 'history-prefix.jsonl'
+                $writer=[IO.StreamWriter]::new($full,$false,[Text.UTF8Encoding]::new($false))
+                try {
+                    $writer.NewLine="`n";$writer.WriteLine($early);$padding=' '*700
+                    # Read-ScorecardLedgers explicitly skips Trim()-empty rows.
+                    for($i=0;$i -lt 50000;$i++){$writer.WriteLine($padding)}
+                    $writer.WriteLine($late)
+                } finally {$writer.Dispose()}
+                $tailWriter=[IO.StreamWriter]::new($suffix,$false,[Text.UTF8Encoding]::new($false))
+                $prefixWriter=[IO.StreamWriter]::new($prefix,$false,[Text.UTF8Encoding]::new($false))
+                try {
+                    $tailWriter.NewLine="`n";$prefixWriter.NewLine="`n";$rows=0;$prefixBytes=0L;$prefixRows=0;$prefixOpen=$true
+                    foreach($line in [IO.File]::ReadLines($full)) {
+                        if($rows -ge 2){$tailWriter.WriteLine($line)}
+                        $length=[Text.Encoding]::UTF8.GetByteCount($line)+1
+                        if($prefixOpen -and $prefixBytes+$length -le 32MB){$prefixWriter.WriteLine($line);$prefixBytes+=$length;$prefixRows++}
+                        else {$prefixOpen=$false}
+                        $rows++
+                    }
+                } finally {$tailWriter.Dispose();$prefixWriter.Dispose()}
+                $bytes=(Get-Item -LiteralPath $full).Length
+                Assert-Scorecard ($rows -eq 50002 -and $bytes -gt 32MB -and $prefixRows -lt 50001) 'scorecard fixture exceeds 50,000 physical rows and 32 MiB; cutoff precedes late row'
+                Copy-Item -LiteralPath $full -Destination $dispatch
+                $large=Invoke-HistoryScorecard
+                Assert-Scorecard ($large.whole -ceq $oracle.whole -and $large.markdown -ceq $oracle.markdown) 'entire scorecard JSON and byte-exact Markdown equal small oracle above both cliffs'
+                foreach($control in @($suffix,$prefix)) {
+                    Copy-Item -LiteralPath $control -Destination $dispatch
+                    $cut=Invoke-HistoryScorecard
+                    Assert-Scorecard ($cut.whole -cne $oracle.whole -and $cut.markdown -cne $oracle.markdown -and
+                        $cut.report.systems.incumbent.dispatches -eq 1 -and $cut.report.systems.incumbent.usd -eq 5 -and
+                        $cut.report.gaps -notcontains 'dispatch-ledger-unavailable') 'actual suffix / line-complete 32 MiB prefix changes dispatch count, not a malformed-input refusal'
+                }
+                Copy-Item -LiteralPath $full -Destination $dispatch
+                $restored=Invoke-HistoryScorecard
+                Assert-Scorecard ($restored.whole -ceq $oracle.whole -and $restored.markdown -ceq $oracle.markdown) 'restored full scorecard recovers entire oracle'
+                Write-Output "PASS scorecard full-history rows=$rows bytes=$bytes suffixRows=50000 prefixRows=$prefixRows prefixBytes=$prefixBytes oracleDispatches=2 suffixDispatches=1 prefixDispatches=1 whole=JSON+Markdown restored=equal"
+            } finally {
+                foreach($path in $saved.Keys) {
+                    [IO.File]::WriteAllBytes($path,$saved[$path].bytes);[IO.File]::SetLastWriteTimeUtc($path,$saved[$path].at)
+                    Assert-Scorecard ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($path),[byte[]]$saved[$path].bytes) -and
+                        [IO.File]::GetLastWriteTimeUtc($path) -eq $saved[$path].at) "original scorecard fixture restored: $path"
+                }
+            }
+        }
     }
     if ($Suite -in @('all','attribution')) {
         Check 'platform-scorecard-attribution each canonical stage independently, depth boundary' {
