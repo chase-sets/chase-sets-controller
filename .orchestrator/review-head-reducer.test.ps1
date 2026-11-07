@@ -969,6 +969,84 @@ try {
   }
   Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
 
+  # A new ordinary CLI route deliberately omits both history-bound arguments.
+  # The existing Invoke-Reduction helper and all historical controls stay intact.
+  function Invoke-OrdinaryCliffCli([string]$Path) {
+    $identity=@((Get-FileHash $Path).Hash,(Get-Item $Path).Length,(Get-Item $Path).LastWriteTimeUtc.Ticks)
+    $output=@(& pwsh -NoProfile -NonInteractive -File $reducer -Pr 6254 -CurrentHead $headA -HistoryPath $Path 2>&1) -join "`n"
+    $exit=$LASTEXITCODE
+    Write-Host "CLI ordinary nativeExit=$exit inputSha256=$($identity[0]) bytes=$($identity[1]) lastwriteTicks=$($identity[2]) output=$output"
+    Assert-True ($exit -eq 0) "ordinary actual CLI native exit=$exit output=$output"
+    Assert-True (($identity|ConvertTo-Json -Compress) -ceq (@((Get-FileHash $Path).Hash,(Get-Item $Path).Length,(Get-Item $Path).LastWriteTimeUtc.Ticks)|ConvertTo-Json -Compress)) 'ordinary actual CLI must preserve hash/length/lastwrite'
+    $output|ConvertFrom-Json -DateKind String
+  }
+  function Assert-OrdinaryCliffWhole($Actual,$Oracle,[long]$Bytes,[string]$Label) {
+    # Whitespace is not parsed: audit.bytes is the sole physical result leaf
+    # that differs. Assert both real lengths, then adjust only the EXPECTED copy.
+    Assert-True ($Actual.audit.bytes -eq $Bytes -and $Oracle.audit.bytes -eq (Get-Item $ordinarySmall).Length) "$Label exact physical audit.bytes"
+    $expected=$Oracle|ConvertTo-Json -Compress -Depth 100|ConvertFrom-Json -DateKind String
+    $expected.audit.bytes=$Bytes
+    Assert-True (($Actual|ConvertTo-Json -Compress -Depth 100) -ceq ($expected|ConvertTo-Json -Compress -Depth 100)) "$Label entire result including every semantic/array/null/map leaf"
+  }
+  $ordinaryCliff=Join-Path $testRoot 'ordinary-physical-cliff.jsonl'
+  $ordinaryBackup=Join-Path $testRoot 'ordinary-physical-original.jsonl'
+  $ordinarySmall=Join-Path $testRoot 'ordinary-small-oracle.jsonl'
+  $earlyReceipt=New-Receipt 6254 $headA PASS 1 'cliff-early-review' 'cliff-author'
+  $lateReceipt=New-Receipt 6254 $headA BLOCK_FIXABLE 2 'cliff-late-review' 'cliff-author'
+  $appendReceipt=New-Receipt 6254 $headA PASS 3 'cliff-append-review' 'cliff-author'
+  $earlyJson=$earlyReceipt|ConvertTo-Json -Compress -Depth 10
+  $lateJson=$lateReceipt|ConvertTo-Json -Compress -Depth 10
+  $appendJson=$appendReceipt|ConvertTo-Json -Compress -Depth 10
+  $padding=' '*700
+  $writer=[IO.StreamWriter]::new($ordinaryCliff,$false,[Text.UTF8Encoding]::new($false));$writer.NewLine="`n"
+  try {
+    $writer.WriteLine($earlyJson)
+    for($i=0;$i -lt 51000;$i++){$writer.WriteLine($padding)}
+    $writer.WriteLine($lateJson)
+  } finally {$writer.Dispose()}
+  $physicalRows=0;foreach($line in [IO.File]::ReadLines($ordinaryCliff)){$physicalRows++}
+  $original=Get-Item $ordinaryCliff;$originalLength=$original.Length;$originalTime=$original.LastWriteTimeUtc
+  $originalHash=(Get-FileHash $ordinaryCliff).Hash
+  Assert-True ($physicalRows -eq 51002 -and $originalLength -gt 33554432) 'ordinary fixture must exceed both physical cliffs, not rich-event/memory coverage'
+  Copy-Item -LiteralPath $ordinaryCliff -Destination $ordinaryBackup
+  [IO.File]::WriteAllText($ordinarySmall,$earlyJson+"`n"+$lateJson+"`n",[Text.UTF8Encoding]::new($false))
+  $small=Invoke-OrdinaryCliffCli $ordinarySmall
+  Assert-True ($small.state -ceq 'blocked' -and $small.reason -ceq 'LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and $small.latest.reviewerAttempt -ceq 'cliff-late-review' -and $small.audit.validRelevantReceipts -eq 2 -and $small.audit.rows -eq 2 -and $small.audit.parsedRows -eq 2 -and -not $small.audit.truncated) 'ordinary explicit early PASS then late BLOCK semantics'
+  $whole=Invoke-OrdinaryCliffCli $ordinaryCliff
+  Assert-OrdinaryCliffWhole $whole $small $originalLength 'ordinary complete default CLI versus small oracle'
+  Assert-True (($whole|ConvertTo-Json -Compress -Depth 100) -ceq ((Invoke-OrdinaryCliffCli $ordinaryCliff)|ConvertTo-Json -Compress -Depth 100)) 'ordinary whole deterministic replay'
+  foreach($control in @('last50000','prefix32MiB')){
+    $writer=[IO.StreamWriter]::new($ordinaryCliff,$false,[Text.UTF8Encoding]::new($false));$writer.NewLine="`n"
+    $reader=[IO.StreamReader]::new($ordinaryBackup,[Text.UTF8Encoding]::new($false,$true))
+    $lineNumber=0;$writtenBytes=0L;$writtenRows=0;$nextBytes=0
+    try {
+      while($null -ne ($line=$reader.ReadLine())){
+        $lineNumber++;$nextBytes=[Text.Encoding]::UTF8.GetByteCount($line)+1
+        if($control -ceq 'last50000' -and $lineNumber -le ($physicalRows-50000)){continue}
+        if($control -ceq 'prefix32MiB' -and $writtenBytes+$nextBytes -gt 33554432){break}
+        $writer.WriteLine($line);$writtenBytes+=$nextBytes;$writtenRows++
+      }
+    } finally {$reader.Dispose();$writer.Dispose()}
+    Assert-True ($(if($control -ceq 'last50000'){$writtenRows -eq 50000}else{$writtenBytes -le 33554432 -and $writtenBytes+$nextBytes -gt 33554432})) "ordinary actual $control geometry"
+    $cut=Invoke-OrdinaryCliffCli $ordinaryCliff
+    $controlJson=if($control -ceq 'last50000'){$lateJson}else{$earlyJson}
+    [IO.File]::WriteAllText($ordinarySmall,$controlJson+"`n",[Text.UTF8Encoding]::new($false))
+    $controlSmall=Invoke-OrdinaryCliffCli $ordinarySmall
+    Assert-OrdinaryCliffWhole $cut $controlSmall $writtenBytes "ordinary $control whole small oracle"
+    Assert-True ($cut.audit.validRelevantReceipts -eq 1 -and $cut.audit.rows -eq 1 -and $cut.audit.parsedRows -eq 1 -and ($cut|ConvertTo-Json -Compress -Depth 100) -cne ($whole|ConvertTo-Json -Compress -Depth 100)) "ordinary $control loses an authority receipt, not only bytes"
+    Assert-True ($(if($control -ceq 'last50000'){$cut.state -ceq 'blocked' -and $cut.reason -ceq 'LATEST_EXACT_HEAD_BLOCK_FIXABLE' -and $cut.latest.reviewerAttempt -ceq 'cliff-late-review'}else{$cut.state -ceq 'authorized' -and $cut.reason -ceq 'LATEST_EXACT_HEAD_PASS' -and $cut.latest.reviewerAttempt -ceq 'cliff-early-review'})) "ordinary $control explicit authority semantics"
+    Copy-Item -LiteralPath $ordinaryBackup -Destination $ordinaryCliff -Force
+    [IO.File]::SetLastWriteTimeUtc($ordinaryCliff,$originalTime)
+    Assert-True ((Get-FileHash $ordinaryCliff).Hash -ceq $originalHash -and (Get-Item $ordinaryCliff).Length -eq $originalLength -and (Get-Item $ordinaryCliff).LastWriteTimeUtc -eq $originalTime -and ((Invoke-OrdinaryCliffCli $ordinaryCliff)|ConvertTo-Json -Compress -Depth 100) -ceq ($whole|ConvertTo-Json -Compress -Depth 100)) "ordinary $control restores original identity and entire result"
+    Write-Output "PASS ordinary actual CLI $control rows=$writtenRows bytes=$writtenBytes state=$($cut.state) validRelevantReceipts=$($cut.audit.validRelevantReceipts) restoration=hash,length,lastwrite,whole-result"
+  }
+  [IO.File]::WriteAllText($ordinarySmall,$earlyJson+"`n"+$lateJson+"`n",[Text.UTF8Encoding]::new($false))
+  foreach($path in @($ordinaryCliff,$ordinarySmall)){[IO.File]::AppendAllText($path,$appendJson+"`n",[Text.UTF8Encoding]::new($false))}
+  $appended=Invoke-OrdinaryCliffCli $ordinaryCliff
+  Assert-OrdinaryCliffWhole $appended (Invoke-OrdinaryCliffCli $ordinarySmall) (Get-Item $ordinaryCliff).Length 'ordinary late terminal append whole equality'
+  Assert-True ($appended.state -ceq 'authorized' -and $appended.reason -ceq 'LATEST_EXACT_HEAD_PASS' -and $appended.latest.reviewerAttempt -ceq 'cliff-append-review' -and $appended.audit.validRelevantReceipts -eq 3 -and $appended.audit.rows -eq 3 -and $appended.audit.parsedRows -eq 3 -and ($appended|ConvertTo-Json -Compress -Depth 100) -ceq ((Invoke-OrdinaryCliffCli $ordinaryCliff)|ConvertTo-Json -Compress -Depth 100)) 'ordinary valid late terminal restores PASS with whole deterministic read-only replay'
+  Write-Output "PASS ordinary actual CLI default bounds physicalLF=$physicalRows bytes=$originalLength parsedEvents=2 appendEvents=3 physicalDifference=audit.bytes-only; no memory qualification"
+
   Assert-True ($script:equivalenceCount -eq 39) "equivalence must exercise all 39 controller fixture invocations; observed=$script:equivalenceCount"
   Write-Output "PASS review-head reducer ordinary byte-stable lifecycle and strict controller authority coverage; H0 equivalent controller fixtures=$script:equivalenceCount ordinary fixtures=$script:ordinaryEquivalenceCount"
 } finally {
