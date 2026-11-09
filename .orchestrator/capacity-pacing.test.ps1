@@ -242,6 +242,7 @@ try {
     @('null-duration', {param($w) $w.durationSeconds = $null}),
     @('string-duration', {param($w) $w.durationSeconds = '604800'}),
     @('bool-duration', {param($w) $w.durationSeconds = $true}),
+    @('zero-duration', {param($w) $w.durationSeconds = 0}),
     @('negative-duration', {param($w) $w.durationSeconds = -1}))) {
     $a = New-Claude5; & $pair[1] $a.quotaWindows[1]
     $invalidCase = New-Case "weekly-invalid-$($pair[0])" (New-StatusWith @($a))
@@ -501,14 +502,26 @@ try {
   Assert-Pacing ($r.providers.claude.laneBudget -eq 0 -and $r.providers.claude.reason -ceq 'NO_AVAILABLE_ACCOUNT') 'AC2 disabled, stale, unknown and reset-less accounts contribute 0'
   $tie = New-ClaudeAccount 'claude-t' 'available' 0 $null 0 100 0 100
   $tie.quotaWindows += [ordered]@{id='weekly-tie';scope='All models';used=0;resetAt=(Reset-At 50);common=$true;durationSeconds=604800;label='Weekly'}
+  $tie.quotaWindows = @($tie.quotaWindows[-1], $tie.quotaWindows[0], $tie.quotaWindows[1], $tie.quotaWindows[2])
   $caseTie = New-Case 'ac2-tie' (New-Status @($tie))
   $r = (Invoke-Pacing $caseTie).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-t')[0]
   Assert-Pacing ($x.contributes -and $x.windowId -ceq 'limit:1' -and $x.hours -eq 100) 'AC2 equal-used Weekly candidates bind the latest known reset'
   Assert-Near $x.lanes (0.9 / (0.015 * 100)) 'AC2 fresh account lanes'
-  $tie.quotaWindows[-1].used = 30
+  $tie.quotaWindows[0].used = 30
   $r = (Invoke-Pacing (New-Case 'ac2-weekly-highest-used' (New-Status @($tie)))).data
   Assert-Pacing ($r.providers.claude.accounts[0].windowId -ceq 'weekly-tie' -and $r.providers.claude.accounts[0].used -eq 30) 'AC2 multiple Weekly candidates retain conservative highest-used selection'
+  $nullTie = New-Claude5
+  $unknownWeekly = [ordered]@{id='weekly-null';scope='All models';used=10;resetAt=$null;common=$true;durationSeconds=604800;label='Weekly'}
+  $nullTie.quotaWindows = @($unknownWeekly) + $nullTie.quotaWindows
+  $nullTieCase = New-Case 'ac2-weekly-null-tie' (New-Status @($nullTie))
+  $r = (Invoke-Pacing $nullTieCase).data
+  Assert-Pacing ($r.providers.claude.accounts[0].windowId -ceq 'limit:1' -and $r.providers.claude.accounts[0].hours -eq 87) 'AC2 known Weekly reset wins an earlier unknown-reset tie'
+  $reserveAccount = New-ClaudeAccount 'reserve-clamp' 'available' 20 5 95 87 95 87
+  $reserveCase = New-Case 'ac2-reserve-clamp' (New-Status @($reserveAccount))
+  $r = (Invoke-Pacing $reserveCase).data
+  Assert-Pacing ($r.providers.claude.accounts[0].contributes -and $r.providers.claude.accounts[0].headroom -eq 0.05 -and $r.providers.claude.accounts[0].lanes -eq 0 -and $r.providers.claude.laneBudget -eq 0) 'AC2 Weekly below reserve contributes zero, never negative supply'
+  Assert-Pacing ($r.providers.claude.fableAccounts[0].lanes -eq 0 -and $r.providers.claude.fableLaneBudget -eq 0) 'AC2 model limiter below reserve is also clamped to zero'
 
   # --- AC3: burn measured from the dispatch log and transcripts -------------------
   Set-Forecast 0.01 0.02
@@ -686,6 +699,18 @@ try {
   Assert-Pacing ($null -ne $refused -and $refused.Contains('PACING_INSTANT_INVALID')) 'AC4 a non-ISO -NowUtc is refused, never defaulted'
 
   # --- Mutants -------------------------------------------------------------------
+  Assert-Mutant 'weekly-latest-reset-ignored' 'if ($candidateReset -gt $bindingReset) { $binding = $candidate }' '' {
+    param($Mutant)
+    Assert-Pacing ((Invoke-Pacing $caseTie @{} $Mutant).data.providers.claude.accounts[0].windowId -ceq 'limit:1') 'Weekly latest-reset tie must not become first-wins'
+  }
+  Assert-Mutant 'weekly-known-reset-ignored' 'if ($candidateReset -gt $bindingReset) { $binding = $candidate }' '' {
+    param($Mutant)
+    Assert-Pacing ((Invoke-Pacing $nullTieCase @{} $Mutant).data.providers.claude.accounts[0].windowId -ceq 'limit:1') 'Weekly null-reset tie must not become first-wins'
+  }
+  Assert-Mutant 'reserve-clamp-removed' '[Math]::Max(0.0, $headroom - $Reserve)' '($headroom - $Reserve)' {
+    param($Mutant)
+    Assert-Pacing ((Invoke-Pacing $reserveCase @{} $Mutant).data.providers.claude.accounts[0].lanes -eq 0) 'Below-reserve Weekly supply cannot be negative'
+  }
   Assert-Mutant 'plain-floor' '[Math]::Floor($sum + 0.5)' '[Math]::Floor($sum)' {
     param($Mutant)
     Assert-Pacing ((Invoke-Pacing $case87 @{} $Mutant).data.providers.claude.laneBudget -eq 1) 'mutant plain floor keeps AC1 budget 1'
