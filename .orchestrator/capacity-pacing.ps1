@@ -109,6 +109,13 @@ function Test-PacingWindow($Window) {
   foreach ($name in @('common', 'scope', 'used', 'resetAt')) { if (-not (Test-PacingHasProperty $Window $name)) { return $false } }
   if ((Get-PacingProperty $Window 'common') -isnot [bool]) { return $false }
   if ((Get-PacingProperty $Window 'scope') -isnot [string]) { return $false }
+  # Only common windows use label/duration to identify weekly supply. Model
+  # limiters retain their existing scope/usage/reset contract.
+  if ((Get-PacingProperty $Window 'common') -eq $true) {
+    if ((Get-PacingProperty $Window 'label') -isnot [string]) { return $false }
+    $duration = Get-PacingProperty $Window 'durationSeconds'
+    if (-not (Test-PacingFiniteNumber $duration) -or [double]$duration -le 0) { return $false }
+  }
   $used = Get-PacingProperty $Window 'used'
   if (-not (Test-PacingFiniteNumber $used)) { return $false }
   if ([double]$used -lt 0 -or [double]$used -gt 100) { return $false }
@@ -178,9 +185,12 @@ function Get-PacingWindowReset($Window) {
 }
 
 function Get-PacingAccountBudget($Account, [DateTimeOffset]$Now, [double]$Burn, [double]$Reserve, [string]$Scope) {
-  # Scope 'common': the binding window is the common window with the highest
-  # used percentage (ties take the latest known reset). Scope 'fable': the
-  # Fable-scoped window. lanes = max(0, headroom - reserve) / (burn * hours).
+  # Scope 'common': only the provider's Weekly (604800-second) common window
+  # supplies account-weeks. Short windows constrain eligibility, not supply.
+  # Multiple weekly candidates bind highest used, then latest reset. Scope
+  # 'fable' uses its own model limiter. lanes = max(0, headroom - reserve) / (burn * hours).
+  # COMMON_WINDOW_EXHAUSTED means any provider-common limiter is fully used,
+  # so neither weekly headroom nor credit pace may bypass it.
   # Read-PacingStatus has already validated every window field consumed here.
   $id = Get-PacingAccountIdentity $Account
   $status = [string](Get-PacingProperty $Account 'status')
@@ -192,8 +202,27 @@ function Get-PacingAccountBudget($Account, [DateTimeOffset]$Now, [double]$Burn, 
   if ($status -ceq 'exhausted') { $entry.reason = 'ACCOUNT_EXHAUSTED'; return $result }
   if ($status -cne 'available') { $entry.reason = 'ACCOUNT_UNKNOWN'; return $result }
   $windows = Get-PacingProperty $Account 'quotaWindows'
+  $providerScope = switch -CaseSensitive (Get-PacingProperty $Account 'provider') {
+    'claude' { 'All models' }
+    'codex' { 'Codex' }
+    default { $null }
+  }
+  if ($Scope -ceq 'common') {
+    foreach ($window in @($windows)) {
+      if ((Get-PacingProperty $window 'common') -eq $true -and
+          (Get-PacingProperty $window 'scope') -ceq $providerScope -and
+          (Get-PacingProperty $window 'used') -eq 100) {
+        $entry.reason = 'COMMON_WINDOW_EXHAUSTED'; return $result
+      }
+    }
+  }
   $candidates = @(foreach ($window in @($windows)) {
-    $selected = if ($Scope -ceq 'common') { (Get-PacingProperty $window 'common') -eq $true }
+    $selected = if ($Scope -ceq 'common') {
+      $null -ne $providerScope -and (Get-PacingProperty $window 'common') -eq $true -and
+        (Get-PacingProperty $window 'scope') -ceq $providerScope -and
+        (Get-PacingProperty $window 'label') -ceq 'Weekly' -and
+        (Get-PacingProperty $window 'durationSeconds') -eq 604800
+    }
       else { $windowScope = Get-PacingProperty $window 'scope'; $windowScope -is [string] -and $windowScope -ceq 'Fable' }
     if (-not $selected) { continue }
     $windowId = Get-PacingProperty $window 'id'

@@ -67,23 +67,23 @@ function New-CodexAccount([string]$Id, [string]$Status, [double]$Used, $ResetHou
 function New-Status([object[]]$Accounts, $CheckedAt = $null) {
   return [ordered]@{accounts=[object[]]$Accounts;checkedAt=$(if($null -ne $CheckedAt){$CheckedAt}else{Format-Instant $now.AddMinutes(-1)});error=$null}
 }
-# F1/F2 fixtures: a fresh 5-hour-binding Claude account (22% used, weekly 10%,
+# F1/F2 fixtures: a fresh Weekly-binding Claude account (short22%, weekly10%,
 # Fable 40%), the same account identified by name only, and a status that adds
 # two healthy Codex accounts so a malformed Claude input must also zero Codex.
 function New-Claude5 { return New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7 }
-function New-Named([string]$Name) { $a = New-Claude5; $a.Remove('id'); $a.name = $Name; return $a }
+function New-Named([string]$Name) { $a = New-Claude5; $a.quotaWindows[1].used = 22; $a.quotaWindows[1].resetAt = Reset-At 5; $a.Remove('id'); $a.name = $Name; return $a }
 function New-StatusWith([object[]]$ClaudeAccounts) {
   return New-Status ([object[]]$ClaudeAccounts + @((New-CodexAccount 'codex-x' 'available' 2 160), (New-CodexAccount 'codex-y' 'available' 10 150)))
 }
 # AC1 shapes: three Claude accounts, one available with 78 remaining on its
-# binding weekly window (reset in 87 h), two exhausted. The 5-hour variant moves
-# the binding window to limit:0 (used 22, reset in 5 h) with a 7-hour Fable
+# binding weekly window (reset in 87 h), two exhausted. The short-window variant
+# has higher short usage but retains Weekly supply, with a 7-hour Fable
 # window at 40% used.
 $exhaustedB = New-ClaudeAccount 'claude-b' 'exhausted' 0 $null 100 50 10 50
 $exhaustedC = New-ClaudeAccount 'claude-c' 'exhausted' 0 $null 100 60 0 60
 $claude87 = New-Status @((New-ClaudeAccount 'claude-a' 'available' 2 3 22 87 27 87), $exhaustedB, $exhaustedC)
 $claude5 = New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7), $exhaustedB, $exhaustedC)
-$mixed = New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7), $exhaustedB, $exhaustedC,
+$mixed = New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 22 5 40 7), $exhaustedB, $exhaustedC,
   (New-CodexAccount 'codex-x' 'available' 2 160), (New-CodexAccount 'codex-y' 'available' 10 150))
 
 function New-Case([string]$Name, $Status, [object[]]$Lanes = @(), [string]$CensusHealth = 'ok') {
@@ -189,6 +189,84 @@ function Assert-NoPaceRaise($Case, [string]$Source) {
 }
 
 try {
+  # Weekly supply must not change when provider inserts a short quota window.
+  Clear-Forecast
+  foreach ($shortUsed in @(2, 22)) {
+    foreach ($weeklyFirst in @($false, $true)) {
+      $a = New-ClaudeAccount 'weekly-selection' 'available' $shortUsed 5 10 87 40 7
+      $weekly = $a.quotaWindows[1]; $weekly.id = 'limit:7'
+      $short = $a.quotaWindows[0]; $short.id = 'limit:9'
+      $a.quotaWindows = if ($weeklyFirst) { @($weekly, $short, $a.quotaWindows[2]) } else { @($short, $a.quotaWindows[2], $weekly) }
+      $caseWeekly = New-Case "weekly-$shortUsed-$weeklyFirst" (New-Status @($a))
+      $r = (Invoke-Pacing $caseWeekly).data
+      $x = $r.providers.claude.accounts[0]
+      Assert-Pacing ($x.windowId -ceq 'limit:7' -and $x.used -eq 10 -and $x.hours -eq 87) 'Weekly identity ignores order, ID and short used percentage'
+      Assert-Pacing ($r.providers.claude.laneBudget -eq 1 -and $r.providers.claude.newLaneAllowance -eq 1) 'Short-window insertion cannot inflate weekly allowance'
+      $a.quotaWindows = @($weekly)
+      $withoutShort = (Invoke-Pacing (New-Case "weekly-only-$shortUsed-$weeklyFirst" (New-Status @($a)))).data
+      Assert-Pacing ($withoutShort.providers.claude.laneBudget -eq $r.providers.claude.laneBudget) 'Short-window removal preserves weekly supply'
+      Assert-Pacing (($withoutShort.providers.claude.accounts[0] | ConvertTo-Json -Compress) -ceq ($x | ConvertTo-Json -Compress)) 'Non-exhausted short insertion/removal preserves the complete Weekly account entry'
+    }
+  }
+  Set-Forecast (0.02724 * 30 / 168) 0.02
+  $reproCase = New-Case 'weekly-25-lane-repro' (New-Status @(
+    (New-ClaudeAccount 'weekly-repro' 'available' 11 1.157871 10 151.324537 15 151.324537),
+    (New-ClaudeAccount 'weekly-b' 'available' 0 5 0 160 0 160),
+    (New-ClaudeAccount 'weekly-c' 'available' 0 5 13 150 0 150)))
+  Add-DispatchRow $reproCase 'opus' 30 'measured-burn' 0
+  $r = (Invoke-Pacing $reproCase).data
+  Assert-Near $r.providers.claude.burnPerLaneHour 0.02724 'Repro retains measured burn'
+  Assert-Near $r.providers.claude.accounts[0].lanes 0.194077 'Repro Weekly account contribution, not25 short lanes'
+  Assert-Pacing ($r.providers.claude.accounts[0].windowId -ceq 'limit:1' -and $r.providers.claude.laneBudget -eq 1 -and $r.providers.claude.newLaneAllowance -eq 1) 'Reported short-window inflation25 is weekly budget1'
+  # Even a fresh credit pace cannot authorize an account without weekly supply.
+  Set-PaceForecast
+  foreach ($pair in @(
+    @('missing', {param($a) $a.quotaWindows = @($a.quotaWindows[0], $a.quotaWindows[2])}),
+    @('wrong-label', {param($a) $a.quotaWindows[1].label = '5-hour'}),
+    @('wrong-duration', {param($a) $a.quotaWindows[1].durationSeconds = 18000}),
+    @('wrong-scope', {param($a) $a.quotaWindows[1].scope = 'Fable'}),
+    @('codex-scope-on-claude', {param($a) $a.quotaWindows[1].scope = 'Codex'}),
+    @('not-common', {param($a) $a.quotaWindows[1].common = $false}))) {
+    $a = New-Claude5; & $pair[1] $a
+    $r = (Invoke-Pacing (New-Case "weekly-$($pair[0])" (New-Status @($a)))).data
+    $x = $r.providers.claude.accounts[0]
+    Assert-Pacing ($r.status -ceq 'ok' -and -not $x.contributes -and $x.reason -ceq 'NO_WINDOW') "Weekly $($pair[0]) refuses short/model supply"
+    Assert-Pacing ($r.providers.claude.laneBudget -eq 0 -and $r.providers.claude.newLaneAllowance -eq 0) "Weekly $($pair[0]) cannot receive credit raise"
+  }
+  $weeklyInvalidCases = @{}
+  foreach ($pair in @(
+    @('missing-label', {param($w) $w.Remove('label')}),
+    @('null-label', {param($w) $w.label = $null}),
+    @('numeric-label', {param($w) $w.label = 7}),
+    @('missing-duration', {param($w) $w.Remove('durationSeconds')}),
+    @('null-duration', {param($w) $w.durationSeconds = $null}),
+    @('string-duration', {param($w) $w.durationSeconds = '604800'}),
+    @('bool-duration', {param($w) $w.durationSeconds = $true}),
+    @('negative-duration', {param($w) $w.durationSeconds = -1}))) {
+    $a = New-Claude5; & $pair[1] $a.quotaWindows[1]
+    $invalidCase = New-Case "weekly-invalid-$($pair[0])" (New-StatusWith @($a))
+    $weeklyInvalidCases[$pair[0]] = $invalidCase
+    $r = (Invoke-Pacing $invalidCase).data
+    Assert-Pacing ($r.statusReason -ceq 'STATUS_MALFORMED') "Weekly $($pair[0]) is malformed"
+    Assert-AllZero $r "Weekly $($pair[0])"
+  }
+  $a = New-Claude5; $a.quotaWindows[0].used = 100
+  $r = (Invoke-Pacing (New-Case 'weekly-short-exhausted' (New-Status @($a)))).data
+  Assert-Pacing (-not $r.providers.claude.accounts[0].contributes -and $r.providers.claude.accounts[0].reason -ceq 'COMMON_WINDOW_EXHAUSTED' -and $r.providers.claude.newLaneAllowance -eq 0) 'Exhausted short limiter cannot be bypassed by weekly supply or credit pace'
+  $a = New-Claude5; $a.quotaWindows[1].used = 100
+  $r = (Invoke-Pacing (New-Case 'weekly-exhausted-with-credit' (New-Status @($a)))).data
+  Assert-Pacing (-not $r.providers.claude.accounts[0].contributes -and $r.providers.claude.newLaneAllowance -eq 0) 'Exhausted Weekly cannot receive a credit raise without provider eligibility'
+  $a = New-Claude5; $a.quotaWindows[2].Remove('label'); $a.quotaWindows[2].Remove('durationSeconds')
+  $r = (Invoke-Pacing (New-Case 'weekly-model-metadata-optional' (New-Status @($a)))).data
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.accounts[0].contributes -and $r.providers.claude.fableLaneBudget -eq 5) 'Model limiters do not require common-window identity metadata'
+  $a = New-CodexAccount 'weekly-codex' 'available' 10 87
+  $r = (Invoke-Pacing (New-Case 'weekly-codex-valid' (New-Status @($a)))).data
+  Assert-Pacing ($r.providers.codex.accounts[0].contributes) 'Codex common Weekly scope is Codex'
+  $a.quotaWindows[0].scope = 'All models'
+  $r = (Invoke-Pacing (New-Case 'weekly-codex-wrong-scope' (New-Status @($a)))).data
+  Assert-Pacing (-not $r.providers.codex.accounts[0].contributes -and $r.providers.codex.newLaneAllowance -eq 0) 'Provider-specific common scope must match'
+  Write-Output 'PASS Weekly supply identity,25-lane repro,missing/invalid and limiter controls'
+
   # #9737 failing-first controls are independent, so a baseline run exposes
   # every changed AC rather than stopping at the first missing output field.
   $legacyNow = $now; $legacyNowText = $nowText
@@ -228,7 +306,7 @@ try {
           $r = (Invoke-Pacing $paceTwo).data
           Assert-Pacing ($r.providers.codex.laneBudget -eq 3 -and $r.providers.codex.newLaneAllowance -eq 1) '9737 AC2 live 2 allows budget 3'
           Assert-Pacing ($r.providers.claude.fableLaneBudget -eq $r.providers.claude.fableLaneBudgetUncapped) '9737 AC2 Fable reports only its own window capacity'
-          $highHeadroom = New-Case '9737-headroom-preserved' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 0 1)))
+          $highHeadroom = New-Case '9737-headroom-preserved' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 22 5 0 1)))
           Assert-Pacing ((Invoke-Pacing $highHeadroom).data.providers.claude.laneBudget -eq 9) '9737 AC2 pace never lowers the headroom budget'
           $empty = New-Case '9737-no-account' (New-Status @())
           $r = (Invoke-Pacing $empty).data
@@ -348,7 +426,7 @@ try {
   $claude = $r.providers.claude
   Assert-Pacing ($claude.burnPerLaneHour -eq 0.015 -and $claude.burnSource -ceq 'default' -and $claude.burnReason -ceq 'FORECAST_ABSENT') 'AC1 default burn without a forecast'
   $a = @($claude.accounts | Where-Object account -ceq 'claude-a')[0]
-  Assert-Pacing ($a.contributes -and $a.windowId -ceq 'limit:1' -and $a.used -eq 22) 'AC1 binding window is the highest-used common window'
+  Assert-Pacing ($a.contributes -and $a.windowId -ceq 'limit:1' -and $a.used -eq 22) 'AC1 binding supply is the Weekly common window'
   Assert-Near $a.hours 87 'AC1 hours to reset from millisecond resetAt'
   Assert-Near $a.headroom 0.78 'AC1 headroom'
   Assert-Near $a.lanes (0.68 / (0.015 * 87)) 'AC1 account lanes'
@@ -365,23 +443,23 @@ try {
   $r = (Invoke-Pacing $case5).data
   $claude = $r.providers.claude
   $a = @($claude.accounts | Where-Object account -ceq 'claude-a')[0]
-  Assert-Pacing ($a.windowId -ceq 'limit:0' -and $a.used -eq 22) 'AC1 5-hour window binds when it is the highest used'
-  Assert-Near $a.hours 5 'AC1 five hours to reset'
-  Assert-Pacing ($claude.laneBudget -eq 9) 'AC1 floor(0.68/0.075+0.5) = 9'
+  Assert-Pacing ($a.windowId -ceq 'limit:1' -and $a.used -eq 10) 'AC1 higher-used 5-hour window never replaces weekly supply'
+  Assert-Near $a.hours 87 'AC1 Weekly hours to reset'
+  Assert-Pacing ($claude.laneBudget -eq 1) 'AC1 floor(0.80/(0.015*87)+0.5) = 1'
   $fable = @($claude.fableAccounts | Where-Object account -ceq 'claude-a')[0]
   Assert-Pacing ($fable.windowId -ceq 'limit:2' -and $fable.used -eq 40) 'AC1 Fable window is the Fable-scoped window'
   Assert-Near $fable.hours 7 'AC1 Fable hours'
   Assert-Pacing ($claude.fableLaneBudgetUncapped -eq 5) 'AC1 Fable floor(0.50/0.105+0.5) = 5'
   Assert-Pacing ($claude.fableLaneBudget -eq 5) 'AC1 Fable window capacity 5 is not capped by Claude share'
-  $caseLapsed = New-Case 'ac1-lapsed' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 -1 10 87 40 7)))
+  $caseLapsed = New-Case 'ac1-lapsed' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 -1 22 -1 40 7)))
   $r = (Invoke-Pacing $caseLapsed).data
   $a = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-a')[0]
-  Assert-Pacing ($a.windowId -ceq 'limit:0' -and $a.hours -eq 1 -and $r.providers.claude.laneBudget -eq 45) 'AC1 a reset in the past floors hours at 1'
+  Assert-Pacing ($a.windowId -ceq 'limit:1' -and $a.hours -eq 1 -and $r.providers.claude.laneBudget -eq 45) 'AC1 a Weekly reset in the past retains the existing floor at1'
 
   # --- AC2: allowance = budget - live lanes mapped through the registry ----------
   $caseCensus = New-Case 'ac2-census' $mixed @((New-Lane 'fable'), (New-Lane 'opus'), (New-Lane 'sol'))
   $r = (Invoke-Pacing $caseCensus).data
-  Assert-Pacing ($r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.liveLanes -eq 2 -and $r.providers.claude.newLaneAllowance -eq 7) 'AC2 claude allowance 9-2'
+  Assert-Pacing ($r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.liveLanes -eq 2 -and $r.providers.claude.newLaneAllowance -eq 7) 'AC2 claude allowance9-2=7 from Weekly supply'
   $codex = $r.providers.codex
   Assert-Near (@($codex.accounts | Where-Object account -ceq 'codex-x')[0].lanes) (0.88 / (0.009 * 160)) 'AC2 codex-x lanes'
   Assert-Near (@($codex.accounts | Where-Object account -ceq 'codex-y')[0].lanes) (0.80 / (0.009 * 150)) 'AC2 codex-y lanes'
@@ -405,11 +483,11 @@ try {
   Assert-Pacing ($r.status -ceq 'ok') 'AC2 all-exhausted is a known state, not unknown'
   # An exhausted verdict overrides the percentages: an exhausted account whose
   # windows still show headroom must contribute 0, never be summed.
-  $exhaustedPartial = New-ClaudeAccount 'claude-p' 'exhausted' 50 5 30 87 0 87
+  $exhaustedPartial = New-ClaudeAccount 'claude-p' 'exhausted' 50 5 30 5 0 87
   $casePartialExhausted = New-Case 'ac2-exhausted-partial' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7), $exhaustedPartial))
   $r = (Invoke-Pacing $casePartialExhausted).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-p')[0]
-  Assert-Pacing (-not $x.contributes -and $x.reason -ceq 'ACCOUNT_EXHAUSTED' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.availableAccounts -eq 1) 'AC2 exhausted account with visible headroom is not summed'
+  Assert-Pacing (-not $x.contributes -and $x.reason -ceq 'ACCOUNT_EXHAUSTED' -and $r.providers.claude.laneBudget -eq 1 -and $r.providers.claude.availableAccounts -eq 1) 'AC2 exhausted account with visible headroom is not summed'
   $disabled =New-ClaudeAccount 'claude-d' 'available' 0 $null 0 100 0 100 $true
   $stale = New-ClaudeAccount 'claude-s' 'available' 0 $null 0 100 0 100 $false $true
   $unknown = New-ClaudeAccount 'claude-u' 'unknown' 0 $null 0 100 0 100
@@ -422,15 +500,20 @@ try {
   }
   Assert-Pacing ($r.providers.claude.laneBudget -eq 0 -and $r.providers.claude.reason -ceq 'NO_AVAILABLE_ACCOUNT') 'AC2 disabled, stale, unknown and reset-less accounts contribute 0'
   $tie = New-ClaudeAccount 'claude-t' 'available' 0 $null 0 100 0 100
+  $tie.quotaWindows += [ordered]@{id='weekly-tie';scope='All models';used=0;resetAt=(Reset-At 50);common=$true;durationSeconds=604800;label='Weekly'}
   $caseTie = New-Case 'ac2-tie' (New-Status @($tie))
   $r = (Invoke-Pacing $caseTie).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-t')[0]
-  Assert-Pacing ($x.contributes -and $x.windowId -ceq 'limit:1' -and $x.hours -eq 100) 'AC2 an equal-used tie binds the latest known reset'
+  Assert-Pacing ($x.contributes -and $x.windowId -ceq 'limit:1' -and $x.hours -eq 100) 'AC2 equal-used Weekly candidates bind the latest known reset'
   Assert-Near $x.lanes (0.9 / (0.015 * 100)) 'AC2 fresh account lanes'
+  $tie.quotaWindows[-1].used = 30
+  $r = (Invoke-Pacing (New-Case 'ac2-weekly-highest-used' (New-Status @($tie)))).data
+  Assert-Pacing ($r.providers.claude.accounts[0].windowId -ceq 'weekly-tie' -and $r.providers.claude.accounts[0].used -eq 30) 'AC2 multiple Weekly candidates retain conservative highest-used selection'
 
   # --- AC3: burn measured from the dispatch log and transcripts -------------------
   Set-Forecast 0.01 0.02
-  $caseBurn = New-Case 'ac3-burn' $claude5
+  $burnAccount = New-Claude5; $burnAccount.quotaWindows[1].used = 22; $burnAccount.quotaWindows[1].resetAt = Reset-At 5
+  $caseBurn = New-Case 'ac3-burn' (New-Status @($burnAccount))
   Add-DispatchRow $caseBurn 'fable' 30 't1' 2          # 28 h inside the window
   Add-DispatchRow $caseBurn 'opus' 200 't2' 150        # started before the window: clipped to 18 h
   Add-DispatchRow $caseBurn 'opus' 10 't3' $null       # transcript missing: skipped
@@ -443,14 +526,14 @@ try {
   Assert-Near $claude.burnPerLaneHour (0.01 * 168 / 46) 'AC3 burn = demand.last168h*168 / lane-hours'
   Assert-Pacing ($claude.demandUnitsPerHour -eq 0.01 -and $r.forecastStatus -ceq 'in-force') 'AC3 demand recorded'
   Assert-Pacing ($r.laneHours.transcriptsMissing -eq 1 -and $r.laneHours.duplicates -eq 1 -and $r.laneHours.counted -eq 3 -and $r.laneHours.rows -eq 5) 'AC3 missing transcript skipped and relaunch deduplicated'
-  Assert-Pacing ($claude.laneBudget -eq 4) 'AC3 measured burn flows into the budget: floor(0.68/(0.036522*5)+0.5) = 4'
+  Assert-Pacing ($claude.laneBudget -eq 4) 'AC3 measured burn flows into Weekly budget: floor(0.68/(0.036522*5)+0.5) = 4'
   $codex = $r.providers.codex
   Assert-Near $codex.laneHours 4 'AC3 codex lane-hours'
   Assert-Pacing ($codex.burnSource -ceq 'default' -and $codex.burnReason -ceq 'LANE_HOURS_BELOW_MINIMUM' -and $codex.burnPerLaneHour -eq 0.009) 'AC3 below 24 lane-hours uses the default'
   Set-Forecast 0.01 0.02 20 14
   $r = (Invoke-Pacing $caseBurn).data
   Assert-Pacing ($r.forecastStatus -ceq 'stale' -and $r.providers.claude.burnSource -ceq 'default' -and $r.providers.claude.burnReason -ceq 'FORECAST_STALE' -and $r.providers.claude.burnPerLaneHour -eq 0.015) 'AC3 stale forecast uses the default'
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9) 'AC3 a stale forecast never makes status unknown'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9) 'AC3 stale forecast retains default Weekly budget9'
   [IO.File]::WriteAllText($forecastPath, '{"format":"capacity-forecast/v1"', $utf8)
   $r = (Invoke-Pacing $caseBurn).data
   Assert-Pacing ($r.forecastStatus -ceq 'malformed' -and $r.providers.claude.burnReason -ceq 'FORECAST_MALFORMED') 'AC3 malformed forecast uses the default'
@@ -488,8 +571,8 @@ try {
   }
 
   # --- AC4 F1: every consumed window field is validated, never skipped or clamped
-  # The 5-hour window binds, so a defect on the nonbinding weekly window is one
-  # the budget would otherwise skip silently. Codex is healthy in every case.
+  # All supplied windows remain validated, including nonbinding short/model
+  # windows. Codex is healthy in every case.
   $f1Cases = @{}
   foreach ($pair in @(
       @('weekly-used-string', { $a = New-Claude5; $a.quotaWindows[1].used = 'synthetic-invalid-number'; @($a) }),
@@ -524,15 +607,15 @@ try {
   # contribute may omit its windows; 0 and 100 are valid percentages.
   $a = New-Claude5; $a.quotaWindows[1].resetAt = $null
   $r = (Invoke-Pacing (New-Case 'ac4-f1-weekly-reset-null' (New-StatusWith @($a)))).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.fableLaneBudget -eq 5 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null reset on the nonbinding window is valid'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 0 -and $r.providers.claude.accounts[0].reason -ceq 'RESET_UNKNOWN' -and $r.providers.claude.fableLaneBudget -eq 5 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null Weekly reset is valid but supplies no lanes'
   $a = New-Claude5; $a.quotaWindows[0].resetAt = $null
   $r = (Invoke-Pacing (New-Case 'ac4-f1-binding-reset-null' (New-StatusWith @($a)))).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-a')[0]
-  Assert-Pacing ($r.status -ceq 'ok' -and -not $x.contributes -and $x.reason -ceq 'RESET_UNKNOWN' -and $r.providers.claude.laneBudget -eq 0 -and $r.providers.claude.reason -ceq 'NO_AVAILABLE_ACCOUNT' -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null reset on the binding window stays RESET_UNKNOWN, not malformed'
+  Assert-Pacing ($r.status -ceq 'ok' -and $x.contributes -and $x.windowId -ceq 'limit:1' -and $r.providers.claude.laneBudget -eq 1 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F1 a null short reset cannot replace known Weekly supply'
   $b = New-ClaudeAccount 'claude-b' 'exhausted' 0 $null 100 50 10 50; $b.Remove('quotaWindows')
   $d = New-ClaudeAccount 'claude-d' 'available' 0 $null 0 100 0 100 $true; $d.quotaWindows = $null
   $r = (Invoke-Pacing (New-Case 'ac4-f1-noncontributing-no-windows' (New-StatusWith @((New-Claude5), $b, $d)))).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.availableAccounts -eq 1) 'AC4 F1 exhausted and disabled accounts may omit their windows'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 1 -and $r.providers.claude.availableAccounts -eq 1) 'AC4 F1 exhausted and disabled accounts may omit their windows'
   foreach ($pair in @(@('claude-b', 'ACCOUNT_EXHAUSTED'), @('claude-d', 'ACCOUNT_DISABLED'))) {
     $x = @($r.providers.claude.accounts | Where-Object account -ceq $pair[0])[0]
     Assert-Pacing (-not $x.contributes -and $x.reason -ceq $pair[1] -and $x.lanes -eq 0) "AC4 F1 $($pair[0]) without windows is $($pair[1])"
@@ -540,7 +623,7 @@ try {
   $a = New-Claude5; $a.quotaWindows[0].used = 100; $a.quotaWindows[1].used = 0
   $r = (Invoke-Pacing (New-Case 'ac4-f1-used-bounds' (New-StatusWith @($a)))).data
   $x = @($r.providers.claude.accounts | Where-Object account -ceq 'claude-a')[0]
-  Assert-Pacing ($r.status -ceq 'ok' -and $x.contributes -and $x.used -eq 100 -and $x.headroom -eq 0 -and $x.lanes -eq 0 -and $r.providers.claude.laneBudget -eq 0) 'AC4 F1 used 0 and 100 are valid bounds; a fully used window yields 0 lanes'
+  Assert-Pacing ($r.status -ceq 'ok' -and -not $x.contributes -and $x.reason -ceq 'COMMON_WINDOW_EXHAUSTED' -and $x.lanes -eq 0 -and $r.providers.claude.laneBudget -eq 0) 'AC4 F1 used0/100 are valid; exhausted short window yields0 lanes'
 
   # --- AC4 F2: account identity is required and unique per (provider, id) ----
   $f2Cases = @{}
@@ -564,13 +647,13 @@ try {
   Assert-Pacing ($r.statusReason -ceq 'STATUS_MALFORMED' -and $r.providers.claude.reason -ceq 'STATUS_UNKNOWN') 'AC4 F2 a duplicate codex identity zeroes the healthy claude provider'
   Assert-AllZero $r 'AC4 F2 duplicate codex identity'
   # Positive controls: distinct accounts stay additive and are never deduplicated.
-  $r = (Invoke-Pacing (New-Case 'ac4-f2-distinct' (New-StatusWith @((New-Claude5), (New-ClaudeAccount 'claude-a2' 'available' 22 5 10 87 40 7))))).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.availableAccounts -eq 2 -and $r.providers.claude.laneBudget -eq 18 -and $r.providers.claude.newLaneAllowance -eq 18 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F2 two distinct accounts are additive: 9+9 = 18'
+  $r = (Invoke-Pacing (New-Case 'ac4-f2-distinct' (New-StatusWith @((New-ClaudeAccount 'claude-a' 'available' 22 5 22 5 40 7), (New-ClaudeAccount 'claude-a2' 'available' 22 5 22 5 40 7))))).data
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.availableAccounts -eq 2 -and $r.providers.claude.laneBudget -eq 18 -and $r.providers.claude.newLaneAllowance -eq 18 -and $r.providers.codex.newLaneAllowance -eq 1) 'AC4 F2 distinct Weekly accounts additive:9+9=18'
   Assert-Pacing ($r.providers.claude.fableLaneBudgetUncapped -eq 10 -and $r.providers.claude.fableLaneBudget -eq 10) 'AC4 F2 two distinct accounts: Fable floor(9.52+0.5) = 10 without a share cap'
   $r = (Invoke-Pacing (New-Case 'ac4-f2-distinct-names' (New-StatusWith @((New-Named 'claude-n1'), (New-Named 'claude-n2'))))).data
   Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 18 -and ((@($r.providers.claude.accounts | ForEach-Object account) -join ',') -ceq 'claude-n1,claude-n2')) 'AC4 F2 name is the identity only when no id is supplied'
   $r = (Invoke-Pacing (New-Case 'ac4-f2-cross-provider' (New-Status @((New-Claude5), (New-CodexAccount 'claude-a' 'available' 2 160))))).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9 -and $r.providers.codex.laneBudget -eq 1) 'AC4 F2 identity is (provider, id): the same id on another provider is distinct'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 1 -and $r.providers.codex.laneBudget -eq 1) 'AC4 F2 identity is (provider, id): the same id on another provider is distinct'
 
   $caseStale = New-Case 'ac4-stale' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7)) (Format-Instant $now.AddMinutes(-31)))
   $r = (Invoke-Pacing $caseStale).data
@@ -582,12 +665,12 @@ try {
   Assert-AllZero $r 'AC4 future'
   $caseFresh = New-Case 'ac4-fresh' (New-Status @((New-ClaudeAccount 'claude-a' 'available' 22 5 10 87 40 7)) (Format-Instant $now.AddMinutes(-29)))
   $r = (Invoke-Pacing $caseFresh).data
-  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 9) 'AC4 status within 30 minutes is fresh'
+  Assert-Pacing ($r.status -ceq 'ok' -and $r.providers.claude.laneBudget -eq 1) 'AC4 status within 30 minutes is fresh'
   $caseNoCensus = New-Case 'ac4-nocensus' $claude5
   [IO.File]::Delete($caseNoCensus.census)
   $r = (Invoke-Pacing $caseNoCensus).data
   Assert-Pacing ($r.status -ceq 'unknown' -and $r.censusStatus -ceq 'unknown' -and $r.censusReason.StartsWith('CENSUS_UNAVAILABLE') -and $r.providers.claude.newLaneAllowance -eq 0 -and $r.providers.codex.newLaneAllowance -eq 0 -and $r.providers.claude.fableLaneBudget -eq 0) 'AC4 missing census never authorizes'
-  Assert-Pacing ($r.providers.claude.laneBudget -eq 9 -and $r.providers.claude.reason -ceq 'CENSUS_UNKNOWN') 'AC4 budget stays visible while the census is unknown'
+  Assert-Pacing ($r.providers.claude.laneBudget -eq 1 -and $r.providers.claude.reason -ceq 'CENSUS_UNKNOWN') 'AC4 budget stays visible while the census is unknown'
   $casePartial = New-Case 'ac4-partial' $claude5 @() 'partial'
   $r = (Invoke-Pacing $casePartial).data
   Assert-Pacing ($r.censusReason -ceq 'CENSUS_UNHEALTHY' -and $r.providers.claude.newLaneAllowance -eq 0) 'AC4 partial census never authorizes'
@@ -618,7 +701,7 @@ try {
 
   Assert-Mutant 'exhausted-summed' "if (`$status -ceq 'exhausted') { `$entry.reason = 'ACCOUNT_EXHAUSTED'; return `$result }" "if (`$status -ceq 'exhausted') { `$status = 'available' }" {
     param($Mutant)
-    Assert-Pacing ((Invoke-Pacing $casePartialExhausted @{} $Mutant).data.providers.claude.laneBudget -eq 9) 'mutant exhausted summed keeps AC2 budget 9'
+    Assert-Pacing ((Invoke-Pacing $casePartialExhausted @{} $Mutant).data.providers.claude.laneBudget -eq 1) 'mutant exhausted summed keeps AC2 weekly budget1'
   }
   Assert-Mutant 'unknown-authorizes' "if (`$overall -cne 'ok') { 0 }" 'if ($false) { 0 }' {
     param($Mutant)
@@ -633,6 +716,8 @@ try {
     }.GetNewClosure()
   }
   Assert-DeletionMutant 'window-fields-optional' "foreach (`$name in @('common', 'scope', 'used', 'resetAt')) { if (-not (Test-PacingHasProperty `$Window `$name)) { return `$false } }" $f1Cases['weekly-reset-missing']
+  Assert-DeletionMutant 'weekly-label-unchecked' "if ((Get-PacingProperty `$Window 'label') -isnot [string]) { return `$false }" $weeklyInvalidCases['numeric-label']
+  Assert-DeletionMutant 'weekly-duration-unchecked' 'if (-not (Test-PacingFiniteNumber $duration) -or [double]$duration -le 0) { return $false }' $weeklyInvalidCases['string-duration']
   Assert-DeletionMutant 'window-common-unchecked' "if ((Get-PacingProperty `$Window 'common') -isnot [bool]) { return `$false }" $f1Cases['weekly-common-string']
   Assert-DeletionMutant 'window-scope-unchecked' "if ((Get-PacingProperty `$Window 'scope') -isnot [string]) { return `$false }" $f1Cases['fable-scope-number']
   Assert-DeletionMutant 'window-used-unchecked' 'if (-not (Test-PacingFiniteNumber $used)) { return $false }' $f1Cases['weekly-used-bool']
