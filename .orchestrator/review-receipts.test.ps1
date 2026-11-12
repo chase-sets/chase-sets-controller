@@ -19,7 +19,7 @@ try {
   Assert-Receipt ($row.findings.nonBlocking -eq 0 -and $row.findings.candidates -eq 0) 'optional counts must default to zero'
   Assert-Receipt (-not $row.PSObject.Properties['reviewerAttempt'] -and -not $row.PSObject.Properties['completeSweep']) 'legacy bookkeeping leaked into minimal receipt'
   $telemetryLog=Join-Path $root 'telemetry.jsonl'
-  $telemetry=@{Issue=263;AuthorModel='gpt-6-astra';AuthorEffort='medium';Effort='high';EffortUsed='high';Row='11';Placement='provisional';Harness='codex'
+  $telemetry=@{Issue=263;AuthorModel='gpt-6-astra';AuthorEffort='medium';AuthorAttempt='synthetic-author-attempt';Effort='high';EffortUsed='high';Row='11';Placement='provisional';Harness='codex'
     Lane='synthetic-receipt-lane';LaneRole='review';Transcript='synthetic-review.jsonl';Note='Synthetic telemetry preserves Case and spelling';ReviewerPatch=$false}
   & $logger -Log dispatch -Kind dispatch -Issue 263 -Lane $telemetry.Lane -LaneRole review -Model gpt-6.1-sol -OutFile $telemetryLog -NoBoard | Out-Null
   $end=[datetimeoffset]::UtcNow.ToString('o')

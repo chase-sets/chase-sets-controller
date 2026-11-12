@@ -274,8 +274,8 @@ try {
     -Blocking 0 -OutFile $loggerOutput -NoBoard | Out-Null
   $minimal=Get-Content -LiteralPath $loggerOutput -Raw | ConvertFrom-Json -DateKind String
   Assert-6254 ($minimal.receiptSchema -ceq 'exact-head-review-receipt/v2' -and
-    $null -eq $minimal.PSObject.Properties['reviewerAttempt'] -and $null -eq $minimal.PSObject.Properties['authorAttempt']) `
-    'legacy attempt arguments became minimal receipt authority'
+    $null -eq $minimal.PSObject.Properties['reviewerAttempt'] -and $minimal.authorAttempt -ceq 'same-attempt') `
+    'reviewer attempt became authority or optional author telemetry was lost'
   $current=& $reducer -Pr 6254 -CurrentHead $headA -HistoryPath $loggerOutput | ConvertFrom-Json -DateKind String
   $moved=& $reducer -Pr 6254 -CurrentHead $headB -HistoryPath $loggerOutput | ConvertFrom-Json -DateKind String
   Assert-6254 ($current.state -ceq 'authorized' -and $moved.state -ceq 'stale') 'minimal receipt lost exact-head authorization'

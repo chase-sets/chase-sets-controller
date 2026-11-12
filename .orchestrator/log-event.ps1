@@ -890,7 +890,7 @@ if ($toddAction) {
   }
   # Preserve optional telemetry for cost/configuration and lane-time consumers.
   # None of these fields participates in PR review authority or its fingerprint.
-  foreach ($field in @('Issue','AuthorModel','AuthorEffort','Effort','EffortUsed','Row','Placement','Harness','Lane','LaneRole','Transcript','Note')) {
+  foreach ($field in @('Issue','AuthorModel','AuthorEffort','AuthorAttempt','Effort','EffortUsed','Row','Placement','Harness','Lane','LaneRole','Transcript','Note')) {
     if ($PSBoundParameters.ContainsKey($field)) {
       $entry[([char]::ToLowerInvariant($field[0]) + $field.Substring(1))] = $PSBoundParameters[$field]
     }
