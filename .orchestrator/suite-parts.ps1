@@ -24,6 +24,7 @@ function Get-HeavySuitePartSelector([string]$Part,$BoundParameters) {
 function Get-DispatchLanePartMap {
   [ordered]@{
     'dispatch-foundation' = 'dispatch-foundation'
+    'controller-review' = 'controller-review'
     'refusal-foundation' = 'refusal-foundation'
     'refusal-harness' = 'refusal-harness'
     'dispatch-incident-a-route' = 'dispatch-incident-a-route'

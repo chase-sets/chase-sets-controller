@@ -306,17 +306,15 @@ exit $code
   }
 
   # --- AC1: a stable conflict refuses preparation and dry runs too ------------
-  # The host prelogs a prepared strict tuple and then launches, so a conflict
-  # already present must refuse while preparing: no prepared route or plan, no
-  # ledger row, no child. A strict review reaches Claude through a capacity
+  # A conflict already present must refuse optional route inspection: no
+  # prepared route or plan, no ledger row, no child. A controller review reaches Claude through a capacity
   # flip, so the check follows the flip. Same-value settings and Codex routes
   # still prepare.
   $userSettingsPath = Join-Path $claudeConfigDir 'settings.json'
   $conflictingUserSettings = '{"env":{"BASH_MAX_TIMEOUT_MS":"600000"}}'
   $forecastPath = Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'capacity-forecast.json'
   $seedHead = (@(& git -C $worktree rev-parse HEAD) -join '').Trim()
-  $strictReview = @{ PrepareRoute = $true; ReviewTarget = 'controller'; ControllerIssue = 997120; ControllerHead = $seedHead
-    AuthorAttempt = 'synthetic-policy-author'; ReviewerAttempt = 'synthetic-policy-reviewer'; AuthorModel = 'gpt-6-astra'; ReviewAuthority = 'governing' }
+  $strictReview = @{ PrepareRoute = $true; ReviewTarget = 'controller'; Issue = 997120; ControllerHead = $seedHead }
   $strictRoute = @{ Harness = 'codex'; LaneRole = 'review'; Model = 'gpt-6.1-sol'; Effort = 'high'; Row = 11; Placement = 'provisional'; Extra = $strictReview }
   $codexRoute = @{ Harness = 'codex'; Model = 'gpt-6.1-sol'; Effort = 'high'; Row = 4; Placement = 'provisional' }
   function ConvertFrom-PolicyOutput([string]$Text) { try { $Text | ConvertFrom-Json -DateKind String } catch { $null } }
@@ -339,7 +337,7 @@ exit $code
     @{ Name = 'dry-run'; Context = 'Claude DryRun'; Route = @{ Extra = @{ DryRun = $true } }; Toward = ''
       Accepts = { param($p) $p.harness -ceq 'claude' -and $null -ne $p.heavyAdmission } },
     @{ Name = 'prepare-strict'; Context = 'strict controller PrepareRoute flipped to Claude'; Route = $strictRoute; Toward = 'claude'
-      Accepts = { param($p) $p.prepared -eq $true -and $p.strictTuple.harness -ceq 'claude' -and $p.strictTuple.reviewerModel -ceq 'claude-opus-5-5' } }
+      Accepts = { param($p) $p.prepared -eq $true -and $p.harness -ceq 'claude' -and $p.model -ceq 'claude-opus-5-5' -and $p.capacityFlip.to.harness -ceq 'claude' } }
   )
   $codexCases = @(
     @{ Name = 'codex-prepare'; Context = 'Codex PrepareRoute'; Route = $codexRoute + @{ Extra = @{ PrepareRoute = $true } }
@@ -347,7 +345,7 @@ exit $code
     @{ Name = 'codex-dry-run'; Context = 'Codex DryRun'; Route = $codexRoute + @{ Extra = @{ DryRun = $true } }
       Accepts = { param($p) $p.harness -ceq 'codex' -and $null -ne $p.heavyAdmission } },
     @{ Name = 'codex-prepare-strict'; Context = 'unflipped strict controller Codex PrepareRoute'; Route = $strictRoute
-      Accepts = { param($p) $p.prepared -eq $true -and $p.strictTuple.harness -ceq 'codex' -and $p.strictTuple.reviewerModel -ceq 'gpt-6.1-sol' } }
+      Accepts = { param($p) $p.prepared -eq $true -and $p.harness -ceq 'codex' -and $p.model -ceq 'gpt-6.1-sol' -and $null -eq $p.capacityFlip } }
   )
   try {
     foreach ($case in $preparationCases) {

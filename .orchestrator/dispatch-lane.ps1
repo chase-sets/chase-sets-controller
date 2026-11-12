@@ -75,9 +75,8 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$ReviewerAttempt,
   [string]$AuthorModel,
   [ValidateSet('governing','shadow','advisory')][string]$ReviewAuthority,
-  # Review independence is per artifact: 'brief' excludes the brief's own
-  # author/repair history; 'code' excludes the code's author, repair and
-  # continuation history and ladders. A controller review defaults to 'code';
+  # Capacity attribution is per artifact. Independence is a fresh non-author
+  # session, not a model-family exclusion. A controller review defaults to 'code';
   # an unnamed product review artifact keeps its history unknown (no flip).
   [ValidateSet('','brief','code')][string]$ReviewArtifact = '',
   [Parameter(Mandatory)][string]$PromptFile,
@@ -88,11 +87,8 @@ param(
   [Parameter(Mandatory)][string]$Label,
   # Resolve, validate, and print the launch plan as JSON without launching.
   [switch]$DryRun,
-  # Preparation: run admission, the exemption and the capacity resolver, print
-  # the final route (and the strict tuple a controller review will bind) as
-  # JSON, and write nothing: no LKG cache, output stem, ledger row, forecast
-  # snapshot or process. The host prelogs that tuple, then launches; a launch
-  # that resolves differently refuses before any side effect.
+  # Optional route inspection: run admission and the capacity resolver, print
+  # JSON, and write no LKG cache, output, ledger row, snapshot or process.
   [switch]$PrepareRoute,
   # Permit reusing an existing non-empty output stem (e.g. an intentional
   # same-label resume after the prior process was confirmed dead).
@@ -853,6 +849,21 @@ if ($PSBoundParameters.ContainsKey('ToddRouteOverride')) {
   }
   $boundToddOverride=$true
 }
+if ($LaneRole -eq 'review') {
+  $controllerTree = @(& git -C $worktreeResolved ls-tree --name-only $admissionHead -- '.orchestrator/controller-release-battery.ps1')
+  if ($LASTEXITCODE -ne 0) { throw 'dispatch-lane: controller review target identity unreadable' }
+  if ($controllerTree.Count -gt 0 -and $ReviewTarget -cne 'controller') {
+    throw 'dispatch-lane: controller source review requires -ReviewTarget controller'
+  }
+}
+if ($ReviewTarget -ceq 'controller') {
+  if ($Issue -lt 1 -and $ControllerIssue -lt 1) { throw 'dispatch-lane: controller review requires positive -Issue or -ControllerIssue' }
+  if ($LaneRole -cne 'review' -or ($ControllerHead -and $ControllerHead -cne $admissionHead)) {
+    throw 'dispatch-lane: controller review must target the worktree HEAD'
+  }
+} elseif ($ControllerIssue -or $ControllerHead -or $AuthorAttempt -or $ReviewerAttempt -or $AuthorModel -or $ReviewAuthority) {
+  throw 'dispatch-lane: controller tuple inputs require -ReviewTarget controller'
+}
 # Planning and review lanes are eligible (Todd 4388/6098327249); row 0,
 # relaunches, launch resumes, integration paths and a bound Todd override stay
 # exempt before the forecast is read.
@@ -871,25 +882,11 @@ if ($null -ne $capacity.capacityFlip) {
 }
 $dispatchRouting.placement=$Placement
 # A fresh route's harness is final once the capacity flip is resolved. Refuse
-# a Claude settings conflict before any prepared route or strict tuple is
-# offered for prelogging, and before a dry-run plan.
+# a Claude settings conflict before optional route inspection or a dry-run plan.
 if (-not $InterruptedIntegrationResumePath -and $Harness -eq "claude") {
   Assert-ClaudeForegroundSettingsAgree $worktreeResolved
 }
-# Ordinary v3 evidence, author and watchdog records keep override-Todd; the
-# strict controller-review tuple binds the lowercase override-todd grammar
-# that the strict classifier admits (#8064).
-$strictPlacement=if ($ReviewTarget -ceq 'controller' -and $null -ne $capacity.capacityFlip) { 'override-todd' } else { $Placement }
-function Write-DispatchPreparedRoute($StrictTuple) {
-  $strictPrelogV1=$null
-  if ($null -ne $StrictTuple) {
-    $strictPrelogV1=[ordered]@{}
-    foreach($property in $StrictTuple.PSObject.Properties) {
-      if ($property.Name -cnotin @('ts','kind','controllerReviewSchema','stage','policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')) {
-        $strictPrelogV1[$property.Name]=$property.Value
-      }
-    }
-  }
+function Write-DispatchPreparedRoute {
   $prepared = [ordered]@{
     prepared = $true
     laneRole = $LaneRole; lane = $admissionLane; label = $Label; transcript = "$Label.jsonl"
@@ -902,81 +899,12 @@ function Write-DispatchPreparedRoute($StrictTuple) {
     capacityShadowFlip = $capacity.capacityShadowFlip
     capacityFlipSkip = $capacity.capacityFlipSkip
     reviewArtifact = $capacityReviewArtifact
-    strictTuple = $StrictTuple
-    strictPrelogV1 = $strictPrelogV1
   }
   $prepared | ConvertTo-Json -Depth 6
   $global:LASTEXITCODE = 0
 }
 
-if ($LaneRole -eq 'review') {
-  $controllerTree = @(& git -C $worktreeResolved ls-tree --name-only $admissionHead -- '.orchestrator/controller-release-battery.ps1')
-  if ($LASTEXITCODE -ne 0) { throw 'dispatch-lane: controller review target identity unreadable' }
-  if ($controllerTree.Count -gt 0 -and $ReviewTarget -cne 'controller') {
-    throw 'dispatch-lane: controller source review requires -ReviewTarget controller and a strict prelogged tuple'
-  }
-}
-if ($ReviewTarget -ceq 'controller') {
-  if ($LaneRole -cne 'review' -or $ControllerHead -cne $admissionHead -or $ControllerIssue -lt 1 -or
-      -not $AuthorAttempt -or -not $ReviewerAttempt -or -not $AuthorModel -or -not $ReviewAuthority) {
-    throw 'dispatch-lane: strict controller prelaunch tuple is incomplete or does not match the target HEAD'
-  }
-  Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
-  $dispatchTuple = [pscustomobject][ordered]@{
-    ts=[datetimeoffset]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'"); kind='dispatch'; controllerReviewSchema='controller-review-dispatch/v2'; stage='review'
-    issue=$ControllerIssue; controllerHead=$ControllerHead; authorAttempt=$AuthorAttempt; reviewerAttempt=$ReviewerAttempt
-    reviewAuthority=$ReviewAuthority; lane=$admissionLane; transcript="$Label.jsonl"; reviewerModel=$Model; authorModel=$AuthorModel
-    effort=$Effort; row=[string]$Row; placement=$strictPlacement; harness=$Harness
-    policyGeneration=[long]$dispatchRouting.policyGeneration
-    registryAuthorityDigest=[string]$dispatchRouting.registryAuthorityDigest
-    family=[string]$dispatchRouting.family; slot=[string]$dispatchRouting.slot
-    usedLastKnownGood=[bool]$dispatchRouting.usedLastKnownGood
-  }
-  if ($PrepareRoute) { Write-DispatchPreparedRoute $dispatchTuple; return }
-  # TestRuntimeRoot isolates output only; dispatch authority belongs to this controller.
-  $reviewHistory = Read-ExactHeadReviewHistory -Path (Join-Path $PSScriptRoot 'dispatch-log.jsonl')
-  # The prelogged schema selects the reducer mode: a provenance-bearing v2
-  # prelog reduces as strict-v2 against this v2 tuple. v1 controller-review
-  # history remains readable during the provenance migration: when the exact
-  # head's history is v1, retry only the exact legacy tuple as strict-v1; a v2
-  # row with partial or mismatched routing evidence still fails closed because
-  # its v2 tuple is never projected into this fallback.
-  $prelaunchReview = Reduce-ControllerReleaseReview -Issue $ControllerIssue -ControllerHead $ControllerHead -Mode strict-v2 -History $reviewHistory -DispatchTuple $dispatchTuple
-  if ($prelaunchReview.reason -ceq 'STRICT_VERSION_MISMATCH') {
-    $legacyDispatchTuple = [pscustomobject][ordered]@{}
-    foreach ($property in $dispatchTuple.PSObject.Properties) {
-      if ($property.Name -notin @('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood','stage')) {
-        $legacyDispatchTuple | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value
-      }
-    }
-    $legacyDispatchTuple.controllerReviewSchema = 'controller-review-dispatch/v1'
-    $legacyReview = Reduce-ControllerReleaseReview -Issue $ControllerIssue -ControllerHead $ControllerHead -Mode strict-v1 -History $reviewHistory -DispatchTuple $legacyDispatchTuple
-    $prelaunchReview = $legacyReview
-  }
-  if ($prelaunchReview.state -cne 'in-flight' -or $prelaunchReview.reason -cne 'STRICT_ATTEMPT_IN_FLIGHT') {
-    if ($prelaunchReview.reason -ceq 'STRICT_PRELAUNCH_TUPLE_REQUIRED') {
-      $voidVocabulary=Get-ReviewRecordVocabulary
-      foreach($entry in $reviewHistory.rows) {
-        $prelogRow=$entry.value
-        $classification=Get-ControllerReviewRowClassification $entry $voidVocabulary
-        if (-not $classification.strict -or $classification.rowKind -cne 'dispatch' -or $classification.issue -ne $ControllerIssue -or
-            $classification.controllerHead -cne $ControllerHead -or ($prelogRow.lane -cne $admissionLane -and $prelogRow.transcript -cne "$Label.jsonl")) { continue }
-        try {
-          & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind controller-review-prelog-void -Issue $ControllerIssue -ControllerHead $ControllerHead `
-            -Lane $prelogRow.lane -Transcript $prelogRow.transcript -ReviewerAttempt $prelogRow.reviewerAttempt -OriginalDispatchRawSha256 $entry.rawSha256 `
-            -OutFile (Join-Path $PSScriptRoot 'dispatch-log.jsonl') -NoBoard | Out-Null
-          [Console]::Error.WriteLine("dispatch-lane: prelog voided hash=$($entry.rawSha256)")
-        } catch {
-          [Console]::Error.WriteLine("dispatch-lane: prelog void refused hash=$($entry.rawSha256) reason=$($_.Exception.Message)")
-        }
-      }
-    }
-    throw "dispatch-lane: strict controller prelaunch tuple refused: $($prelaunchReview.reason)"
-  }
-} elseif ($ControllerIssue -or $ControllerHead -or $AuthorAttempt -or $ReviewerAttempt -or $AuthorModel -or $ReviewAuthority) {
-  throw 'dispatch-lane: controller tuple inputs require -ReviewTarget controller'
-}
-if ($PrepareRoute) { Write-DispatchPreparedRoute $null; return }
+if ($PrepareRoute) { Write-DispatchPreparedRoute; return }
 
 # --- output stem, clobber guard ----------------------------------------------
 $stdoutPath = Join-Path $runtimeRoot "$Label.jsonl"
@@ -1257,13 +1185,13 @@ try {
   if ($LaneRole -cin @('implementation','planning','review','decision')) {
     $routingIssue = @{}
     if ($PSBoundParameters.ContainsKey('Issue')) { $routingIssue.Issue = $Issue }
+    elseif ($ReviewTarget -ceq 'controller') { $routingIssue.Issue = $ControllerIssue }
     # Every role writes the v3 routing row with its five capacity fields.
     $routingSchema = 'watchdog-dispatch-routing/v3'
     $capacityEvidence = @{CapacityForecastStatus=$capacity.capacityForecastStatus;CapacityDecisionDigest=$capacity.capacityDecisionDigest
       CapacityFlip=$capacity.capacityFlip;CapacityShadowFlip=$capacity.capacityShadowFlip;CapacityFlipSkip=$capacity.capacityFlipSkip}
     try {
       & (Join-Path $PSScriptRoot 'log-event.ps1') -Log dispatch -Kind dispatch -DispatchRoutingSchema $routingSchema `
-        -StrictControllerLaunch:($ReviewTarget -ceq 'controller') `
         -DispatchAttemptId $(if($SemanticAttemptId){$SemanticAttemptId}else{$Label}) -DispatchLabel $Label -Lane $admissionLane -LaneRole $LaneRole @routingIssue `
         -Transcript (Split-Path -Leaf $stdoutPath) -Harness $Harness -Model $Model -Effort $Effort -Row ([string]$Row) -Placement $Placement `
         -DispatchWorktree $worktreeResolved -DispatchBranch $admissionBranch -DispatchHead $admissionHead `

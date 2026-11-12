@@ -470,7 +470,7 @@ $script:BlockingReviewOutcomes = @("BLOCK_FIXABLE", "BLOCK_REPLAN")
 
 function Get-ExactHeadReviewContract {
   [pscustomobject][ordered]@{
-    receiptSchema = $script:ReviewReceiptSchema
+    receiptSchema = 'exact-head-review-receipt/v2'
     reducerSchema = $script:ReviewReducerSchema
     maxHistoryBytes = 33554432
     maxHistoryRows = 50000
@@ -584,6 +584,25 @@ function Test-AttemptIdentity([string]$Value) {
 function Get-ReviewReceiptValidation($Row, [object]$Vocabulary = $null) {
   if ($null -eq $Vocabulary) { $Vocabulary = Get-ReviewRecordVocabulary }
   $errors = [Collections.Generic.List[string]]::new()
+  if ([string]$Row.receiptSchema -ceq 'exact-head-review-receipt/v2') {
+    foreach ($field in @('ts','kind','pr','reviewedHead','model','outcome','findings')) {
+      if (-not (Test-JsonProperty $Row $field)) { $errors.Add("MISSING_$($field.ToUpperInvariant())") }
+    }
+    $instant = ConvertTo-ReviewInstant ([string]$Row.ts)
+    if ($null -eq $instant) { $errors.Add('INVALID_TS') }
+    if ([string]$Row.kind -cne 'review-complete') { $errors.Add('INVALID_KIND') }
+    if (-not (Test-WholeNumber $Row.pr 1) -or $Row.pr -gt [int]::MaxValue) { $errors.Add('INVALID_PR') }
+    if ([string]$Row.reviewedHead -cnotmatch '^[a-f0-9]{40}$') { $errors.Add('INVALID_REVIEWED_HEAD') }
+    if ([string]$Row.model -cnotin (Get-ReviewSelectableModels $Vocabulary)) { $errors.Add('INVALID_MODEL') }
+    if ([string]$Row.outcome -cnotin $script:TerminalReviewOutcomes) { $errors.Add('INVALID_TERMINAL_DISPOSITION') }
+    foreach ($field in @('blocking','candidates','nonBlocking')) {
+      if (-not (Test-WholeNumber $Row.findings.$field 0)) { $errors.Add("INVALID_FINDINGS_$($field.ToUpperInvariant())") }
+    }
+    if ([string]$Row.outcome -cin $script:BlockingReviewOutcomes) {
+      if ($Row.findings.blocking -lt 1) { $errors.Add('BLOCK_WITHOUT_FINDING') }
+    } elseif ($Row.findings.blocking -ne 0) { $errors.Add('NONBLOCK_WITH_BLOCKING_FINDING') }
+    return [pscustomobject][ordered]@{valid=$errors.Count -eq 0; errors=@($errors); instant=$instant}
+  }
   $required = @(
     "ts", "kind", "pr", "receiptSchema", "reviewedHead",
     "reviewerAttempt", "authorAttempt", "reviewContract", "completeSweep",
@@ -862,6 +881,12 @@ function Reduce-LandedIntegrationAuthority($History, [int]$Pr, [string]$Branch, 
 }
 
 function Get-ReceiptFingerprint($Row) {
+  if ([string]$Row.receiptSchema -ceq 'exact-head-review-receipt/v2') {
+    $canonical = [ordered]@{ts=[string]$Row.ts; pr=[int]$Row.pr; reviewedHead=[string]$Row.reviewedHead
+      model=[string]$Row.model; outcome=[string]$Row.outcome
+      findings=[ordered]@{blocking=$Row.findings.blocking; candidates=$Row.findings.candidates; nonBlocking=$Row.findings.nonBlocking}}
+    return Get-LaneTimeHash ([Text.Encoding]::UTF8.GetBytes(($canonical | ConvertTo-Json -Compress -Depth 5)))
+  }
   $canonical = [ordered]@{
     ts = [string]$Row.ts
     pr = [int64]$Row.pr
@@ -1156,7 +1181,7 @@ function Reduce-ExactHeadReview(
     $audit.duplicateReceipts += $group.Count - 1
   }
 
-  foreach ($attemptGroup in @($deduplicated | Group-Object { $_.row.reviewerAttempt })) {
+  foreach ($attemptGroup in @($deduplicated | Where-Object { $_.row.receiptSchema -cne 'exact-head-review-receipt/v2' } | Group-Object { $_.row.reviewerAttempt })) {
     if ($attemptGroup.Count -gt 1) {
       return New-ReviewReduction "unknown" "CONTRADICTORY_ATTEMPT_RECEIPTS" $Pr $CurrentHead $null $audit
     }
@@ -1851,13 +1876,13 @@ function Reduce-ControllerReleaseReview {
       operatorAuthority=$correction.entry.value.operatorAuthority
     })
   }
-  $blockingHeads=@($valid|Where-Object{$_.classification.rowKind-ceq"receipt"-and$_.classification.reviewAuthority-ceq"governing"-and[string]$_.entry.value.outcome-in@("BLOCK_FIXABLE","BLOCK_REPLAN")}|ForEach-Object{$_.classification.controllerHead}|Sort-Object -Unique)
-  $base.blockingHeads=@($blockingHeads)
+  $base.blockingHeads=@($valid | Where-Object {$_.classification.rowKind -ceq 'receipt' -and $_.classification.reviewAuthority -ceq 'governing' -and $_.entry.value.outcome -cin @('BLOCK_FIXABLE','BLOCK_REPLAN')} | ForEach-Object {$_.classification.controllerHead} | Sort-Object -Unique)
   $groups=@($candidate|Group-Object{Get-ControllerTupleKey $_.entry.value})
   if($groups.Count-eq0){$base.reason="NO_STRICT_REVIEW_HISTORY";return New-ControllerReleaseReduction $base}
   $governingPass=0;$governingBlock=0;$inFlight=0
   $selectedRows=[Collections.Generic.List[object]]::new()
   $selectedGoverningPass=$null
+  $governingReceipts=[Collections.Generic.List[object]]::new()
   foreach($group in $groups){
     $dispatches=@($group.Group|Where-Object{$_.classification.rowKind-ceq"dispatch"}|Group-Object{$_.classification.rawSha256}|ForEach-Object{$census.duplicateReplay+=$_.Count-1;$_.Group[0]})
     $receipts=@($group.Group|Where-Object{$_.classification.rowKind-ceq"receipt"}|Group-Object{$_.classification.rawSha256}|ForEach-Object{$census.duplicateReplay+=$_.Count-1;$_.Group[0]})
@@ -1870,13 +1895,25 @@ function Reduce-ControllerReleaseReview {
     $bucket=switch([string]$receipt.entry.value.outcome){"PASS"{"pass"};"BLOCK_FIXABLE"{"blockFixable"};"BLOCK_REPLAN"{"blockReplan"}}
     $selectedRows.Add([ordered]@{kind="review-complete";physicalLine=[int]$receipt.entry.line;rawSha256=[string]$receipt.classification.rawSha256})
     $census[$authority][$bucket]+=1
+    if($authority-ceq'governing'){$governingReceipts.Add([pscustomobject]@{row=$receipt.entry.value;pair=[ordered]@{dispatchRawSha256=[string]$dispatch.classification.rawSha256;terminalRawSha256=[string]$receipt.classification.rawSha256;lane=[string]$dispatch.entry.value.lane;transcript=[string]$dispatch.entry.value.transcript}})}
     if($authority-ceq"governing"-and$bucket-ceq"pass"){
       $governingPass+=1
       if($null-eq$selectedGoverningPass){$selectedGoverningPass=[ordered]@{dispatchRawSha256=[string]$dispatch.classification.rawSha256;terminalRawSha256=[string]$receipt.classification.rawSha256;lane=[string]$dispatch.entry.value.lane;transcript=[string]$dispatch.entry.value.transcript}}
     }
     if($authority-ceq"governing"-and$bucket-ne"pass"){$governingBlock+=1}
   }
-  if($inFlight-gt0){$base.state="in-flight";$base.reason="STRICT_ATTEMPT_IN_FLIGHT"}
+  $base.blockingHeads=@()
+  $latestGoverning=@($governingReceipts | Sort-Object { [datetimeoffset]::Parse($_.row.ts) } -Descending | Select-Object -First 1)
+  if($latestGoverning.Count){
+    $latestAt=[datetimeoffset]::Parse($latestGoverning[0].row.ts)
+    $latestOutcomes=@($governingReceipts | Where-Object { [datetimeoffset]::Parse($_.row.ts) -eq $latestAt } | ForEach-Object { $_.row.outcome } | Sort-Object -Unique)
+    if($latestOutcomes.Count-ne1){$base.reason='TERMINAL_ORDER_AMBIGUOUS';return New-ControllerReleaseReduction $base}
+    $governingBlock=if($latestGoverning[0].row.outcome-ceq'PASS'){0}else{1}
+    $governingPass=if($governingBlock){0}else{1}
+    $selectedGoverningPass=if($governingPass){$latestGoverning[0].pair}else{$null}
+    if($governingBlock){$base.blockingHeads=@($ControllerHead)}
+  }
+  if($latestGoverning.Count-eq0-and$inFlight-gt0){$base.state="in-flight";$base.reason="STRICT_ATTEMPT_IN_FLIGHT"}
   elseif($governingBlock-gt0){$base.state="blocked";$base.reason="GOVERNING_BLOCK"}
   elseif($governingPass-lt1){$base.reason="NO_GOVERNING_PASS"}
   else{$base.state="authorized";$base.reason="GOVERNING_PASS"}

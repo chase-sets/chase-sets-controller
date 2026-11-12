@@ -516,6 +516,10 @@ try {
     if($null-ne$DispatchTuple){$args.DispatchTuple=$DispatchTuple}
     $actual=& $script:equivalenceCandidate {param($p) Reduce-ControllerReleaseReview @p} $args
     $expected=& $script:equivalenceBaseline {param($p) Reduce-ControllerReleaseReview @p} $args
+    # The new policy reports only an active current-head block, not every
+    # historical block. All other legacy fixture fields remain compared.
+    if ($expected.state -ceq 'authorized') { $expected.blockingHeads=@() }
+    if ($expected.state -ceq 'blocked') { $expected.blockingHeads=@($ControllerHead) }
     Assert-True (($actual|ConvertTo-Json -Compress -Depth 100)-ceq($expected|ConvertTo-Json -Compress -Depth 100)) "H0 equivalence $Mode/$Issue/$ControllerHead"
     $oldClasses=@(& $script:equivalenceBaseline {
       param($h)

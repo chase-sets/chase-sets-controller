@@ -268,17 +268,17 @@ try {
 
   $logger = Join-Path $runtime "log-event.ps1"
   $loggerOutput = Join-Path $root "logger.jsonl"
-  $sameAttemptRejected = $false
-  try {
-    & $logger -Log dispatch -Kind review-complete -Pr 6254 `
-      -Model claude-opus-5-5 -AuthorModel gpt-6.1-sol -Outcome PASS `
-      -ReviewContract review-contract/v2 -CompleteSweep -ReviewedHead $headA `
-      -ReviewerAttempt same-attempt -AuthorAttempt same-attempt `
-      -Blocking 0 -Candidates 0 -NonBlocking 0 -OutFile $loggerOutput | Out-Null
-  } catch {
-    $sameAttemptRejected = $_.Exception.Message -match "independent attempt identities"
-  }
-  Assert-6254 $sameAttemptRejected "different model names disguised one attempt identity"
+  & $logger -Log dispatch -Kind review-complete -Pr 6254 `
+    -Model claude-opus-5-5 -Outcome PASS -ReviewedHead $headA `
+    -ReviewerAttempt same-attempt -AuthorAttempt same-attempt `
+    -Blocking 0 -OutFile $loggerOutput -NoBoard | Out-Null
+  $minimal=Get-Content -LiteralPath $loggerOutput -Raw | ConvertFrom-Json -DateKind String
+  Assert-6254 ($minimal.receiptSchema -ceq 'exact-head-review-receipt/v2' -and
+    $null -eq $minimal.PSObject.Properties['reviewerAttempt'] -and $minimal.authorAttempt -ceq 'same-attempt') `
+    'reviewer attempt became authority or optional author telemetry was lost'
+  $current=& $reducer -Pr 6254 -CurrentHead $headA -HistoryPath $loggerOutput | ConvertFrom-Json -DateKind String
+  $moved=& $reducer -Pr 6254 -CurrentHead $headB -HistoryPath $loggerOutput | ConvertFrom-Json -DateKind String
+  Assert-6254 ($current.state -ceq 'authorized' -and $moved.state -ceq 'stale') 'minimal receipt lost exact-head authorization'
 
   $preflight = Join-Path $runtime "landing-preflight.ps1"
   $fixture = Join-Path $runtime "landing-preflight.fixture.json"
@@ -294,8 +294,12 @@ try {
     -AuthorityFixture $fixture -AuthorityScenario eligible |
     ConvertFrom-Json -DateKind String
   Assert-6254 ($apply.status -eq "enqueued" -and $apply.mutationCount -eq 1) "green apply fixture did not reach exactly one canonical mutation"
+  $minimalApply=& $preflight -Pr 6254 -Action Apply -HistoryPath $loggerOutput -AuthorityFixture $fixture -AuthorityScenario eligible | ConvertFrom-Json -DateKind String
+  Assert-6254 ($minimalApply.status -ceq 'enqueued' -and $minimalApply.mutationCount -eq 1) 'minimal receipt did not reach one guarded synthetic enqueue'
+  $minimalMoved=& $preflight -Pr 6254 -Action Apply -HistoryPath $loggerOutput -AuthorityFixture $fixture -AuthorityScenario head-movement | ConvertFrom-Json -DateKind String
+  Assert-6254 ($minimalMoved.reason -ceq 'HEAD_MOVED_BETWEEN_READS' -and $minimalMoved.mutationCount -eq 0) 'minimal receipt authorized enqueue after head movement'
 
-  Write-Output "PASS issue-6254 discriminator: fail-closed evidence validated, explicit independent attempts, exact-head authorization, synchronize invalidation, report-only zero mutation, and one guarded apply mutation"
+  Write-Output "PASS issue-6254 discriminator: fail-closed evidence validated, minimal receipts ignore legacy attempts, exact-head authorization, synchronize invalidation, report-only zero mutation, and guarded apply mutations"
 } finally {
   $resolved = [IO.Path]::GetFullPath($root)
   $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
