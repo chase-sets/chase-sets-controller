@@ -208,7 +208,7 @@ $script:requiredMilestoneStatements = @(
   'retry with backoff and open no breaker',
   'Spend rolls up once per UTC day',
   'Post a status entry on #4388 only after a landing, a breaker change, or two hours without one, at most 1,500 bytes',
-  'No USD figure is a ceiling.',
+  'No model USD figure is a ceiling; explicit external-action spend caps still bind.',
   'a brief takes at most two complete-sweep semantic reviews in its lifetime',
   'an implementation takes one exact-head code review before ready',
   'Reviewers apply mechanical fixes (pins, counts, generated outputs, lint) directly on the branch and let hosted CI validate them',

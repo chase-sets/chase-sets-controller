@@ -1068,10 +1068,59 @@ current items first.
 Batch operator work into signaled windows. Keep credentials, approvals, and
 provider mutations outside worker prompts unless the role requires them.
 
+### One-shot external actions
+
+Use a short action brief, not an execution packet. This path governs paid or
+one-shot external actions, including staging checks; ordinary implementation
+attempt and advisory model-spend rules do not relax its explicit hard limits.
+Use `.orchestrator/one-shot-action-brief.ps1 -Template` to print this template:
+
+```one-shot-action-brief
+Goal: <bounded outcome and target environment/service>
+Hard limits: <attempt cap per action; total spend cap and currency, including zero>
+Boundary: <staging only when required; no secrets in brief/results or credential access>
+TCGplayer: never contact its servers or store/use its credentials.
+Steps: <ordered commands/clicks; worst-case cost and attempt units for each>
+Result file: <one path for execution-time deployed SHA, attempts, spend, outcome>
+```
+
+The brief grants no action, credential, or Todd-only authority. Use only an
+already authorized operator/tool; when credentials are needed, leave that step
+to the authorized operator without putting credentials in prompts or files.
+Review the brief once when production or money is involved; otherwise no brief
+review is required. Review a delta only if the reviewed brief changes. No extra
+packet review, hash custody, operation-map, release-manifest, START-file, or
+executor-admission packet is required, and no process-permission decision lane
+is needed for this path. Existing production/money, secrets, Todd-only, and
+TCGplayer no-contact gates still apply.
+
+At execution, read the target's actual deployed SHA and record it in the result
+file before the first side effect. Do not pin to current main, require deployed
+SHA = main, or invalidate/rebind the brief on main merges; never hold ready PRs
+to protect it. Missing deployed identity or the wrong environment stops the
+action. If deployment changes during the steps, stop and assess the remaining
+steps against the new deployment, without resetting consumed limits.
+
+Before each side effect, check the remaining per-action attempts and total
+spend, including earlier runs of the same action. Count every submitted attempt,
+even a failure. Reserve its attempt units and worst-case cost in the result file
+before issuing it; if that write fails, do not act. Disable automatic retries
+unless each retry is explicitly within the same caps. The optional read-only
+helper's `-CheckLimits` checks one proposed step using those current totals; its
+`fitsWithinLimits` is arithmetic, never execution permission or a replay guard.
+Keep reservations until actual cost is known. An unknown outcome, uncertain
+submission, missing result history, or unknown cost stops further actions;
+read-only reconciliation may resolve it, never replay it to find out. Renaming
+the brief, replacing an executor, replanning, or a review never resets a cap or
+authorizes extra paid attempts. Any cap increase needs explicit authority from
+whoever owns that limit, not a process decision. Record the terminal result or
+uncertainty in the same file; no second custody artifact is needed.
+
 ## 12. Circuit breakers
 
 Record spend per model-routing's telemetry rules; spend never opens a
-breaker. Stop only the affected mutation path:
+breaker. This is model-spend telemetry, not authority to exceed a one-shot
+external action's attempt or spend cap (§11). Stop only the affected mutation path:
 
 - Actual staging deploy red or deployed-head mismatch.
 
@@ -1091,11 +1140,14 @@ receipts each cycle; over 60 minutes is a stall alert.
 Every `breaker-open` carries `-BreakerScope artifact|pipeline`. Artifact breakers
 discharge through the §7 recovery ladder.
 
-No artifact parks on attempts (§7; 4388/6022146271). There is no standing-cap
+No artifact parks on attempts under the §7 implementation rule
+(4388/6022146271); one-shot external action caps still stop the action (§11).
+There is no standing-cap
 continuation row and no ceiling authority ceremony; the fourth-attempt
 step-back review chooses the next step.
 Replacement never resets an attempt count, and counts follow
-the §7 attempt definition; billed USD is carried forward as telemetry. No USD figure is a ceiling.
+the §7 attempt definition; billed model USD is carried forward as telemetry.
+No model USD figure is a ceiling; explicit external-action spend caps still bind.
 
 ## 13. Bookkeeping and digest
 
