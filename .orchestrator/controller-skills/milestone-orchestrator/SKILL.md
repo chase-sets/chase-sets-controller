@@ -1071,13 +1071,14 @@ provider mutations outside worker prompts unless the role requires them.
 ### One-shot external actions
 
 Use a short action brief, not an execution packet. This path governs paid or
-one-shot external actions, including staging checks; ordinary implementation
+one-shot external actions, including staging checks that are themselves paid or
+one-shot; ordinary implementation
 attempt and advisory model-spend rules do not relax its explicit hard limits.
 Use `.orchestrator/one-shot-action-brief.ps1 -Template` to print this template:
 
 ```one-shot-action-brief
 Goal: <bounded outcome and target environment/service>
-Hard limits: <attempt cap per action; total spend cap and currency, including zero>
+Hard limits: <owner authorization; attempt cap per action; total spend cap and currency, including zero>
 Boundary: <staging only when required; no secrets in brief/results or credential access>
 TCGplayer: never contact its servers or store/use its credentials.
 Steps: <ordered commands/clicks; worst-case cost and attempt units for each>
@@ -1094,10 +1095,15 @@ executor-admission packet is required, and no process-permission decision lane
 is needed for this path. Existing production/money, secrets, Todd-only, and
 TCGplayer no-contact gates still apply.
 
-At execution, read the target's actual deployed SHA and record it in the result
-file before the first side effect. Do not pin to current main, require deployed
+Each hard limit cites its owner's authorization, such as a Todd ruling or
+operator grant, and may only narrow it. Without authorized limits, do not act;
+a paid action without spend authorization has spend cap zero.
+
+When the action runs through a Chase Sets deployment, read the target's actual
+deployed SHA before each side effect and record it in the result file. Do not
+pin to current main, require deployed
 SHA = main, or invalidate/rebind the brief on main merges; never hold ready PRs
-to protect it. Missing deployed identity or the wrong environment stops the
+to protect it. Missing required deployed identity or the wrong environment stops the
 action. If deployment changes during the steps, stop and assess the remaining
 steps against the new deployment, without resetting consumed limits.
 
@@ -1108,8 +1114,9 @@ before issuing it; if that write fails, do not act. Disable automatic retries
 unless each retry is explicitly within the same caps. The optional read-only
 helper's `-CheckLimits` checks one proposed step using those current totals; its
 `fitsWithinLimits` is arithmetic, never execution permission or a replay guard.
-Keep reservations until actual cost is known. An unknown outcome, uncertain
-submission, missing result history, or unknown cost stops further actions;
+Keep reservations until actual cost is known; an authorized, reserved worst-case
+cost remains bounded even before billing arrives. An unknown outcome, uncertain
+submission, missing result history, or unbounded cost stops further actions;
 read-only reconciliation may resolve it, never replay it to find out. Renaming
 the brief, replacing an executor, replanning, or a review never resets a cap or
 authorizes extra paid attempts. Any cap increase needs explicit authority from

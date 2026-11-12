@@ -5,6 +5,10 @@ Print the short action brief or check one step's attempt and spend arithmetic.
 Read-only: no action execution, credential access, permission grant, or state
 storage. Totals must include prior runs and reservations from the result file.
 Costs use the brief's single currency as exact decimal or integer values.
+Invoke from PowerShell (or pwsh -Command), not pwsh -File: values must retain
+their types. Use decimal literals with a d suffix, for example 2.50d, or integer
+minor units throughout. Convert JSON costs to exact decimal values first;
+binary floating-point, strings and coerced booleans are intentionally refused.
 .EXAMPLE
 ./one-shot-action-brief.ps1 -Template
 .EXAMPLE

@@ -23,6 +23,9 @@ Refuses @{AttemptsUsed=2} 'attempt-cap'
 Refuses @{StepAttempts=2} 'attempt-cap'
 Refuses @{AttemptCap=0} 'attempt-cap'
 Refuses @{SpendCap=1;SpendUsed=1;StepWorstCaseCost=0.01d} 'spend-cap'
+Refuses @{SpendCap=1.00d;StepWorstCaseCost=2} 'spend-cap'
+Refuses @{SpendCap=1.01d;SpendUsed=1;StepWorstCaseCost=0.02d} 'spend-cap'
+Assert-Brief (Check-Limits @{SpendCap=1.10d;StepWorstCaseCost=1.1d}).fitsWithinLimits 'different decimal scales compare exactly'
 Refuses @{SpendUsed=1} 'spend-cap'
 Refuses @{StepWorstCaseCost=0.01d} 'spend-cap'
 Refuses @{HistoryKnown=$false;AttemptCap=5;SpendCap=100} 'unknown-history-or-outcome'
@@ -65,11 +68,14 @@ foreach ($rule in @(
   'Review the brief once when production or money is involved; otherwise no brief review is required.',
   'No extra packet review, hash custody, operation-map, release-manifest, START-file, or executor-admission packet is required',
   'no process-permission decision lane is needed for this path',
-  'read the target''s actual deployed SHA',
+  'Each hard limit cites its owner''s authorization',
+  'Without authorized limits, do not act; a paid action without spend authorization has spend cap zero.',
+  'When the action runs through a Chase Sets deployment, read the target''s actual deployed SHA before each side effect',
   'Do not pin to current main, require deployed SHA = main, or invalidate/rebind the brief on main merges',
   'Reserve its attempt units and worst-case cost in the result file before issuing it; if that write fails, do not act.',
   'Disable automatic retries unless each retry is explicitly within the same caps.',
-  'An unknown outcome, uncertain submission, missing result history, or unknown cost stops further actions',
+  'an authorized, reserved worst-case cost remains bounded even before billing arrives.',
+  'An unknown outcome, uncertain submission, missing result history, or unbounded cost stops further actions',
   'read-only reconciliation may resolve it, never replay it to find out.',
   'Renaming the brief, replacing an executor, replanning, or a review never resets a cap or authorizes extra paid attempts.'
 )) { Assert-Brief ($section.Contains($rule,[StringComparison]::Ordinal)) "one-shot hard gate missing: $rule" }
