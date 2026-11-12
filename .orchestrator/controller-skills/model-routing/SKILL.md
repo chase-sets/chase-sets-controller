@@ -494,9 +494,9 @@ reported. It is never a gate.
   $20,000 billed USD. These are attention markers for a retro, never a spend
   gate, breaker, park trigger, host rotation trigger, or Decision.
 - No per-dispatch, per-artifact, lineage, daily, or monthly USD limit exists.
-  Dispatch notes carry expected USD as telemetry only. The fourth-attempt
-  step-back review (review, repair, and planning rounds never count) and the
-  two-block rule in milestone-orchestrator are the only artifact checkpoints;
+  Dispatch notes carry expected USD as telemetry only. The host-owned
+  three-consecutive-head failure rule and the two-block rule in
+  milestone-orchestrator are the artifact checkpoints;
   neither parks an artifact (4388/6022146271). The controller never files a
   cap-only Decision.
 
@@ -654,8 +654,9 @@ the model's own reasoning, knowledge or quality (steps 3 and 4).
 6. Two premium attempts disagree without a verifier: route one row-8 judge.
 
 Stop after two configuration changes; any further attempt is governed only by
-milestone-orchestrator's §7 recovery ladder, its fourth-attempt step-back
-review and the two-block rule, never by spend.
+milestone-orchestrator's §7 recovery ladder, its host-owned repeated-failure
+rule and the two-block rule, never by spend. Paid or one-shot external actions
+retain their explicit attempt and spend limits.
 
 Astra and Fable may be chosen on any escalation when best for the failure
 mode. Record the off-slot reason as for every model. Higher-effort exceptions

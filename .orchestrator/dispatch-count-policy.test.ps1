@@ -86,18 +86,19 @@ function Refused([scriptblock]$Body) {
 }
 function Test-Text([string]$Text) {
   $rules=@{
-    7=@('At 15 or more dispatches without any confirmed canonical landing', 'only at the pre-dispatch moment', 'query-ledgers.ps1 -DispatchIssue', 'Never sweep closed, tracking-only or non-candidate issues', 'The fourth-attempt step-back review remains independent of this count', 'route one independent step-back review under section 11')
-    11=@('Pending and final are once-only steady states', 'log-event.ps1 -DispatchDecision', 'CLAIMED', 'ACKNOWLEDGED', 'FINAL', 'APPLYING', 'APPLIED', 'never launch a second threshold decision', 'Replan is planning work, not another decision lane', 'counsel/operator gates and Todd-only authority remain binding', '`PARK` is refused.',
-      'The claim caller launches the decision lane once through `dispatch-lane.ps1 -Issue <issue> -LaneRole decision`.',
-      'The worktree leaf must equal the claimed `lane`, and the label must make the transcript equal the claimed `transcript`.',
-      'That launcher''s `watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row, and `ACKNOWLEDGED.dispatchReceiptIdentity` is its raw SHA256.',
-      'The host appends no other issue-bearing `kind=dispatch` row for that lane/transcript: no VERIFIED, attribution or backfill `-Issue` row.')
+    7=@('When the same failure persists across three consecutive heads, the host steps back:',
+      'Dispatch counts are telemetry, not dispatch prerequisites.',
+      'Legacy dispatch-count query and lifecycle APIs remain readable for compatibility; the host does not invoke them to obtain permission for new work.',
+      'It does not reset consumed attempts or relax paid or one-shot external-action limits.')
+    11=@('Do not create dispatch-count threshold decisions or lifecycle rows for new work.',
+      'Retain historical rows without rewriting them; they grant no new attempt or external-action authority.',
+      'A real external blocker, paid/one-shot attempt limit or Todd-owned scope decision remains binding.')
   }
   foreach ($number in $rules.Keys) {
     $section=[regex]::Match($Text,"(?ms)^## $number\..*?(?=^## \d+\.|\z)").Value -replace '\s+',' '
     foreach ($rule in $rules[$number]) { if (-not $section.Contains($rule,[StringComparison]::Ordinal)) { return $false } }
   }
-  return $true
+  return $Text -notmatch 'At 15 or more dispatches|At every fourth counted implementation attempt|query-ledgers\.ps1 -DispatchIssue|log-event\.ps1 -DispatchDecision'
 }
 
 if (-not $RegressionOnly -or $RegressionOnly -ceq 'F1') {
@@ -354,19 +355,19 @@ Case 'dispatch-incomplete-history-controls' {
 }
 Case 'dispatch-policy-and-guard-omission-mutants' {
   $text=[IO.File]::ReadAllText($skillPath)
-  Assert-Policy (Test-Text $text) 'sections 7/11 must bind real query and lifecycle'
-  foreach($clause in @('At 15 or more dispatches without any confirmed canonical landing','Pending and final are once-only steady states')) {
+  Assert-Policy (Test-Text $text) 'sections 7/11 retire count-based admission while preserving hard limits'
+  foreach($clause in @('Dispatch counts are telemetry, not dispatch prerequisites.','Do not create dispatch-count threshold decisions or lifecycle rows for new work.')) {
     Assert-Policy (-not (Test-Text ($text.Replace($clause,'')))) "policy omission killed: $clause"
     Write-Output "KILLED policy: $clause"
   }
 }
-Case 'F4-launcher-row-policy-omission-mutant' {
+Case 'legacy-history-policy-omission-mutant' {
   $text=[IO.File]::ReadAllText($skillPath)
-  $clause='The claim caller launches the decision lane once through'
+  $clause='Retain historical rows without rewriting them; they grant no new attempt or'
   $changed=$text.Replace($clause,'')
-  Assert-Policy ($changed -cne $text) 'launcher-row policy omission target exists'
-  Assert-Policy (-not (Test-Text $changed)) 'launcher-row policy omission must fail Test-Text'
-  Write-Output 'KILLED policy: launcher-row sentence'
+  Assert-Policy ($changed -cne $text) 'legacy-history policy omission target exists'
+  Assert-Policy (-not (Test-Text $changed)) 'legacy-history policy omission must fail Test-Text'
+  Write-Output 'KILLED policy: legacy-history sentence'
 }
 if (-not $SkipMutants -and $script:failures -eq 0) {
   Case 'dispatch-scripted-guard-omission-mutants' {
