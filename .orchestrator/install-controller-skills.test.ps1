@@ -97,12 +97,16 @@ landing-preflight/v1
     $output = @(& pwsh -NoProfile -NonInteractive -File $installer -ReleaseTag $Tag -ReleaseRepository $publisher -DestinationRoot $destinationRoot -CodexSkillRoot $codexRoot 2>&1)
     [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($output -join "`n") }
   }
+  function ConvertFrom-InstallerDisplay([string]$Output) {
+    $plain = $Output -replace '\x1b\[[0-9;]*m', ''
+    return ($plain -replace '(?m)(?:^|\s)\|(?=\s)', ' ') -replace '\s+', ' '
+  }
   function Assert-Refused([string]$Tag, [string]$Expected) {
     $result = Invoke-Installer $Tag
     Assert-True ($result.ExitCode -ne 0) "installer should refuse $($Tag): $Expected"
-    # Native ErrorRecords can flatten wrapped display lines before capture.
-    # Strip only whitespace-delimited display bars, keeping the refusal text.
-    $plainOutput = ($result.Output -replace '(?m)(?:^|\s)\|(?=\s)', ' ') -replace '\s+', ' '
+    # Color spans and display gutters can split the literal refusal message.
+    # Remove only display formatting, preserving the diagnostic and exit checks.
+    $plainOutput = ConvertFrom-InstallerDisplay $result.Output
     Assert-True ($plainOutput -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output); plainJson=$($plainOutput | ConvertTo-Json -Compress); rawJson=$($result.Output | ConvertTo-Json -Compress)"
     $result
   }
@@ -125,6 +129,15 @@ landing-preflight/v1
     Assert-True ($LASTEXITCODE -ne 0) "container checkout is detached"
     Assert-True (@(& git -C $container remote).Count -eq 0) "installer never configures a remote"
   }
+
+  $displayExpected = "controller skill install refused: cannot compute dropped files: installed release $('0' * 40) is unreadable"
+  $displayWrapped = "`e[31;1mcontroller skill install refused: cannot compute dropped files: installed release`e[0m`n`e[31;1m     | `e[31;1m$('0' * 40) is unreadable`e[0m"
+  Assert-True ((ConvertFrom-InstallerDisplay $displayWrapped) -ceq $displayExpected) 'colored wrapped refusal keeps its literal message'
+  Assert-True ((ConvertFrom-InstallerDisplay $displayExpected) -ceq $displayExpected) 'unformatted refusal is unchanged'
+  Assert-True ((ConvertFrom-InstallerDisplay $displayWrapped.Replace(('0' * 40), ('1' * 40))) -notmatch [regex]::Escape($displayExpected)) 'formatting cannot hide a wrong release'
+  Assert-True ((ConvertFrom-InstallerDisplay $displayWrapped.Replace('is unreadable', 'is readable')) -notmatch [regex]::Escape($displayExpected)) 'formatting cannot hide a wrong refusal reason'
+  Assert-True ((ConvertFrom-InstallerDisplay "`e[31;1munrelated refusal`e[0m") -notmatch [regex]::Escape($displayExpected)) 'formatting cannot invent a missing diagnostic'
+  Write-Output 'PASS refusal display: colored wrapped and plain messages; wrong release, wrong reason and missing-message controls'
 
   # --- release repository and private container --------------------------
   Initialize-Repository $publisher

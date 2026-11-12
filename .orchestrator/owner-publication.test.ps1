@@ -443,7 +443,7 @@ function Invoke-ReaderInventory {
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
-    'install-controller-skills.test.ps1'=@(209,226,231,262,366,387,401)
+    'install-controller-skills.test.ps1'=@(226,243,248,279,385,406,420)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
