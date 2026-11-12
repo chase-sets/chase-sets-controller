@@ -73,7 +73,7 @@ try {
     'dispatch-history-rebase-lines.test.ps1') | ForEach-Object { Join-Path $PSScriptRoot $_ }
   $sourceBefore = ConvertTo-Json -InputObject @($sourcePaths | ForEach-Object { Get-RebaseHistoryIdentity $_ }) -Depth 10 -Compress
   $manifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'contracts/dispatch-history-callers.json')) | ConvertFrom-Json
-  $row = $manifest.rows[21]
+  $row = $manifest.rows[20]
   Assert-RebaseHistory ($row.path -ceq '.orchestrator/landed-integration-evidence.psm1' -and
     $row.scope -ceq 'Read-RebaseJsonLines' -and $row.api -ceq 'read-dispatchledgerlines' -and $row.ordinal -eq 1 -and
     $row.callSha256 -ceq '8275497c8e0b74b2b817bc6c2d60995bf93856b23e5d6ef5c069da40d6ef775a') 'literal manifest row22 identity'

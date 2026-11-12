@@ -46,11 +46,11 @@ function Assert-AttributionLoadedSource {
     ForEach-Object { "$($_.Kind):$($_.Text)" }) -join "`n"
   $callSha = Get-RebaseHash ($utf8.GetBytes($shape))
   $manifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'contracts/dispatch-history-callers.json')) | ConvertFrom-Json
-  $row = $manifest.rows[15]
+  $row = $manifest.rows[14]
   Assert-AttributionHistory ($row.path -ceq '.orchestrator/integration-dispatch-contract.ps1' -and
     $row.scope -ceq 'Get-IntegrationExecutionAttribution' -and $row.api -ceq 'read-exactheadreviewhistory' -and
     $row.ordinal -eq 1 -and $row.callSha256 -ceq $callSha -and
-    $callSha -ceq '56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe') 'manifest index15 full caller tuple and token SHA'
+    $callSha -ceq '56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe') 'manifest index14 full caller tuple and token SHA'
   foreach ($dependency in @(
     @('Read-RebaseCompletion','landed-integration-evidence.psm1'),
     @('Read-ExactHeadReviewHistory','review-head-contract.psm1'),

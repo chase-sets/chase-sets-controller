@@ -83,9 +83,9 @@ function BindSource {
   $callHash = Hash ($utf8.GetBytes($shape))
   Check ($errors.Count -eq 0 -and $callHash -ceq '45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba') 'literal token call hash'
   $manifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'contracts/dispatch-history-callers.json')) | ConvertFrom-Json -AsHashtable
-  Graph $manifest.rows[48] ([ordered]@{ path = '.orchestrator/review-head-reducer.ps1'; scope = '<script>'
+  Graph $manifest.rows[47] ([ordered]@{ path = '.orchestrator/review-head-reducer.ps1'; scope = '<script>'
     api = 'read-exactheadreviewhistory'; ordinal = 1; mode = 'one-pass-stream'; projection = 'dispatch-count/v1'
-    peakEnvelope = 'parsed-history'; callSha256 = $callHash }) 'literal rows[48] entire eight-field tuple'
+    peakEnvelope = 'parsed-history'; callSha256 = $callHash }) 'literal rows[47] entire eight-field tuple'
   $module = Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -PassThru -DisableNameChecking
   $bindings = @()
   foreach ($file in @('review-head-contract.psm1', 'routing-data.ps1', 'dispatch-ledger-reader.psm1')) {
@@ -102,7 +102,7 @@ function BindSource {
       $bindings += [ordered]@{ file = $file; function = $function.Name; astSha256 = Hash ($utf8.GetBytes($loaded)) }
     }
   }
-  Save 'source-binding.json' ([ordered]@{ cli = Identity $cli; cliAstSha256 = Hash ($utf8.GetBytes($ast.Extent.Text)); literalCall = $calls[0].Extent.Text; row = $manifest.rows[48]; bindings = $bindings })
+  Save 'source-binding.json' ([ordered]@{ cli = Identity $cli; cliAstSha256 = Hash ($utf8.GetBytes($ast.Extent.Text)); literalCall = $calls[0].Extent.Text; row = $manifest.rows[47]; bindings = $bindings })
 }
 function Native([string]$Name, [string[]]$Arguments, [int]$ExpectedExit = 0) {
   $si = [Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME $(if ($IsWindows) { 'pwsh.exe' } else { 'pwsh' })))
