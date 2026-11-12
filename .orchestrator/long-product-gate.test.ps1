@@ -115,7 +115,7 @@ exit 0
   Write-Text (Join-Path $orchestrator 'fixture-heavy-child.ps1') $child
   $verifierPath = Join-Path $orchestrator 'invoke-heavy-verifier.ps1'
   $verifier = [IO.File]::ReadAllText($verifierPath)
-  $needle = '$ownerGate = if ($isNativeDb) {'
+  $needle = '$ownerGate = if ($isManifestReplay) {'
   $needleCount = ([regex]::Matches($verifier, [regex]::Escape($needle))).Count
   Assert-True ($needleCount -eq 1) 'fixture verifier command-table seam occurs exactly once'
   $replacement = @"
