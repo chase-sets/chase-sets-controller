@@ -141,7 +141,7 @@ if ($OrdinaryOnly) {
   return
 }
 
-$runLauncher = -not $Part -or $Part -ceq 'all' -or $Part -in @('refusal-foundation','refusal-harness')
+$runLauncher = -not $Part -or $Part -ceq 'all' -or $Part -in @('controller-review','refusal-foundation','refusal-harness')
 if ($runLauncher) {
 $launcher = Join-Path $PSScriptRoot "dispatch-lane.ps1"
 $ownershipHelper = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
@@ -811,9 +811,11 @@ try {
   $controllerRuntime=Join-Path $testRoot 'controller-review-runtime'
   $controllerTemp=Join-Path $testRoot 'controller-review-temp'
   New-Item -ItemType Directory -Path $controllerRuntime,$controllerTemp|Out-Null
-  $controllerArgs=@{Harness='codex';Model='gpt-6.1-sol';Effort='high';LaneRole='review';ReviewTarget='controller';Row=11;Placement='provisional';PromptFile=$prompt;Worktree=$worktree;Label='synthetic-controller-review';ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$controllerRuntime;TestTempRoot=$controllerTemp;TestArgumentList=@('-NoProfile','-NonInteractive','-Command','Write-Output SYNTHETIC_CONTROLLER_STARTED')}
+  $controllerArgs=@{Harness='codex';Model='gpt-6.1-sol';Effort='high';LaneRole='review';ReviewTarget='controller';Issue=263;Row=11;Placement='provisional';PromptFile=$prompt;Worktree=$worktree;Label='synthetic-controller-review';ExecutablePath=(Join-Path $PSHOME 'pwsh.exe');TestRuntimeRoot=$controllerRuntime;TestTempRoot=$controllerTemp;TestArgumentList=@('-NoProfile','-NonInteractive','-Command','Write-Output SYNTHETIC_CONTROLLER_STARTED')}
   $controllerLog=Join-Path $controllerSubject.ScriptRoot 'dispatch-log.jsonl'
   Assert-True (-not (Test-Path $controllerLog)) 'controller direct-launch control needs absent prelog'
+  $missingIssue=$controllerArgs.Clone();$missingIssue.Remove('Issue')
+  Assert-Throws { & $controllerLauncher @missingIssue } 'requires positive -Issue or -ControllerIssue' 'controller launch needs issue attribution, not a prelog'
   & $controllerLauncher @controllerArgs | Out-Null
   $output=Get-Content (Join-Path $controllerRuntime 'synthetic-controller-review.jsonl') -Raw
   Assert-True ($LASTEXITCODE -eq 0 -and $output -match 'SYNTHETIC_CONTROLLER_STARTED') 'controller review requires no legacy tuple or prelog'
@@ -827,7 +829,59 @@ try {
   $prepared=& $controllerLauncher @controllerArgs | ConvertFrom-Json -DateKind String
   Assert-True ($prepared.prepared -and $null -eq $prepared.strictTuple -and $null -eq $prepared.strictPrelogV1) 'optional route inspection creates no receipt tuple'
   Assert-True (-not (Test-Path (Join-Path $controllerRuntime 'synthetic-controller-prepared.jsonl'))) 'optional preparation started a reviewer'
+  $controllerSource=New-AdmissionMatrixFixture 97 'controller-source'
+  New-Item -ItemType Directory -Path (Join-Path $controllerSource.Worktree '.orchestrator') | Out-Null
+  Set-Content (Join-Path $controllerSource.Worktree '.orchestrator/controller-release-battery.ps1') 'synthetic controller identity'
+  Invoke-AdmissionFixtureGit $controllerSource.Worktree @('add','.') | Out-Null
+  Invoke-AdmissionFixtureGit $controllerSource.Worktree @('commit','-m','synthetic controller identity') | Out-Null
+  $masquerade=$controllerArgs.Clone();$masquerade.Remove('ReviewTarget');$masquerade.Worktree=$controllerSource.Worktree;$masquerade.Label='synthetic-controller-as-product'
+  Assert-Throws { & $controllerLauncher @masquerade } 'controller source review requires -ReviewTarget controller' 'tracked controller source cannot masquerade as product review'
+  $forecastPath=Join-Path $env:CHASE_SETS_ROUTING_DATA_ROOT 'capacity-forecast.json'
+  $now=[datetimeoffset]::UtcNow
+  $forecast=[ordered]@{format='capacity-forecast/v1';mode='active';generatedAt=$now.AddMinutes(-1).ToString('o');staleAfter=$now.AddMinutes(14).ToString('o');decisionDigest='fedcba9876543210'
+    providers=@{codex=@{state='conserve'};claude=@{state='spend'}};balance=@{toward='claude';steps=1}}
+  [IO.File]::WriteAllText($forecastPath,($forecast|ConvertTo-Json -Depth 20),[Text.UTF8Encoding]::new($false))
+  try {
+    $flipChild=Join-Path $testRoot 'controller-flip-child.ps1'
+    $flipStarted=Join-Path $controllerRuntime 'controller-flip-started.txt'
+    [IO.File]::WriteAllText($flipChild,"param([string]`$StartedPath)`n[IO.File]::AppendAllText(`$StartedPath,""started``n"")`n[void][Console]::In.ReadToEnd()`nWrite-Output '{""type"":""result"",""subtype"":""success"",""is_error"":false,""result"":""SYNTHETIC_CONTROLLER_STARTED""}'`nexit 0`n",[Text.UTF8Encoding]::new($false))
+    $flip=$controllerArgs.Clone();$flip.Remove('PrepareRoute');$flip.Label='synthetic-controller-flip'
+    $flip.TestArgumentList=@('-NoProfile','-NonInteractive','-File',$flipChild,$flipStarted)
+    $prepareFlip=$flip.Clone();$prepareFlip.PrepareRoute=$true
+    function Get-ControllerReviewInventory {
+      @(
+        foreach($root in @($controllerSubject.Root,$controllerRuntime,$controllerTemp,$env:CHASE_SETS_ROUTING_DATA_ROOT)) {
+          "$root|$(Get-AdmissionPathInventory $root)"
+        }
+        foreach($file in @($prompt,$flipChild)) {
+          "$file|$(Get-AdmissionSha256 ([IO.File]::ReadAllBytes($file)))"
+        }
+      ) -join "`n"
+    }
+    $beforeInventory=Get-ControllerReviewInventory
+    $preparedFlip=& $controllerLauncher @prepareFlip | ConvertFrom-Json -DateKind String
+    Assert-True ($preparedFlip.prepared -and $preparedFlip.harness -ceq 'claude' -and $preparedFlip.model -ceq 'claude-opus-5-5' -and
+      $preparedFlip.placement -ceq 'override-Todd' -and $preparedFlip.reviewArtifact -ceq 'code' -and $preparedFlip.capacityFlip.to.harness -ceq 'claude') 'controller route inspection resolves the capacity flip without a prelog'
+    $afterInventory=Get-ControllerReviewInventory
+    $inventoryDelta=Compare-Object @($beforeInventory -split "`n") @($afterInventory -split "`n") | Format-List | Out-String
+    Assert-True ($beforeInventory -ceq $afterInventory) "route inspection changed LKG, snapshot, ledger, output, ownership, prompt or child inventory: $inventoryDelta"
+    Assert-True (-not (Test-Path -LiteralPath $flipStarted)) 'route inspection started an inert child'
+    & $controllerLauncher @flip | Out-Null
+    $flipOutput=Get-Content -LiteralPath (Join-Path $controllerRuntime 'synthetic-controller-flip.jsonl') -Raw
+    Assert-True ($LASTEXITCODE -eq 0 -and @(Get-Content -LiteralPath $flipStarted).Count -eq 1 -and
+      [regex]::Matches($flipOutput,'SYNTHETIC_CONTROLLER_STARTED').Count -eq 1) 'inert flipped controller reviewer did not start exactly once'
+    $v3=@(Get-Content -LiteralPath (Join-Path $controllerRuntime 'dispatch-log.jsonl') | ConvertFrom-Json -DateKind String | Where-Object {$_.transcript -ceq 'synthetic-controller-flip.jsonl'})
+    Assert-True ($v3.Count -eq 1 -and $v3[0].issue -eq 263 -and $v3[0].dispatchRoutingSchema -ceq 'watchdog-dispatch-routing/v3' -and
+      $v3[0].harness -ceq 'claude' -and $v3[0].model -ceq 'claude-opus-5-5' -and $v3[0].placement -ceq 'override-Todd' -and
+      $v3[0].capacityFlip.to.placement -ceq 'override-Todd' -and (Test-DispatchRoutingLedgerEvidence $v3[0])) 'flipped controller launch lost canonical v3 capacity evidence'
+    Assert-True ((Get-FileHash (Join-Path $controllerRuntime 'synthetic-controller-flip.capacity-forecast.json')).Hash -ceq (Get-FileHash $forecastPath).Hash) 'flipped controller launch did not retain the consumed forecast bytes'
+    Assert-True (-not (Test-Path $controllerLog)) 'flipped controller launch created strict prelog history'
+    Write-Output 'PASS inert controller flip, v3 override-Todd evidence, forecast snapshot and route inspection zero writes'
+  } finally {
+    Remove-Item -LiteralPath $forecastPath -Force
+  }
   Write-Output 'PASS controller review launches without strict tuple; explicit head match and no-write route inspection retained'
+  if($Part -ceq 'controller-review'){return}
   if (& $runPart 'refusal-foundation') {
   $refusalFoundationTimer=Start-DispatchCase 'refusal-foundation' 'refusal-foundation'
   try {

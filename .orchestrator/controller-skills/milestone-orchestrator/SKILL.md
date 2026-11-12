@@ -296,7 +296,9 @@ any other quota window, not as a share rule. Respect quota windows and
 role; calibration separates active flips.
 
 Controller reviews launch directly, without a strict prelog or route
-preparation. Ordinary and controller changes use the same five-concept receipt:
+preparation. Ordinary and controller changes use the same five-concept receipt.
+Controller launch attribution is `-LaneRole review -ReviewTarget controller
+-Issue <positive issue>`, not a receipt field. The receipt concepts are
 PR, reviewed head, reviewer model, verdict and finding counts. The latest valid
 review for the current head supplies the verdict; a later PASS replaces an
 earlier non-PASS without a tree-identical recut. Legacy receipts remain readable.

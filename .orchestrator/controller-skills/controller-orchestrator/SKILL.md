@@ -65,6 +65,8 @@ controller battery runs only in a window with no product heavy work queued.
 3. Get one focused review from a fresh session that did not author the change.
    Model-family pairing and strict dispatch prelogs are not required. Record
    only the PR, reviewed head, reviewer model, verdict and finding counts.
+   A controller review launch supplies `-LaneRole review -ReviewTarget controller
+   -Issue <positive issue>` for capacity attribution, not as receipt fields.
    Later changed bytes receive a delta review, not another complete sweep.
    The latest valid review of the current head supersedes an older non-PASS;
    never make a tree-identical recut just to escape a receipt. Mechanical

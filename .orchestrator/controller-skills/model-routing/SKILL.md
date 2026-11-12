@@ -360,7 +360,9 @@ for every role. Active flips and proven same-config continuations remain
 separate calibration cells; ambiguous or unbound joins never enter a cohort.
 
 Controller reviews launch directly through `dispatch-lane.ps1`, like product
-reviews. No strict prelog or route preparation is required. Use the same
+reviews. No strict prelog or route preparation is required. Supply
+`-LaneRole review -ReviewTarget controller -Issue <positive issue>` attribution.
+The issue is a launch/capacity input, not another required receipt field. Use the
 five-concept PR receipt: PR, reviewed head, reviewer model, verdict and finding
 counts. The reviewer is a fresh non-author session; enqueue still requires an
 exact live-head match. Legacy strict receipts remain readable audit evidence.

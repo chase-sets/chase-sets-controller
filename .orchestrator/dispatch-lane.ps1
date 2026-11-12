@@ -75,9 +75,8 @@ param(
   [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$')][string]$ReviewerAttempt,
   [string]$AuthorModel,
   [ValidateSet('governing','shadow','advisory')][string]$ReviewAuthority,
-  # Review independence is per artifact: 'brief' excludes the brief's own
-  # author/repair history; 'code' excludes the code's author, repair and
-  # continuation history and ladders. A controller review defaults to 'code';
+  # Capacity attribution is per artifact. Independence is a fresh non-author
+  # session, not a model-family exclusion. A controller review defaults to 'code';
   # an unnamed product review artifact keeps its history unknown (no flip).
   [ValidateSet('','brief','code')][string]$ReviewArtifact = '',
   [Parameter(Mandatory)][string]$PromptFile,
@@ -850,6 +849,21 @@ if ($PSBoundParameters.ContainsKey('ToddRouteOverride')) {
   }
   $boundToddOverride=$true
 }
+if ($LaneRole -eq 'review') {
+  $controllerTree = @(& git -C $worktreeResolved ls-tree --name-only $admissionHead -- '.orchestrator/controller-release-battery.ps1')
+  if ($LASTEXITCODE -ne 0) { throw 'dispatch-lane: controller review target identity unreadable' }
+  if ($controllerTree.Count -gt 0 -and $ReviewTarget -cne 'controller') {
+    throw 'dispatch-lane: controller source review requires -ReviewTarget controller'
+  }
+}
+if ($ReviewTarget -ceq 'controller') {
+  if ($Issue -lt 1 -and $ControllerIssue -lt 1) { throw 'dispatch-lane: controller review requires positive -Issue or -ControllerIssue' }
+  if ($LaneRole -cne 'review' -or ($ControllerHead -and $ControllerHead -cne $admissionHead)) {
+    throw 'dispatch-lane: controller review must target the worktree HEAD'
+  }
+} elseif ($ControllerIssue -or $ControllerHead -or $AuthorAttempt -or $ReviewerAttempt -or $AuthorModel -or $ReviewAuthority) {
+  throw 'dispatch-lane: controller tuple inputs require -ReviewTarget controller'
+}
 # Planning and review lanes are eligible (Todd 4388/6098327249); row 0,
 # relaunches, launch resumes, integration paths and a bound Todd override stay
 # exempt before the forecast is read.
@@ -868,8 +882,7 @@ if ($null -ne $capacity.capacityFlip) {
 }
 $dispatchRouting.placement=$Placement
 # A fresh route's harness is final once the capacity flip is resolved. Refuse
-# a Claude settings conflict before any prepared route or strict tuple is
-# offered for prelogging, and before a dry-run plan.
+# a Claude settings conflict before optional route inspection or a dry-run plan.
 if (-not $InterruptedIntegrationResumePath -and $Harness -eq "claude") {
   Assert-ClaudeForegroundSettingsAgree $worktreeResolved
 }
@@ -891,13 +904,6 @@ function Write-DispatchPreparedRoute {
   $global:LASTEXITCODE = 0
 }
 
-if ($ReviewTarget -ceq 'controller') {
-  if ($LaneRole -cne 'review' -or ($ControllerHead -and $ControllerHead -cne $admissionHead)) {
-    throw 'dispatch-lane: controller review must target the worktree HEAD'
-  }
-} elseif ($ControllerIssue -or $ControllerHead -or $AuthorAttempt -or $ReviewerAttempt -or $AuthorModel -or $ReviewAuthority) {
-  throw 'dispatch-lane: controller tuple inputs require -ReviewTarget controller'
-}
 if ($PrepareRoute) { Write-DispatchPreparedRoute; return }
 
 # --- output stem, clobber guard ----------------------------------------------
@@ -1179,6 +1185,7 @@ try {
   if ($LaneRole -cin @('implementation','planning','review','decision')) {
     $routingIssue = @{}
     if ($PSBoundParameters.ContainsKey('Issue')) { $routingIssue.Issue = $Issue }
+    elseif ($ReviewTarget -ceq 'controller') { $routingIssue.Issue = $ControllerIssue }
     # Every role writes the v3 routing row with its five capacity fields.
     $routingSchema = 'watchdog-dispatch-routing/v3'
     $capacityEvidence = @{CapacityForecastStatus=$capacity.capacityForecastStatus;CapacityDecisionDigest=$capacity.capacityDecisionDigest

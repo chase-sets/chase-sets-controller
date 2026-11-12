@@ -18,6 +18,27 @@ try {
   Assert-Receipt ((Get-ReviewReceiptValidation $row).valid) 'minimal blocking receipt is unreadable'
   Assert-Receipt ($row.findings.nonBlocking -eq 0 -and $row.findings.candidates -eq 0) 'optional counts must default to zero'
   Assert-Receipt (-not $row.PSObject.Properties['reviewerAttempt'] -and -not $row.PSObject.Properties['completeSweep']) 'legacy bookkeeping leaked into minimal receipt'
+  $telemetryLog=Join-Path $root 'telemetry.jsonl'
+  $telemetry=@{Issue=263;AuthorModel='gpt-6-astra';AuthorEffort='medium';Effort='high';EffortUsed='high';Row='11';Placement='provisional';Harness='codex'
+    Lane='synthetic-receipt-lane';LaneRole='review';Transcript='synthetic-review.jsonl';Note='Synthetic telemetry preserves Case and spelling';ReviewerPatch=$false}
+  & $logger -Log dispatch -Kind dispatch -Issue 263 -Lane $telemetry.Lane -LaneRole review -Model gpt-6.1-sol -OutFile $telemetryLog -NoBoard | Out-Null
+  $end=[datetimeoffset]::UtcNow.ToString('o')
+  & $logger -Log dispatch -Kind review-complete -Pr 263 -ReviewedHead $headA -Model gpt-6.1-sol -Outcome PASS -Blocking 0 @telemetry `
+    -ObservedEndAt $end -ObservedEvidence 'report-mtime:synthetic-report.txt' -OutFile $telemetryLog -NoBoard | Out-Null
+  $withTelemetry=Get-Content $telemetryLog -Tail 1 | ConvertFrom-Json -DateKind String
+  foreach($field in $telemetry.Keys) {
+    $name=[char]::ToLowerInvariant($field[0]) + $field.Substring(1)
+    Assert-Receipt ($withTelemetry.$name -ceq $telemetry[$field]) "optional telemetry did not round trip: $field"
+  }
+  Assert-Receipt ($withTelemetry.observedEndAt -ceq $end -and $withTelemetry.observedEvidence -ceq 'report-mtime:synthetic-report.txt') 'observed lane end did not round trip'
+  $withoutTelemetry=$withTelemetry.PSObject.Copy()
+  foreach($field in @($telemetry.Keys)+@('ObservedEndAt','ObservedEvidence')) {
+    $withoutTelemetry.PSObject.Properties.Remove(([char]::ToLowerInvariant($field[0]) + $field.Substring(1)))
+  }
+  $module=Get-Module review-head-contract
+  $withFingerprint=& $module {param($r) Get-ReceiptFingerprint $r} $withTelemetry
+  $withoutFingerprint=& $module {param($r) Get-ReceiptFingerprint $r} $withoutTelemetry
+  Assert-Receipt ($withFingerprint -ceq $withoutFingerprint -and (Get-ReviewReceiptValidation $withoutTelemetry).valid) 'optional telemetry changed receipt authority or fingerprint'
   foreach($count in @('Candidates','NonBlocking')) {
     $optional=@{}; $optional[$count]=-1; $refused=$false
     try { & $logger -Log dispatch -Kind review-complete -Pr 263 -ReviewedHead $headA -Model gpt-6.1-sol -Outcome PASS -Blocking 0 @optional -OutFile $log -NoBoard | Out-Null }
@@ -56,7 +77,12 @@ try {
   Assert-Receipt ($parseErrors.Count -eq 0) 'dispatcher does not parse'
   $guards=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith("if (`$ReviewTarget -ceq 'controller') {")},$false))
   Assert-Receipt ($guards.Count -eq 1) 'controller target guard missing or duplicated'
-  $ReviewTarget='controller'; $LaneRole='review'; $ControllerHead=$null; $admissionHead=$headA
+  $ReviewTarget='controller'; $LaneRole='review'; $ControllerHead=$null; $admissionHead=$headA; $Issue=263; $ControllerIssue=0
+  & ([scriptblock]::Create($guards[0].Extent.Text))
+  $Issue=0; $refused=$false
+  try { & ([scriptblock]::Create($guards[0].Extent.Text)) } catch { $refused=$_.Exception.Message -like '*requires positive -Issue or -ControllerIssue*' }
+  Assert-Receipt $refused 'controller review accepted missing issue attribution'
+  $ControllerIssue=263
   & ([scriptblock]::Create($guards[0].Extent.Text))
   $ControllerHead=$headB; $refused=$false
   try { & ([scriptblock]::Create($guards[0].Extent.Text)) } catch { $refused=$_.Exception.Message -like '*must target the worktree HEAD*' }

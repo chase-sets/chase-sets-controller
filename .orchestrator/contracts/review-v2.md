@@ -23,6 +23,9 @@ model, verdict and finding counts. Record it with
 No contract marker, sweep flag, author identity, repair owner, attempt tuple,
 prelog or route preparation is required. Legacy receipts remain readable audit
 evidence without making their fields mandatory for new receipts.
+Controller review dispatches use `-LaneRole review -ReviewTarget controller
+-Issue <positive issue>` for ordinary capacity and artifact attribution, not
+as receipt fields or a review prelog.
 
 Enqueue requires the live head to equal the reviewed head. The latest valid
 review of that head supplies the verdict. A later PASS replaces an earlier
@@ -72,13 +75,16 @@ conflict resolution receives a delta review over only the resolved hunks and
 their direct callers; it is never promoted to
 a fresh complete sweep merely because the rebase changed the commit SHA.
 
-For a controller repair, only a governing `BLOCK_FIXABLE` predecessor with at
+The controller repair `-BaselineHead` shortcut is legacy strict-history-only
+compatibility. Only a legacy governing `BLOCK_FIXABLE` predecessor with at
 least one named finding may select the ancestor head as the release-battery
 `-BaselineHead`. A test/skill/contract-only repair diff selects the prose plan;
 any runtime-script change selects the full plan. The initial candidate always
 uses the installed controller baseline and full runtime proof. Malformed,
 missing, non-ancestor, non-fixable, or finding-less predecessor evidence cannot
-reduce the battery scope.
+reduce the battery scope. New minimal PR repair receipts do not supply this
+legacy shortcut: use the normal installed baseline and full plan, with local
+checks sized to the changed surface and hosted CI as the proof.
 
 ## Blocking finding
 

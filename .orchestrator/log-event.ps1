@@ -888,6 +888,14 @@ if ($toddAction) {
     pr=[int]$rawPr; reviewedHead=$ReviewedHead; model=$Model; outcome=$Outcome
     findings=[ordered]@{blocking=$Blocking; candidates=$Candidates; nonBlocking=$NonBlocking}
   }
+  # Preserve optional telemetry for cost/configuration and lane-time consumers.
+  # None of these fields participates in PR review authority or its fingerprint.
+  foreach ($field in @('Issue','AuthorModel','AuthorEffort','Effort','EffortUsed','Row','Placement','Harness','Lane','LaneRole','Transcript','Note')) {
+    if ($PSBoundParameters.ContainsKey($field)) {
+      $entry[([char]::ToLowerInvariant($field[0]) + $field.Substring(1))] = $PSBoundParameters[$field]
+    }
+  }
+  if ($PSBoundParameters.ContainsKey('ReviewerPatch')) { $entry.reviewerPatch=[bool]$ReviewerPatch }
 } elseif ($strictController) {
   $schema = if ($controllerCorrection) { "controller-review-audit-correction/v1" } elseif ($strictRoutingPresent) {
     if ($Kind -eq "dispatch") { "controller-review-dispatch/v2" } else { "controller-review-receipt/v2" }
