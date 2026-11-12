@@ -100,7 +100,9 @@ landing-preflight/v1
   function Assert-Refused([string]$Tag, [string]$Expected) {
     $result = Invoke-Installer $Tag
     Assert-True ($result.ExitCode -ne 0) "installer should refuse $($Tag): $Expected"
-    $plainOutput = ($result.Output -replace '(?m)^\s*\|\s?', '') -replace '\s+', ' '
+    # Native ErrorRecords can flatten wrapped display lines before capture.
+    # Strip only whitespace-delimited display bars, keeping the refusal text.
+    $plainOutput = ($result.Output -replace '(?m)(?:^|\s)\|(?=\s)', ' ') -replace '\s+', ' '
     Assert-True ($plainOutput -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output)"
     $result
   }
