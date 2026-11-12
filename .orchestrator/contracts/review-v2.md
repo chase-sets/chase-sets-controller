@@ -32,11 +32,32 @@ review of that head supplies the verdict. A later PASS replaces an earlier
 non-PASS; a new reviewed head needs no tree-identical recut to escape an old
 verdict. Re-read only changed bytes and their direct callers after a repair.
 
+## Planning/review handoff
+
 A lane must not launch model CLIs or subprocess reviewers itself; any required
-independent review returns to the host for a canonical attributed dispatch.
-A lane that cannot obtain a fresh non-author review returns the scope as
-`PENDING_HOST_REVIEW`, a handoff rather than a semantic verdict. Do not invent
-a verdict or launch an unapproved provider fallback.
+independent review returns to the host for a canonical attributed dispatch after
+full artifact history and row-slot admission checks. Output from a bypass is
+non-governing evidence, never review or admission authority. An
+`unsupported_encrypted_delegation` adapter failure followed by an
+attempted native-CLI fallback must be reported as `PENDING_HOST_REVIEW`,
+never a semantic verdict. Do not execute
+that fallback. Report the failure, required review scope and complete author/repair
+history to the host. Only a host-dispatched eligible review can supply independent
+review authority; record its exact dispatch/receipt binding, never invent a verdict.
+`PENDING_HOST_REVIEW` is a handoff, not a review disposition or semantic receipt.
+
+Count every in-body brief repair in that model's artifact repair history. If no
+admitted independent brief reviewer remains, never add a sweep or cleanse history.
+For a nonterminal, outcome/decision/acceptance-preserving repair, the host may apply
+FINAL `brief-sweep2-authority-decision-r1`'s standing proof route: bind the completed
+repair, current body/dependencies and full findings in a causal exception record;
+retain trusted readiness and ordinary admission; use a row-qualified author and a
+fresh-session reviewer on the row's policy slot for one complete exact-head implementation
+review that challenges the whole brief and all findings before ready/landing.
+This is not a brief semantic PASS. Terminal re-entry, changed semantics,
+missing authority or no eligible implementation reviewer remain outside this
+route and return to independent decision. No attempt, blocking-round or landing
+rule changes.
 
 ## Disposition
 
