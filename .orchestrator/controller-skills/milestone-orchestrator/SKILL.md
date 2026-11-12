@@ -687,6 +687,8 @@ query. The host decides the next step; no independent step-back review,
 threshold decision lane, or threshold-decision lifecycle row is required.
 This rule never parks work or asks Todd for an attempt ceiling. It does not
 reset consumed attempts or relax paid or one-shot external-action limits.
+This step-back takes precedence even if other findings are shrinking while
+the same failure persists.
 
 Semantic implementation G1 identity and attempt counts persist across repair.
 The lane name identifies the current author or reviewer execution; it is unique
@@ -948,12 +950,13 @@ the current priority while a question is open. Process decisions never become
 Every other decision stays with agents:
 
 - **The host decides** non-Todd process questions directly and logs one
-  `decision-resolved` row with its reasoning. These include acceptance-criteria
-  adjustments inside accepted product scope, repairs, step-backs, proof-route
+  `decision-resolved` row with its reasoning. These include repairs, step-backs, proof-route
   substitutions, bounded capture allowances, staging data repairs and
   cross-lineage sequencing. Simplify a non-hard process block, say why, and
   continue; do not dispatch a decision lane or request a second independent
   ruling to authorize the process choice.
+  Process simplification never weakens accepted acceptance criteria or changes
+  the accepted product outcome; those are not process permissions.
 - **A decision lane is optional** for a genuine product, domain, legal,
   provider-contract, UX, data or architecture tradeoff inside accepted product
   scope, not for permission to carry out an in-scope process step.

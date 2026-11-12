@@ -56,6 +56,7 @@ $script:sectionRules = @(
   @(7, 'When the same failure persists across three consecutive heads, the host steps back: replan, change the approach, or ask Todd only if product priority or scope must change (§11).'),
   @(7, 'This rule never parks work or asks Todd for an attempt ceiling.'),
   @(7, 'It does not reset consumed attempts or relax paid or one-shot external-action limits.'),
+  @(7, 'This step-back takes precedence even if other findings are shrinking while the same failure persists.'),
   @(12, 'No artifact parks on attempts'),
   @(11, 'Todd receives exactly two kinds of request'),
   @(11, 'A decision is one comment on #4388 only when it is a product priority or scope question for Todd.'),
@@ -68,6 +69,7 @@ $script:sectionRules = @(
   @(11, '**A decision lane is optional** for a genuine product, domain, legal, provider-contract, UX, data or architecture tradeoff inside accepted product scope'),
   @(11, 'do not dispatch a decision lane or request a second independent ruling to authorize the process choice.'),
   @(11, 'Production/money safety, secrets and TCGplayer no contact/no credentials are never process exceptions.'),
+  @(11, 'Process simplification never weakens accepted acceptance criteria or changes the accepted product outcome; those are not process permissions.'),
   @(11, 'It goes to Todd only as a priority or scope question or a packaged operator action.'),
   @(11, 'Escalate to Todd only when a tradeoff would change product priority or accepted product scope.'),
   @(11, 'The existing Todd-reserved rules are unchanged: host rotation (§2) and reclaiming unrecognized worktrees (§9).'),
@@ -174,6 +176,8 @@ $contractMutants = [ordered]@{
 
 $mutants = [ordered]@{
   "same-failure-trigger-changed" = $skill.Replace('three consecutive heads', 'four unrelated attempts')
+  "shrinking-findings-avoid-step-back" = Remove-Phrase $skill 'This step-back takes precedence even if other findings are shrinking while the same failure persists.'
+  "process-choice-weakens-acceptance" = Remove-Phrase $skill 'Process simplification never weakens accepted acceptance criteria or changes the accepted product outcome; those are not process permissions.'
   "hard-boundaries-removed" = Remove-Phrase $skill 'Production/money safety, secrets and TCGplayer no contact/no credentials are never process exceptions.'
   "process-choice-requires-lane" = Remove-Phrase $skill 'do not dispatch a decision lane or request a second independent ruling to authorize the process choice.'
   "genuine-tradeoff-route-removed" = Remove-Phrase $skill '**A decision lane is optional**'

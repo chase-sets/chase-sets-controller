@@ -99,8 +99,7 @@ work, not parked work.
 ## Recovery level and re-entry
 
 Every planning-repair dispatch names the recovery level the host assigned
-(milestone-orchestrator section 7). A process step-back needs no independent
-decision lane:
+(milestone-orchestrator section 7):
 
 - `ISSUE`: repair or replace this brief.
 - `SET`: re-cut this issue together with the named siblings that share the
@@ -111,6 +110,7 @@ decision lane:
 
 A product scope conflict is not a planning disposition. Report it under
 `RESIDUAL_DECISIONS` for one section 11 question and finish everything else.
+A process step-back needs no independent decision lane.
 
 A replan of a previously stopped artifact carries exactly this ordered section,
 with each label appearing once and carrying a non-space payload:
