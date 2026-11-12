@@ -295,17 +295,11 @@ any other quota window, not as a share rule. Respect quota windows and
 `newLaneAllowance`. Dispatch v3 records all five capacity fields for every
 role; calibration separates active flips.
 
-A strict controller review is prepared, prelogged, then launched, in that
-order: run `dispatch-lane.ps1 -PrepareRoute` with the full review request,
-prelog the returned `strictPrelogV1` through `log-event.ps1` (map `reviewerModel`
-to `-Model`, with `-Kind dispatch -LaneRole review`). Governing receipts remain
-v1 until all terminal/install consumers support v2. Launch the same request.
-A launch refusing `STRICT_PRELAUNCH_TUPLE_REQUIRED` voids never-launched prelogs
-through the closed `controller-review-prelog-void/v1` row, naming each voided or
-refused hash, with no launch output, snapshot, ownership record, v3 row or
-process. A prelog void supplies no review authority. Re-prepare with a fresh
-`-Label` and `-ReviewerAttempt`; the same seat is allowed. Other refusals and
-preparation void nothing.
+Controller reviews launch directly, without a strict prelog or route
+preparation. Ordinary and controller changes use the same five-concept receipt:
+PR, reviewed head, reviewer model, verdict and finding counts. The latest valid
+review for the current head supplies the verdict; a later PASS replaces an
+earlier non-PASS without a tree-identical recut. Legacy receipts remain readable.
 
 Every dispatch uses `.orchestrator/dispatch-lane.ps1`. Never author a one-off
 launcher. Every implementation call supplies its exact `-Row` and `-Placement`;
@@ -558,7 +552,7 @@ Reviewer exhaustion never parks or stalls an artifact (4388/6022146271). When
 choosing a reviewer, the host dispatches the row's policy slot regardless of
 which model authored or repaired the exact artifact. The reviewer is a fresh
 lane and session with no shared transcript or conversation state with the
-author lane, and the receipt discloses earlier participation in the lineage.
+author lane. No ineligible-session list or model-family pairing is required.
 This is never self-review. No lane reviews its own output in the same session.
 
 Every non-trivial PR receives independent review on its exact head. The injected
@@ -620,9 +614,9 @@ days. Outcomes are:
 Only confirmed correctness, security, or objective quality findings block;
 the objective sub-cases are the ones `contracts/quality-v2.md` states per
 pair side, and a side blocks only on its reproducible sub-case at the weight
-its profile sets. Every review receipt carries the `G0` gate answer, the
-quality profile, and a two-sided verdict on all twelve pairs of
-`contracts/quality-v2.md`, one line per key. Until the launcher
+its profile sets. Quality analysis supports the findings, not extra mandatory
+receipt fields. A review receipt needs only PR, reviewed head, reviewer model,
+verdict and finding counts. Until the launcher
 injects that contract, the review dispatch names its path at the container
 head beside `contracts/review-v2.md`. A blocker includes an
 executed reproduction, root cause, exact surface, bounded remedy, regression

@@ -250,7 +250,7 @@ $script:requiredMilestoneStatements = @(
   'No artifact parks on attempts',
   'The #6026 protected sweep runs only after a landing that touches its footprint and at most once per 24 hours',
   'Only confirmed correctness, security, or objective quality findings block',
-  'Every review receipt carries the `G0` gate answer, the quality profile, and a two-sided verdict on all twelve pairs of `contracts/quality-v2.md`, one line per key.',
+  'A review receipt needs only PR, reviewed head, reviewer model, verdict and finding counts.',
   'a side blocks only on its reproducible sub-case at the weight its profile sets',
   'Non-blocking findings carry stable IDs and stay in the receipt; the controller files no issue, debt slice, or weekly review from them',
   'A non-blocking finding never delays landing.',
@@ -408,8 +408,8 @@ $noiseBreakerMutant = $milestone.Replace("retry with backoff`nand open no breake
 Add-MutantClaim "noise-breaker-reintroduced" $true (Test-PreservedSections $noiseBreakerMutant $baseMilestone) "v2.58 tooling noise opens no breaker"
 $sweepCadenceMutant = $milestone.Replace("at most once per 24 hours", "every two hours", [StringComparison]::Ordinal)
 Add-MutantClaim "protected-sweep-fixed-cadence" $true (Test-PreservedSections $sweepCadenceMutant $baseMilestone) "#6026 footprint-triggered, max-once-24h cadence"
-$qualityVerdictMutant = $milestone.Replace("two-sided verdict on all twelve pairs", "one-sided verdict on any pair", [StringComparison]::Ordinal)
-Add-MutantClaim "quality-verdict-partial" $true (Test-PreservedSections $qualityVerdictMutant $baseMilestone) "v2.56 two-sided verdict on all twelve pairs"
+$qualityVerdictMutant = $milestone.Replace("needs only PR, reviewed head, reviewer model", "needs only PR, author model", [StringComparison]::Ordinal)
+Add-MutantClaim "review-receipt-drops-reviewed-head" $true (Test-PreservedSections $qualityVerdictMutant $baseMilestone) "minimal receipt retains exact reviewed-head identity"
 $qualityWeightMutant = $milestone.Replace("its profile sets", "any profile allows", [StringComparison]::Ordinal)
 Add-MutantClaim "quality-weight-ignored" $true (Test-PreservedSections $qualityWeightMutant $baseMilestone) "v2.56 profile weight governs blocking"
 $landingStallMutant = $milestone.Replace("is a controller defect: enqueue", "is a routine refusal: enqueue", [StringComparison]::Ordinal)
@@ -611,7 +611,7 @@ Assert-6997 (-not $routingCompact.Contains("D = 0.22", [StringComparison]::Ordin
 Assert-6997 ($routingCompact.Contains('read `blockRateByRowConfig` by author configuration and row', [StringComparison]::Ordinal)) "v4.13 rebalance does not read per-configuration block rates"
 Assert-6997 ($routingCompact.Contains("Sol 6.1 medium takes the next row-4 dispatch after Astra, then every third once Astra quota ends, until n=20", [StringComparison]::Ordinal) -and $routingCompact.Contains("threshold: no worse than Sol 6.1 high row 4 once both have n>=20", [StringComparison]::Ordinal)) "v4.16 lacks the fresh same-version row-4 effort-step quota"
 Assert-6997 ($routingCompact.Contains("Knowledge or taste failure", [StringComparison]::Ordinal) -and $routingCompact.Contains("Effort does not buy knowledge", [StringComparison]::Ordinal)) "v4.13 escalation does not branch by failure mode"
-Assert-6997 ($routingCompact.Contains('Log `authorEffort` on every review-complete and verify-complete receipt', [StringComparison]::Ordinal)) "v4.13 does not require author effort on receipts"
+Assert-6997 ($routingCompact.Contains('PR review receipts need only PR, reviewed head, reviewer model, verdict and finding counts, never author-effort bookkeeping.', [StringComparison]::Ordinal)) "review receipt still requires author-effort bookkeeping"
 Assert-6997 ($routingCompact.Contains("## Price bands and effort ladders", [StringComparison]::Ordinal) -and $routingCompact.Contains("never a routing input", [StringComparison]::Ordinal)) "v4.13 lacks the price-band and effort-ladder rule"
 Assert-6997 ($routingCompact.Contains('and its id is derived, never named: `<exact selector>/<effort>`', [StringComparison]::Ordinal)) "v4.13 lacks the derived configuration-id rule"
 $matrixDocument = Get-RepoText ".orchestrator/controller-skills/model-routing/capability-matrix.json" | ConvertFrom-Json -Depth 20

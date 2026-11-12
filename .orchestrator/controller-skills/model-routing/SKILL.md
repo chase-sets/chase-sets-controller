@@ -16,14 +16,14 @@ when the same family wrote or repaired the artifact. Authorship never forces
 Astra, Fable or a third model. Reviewer independence means a fresh lane and
 session with no shared transcript or conversation state with the author lane;
 a lane never reviews its own output within the same session. Exact-head
-receipts, full-history inspection and all other review gates remain required.
+receipts retain the reviewed head; no ineligible-session list is required.
 
 Version 4.27 (Todd, 2026-10-19, 4388/6268904121, 6109904570, 6229141245)
 moves rows 7, 14 and 15 to the routing-policy generation-4 slots, removes
 every Astra and Fable policy limit (share cap, row restriction, reserve,
 one-attempt rule and upper-tier authorship), and routes review and decision
-lanes to their policy slot regardless of authorship. `strictPrelogV1` binding
-and launcher-observed void recovery are unchanged. Onboarding a model remains
+lanes to their policy slot regardless of authorship. Controller review prelogs
+and launcher-observed void recovery are no longer required. Onboarding a model remains
 a data change. Release notes for v4.26 and earlier are in milestone-orchestrator's
 `references/rule-provenance-v2.24.md`.
 
@@ -111,10 +111,11 @@ name configurations, never a bare model or a bare effort level.
 
 Log every dispatch: task ID, exact reported model version, effort, `row:`,
 `placement: measured|provisional|override-<who>`, transcript, and expected USD
-(recorded, never binding). Log `authorEffort` on every review-complete and
+(recorded, never binding). Optional telemetry may log `authorEffort` on a
 verify-complete receipt (`log-event.ps1 -AuthorEffort`); a receipt's own
 `effort` is the reviewer's dial, and without the author's the receipt scores a
-model but not a configuration.
+model but not a configuration. PR review receipts need only PR, reviewed head,
+reviewer model, verdict and finding counts, never author-effort bookkeeping.
 Never transfer a veto, score, cost, benchmark, or verdict across model versions
 or between effort levels of one model. Exclude ambiguous family aliases and
 unresolved efforts instead of guessing.
@@ -358,16 +359,11 @@ The v3 dispatch row carries status, digest, active/shadow flip and skip reason
 for every role. Active flips and proven same-config continuations remain
 separate calibration cells; ambiguous or unbound joins never enter a cohort.
 
-A strict controller review is prepared, prelogged, then launched:
-`dispatch-lane.ps1 -PrepareRoute` runs the same admission, exemption and
-resolver, prints the final route and the strict tuple it will bind
-(`override-todd` when flipped) and writes nothing (no LKG cache, output,
-snapshot, ledger row or process). The host prelogs `strictPrelogV1` as specified
-in milestone-orchestrator section 5, then launches the original request.
-`STRICT_PRELAUNCH_TUPLE_REQUIRED` voids never-launched prelogs, naming each
-voided or refused hash, but creates no launch resources. Re-prepare with a fresh
-`-Label` and `-ReviewerAttempt`; the same seat is allowed. Preparation and other
-refusals void nothing; a prelog void supplies no review authority.
+Controller reviews launch directly through `dispatch-lane.ps1`, like product
+reviews. No strict prelog or route preparation is required. Use the same
+five-concept PR receipt: PR, reviewed head, reviewer model, verdict and finding
+counts. The reviewer is a fresh non-author session; enqueue still requires an
+exact live-head match. Legacy strict receipts remain readable audit evidence.
 
 The watchdog stays closed-table and never reads the forecast. A quota/session
 death keeps its configuration while its provider has a routable account. With

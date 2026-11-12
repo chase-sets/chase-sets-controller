@@ -291,9 +291,9 @@ function Invoke-PlanControl {
   Assert-BatteryTest (@($consumerInventory.consumers).Count-eq8-and@($consumerInventory.consumers.path)-cnotcontains'.orchestrator/controller-runtime-closure-census.ps1') `
     "controller review consumer census is not the closed exact eight-row set"
   $launcherConsumer=@($consumerInventory.consumers|Where-Object{$_.path-ceq'.orchestrator/dispatch-lane.ps1'})
-  Assert-BatteryTest ($launcherConsumer.Count-eq1-and$launcherConsumer[0].symbol-ceq'Reduce-ControllerReleaseReview'-and
-    $launcherConsumer[0].purpose-ceq'strict-controller-review-prelaunch'-and$launcherConsumer[0].ordinaryPrExemption-eq$true) `
-    "controller review launcher consumer must bind the strict reducer and preserve ordinary PR exemption"
+  Assert-BatteryTest ($launcherConsumer.Count-eq1-and$launcherConsumer[0].symbol-ceq'ReviewTarget'-and
+    $launcherConsumer[0].purpose-ceq'direct-controller-review-launch'-and$launcherConsumer[0].ordinaryPrExemption-eq$true) `
+    "controller review launcher must launch directly and preserve ordinary PR admission"
   Write-Output "PASS controller battery plan derives tracked tests/discriminators, includes direct checker, and prevents self-recursion"
 }
 

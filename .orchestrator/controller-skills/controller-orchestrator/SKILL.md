@@ -62,8 +62,13 @@ controller battery runs only in a window with no product heavy work queued.
    shared runtime that many tests read; tests that read private container
    history run with `GIT_ALTERNATE_OBJECT_DIRECTORIES` set to the container's
    `.git/objects` (read-only; never fetch private history into this clone).
-3. Get one independent review for a non-trivial change (another model family
-   where available). Mechanical findings are fixed directly.
+3. Get one focused review from a fresh session that did not author the change.
+   Model-family pairing and strict dispatch prelogs are not required. Record
+   only the PR, reviewed head, reviewer model, verdict and finding counts.
+   Later changed bytes receive a delta review, not another complete sweep.
+   The latest valid review of the current head supersedes an older non-PASS;
+   never make a tree-identical recut just to escape a receipt. Mechanical
+   findings are fixed directly.
 4. Scan the release tree: `git archive <sha>` to a new directory under
    `D:\Users\ToddS\Source\Repos\chase-sets-controller-split-scan\`, then
    `gitleaks dir <dir> --redact --no-banner --exit-code 0 --report-format json

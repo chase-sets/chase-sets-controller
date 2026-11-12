@@ -11,12 +11,9 @@ loop's declared optimization target — unmeasurable from its own logs.
 
 .EXAMPLE
 ./log-event.ps1 -Log dispatch -Kind review-complete -Pr 5597 -Outcome BLOCK_FIXABLE `
-  -Model gpt-6.1-sol -AuthorModel gpt-6-luna `
+  -Model gpt-6.1-sol `
   -ReviewedHead 0123456789abcdef0123456789abcdef01234567 `
-  -ReviewerAttempt review-5597-01 -AuthorAttempt author-5597-03 `
-  -ReviewContract review-contract/v2 -CompleteSweep -FindingIds F1,F2 `
-  -Blocking 2 -Candidates 2 -NonBlocking 0 -RepairOwner author `
-  -Note "all blockers probe-confirmed"
+  -Blocking 2 -NonBlocking 0
 #>
 [CmdletBinding()]
 param(
@@ -147,9 +144,8 @@ param(
   # how #5684 lost its successor: the disposition named #6105/#6106 in prose on
   # a closed PR, and nothing could join the two.
   [int]$Replacement,
-  # Required structured receipt for review-complete rows. Plain BLOCK is
-  # invalid: classify implementation-shaped findings as BLOCK_FIXABLE and
-  # specification/feasibility findings as BLOCK_REPLAN.
+  # Legacy contract and sweep metadata remain accepted, not required for PRs.
+  # Plain BLOCK is invalid: use BLOCK_FIXABLE or BLOCK_REPLAN.
   [ValidateSet("review-contract/v2")][string]$ReviewContract,
   # Planning-review receipts are a separate domain. Their reviewedHead is the
   # source artifact being planned from and never claims PR landing authority.
@@ -162,12 +158,10 @@ param(
   # lifecycle's terminal disposition (§7). Unscoped legacy rows are read as
   # pipeline, which is the conservative direction.
   [ValidateSet("artifact", "pipeline")][string]$BreakerScope,
-  # Exact controller release identity for controller-skill review receipts.
+  # Legacy controller review identity; new controller PRs use ReviewedHead.
   [ValidatePattern("^[a-f0-9]{40}$")][string]$ControllerHead,
-  # Ordinary PR review receipts are a separate exact-head authorization
-  # variant. Attempts are opaque identities supplied by the dispatch/launcher;
-  # model families, model names, and reviewer prose are never parsed to infer
-  # them. Controller-release receipts stay keyed only by ControllerHead.
+  # Exact PR head, for ordinary and controller reviews alike. Attempt fields
+  # below are retained for legacy callers, not mandatory receipt concepts.
   [ValidatePattern("^[a-f0-9]{40}$")][string]$ReviewedHead,
   [ValidatePattern("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")][string]$ReviewerAttempt,
   [ValidatePattern("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")][string]$AuthorAttempt,
@@ -575,6 +569,22 @@ $claimsPlanningReview = $Kind -ceq "review-complete" -and (
 )
 $planningReview = $claimsPlanningReview -and
   $LaneRole -ceq "planning" -and $PlanningContract -ceq "planning-repair/v1"
+$prReview = $Kind -ceq 'review-complete' -and $hasPr -and -not $claimsPlanningReview -and -not $ControllerHead
+if ($prReview) {
+  # PR receipts, including controller changes, need no dispatch bookkeeping.
+  $strictController = $false
+  if (-not (Test-SupportedPositivePr $rawPr) -or -not $ReviewedHead -or -not $Model -or
+      $Outcome -cnotin @('PASS','BLOCK_FIXABLE','BLOCK_REPLAN','SKIP') -or $Blocking -lt 0) {
+    throw 'review-complete requires positive -Pr, exact -ReviewedHead, -Model, -Outcome, and -Blocking'
+  }
+  if ($Outcome -cin @('PASS','SKIP') -and $Blocking -ne 0) { throw "$Outcome cannot carry blocking findings" }
+  if ($Outcome -cin @('BLOCK_FIXABLE','BLOCK_REPLAN') -and $Blocking -lt 1) { throw "$Outcome requires blocking findings" }
+  foreach ($count in @('Candidates','NonBlocking')) {
+    if ($PSBoundParameters.ContainsKey($count) -and [int]$PSBoundParameters[$count] -lt 0) { throw "review-complete requires nonnegative -$count" }
+  }
+  if (-not $PSBoundParameters.ContainsKey('Candidates')) { $Candidates = 0 }
+  if (-not $PSBoundParameters.ContainsKey('NonBlocking')) { $NonBlocking = 0 }
+}
 
 if ($PlanningContract -and $Kind -cne "review-complete") {
   throw "-PlanningContract is valid only for review-complete planning receipts"
@@ -630,7 +640,7 @@ if ($AuthorEffort -and -not $AuthorModel) {
   throw "-AuthorEffort requires -AuthorModel: an effort names a configuration only together with its exact model"
 }
 
-if ($Kind -eq "review-complete") {
+if ($Kind -eq "review-complete" -and -not $prReview) {
   $reviewOutcomes = @("PASS", "BLOCK_FIXABLE", "BLOCK_REPLAN", "SKIP")
   if ($Outcome -notin $reviewOutcomes) {
     throw "review-complete outcome '$Outcome' is invalid; use PASS, BLOCK_FIXABLE, BLOCK_REPLAN, or SKIP"
@@ -872,6 +882,12 @@ if ($toddAction) {
 } elseif ($controllerPrelogVoid) {
   $entry=[ordered]@{ts=$eventTs;kind=$Kind;controllerReviewSchema='controller-review-prelog-void/v1';issue=$Issue;controllerHead=$ControllerHead
     lane=$Lane;transcript=$Transcript;reviewerAttempt=$ReviewerAttempt;originalDispatchRawSha256=$OriginalDispatchRawSha256}
+} elseif ($prReview) {
+  $entry = [ordered]@{
+    ts=$eventTs; kind=$Kind; receiptSchema='exact-head-review-receipt/v2'
+    pr=[int]$rawPr; reviewedHead=$ReviewedHead; model=$Model; outcome=$Outcome
+    findings=[ordered]@{blocking=$Blocking; candidates=$Candidates; nonBlocking=$NonBlocking}
+  }
 } elseif ($strictController) {
   $schema = if ($controllerCorrection) { "controller-review-audit-correction/v1" } elseif ($strictRoutingPresent) {
     if ($Kind -eq "dispatch") { "controller-review-dispatch/v2" } else { "controller-review-receipt/v2" }

@@ -152,66 +152,23 @@ Assert-Mutant "dropped-disposition" { Test-Dispositions ($reviewContract -replac
 
 # --- 4. completion report fields the receipt validator requires ---------------
 
-$reportFieldForKey = @{
-  reviewContract = "REVIEW_CONTRACT_VERSION"; outcome = "DISPOSITION"; completeSweep = "COMPLETE_SWEEP"
-  reviewedHead = "EXACT_HEAD"; reviewerAttempt = "REVIEWER_ATTEMPT"; authorAttempt = "AUTHOR_ATTEMPT"
-  model = "REPORTED_MODEL"; findingIds = "FINDING_IDS"; findings = "FINDINGS"
-}
-# Keys the controller writes from the dispatch tuple, never from the report.
-$controllerSuppliedKeys = @("ts", "kind", "pr", "receiptSchema", "authorModel")
-
 function Test-ReportBlock([string]$Contract, [string]$Runtime) {
-  $compact = Compact-Text $Contract
-  foreach ($required in @(
-    'Semantic implementation identity and strict participant identity are separate.',
-    'The lane name identifies the current author or reviewer execution and is unique while live through ownership-v4, not globally single-use across historical receipts.',
-    'Author and reviewer values remain distinct inside one tuple, and its causal dispatch and terminal repeat the same exact issue/head/lane/transcript tuple.'
-  )) {
-    if (-not $compact.Contains($required)) { throw "ASSERTION FAILED: strict participant guidance missing: $required" }
-  }
   $block = [regex]::Match($Contract, '(?s)```text\r?\n(.*?)```').Groups[1].Value
-  $fields = @([regex]::Matches($block, "(?m)^([A-Z_]+):") | ForEach-Object { $_.Groups[1].Value })
-  $requiredText = [regex]::Match($Runtime, '(?s)\$required = @\((.*?)\)').Groups[1].Value
-  $required = @([regex]::Matches($requiredText, '"([A-Za-z]+)"') | ForEach-Object { $_.Groups[1].Value })
-  if ($required.Count -lt 10) { throw "ASSERTION FAILED: runtime required receipt keys unreadable" }
-  foreach ($key in $required) {
-    if ($controllerSuppliedKeys -ccontains $key) { continue }
-    if (-not $reportFieldForKey.ContainsKey($key)) { throw "ASSERTION FAILED: receipt key $key has no completion-report field" }
-    if ($fields -cnotcontains $reportFieldForKey[$key]) { throw "ASSERTION FAILED: completion report lacks $($reportFieldForKey[$key]) for receipt key $key" }
+  $fields = @([regex]::Matches($block, '(?m)^([A-Z_]+):') | ForEach-Object { $_.Groups[1].Value })
+  if (($fields -join ',') -cne 'PR,REVIEWED_HEAD,REVIEWER_MODEL,VERDICT,FINDING_COUNTS') {
+    throw 'ASSERTION FAILED: receipt must have exactly the five review concepts'
   }
-  if ($block -notmatch "(?m)^COMPLETE_SWEEP: true\r?$") { throw "ASSERTION FAILED: completion report must state COMPLETE_SWEEP: true" }
-  if ($Contract.Contains("COMPLETE_SWEEP: false")) { throw "ASSERTION FAILED: contract offers COMPLETE_SWEEP: false, which the runtime refuses as INCOMPLETE_SWEEP" }
-  if ($Runtime -notmatch 'completeSweep -ne \$true\) \{ \$errors\.Add\("INCOMPLETE_SWEEP"\)') { throw "ASSERTION FAILED: runtime no longer enforces completeSweep" }
+  if (-not $Runtime.Contains("exact-head-review-receipt/v2")) { throw 'ASSERTION FAILED: minimal runtime schema missing' }
+  if (-not (Compact-Text $Contract).Contains('fresh session that did not author the change')) { throw 'ASSERTION FAILED: fresh non-author review missing' }
+  if (-not (Compact-Text $Contract).Contains('live head to equal the reviewed head')) { throw 'ASSERTION FAILED: live-head binding missing' }
   $script:assertions += 1
 }
 
 Test-ReportBlock $reviewContract $reviewRuntime
-Assert-Mutant "report-drops-exact-head" { Test-ReportBlock ($reviewContract.Replace("EXACT_HEAD: <40-char sha>`r`n", "")) $reviewRuntime }
-Assert-Mutant "report-drops-live-lane-identity" { Test-ReportBlock ($reviewContract.Replace("unique while live", "reusable while live")) $reviewRuntime }
-Assert-Mutant "report-allows-partial-sweep" { Test-ReportBlock ($reviewContract.Replace("COMPLETE_SWEEP: true`r`nREVIEW_SCOPE", "COMPLETE_SWEEP: true | false`r`nREVIEW_SCOPE")) $reviewRuntime }
-Assert-Mutant "runtime-drops-sweep-guard" { Test-ReportBlock $reviewContract ($reviewRuntime.Replace('$errors.Add("INCOMPLETE_SWEEP")', '$null')) }
-
-function Test-StrictIdentityConsistency([string]$Contract, [string]$Skill) {
-  $contractText = Compact-Text $Contract
-  $skillText = Compact-Text $Skill
-  $identityRule = 'unique while live through ownership-v4, not globally single-use across historical receipts.'
-  if (-not $contractText.Contains($identityRule) -or -not $skillText.Contains($identityRule)) {
-    throw "ASSERTION FAILED: review contract and live skill do not share the lane-identity retirement rule"
-  }
-  if ($contractText.Contains('is globally single-use for one immutable review tuple') -or
-      $skillText.Contains('is globally single-use for one immutable review tuple')) {
-    throw "ASSERTION FAILED: retired global strict-participant identity remains live"
-  }
-  $script:assertions += 1
-}
-
-Test-StrictIdentityConsistency $reviewContract $milestoneText
-Assert-Mutant "contract-restores-global-strict-identity" {
-  Test-StrictIdentityConsistency ($reviewContract + "`r`nEach strict participant identity is globally single-use for one immutable review tuple.`r`n") $milestoneText
-}
-Assert-Mutant "skill-restores-global-strict-identity" {
-  Test-StrictIdentityConsistency $reviewContract ($milestoneText + "`r`nEach strict participant identity is globally single-use for one immutable review tuple.`r`n")
-}
+Assert-Mutant "report-drops-exact-head" { Test-ReportBlock ($reviewContract.Replace('REVIEWED_HEAD:', 'STALE_HEAD:')) $reviewRuntime }
+Assert-Mutant "report-adds-custody" { Test-ReportBlock ($reviewContract.Replace('PR:', "REVIEWER_ATTEMPT: required`nPR:")) $reviewRuntime }
+Assert-Mutant "report-drops-fresh-session" { Test-ReportBlock ($reviewContract.Replace('fresh session that did not author the change', 'same author session')) $reviewRuntime }
+Assert-Mutant "report-drops-live-head" { Test-ReportBlock ($reviewContract.Replace('live head to equal the reviewed head', 'any prior head')) $reviewRuntime }
 
 function Test-LegacyReviewDomainConsistency([string]$Skill, [string]$Runtime) {
   $skillText = Compact-Text $Skill
@@ -327,11 +284,7 @@ function Test-QualityKeys([string]$Quality, [string]$Review) {
   if (($keys -join ",") -cne ($listed -join ",")) { throw "ASSERTION FAILED: review contract verdict keys [$($listed -join ',')] differ from quality contract [$($keys -join ',')]" }
   if (-not (Compact-Text $verdict).Contains('answers the `G0` gate')) { throw "ASSERTION FAILED: review contract verdict no longer requires the G0 gate" }
   $block = [regex]::Match($Review, '(?s)```text\r?\n(.*?)```').Groups[1].Value
-  if ($block -notmatch "(?m)^QUALITY_VERDICT:\r?$") { throw "ASSERTION FAILED: completion report lacks QUALITY_VERDICT" }
-  $profileLine = "QUALITY_PROFILE: " + ($script:qualityProfiles -join " | ")
-  if (-not $block.Contains($profileLine)) { throw "ASSERTION FAILED: completion report QUALITY_PROFILE does not list the six profiles" }
-  if ($block -notmatch "(?m)^G0: PASS") { throw "ASSERTION FAILED: completion report lacks the G0 verdict line" }
-  if ($block -notmatch "(?m)^NON_BLOCKING_IDS:") { throw "ASSERTION FAILED: completion report lacks NON_BLOCKING_IDS" }
+  if ($block -match '(?m)^(QUALITY_VERDICT|QUALITY_PROFILE|G0|NON_BLOCKING_IDS):') { throw 'ASSERTION FAILED: quality analysis became mandatory receipt bookkeeping' }
   $script:assertions += 1
 }
 
@@ -362,10 +315,7 @@ Assert-Mutant "profile-row-dropped" { Test-QualityKeys ($qualityContract -replac
 Assert-Mutant "profile-weight-invented" { Test-QualityKeys ($qualityContract.Replace("| SCOPE | Med | High |", "| SCOPE | Ultra | High |")) $reviewContract }
 Assert-Mutant "gate-section-dropped" { Test-QualityKeys ($qualityContract.Replace("## Gate`r`n", "## Entry`r`n")) $reviewContract }
 Assert-Mutant "verdict-key-order-drift" { Test-QualityKeys $qualityContract ($reviewContract.Replace("READABILITY, TESTS", "TESTS, READABILITY")) }
-Assert-Mutant "report-drops-quality-verdict" { Test-QualityKeys $qualityContract ($reviewContract.Replace("QUALITY_VERDICT:`r`n", "")) }
-Assert-Mutant "report-drops-profile" { Test-QualityKeys $qualityContract ($reviewContract -replace '(?m)^QUALITY_PROFILE:.*\r?\n', '') }
-Assert-Mutant "report-drops-gate-line" { Test-QualityKeys $qualityContract ($reviewContract -replace '(?m)^G0: PASS.*\r?\n', '') }
-Assert-Mutant "report-drops-non-blocking-ids" { Test-QualityKeys $qualityContract ($reviewContract -replace '(?m)^NON_BLOCKING_IDS:.*\r?\n', '') }
+Assert-Mutant "report-restores-quality-bookkeeping" { Test-QualityKeys $qualityContract ($reviewContract.Replace('PR:', "QUALITY_VERDICT:`nPR:")) }
 
 # Policy-only boundary: pins are section-scoped and whitespace-insensitive.
 # Each negative control removes one permission boundary, not a runtime fixture.
@@ -428,11 +378,8 @@ function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
     Assert-Enforced ((Compact-Text $text).Contains('capacityShadowFlip')) 'capacity shadow policy is explicit'
     # #9282: planning and review lanes are capacity-eligible; the role exemption is removed from both skills.
     Assert-Enforced (-not (Compact-Text $text).Contains('Review/planning, row 0')) 'capacity role exemption removed (#9282)'
-    Assert-Enforced ((Compact-Text $text).Contains('override-todd')) 'strict controller tuples bind override-todd'
-    Assert-Enforced ((Compact-Text $text).Contains('prepared, prelogged, then launched')) 'strict review prepare-prelog-launch order'
-    Assert-Enforced ((Compact-Text $text).Contains('strictPrelogV1')) 'strict review exact v1 prelog (#9382)'
-    Assert-Enforced ((Compact-Text $text).Contains('voids never-launched prelogs')) 'strict refusal void recovery (#9382)'
-    Assert-Enforced ((Compact-Text $text).Contains('`-Label` and `-ReviewerAttempt`')) 'strict recovery uses fresh label and reviewer attempt (#9382)'
+    Assert-Enforced ((Compact-Text $text).Contains('five-concept')) 'review receipts use five concepts'
+    Assert-Enforced (-not (Compact-Text $text).Contains('prepared, prelogged, then launched')) 'strict review launch ceremony removed'
   }
   Assert-Enforced ((Compact-Text $Routing).Contains('Codex [3,13,10,4]')) 'capacity Codex ordered prefix retained'
   Assert-Enforced (-not (Compact-Text $Routing).Contains('Claude [13,10,4,5]')) 'capacity Claude prefix superseded (#9282)'
@@ -445,8 +392,8 @@ function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
 }
 $routingSkill=Read-Strict 'controller-skills/model-routing/SKILL.md'
 Test-CapacityPolicy $milestoneText $routingSkill
-Assert-Mutant 'strict-prelog-hand-projection-restored' {Test-CapacityPolicy ($milestoneText.Replace('strictPrelogV1','strictTuple')) $routingSkill}
-Assert-Mutant 'strict-prelog-void-recovery-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('voids never-launched prelogs','refuses without recovery'))}
+Assert-Mutant 'strict-prelog-ceremony-restored' {Test-CapacityPolicy ($milestoneText + ' prepared, prelogged, then launched') $routingSkill}
+Assert-Mutant 'five-concept-receipt-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('five-concept','strict-tuple'))}
 Assert-Mutant 'capacity-fresh-session-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'fresh\s+lane\s+and\s+session','same lane and session')) $routingSkill}
 Assert-Mutant 'capacity-role-exemption-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('lanes are eligible. Row 0, relaunches','lanes are eligible. Review/planning, row 0, relaunches'))}
 Assert-Mutant 'capacity-claude-prefix-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('Codex [3,13,10,4]','Claude [13,10,4,5] and Codex [3,13,10,4]'))}
@@ -463,7 +410,7 @@ Assert-Mutant 'fable-share-cap-restored' {Test-OrdinaryModelPolicy ($routingSkil
 Assert-Mutant 'fable-row-restriction-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Fable is eligible only for rows 7/14/15.')}
 Assert-Mutant 'third-model-authorship-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Authorship must use a third model.')}
 Assert-Mutant 'off-slot-reason-omitted' {Test-CapacityPolicy $milestoneText ([regex]::Replace($routingSkill,'Any lane\s+routed off its slot','A lane follows its slot'))}
-Assert-Mutant 'capacity-prepare-order-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'prepared,\s+prelogged,\s+then\s+launched','launched, then prelogged')) $routingSkill}
+Assert-Mutant 'capacity-strict-prelog-restored' {Test-CapacityPolicy ($milestoneText + ' prepared, prelogged, then launched') $routingSkill}
 function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
   # #9316: section 10 states the pacing condition; capacity-pacing.ps1 is its runtime counterpart.
   $section=[regex]::Match($Skill,'(?ms)^## 10\.[^\r\n]*\r?\n(.*?)(?=^## \d+\.|\z)')
