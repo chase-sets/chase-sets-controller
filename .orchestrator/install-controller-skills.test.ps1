@@ -103,7 +103,7 @@ landing-preflight/v1
     # Native ErrorRecords can flatten wrapped display lines before capture.
     # Strip only whitespace-delimited display bars, keeping the refusal text.
     $plainOutput = ($result.Output -replace '(?m)(?:^|\s)\|(?=\s)', ' ') -replace '\s+', ' '
-    Assert-True ($plainOutput -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output)"
+    Assert-True ($plainOutput -match [regex]::Escape($Expected)) "refusal should explain: $Expected; output=$($result.Output); plainJson=$($plainOutput | ConvertTo-Json -Compress); rawJson=$($result.Output | ConvertTo-Json -Compress)"
     $result
   }
   function Assert-Installed([string]$Tag, [string]$Commit) {
