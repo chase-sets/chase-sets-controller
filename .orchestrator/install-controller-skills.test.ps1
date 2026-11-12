@@ -300,6 +300,8 @@ landing-preflight/v1
   $controlDestination = Join-Path $sandbox 'control-live'
   $controlCodexRoot = Join-Path $sandbox 'control-codex-skills'
   & git clone --quiet --no-hardlinks $container $controlContainer
+  & git -C $controlContainer config user.email "installer-test@example.invalid"
+  & git -C $controlContainer config user.name "Controller installer test"
   & git -C $controlContainer remote remove origin
   [IO.File]::WriteAllText((Join-Path $controlContainer '.orchestrator/install-controller-skills.ps1'), $handoverMutantText)
   & git -C $controlContainer add .orchestrator/install-controller-skills.ps1
