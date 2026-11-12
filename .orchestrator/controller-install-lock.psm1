@@ -312,12 +312,19 @@ function Invoke-ReclaimableControllerVerifyOwner {
   return Remove-ClaimedOwnerLock $lockPath $claimPath $snapshot.Raw -RequireDead
 }
 
-function Assert-ControllerLegacyReferencePath([string]$Path) {
+function Assert-ControllerLegacyReferencePath([string]$Path, [string]$TrustedRoot) {
   if (-not [IO.Path]::IsPathFullyQualified($Path) -or $Path.StartsWith('\\') -or $Path.StartsWith('//')) {
     throw 'legacy reference archive refused: path must be absolute and local'
   }
   $cursor = [IO.Path]::GetFullPath($Path)
-  while ($cursor) {
+  $boundary = if ($TrustedRoot) { [IO.Path]::GetFullPath($TrustedRoot).TrimEnd('\','/') } else { '' }
+  if ($boundary -and -not ($cursor.Equals($boundary, [StringComparison]::OrdinalIgnoreCase) -or
+      $cursor.StartsWith($boundary + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))) {
+    throw 'legacy reference archive refused: path escapes trusted root'
+  }
+  # Configured roots are authority, as in the installer's dropped-path guard.
+  # They may resolve through host junctions; every descendant is still checked.
+  while ($cursor -and -not $cursor.Equals($boundary, [StringComparison]::OrdinalIgnoreCase)) {
     $item = $null
     try { $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop }
     catch [System.Management.Automation.ItemNotFoundException] {}
@@ -334,7 +341,8 @@ function Assert-ControllerLegacyReferencePath([string]$Path) {
 }
 
 function Test-ControllerLegacyReferenceBytes($Entry, [string]$Path) {
-  Assert-ControllerLegacyReferencePath $Path
+  $trustedRoot = if ($Path -ceq $Entry.Archive) { $Entry.ArchiveTrustedRoot } else { $Entry.TrustedRoot }
+  Assert-ControllerLegacyReferencePath $Path $trustedRoot
   if (-not (Test-ControllerInstallSafeFile $Path)) { return $false }
   $bytes = [IO.File]::ReadAllBytes($Path)
   return [Convert]::ToBase64String($bytes) -ceq [Convert]::ToBase64String($Entry.Bytes) -and
@@ -347,10 +355,10 @@ function Get-ControllerLegacyReferenceArchivePlan {
     [Parameter(Mandatory)][string]$DestinationRoot,
     [Parameter(Mandatory)][string]$CodexSkillRoot)
   foreach ($path in @($ContainerRoot, $DestinationRoot, $CodexSkillRoot)) {
-    Assert-ControllerLegacyReferencePath $path
+    Assert-ControllerLegacyReferencePath $path $path
   }
   $archiveRoot = [IO.Path]::GetFullPath((Join-Path $ContainerRoot '.orchestrator/archived-skill-references'))
-  Assert-ControllerLegacyReferencePath $archiveRoot
+  Assert-ControllerLegacyReferencePath $archiveRoot $ContainerRoot
   if ((Test-Path -LiteralPath $archiveRoot) -and -not (Test-ControllerInstallSafeDirectory $archiveRoot)) {
     throw 'legacy reference archive refused: archive is not an ordinary directory'
   }
@@ -379,7 +387,7 @@ function Get-ControllerLegacyReferenceArchivePlan {
   foreach ($name in @('defect-classes.md', 'stall-gotchas.md',
       'defect-classes.md.bak-20261015T0925', 'defect-classes.md.bak-20261102T1400')) {
     $source = [IO.Path]::GetFullPath((Join-Path $DestinationRoot "milestone-orchestrator/references/$name"))
-    Assert-ControllerLegacyReferencePath $source
+    Assert-ControllerLegacyReferencePath $source $DestinationRoot
     $item = $null
     try { $item = Get-Item -LiteralPath $source -Force -ErrorAction Stop }
     catch [System.Management.Automation.ItemNotFoundException] {}
@@ -389,8 +397,8 @@ function Get-ControllerLegacyReferenceArchivePlan {
     }
     $bytes = [IO.File]::ReadAllBytes($source)
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-    $entry = [pscustomobject]@{ Source = $source; Archive = Join-Path $archiveRoot "$hash-$name"; Bytes = $bytes; Hash = $hash }
-    Assert-ControllerLegacyReferencePath $entry.Archive
+    $entry = [pscustomobject]@{ Source = $source; Archive = Join-Path $archiveRoot "$hash-$name"; Bytes = $bytes; Hash = $hash; TrustedRoot = $DestinationRoot; ArchiveTrustedRoot = $ContainerRoot }
+    Assert-ControllerLegacyReferencePath $entry.Archive $entry.ArchiveTrustedRoot
     if ((Test-Path -LiteralPath $entry.Archive) -and -not (Test-ControllerLegacyReferenceBytes $entry $entry.Archive)) {
       throw "legacy reference archive refused: archive collision, no overwrite: $($entry.Archive)"
     }
@@ -421,7 +429,7 @@ function Invoke-WithControllerLegacyReferenceArchive {
   try {
     [void][IO.Directory]::CreateDirectory($plan.ArchiveRoot)
     foreach ($entry in $plan.Entries) {
-      Assert-ControllerLegacyReferencePath $entry.Archive
+      Assert-ControllerLegacyReferencePath $entry.Archive $entry.ArchiveTrustedRoot
       if (-not (Test-Path -LiteralPath $entry.Archive)) {
         Write-ControllerLegacyReferenceNewFile $entry.Archive $entry.Bytes
         $created.Add($entry)
@@ -439,7 +447,7 @@ function Invoke-WithControllerLegacyReferenceArchive {
     $rollbackErrors = [Collections.Generic.List[string]]::new()
     foreach ($entry in $removed) {
       try {
-        Assert-ControllerLegacyReferencePath $entry.Source
+        Assert-ControllerLegacyReferencePath $entry.Source $entry.TrustedRoot
         if (-not (Test-Path -LiteralPath $entry.Source)) { Write-ControllerLegacyReferenceNewFile $entry.Source $entry.Bytes }
         if (-not (Test-ControllerLegacyReferenceBytes $entry $entry.Source)) { throw 'source conflict; verified archive retained' }
       } catch { $rollbackErrors.Add($_.Exception.Message) }
@@ -454,7 +462,7 @@ function Invoke-WithControllerLegacyReferenceArchive {
         if (Test-ControllerLegacyReferenceBytes $entry $entry.Archive) { [IO.File]::Delete($entry.Archive) }
       }
       if ($createdRoot) {
-        Assert-ControllerLegacyReferencePath $plan.ArchiveRoot
+        Assert-ControllerLegacyReferencePath $plan.ArchiveRoot $ContainerRoot
         try { [IO.Directory]::Delete($plan.ArchiveRoot) } catch [IO.IOException] {}
       }
     } else {

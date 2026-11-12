@@ -70,6 +70,32 @@ try {
   Assert-Archive ([IO.File]::ReadAllText((Join-Path $references 'user-notes.md')) -ceq 'unknown user bytes') 'unknown user file survives'
   Assert-Archive ([IO.File]::ReadAllText((Join-Path $references 'defect-classes.md.bak-unknown')) -ceq 'unknown backup bytes') 'no backup glob or history sweep'
 
+  # Default host roots can have .claude/.codex junction ancestors. Trust the
+  # configured roots, not arbitrary descendants below them.
+  $f = New-Fixture
+  $hostRoot = Join-Path (Split-Path $f.ContainerRoot -Parent) 'host'
+  [void][IO.Directory]::CreateDirectory($hostRoot)
+  $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+  $links = @()
+  try {
+    foreach ($pair in @(@('.claude', $f.DestinationRoot), @('.codex', $f.CodexSkillRoot))) {
+      $targetParent = Split-Path $pair[1] -Parent
+      $targetName = Split-Path $pair[1] -Leaf
+      $link = Join-Path $hostRoot $pair[0]
+      [void](New-Item -ItemType $linkType -Path $link -Target $targetParent)
+      $links += $link
+      if ($pair[0] -eq '.claude') { $f.DestinationRoot = Join-Path $link $targetName }
+      else { $f.CodexSkillRoot = Join-Path $link $targetName }
+    }
+    $plan = Get-ControllerLegacyReferenceArchivePlan @f
+    Assert-Archive ($plan.Entries.Count -eq 4) 'both configured roots accept trusted junction ancestors'
+    Invoke-WithControllerLegacyReferenceArchive @f -Body {}
+    foreach ($entry in $plan.Entries) {
+      Assert-Archive (-not (Test-Path -LiteralPath $entry.Source) -and
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($entry.Archive)) -ceq [Convert]::ToBase64String($entry.Bytes)) 'junction-ancestor migration retains exact bytes outside discovery'
+    }
+  } finally { foreach ($link in $links) { [IO.Directory]::Delete($link) } }
+
   $f = New-Fixture; $plan = Get-ControllerLegacyReferenceArchivePlan @f
   [void][IO.Directory]::CreateDirectory($plan.ArchiveRoot)
   [IO.File]::WriteAllText($plan.Entries[0].Archive, 'collision')
@@ -138,7 +164,7 @@ try {
   [void][IO.Directory]::CreateDirectory((Join-Path $unsafe.ContainerRoot '.orchestrator'))
   Assert-Refused { Get-ControllerLegacyReferenceArchivePlan @unsafe } 'skill-discovery ancestor'
 
-  foreach ($surface in @('source-parent','archive-root')) {
+  foreach ($surface in @('source-parent','archive-root','archive-parent','source-file')) {
     $f = New-Fixture; $plan = Get-ControllerLegacyReferenceArchivePlan @f
     $target = Join-Path (Split-Path $f.ContainerRoot -Parent) 'outside-link-target'
     [void][IO.Directory]::CreateDirectory($target)
@@ -148,6 +174,12 @@ try {
       # The fixture-owned ordinary directory is empty before replacement.
       foreach ($file in Get-ChildItem -LiteralPath $path -File) { [IO.File]::Delete($file.FullName) }
       [IO.Directory]::Delete($path)
+    } elseif ($surface -eq 'archive-parent') {
+      $path = Join-Path $f.ContainerRoot '.orchestrator'
+      [IO.Directory]::Delete($path)
+    } elseif ($surface -eq 'source-file') {
+      $path = $plan.Entries[0].Source
+      [IO.File]::Delete($path)
     } else { $path = $plan.ArchiveRoot }
     $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
     [void](New-Item -ItemType $linkType -Path $path -Target $target)
