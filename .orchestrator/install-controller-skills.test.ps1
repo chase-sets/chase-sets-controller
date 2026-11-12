@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+$reviewContract = Get-ExactHeadReviewContract
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingScope = Enter-RoutingDataTestScope
 
@@ -53,8 +55,8 @@ try {
   )
   $skillContractFixture = @"
 # Milestone Orchestrator (v2.59)
-exact-head-review-receipt/v1
-exact-head-review-reducer/v1
+$($reviewContract.receiptSchema)
+$($reviewContract.reducerSchema)
 landing-preflight/v1
 "@
 

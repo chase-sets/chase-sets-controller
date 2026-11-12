@@ -702,7 +702,7 @@ Todd-only authority, and the TCGplayer no-contact/no-credentials boundary.
 
 Review authorization is exact-head and exact-attempt:
 
-- Receipt: `exact-head-review-receipt/v1`
+- Receipt: `exact-head-review-receipt/v2`
 - Reducer: `exact-head-review-reducer/v1`
 - Landing gate: `landing-preflight/v1`
 
