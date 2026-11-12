@@ -124,9 +124,9 @@ function Test-TransportDeath {
     @('missing-reason',$fatal.Replace('"terminal_reason":"api_error",','')),
     @('result-object','{"type":"result","is_error":true,"terminal_reason":"api_error","result":{"text":"ECONNRESET"}}'),
     @('duplicate',$fatal.Replace('"is_error":true','"is_error":false,"is_error":true')),
-    @('array','['+$fatal+']'),
+    @('array',('['+$fatal+']')),
     @('malformed','{"type":"result","is_error":true'),
-    @('recovered',$fatal+"`n"+$completed),
+    @('recovered',($fatal+"`n"+$completed)),
     @('retry-only','{"type":"system","subtype":"api_retry","api_error":"connection_failed"}'),
     @('assistant-only','{"type":"assistant","error":"server_error","api_error":"connection_failed","message":{"content":[{"type":"text","text":"ECONNRESET"}]}}')
   )){
