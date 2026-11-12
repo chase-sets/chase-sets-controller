@@ -36,11 +36,22 @@ foreach ($relative in @('controller-skills/milestone-orchestrator/SKILL.md', 'co
 Assert-Route (($planning -replace '\s+', ' ').Contains('does not replace the fresh independent semantic PASS required for terminal re-entry')) 'terminal re-entry distinction missing'
 $routing = [IO.File]::ReadAllText((Join-Path $root 'controller-skills/model-routing/SKILL.md'))
 Assert-Route $routing.Contains('fresh lane and session with no shared') 'routing fresh-session independence missing'
-$result = & (Join-Path $root 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Mode dispatch `
-  -Text 'planning-repair independent review unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json | ConvertFrom-Json
-$entry = @($result.entries | Where-Object slug -eq 'unattributed-nested-model-dispatch')
-Assert-Route ($entry.Count -eq 1) 'planning-repair footprint must retrieve the nested-dispatch constraint'
-Assert-Route ($entry[0].instruction.Contains('review-probe-live-provider-credential-inheritance') -and
-  $entry[0].instruction.Contains('review-isolation-opt-in-by-default') -and
-  $entry[0].guard.Contains('CONTRACT_AND_REGRESSION')) 'query must preserve both cross-references and guard status'
+$sandbox = Join-Path ([IO.Path]::GetTempPath()) "planning-review-routes-$([guid]::NewGuid().ToString('N'))"
+try {
+  New-Item -ItemType Directory -Path $sandbox | Out-Null
+  # The query still reads the real committed controller supplement, not a fixture.
+  # Its mutable catalog pair must not depend on the machine's installed skill.
+  [IO.File]::WriteAllText((Join-Path $sandbox 'stall-gotchas.md'), "# Stall-gotcha ledger`n")
+  [IO.File]::WriteAllText((Join-Path $sandbox 'defect-classes.md'), "# Defect-class ledger`n")
+  $result = & (Join-Path $root 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Mode dispatch `
+    -InstalledReferenceRoot $sandbox -Text 'planning-repair independent review unsupported_encrypted_delegation' `
+    -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json | ConvertFrom-Json
+  $entry = @($result.entries | Where-Object slug -eq 'unattributed-nested-model-dispatch')
+  Assert-Route ($entry.Count -eq 1) 'planning-repair footprint must retrieve the nested-dispatch constraint'
+  Assert-Route ($entry[0].instruction.Contains('review-probe-live-provider-credential-inheritance') -and
+    $entry[0].instruction.Contains('review-isolation-opt-in-by-default') -and
+    $entry[0].guard.Contains('CONTRACT_AND_REGRESSION')) 'query must preserve both cross-references and guard status'
+} finally {
+  if (Test-Path -LiteralPath $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
+}
 Write-Output 'PASS planning/review handoff, exhausted-roster rule and contract mutants'
