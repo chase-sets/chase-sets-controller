@@ -102,16 +102,6 @@
       "callSha256": "0785db856204fc65116eeca3e31860319d8c6bb9ca9bcf5136523b42244daa52"
     },
     {
-      "path": ".orchestrator/dispatch-lane.ps1",
-      "scope": "<script>",
-      "api": "read-exactheadreviewhistory",
-      "ordinal": 1,
-      "mode": "one-pass-stream",
-      "projection": "dispatch-count/v1",
-      "peakEnvelope": "parsed-history",
-      "callSha256": "e0a4524e78fb1457ad463d890927e2312bc501fa74336cd3aa9a27710fd9ca46"
-    },
-    {
       "path": ".orchestrator/dispatch-ledger-reader.psm1",
       "scope": "Read-DispatchLedgerLines",
       "api": "read-dispatchledgersnapshot",
