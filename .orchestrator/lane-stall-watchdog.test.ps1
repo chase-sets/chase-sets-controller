@@ -1461,13 +1461,14 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   & $logger @binding -AuthorityState STOP|Out-Null
   $stop=(Read-ExactHeadReviewHistory $history).rows[-1].rawSha256
   $observation=New-Observation 'synthetic-authority'
+  $stopCallsBefore=Get-CallCount
   $before=@{};foreach($f in Get-ChildItem $runtime -File){$before[$f.Name]=(Get-FileHash $f.FullName).Hash}
   foreach($day in 1..2){
     $result=& $watchdog -Label $item.spec.label -RuntimeRoot $runtime -HistoryPath $history -ObservationFixture $observation -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json
     Assert-True ($result.status-ceq'TERMINAL_AUTHORITY_STOP'-and-not$result.relaunch-and$result.stopRows.Count-eq1-and$result.stopRows[0]-ceq$stop) 'watchdog STOP gate did not bind exact active hash'
   }
   $changed=@(Get-ChildItem $runtime -File|Where-Object{-not$before.ContainsKey($_.Name)-or$before[$_.Name]-cne(Get-FileHash $_.FullName).Hash})
-  Assert-True ($changed.Count-eq0-and(Get-CallCount)-eq0) 'watchdog stop wrote prompt/request/resume/ack/history or dispatched'
+  Assert-True ($changed.Count-eq0-and(Get-CallCount)-eq$stopCallsBefore) 'watchdog stop wrote prompt/request/resume/ack/history or dispatched'
   Write-Output 'CONTROL watchdog-relaunch-refused-by-terminal-stop PASS'
   $mutantRoot=Join-Path $root 'mutant-stop-gate';New-Item -ItemType Directory $mutantRoot|Out-Null
   Get-ChildItem $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $mutantRoot
