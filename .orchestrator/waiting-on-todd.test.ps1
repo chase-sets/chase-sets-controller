@@ -276,27 +276,23 @@ try{
   $piped=[pscustomobject]@{ts='2026-10-09T00:00:00.000Z';kind='todd-action';toddActionSchema='todd-action/v1';actionId='synthetic-pipe';issue=909001;state='now';action='a | b';time='t';unblocks='u'}
   Assert-Wot ((Get-WaitingOnToddBody @($piped) ([datetimeoffset]'2026-10-09T00:00:00Z') 7).Contains('| #909001 | a \| b | t | u |')) 'pipe in action text was not escaped'
   Write-Output 'PASS rendering escapes table separators'
-  # AC3 skill contract: the cycle runs the script, section 11 requires the ledger
-  # row and the status link, section 14 names the closed variant. Each rule is
+  # AC3 compact skill contract: the cycle runs the script and section 11 names
+  # the event producer and pinned status link. Runtime schema checks remain below. Each rule is
   # removed in isolation to prove the check cannot pass vacuously.
   $skillText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md')).Replace("`r`n","`n")
   function Get-WotSection([string]$Text,[int]$Number){$m=[regex]::Match($Text,"(?ms)^## $Number\. .*?(?=^## \d+\. |\z)");if($m.Success){$m.Value}else{''}}
   function Compress-WotText([string]$Text){($Text -replace '\s+',' ').Trim()}
   $skillRules=@(
-    @(3,'12. Run `waiting-on-todd.ps1` once, in the foreground.'),
-    @(3,'log each packaged Todd action change as `todd-action` (§11).'),
-    @(11,'link the pinned Waiting-on-Todd issue for packaged operator actions; they never repeat its list inline.'),
-    @(11,'`log-event.ps1 -Log dispatch -Kind todd-action -ActionId <id> -Issue <issue> -ActionState now|later|done -Action <step> -ActionTime <estimate> -Unblocks <issues>`'),
-    @(11,'The actionId is stable and unique per action; one issue may carry several.'),
-    @(11,'The ledger is the only membership source'),
-    @(11,'Ambiguous ownership goes to host triage, never to Todd.'),
-    @(11,'removes only assignments it made.'),
-    @(11,'It also writes nothing while the pinned body is still hand-written and no `todd-action` row exists, so install seeds the current items first.'),
-    @(14,'`todd-action/v1` is closed: actionId, issue, state (`now`, `later` or `done`), action, time and unblocks are all required'),
-    @(14,'escaped defect, and Todd action.')
+    @(3,'12. Run `waiting-on-todd.ps1` once, foreground.'),
+    @(3,'Repair a refusal''s named cause; never hand-edit the pinned issue to simulate success.'),
+    @(11,'Actions live on pinned issue in `waiting-on-todd.psd1`, not status comments.'),
+    @(11,'`log-event.ps1 -Log dispatch -Kind todd-action -ActionId <stable-id> -Issue <issue> -ActionState now|later|done -Action <step> -ActionTime <estimate> -Unblocks <issues>`'),
+    @(11,'Now is ready, Later gated, done resolved.'),
+    @(11,'`waiting-on-todd.ps1` renders latest row per actionId; never move its issue.'),
+    @(11,'Status links pinned issue, never repeats its list or lists host process decisions as waiting on Todd.')
   )
   function Test-WotSkill([string]$Text){foreach($rule in $skillRules){if(-not (Compress-WotText (Get-WotSection $Text $rule[0])).Contains((Compress-WotText $rule[1]),[StringComparison]::Ordinal)){return $false}};return $true}
-  Assert-Wot (Test-WotSkill $skillText) 'SKILL sections 3, 11 and 14 do not carry the #9228 contract'
+  Assert-Wot (Test-WotSkill $skillText) 'SKILL sections 3 and 11 do not carry the operator-action contract'
   Assert-Wot (-not $skillText.Contains('Status posts list only open priority or scope questions and packaged')) 'status posts still list operator actions inline'
   foreach($rule in $skillRules){
     $pattern=([regex]::Escape($rule[1])) -replace '\\ ','\s+'

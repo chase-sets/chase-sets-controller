@@ -62,21 +62,22 @@ foreach ($part in @('Goal:','Hard limits:','attempt cap per action','spend cap a
   Assert-Brief ($template.Contains($part,[StringComparison]::Ordinal)) "template contains $part"
 }
 $skill = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md'))
-$section = [regex]::Match($skill,'(?ms)^### One-shot external actions\r?\n(.*?)(?=^## |\z)').Value -replace '\s+',' '
+Assert-Brief ($skill.Contains('references/one-shot-actions.md')) 'core names the side-effect reference before acting'
+$section = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/references/one-shot-actions.md')) -replace '\s+',' '
 foreach ($rule in @(
-  'The brief grants no action, credential, or Todd-only authority.',
-  'Review the brief once when production or money is involved; otherwise no brief review is required.',
-  'No extra packet review, hash custody, operation-map, release-manifest, START-file, or executor-admission packet is required',
-  'no process-permission decision lane is needed for this path',
-  'Each hard limit cites its owner''s authorization',
-  'Without authorized limits, do not act; a paid action without spend authorization has spend cap zero.',
-  'When the action runs through a Chase Sets deployment, read the target''s actual deployed SHA before each side effect',
-  'Do not pin to current main, require deployed SHA = main, or invalidate/rebind the brief on main merges',
-  'Reserve its attempt units and worst-case cost in the result file before issuing it; if that write fails, do not act.',
-  'Disable automatic retries unless each retry is explicitly within the same caps.',
-  'an authorized, reserved worst-case cost remains bounded even before billing arrives.',
-  'An unknown outcome, uncertain submission, missing result history, or unbounded cost stops further actions',
-  'read-only reconciliation may resolve it, never replay it to find out.',
-  'Renaming the brief, replacing an executor, replanning, or a review never resets a cap or authorizes extra paid attempts.'
+'Brief grants no authority: use an already authorized operator/tool.',
+'Review once for production/money, otherwise none; review deltas only when reviewed bytes change.',
+'No execution packet/rebind, START-file or extra custody artifact.',
+'total spend/currency (zero without authorization)',
+'Before each side effect read actual deployed SHA for Chase Sets deployments;',
+'Wrong environment or missing required identity stops action.',
+'Do not pin/rebind to main or hold ready PRs;',
+'Cite limit-owner authorization.',
+'Count every submitted attempt, failures and prior runs included;',
+'reserve units/worst-case cost before issuing. Reservation write failure means no action.',
+'No automatic retries outside same caps.',
+'Unknown submission, missing history or unbounded cost stops further actions;',
+'reconcile read-only, never replay to discover outcome.',
+'Rename/replan/review/replacement cannot reset caps; only limit owner authorizes increase.'
 )) { Assert-Brief ($section.Contains($rule,[StringComparison]::Ordinal)) "one-shot hard gate missing: $rule" }
 Write-Output "PASS short one-shot brief: template, attempt/spend boundaries, invalid/unknown history and restart checks=$script:checks; no external actions"

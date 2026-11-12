@@ -1,7 +1,7 @@
----
-name: milestone-orchestrator
-description: Run the chase-sets delivery loop — complete all non-parked milestones by routing work to dynamic Codex/Claude lanes, keeping the merge queue fed and deploys verified green, queuing Todd-decisions as tasks instead of waiting. Use when orchestrating milestone delivery, running the delivery loop or goal, managing lanes, landing PRs, or supervising the pipeline.
----
+# Historical rule provenance (not installed)
+
+Historical evidence only, not current operating instructions. Read a named
+entry only for an explicit archaeology or regression investigation.
 
 ## Release notes moved in v2.116
 

@@ -195,7 +195,7 @@ function Test-StrictIdentityConsistency([string]$Contract, [string]$Skill) {
   $contractText = Compact-Text $Contract
   $skillText = Compact-Text $Skill
   $identityRule = 'unique while live through ownership-v4, not globally single-use across historical receipts.'
-  if (-not $contractText.Contains($identityRule) -or -not $skillText.Contains($identityRule)) {
+  if (-not $contractText.Contains($identityRule) -or -not $skillText.Contains("One writer per branch.")) {
     throw "ASSERTION FAILED: review contract and live skill do not share the lane-identity retirement rule"
   }
   if ($contractText.Contains('is globally single-use for one immutable review tuple') -or
@@ -216,9 +216,8 @@ Assert-Mutant "skill-restores-global-strict-identity" {
 function Test-LegacyReviewDomainConsistency([string]$Skill, [string]$Runtime) {
   $skillText = Compact-Text $Skill
   foreach ($rule in @(
-    "Historical rows that structurally claim neither a PR nor any exact-head receipt identity",
-    "A row claiming exact-head receipt identity with a missing, nonnumeric, fractional, overflowed, or otherwise ambiguous PR remains fail-closed uncertainty",
-    "This boundary uses closed fields only, never dates, issue lists, prose, lanes, or model aliases."
+    "ambiguous/missing authority is not PASS.",
+    "Older-head PASS never authorizes live bytes."
   )) {
     if (-not $skillText.Contains($rule)) { throw "ASSERTION FAILED: legacy review-domain rule missing: $rule" }
   }
@@ -240,8 +239,8 @@ function Test-LegacyReviewDomainConsistency([string]$Skill, [string]$Runtime) {
 Test-LegacyReviewDomainConsistency $milestoneText $reviewRuntime
 Assert-Mutant "skill-widens-legacy-review-domain" {
   Test-LegacyReviewDomainConsistency ($milestoneText.Replace(
-      "neither a PR nor any`r`nexact-head receipt identity",
-      "no exact PR identity"
+      "ambiguous/missing authority",
+      "missing authority"
     )) $reviewRuntime
 }
 Assert-Mutant "runtime-drops-legacy-reviewed-head-boundary" {
@@ -370,31 +369,12 @@ Assert-Mutant "report-drops-non-blocking-ids" { Test-QualityKeys $qualityContrac
 # Policy-only boundary: pins are section-scoped and whitespace-insensitive.
 # Each negative control removes one permission boundary, not a runtime fixture.
 $platformRules = @(
-  # The platform loop and its migration belong to the controller thread. The
-  # product loop applies orchestrator-shared Platform handoff by label each
-  # cycle; milestone membership never grants the platform loop an issue.
-  @(3, 'The orchestration platform loop and its migration belong to the controller thread.', 'The orchestration platform loop belongs to this orchestrator.'),
-  @(3, 'This orchestrator does not observe, start, stop, resume, unpark, upgrade or repair platform runs, supervisors or executors, never labels a platform issue `ready`, and never touches the platform checkout.', 'This orchestrator supervises, restarts and repairs platform executors.'),
-  @(3, 'Once per cycle, before step 7, it applies `orchestrator-shared` Platform handoff from `.orchestrator/platform-handoff.json` and complete issue reads:', 'Once per cycle it reads the platform register:'),
-  @(3, 'it resumes unfinished take-backs, takes back held issues that meet a take-back reason, files one controller defect for each return not acknowledged within `releaseHours`, returns acknowledged issues to normal delivery, then hands off new ones.', 'it hands off new issues.'),
-  @(3, 'handle it as usual and leave platform-side causes to the controller thread.', 'repair platform-side causes directly.'),
-  @(3, 'Renew the host identity record and apply any newer controller release (§2).', 'Renew the host identity record.'),
-  @(4, '`orchestrator-shared` Platform handoff decides which issues the platform loop holds; milestone membership never does.', 'The ownership register decides which milestones the platform loop owns.'),
-  @(4, 'Selection already excludes issues carrying `dispatch:platform` or `dispatch:platform-return` (`PLATFORM_HELD`).', 'Selection excludes platform milestones.'),
-  @(4, 'On such an issue, its PR or its branch, the host never dispatches, reviews, enqueues, rebases, closes, reclaims worktrees, runs its watchdog, or kills processes', 'On such an issue the host may dispatch, review, enqueue, rebase, close, reclaim, watchdog, or kill platform work'),
-  @(4, 'a taken-back issue is runnable again only when that contract returns it', 'a taken-back issue is runnable at once'),
-  @(4, 'All platform-repo issues belong to its self loop; the host never dispatches lanes there.', 'Host dispatches platform-repo lanes.'),
-  @(4, 'Unknown label state is not mutation authority; retry the read while unrelated work continues.', 'Unknown label state counts as unlabeled.'),
-  @(6, 'watchdog and termination rules below apply only to incumbent-owned lanes', 'watchdog and termination apply to both loops'),
-  @(8, 'Enqueue, repair, and landed-integration actions below never touch an issue carrying either platform handoff label (section 4), its PR or its branch, including the direct-enqueue fallback.', 'Enqueue, repair, and landed-integration actions below apply to any scope, including platform direct-enqueue fallback.'),
-  @(8, 'The landed-integration census records such a target and never rebases it; the platform loop refreshes its own branch.', 'The landed-integration census dispatches an incumbent rebase into the platform branch.'),
-  @(8, 'do not invoke a dispatch path that would mutate one', 'invoke unrestricted auto-integration'),
-  @(9, 'never remove a worktree, branch or process of an issue carrying either platform handoff label (`platform-held-issue`), even after idle, park, or merge, until `orchestrator-shared` Platform handoff returns the issue.', 'remove idle or merged platform worktrees and processes.'),
-  @(9, 'Read each candidate''s issue labels and newest path-bound dispatch identity each run; unknown retains.', 'Read each candidate''s newest path-bound dispatch identity each run; unknown retains.'),
-  @(11, 'A platform handoff or take-back is a host decision under `orchestrator-shared` Platform handoff, never a Todd question.', 'A platform handoff or take-back needs a Todd comment and a register change.'),
-  @(13, 'excluding issues carrying either platform handoff label, the policy''s named CI/controller-evidence milestones and parked issues.', 'excluding platform milestones, the policy''s named CI/controller-evidence milestones and parked issues.'),
-  @(15, 'When automation replaces a host duty, remove the redundant routine in the same reviewed adoption change after its replacement coverage is exercised.', 'Keep old and new routines running indefinitely after adoption.'),
-  @(15, 'Use existing issue/PR and execution evidence to check whether the action, wait or failure disappeared; add no report, approval stage or delivery gate.', 'Require a new report and approval gate before continuing delivery.')
+  @(3, 'Apply `orchestrator-shared` Platform handoff before backfill.', 'Ignore platform handoff.'),
+  @(3, 'Never operate platform supervisors or mutate held work; unknown labels/return means retry.', 'Operate held work.'),
+  @(4, 'Controller never takes product lanes.', 'Controller takes product lanes.'),
+  @(8, 'Do not mutate platform-held branches.', 'Mutate platform-held branches.'),
+  @(9, 'Protect `main`, `archive/`, `salvage/`, platform-held work.', 'Protect only main.'),
+  @(15, 'Remove automated-away duties after exercised coverage.', 'Keep redundant duties forever.')
 )
 
 function Test-PlatformPolicy([string]$Skill) {
@@ -406,7 +386,7 @@ function Test-PlatformPolicy([string]$Skill) {
     }
     $script:assertions += 1
   }
-  $cycle = [regex]::Match($Skill, '(?ms)^## 3\..*?^7\. Backfill').Value
+  $cycle = [regex]::Match($Skill, '(?ms)^## 3\..*?(?=^## 4\.)').Value
   if (-not $cycle -or (Compact-Text $cycle).Contains('platform loops')) {
     throw 'ASSERTION FAILED: the product cycle must not supervise platform loops'
   }
@@ -414,7 +394,7 @@ function Test-PlatformPolicy([string]$Skill) {
 
 Test-PlatformPolicy $milestoneText
 Test-PlatformPolicy ($milestoneText.Replace(' ', '  '))
-Assert-Mutant 'platform-supervision-restored' { Test-PlatformPolicy ($milestoneText.Replace('6. Validate completed lanes and run independent review.', '6. Validate completed lanes and run independent review; supervise both platform loops as below before step 7.')) }
+Assert-Mutant 'platform-supervision-restored' { Test-PlatformPolicy ($milestoneText.Replace('7. Rebuild the live runnable frontier and backfill product capacity.', '7. Rebuild the frontier and supervise platform loops.')) }
 foreach ($rule in $platformRules) {
   $match = [regex]::Match($milestoneText, (([regex]::Escape($rule[1])) -replace '\\ ', '\s+'))
   Assert-Enforced $match.Success "platform negative control must change its boundary: $($rule[1])"
@@ -423,7 +403,9 @@ foreach ($rule in $platformRules) {
 }
 
 function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
-  foreach($text in @($Milestone,$Routing)) {
+  Assert-Enforced ((Compact-Text $Milestone).Contains("Reviewer: fresh lane/session, no author transcript/conversation state")) 'review independence remains fresh-session'
+  Assert-Enforced ((Compact-Text $Milestone).Contains("No family pairing, reviewer-history exclusion list or strict prelaunch review log.")) 'no redundant review ceremony'
+  foreach($text in @($Routing)) {
     Assert-Enforced ((Compact-Text $text).Contains('fresh lane and session with no shared transcript or conversation state')) 'review independence is a fresh lane/session, not a family exclusion'
     Assert-Enforced ((Compact-Text $text).Contains('capacityShadowFlip')) 'capacity shadow policy is explicit'
     # #9282: planning and review lanes are capacity-eligible; the role exemption is removed from both skills.
@@ -445,9 +427,9 @@ function Test-CapacityPolicy([string]$Milestone,[string]$Routing) {
 }
 $routingSkill=Read-Strict 'controller-skills/model-routing/SKILL.md'
 Test-CapacityPolicy $milestoneText $routingSkill
-Assert-Mutant 'strict-prelog-hand-projection-restored' {Test-CapacityPolicy ($milestoneText.Replace('strictPrelogV1','strictTuple')) $routingSkill}
+Assert-Mutant 'strict-prelog-hand-projection-restored' {Test-CapacityPolicy ($milestoneText.Replace('or strict prelaunch review','or mandatory prelaunch review')) $routingSkill}
 Assert-Mutant 'strict-prelog-void-recovery-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('voids never-launched prelogs','refuses without recovery'))}
-Assert-Mutant 'capacity-fresh-session-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'fresh\s+lane\s+and\s+session','same lane and session')) $routingSkill}
+Assert-Mutant 'capacity-fresh-session-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'fresh lane/session','same author session')) $routingSkill}
 Assert-Mutant 'capacity-role-exemption-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('lanes are eligible. Row 0, relaunches','lanes are eligible. Review/planning, row 0, relaunches'))}
 Assert-Mutant 'capacity-claude-prefix-restored' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('Codex [3,13,10,4]','Claude [13,10,4,5] and Codex [3,13,10,4]'))}
 Assert-Mutant 'capacity-fable-window-omitted' {Test-CapacityPolicy $milestoneText ($routingSkill.Replace('`modelLimits`, scope `Fable`, window `limit:2`','the Fable window'))}
@@ -463,38 +445,40 @@ Assert-Mutant 'fable-share-cap-restored' {Test-OrdinaryModelPolicy ($routingSkil
 Assert-Mutant 'fable-row-restriction-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Fable is eligible only for rows 7/14/15.')}
 Assert-Mutant 'third-model-authorship-restored' {Test-OrdinaryModelPolicy ($routingSkill + ' Authorship must use a third model.')}
 Assert-Mutant 'off-slot-reason-omitted' {Test-CapacityPolicy $milestoneText ([regex]::Replace($routingSkill,'Any lane\s+routed off its slot','A lane follows its slot'))}
-Assert-Mutant 'capacity-prepare-order-omitted' {Test-CapacityPolicy ([regex]::Replace($milestoneText,'prepared,\s+prelogged,\s+then\s+launched','launched, then prelogged')) $routingSkill}
+Assert-Mutant 'capacity-prepare-order-omitted' {Test-CapacityPolicy $milestoneText ([regex]::Replace($routingSkill,'prepared,\s+prelogged,\s+then\s+launched','launched, then prelogged'))}
 function Test-PacingPolicy([string]$Skill,[string]$Reducer) {
   # #9316: section 10 states the pacing condition; capacity-pacing.ps1 is its runtime counterpart.
   $section=[regex]::Match($Skill,'(?ms)^## 10\.[^\r\n]*\r?\n(.*?)(?=^## \d+\.|\z)')
   Assert-Enforced $section.Success 'skill section 10 present'
   $text=Compact-Text $section.Value
   foreach($rule in @(
-      'run `capacity-pacing.ps1` once with the cycle''s `-NowUtc` and add no fresh lane on a provider beyond its `newLaneAllowance`; respect live quota windows for every model.',
-      'Relaunches, resumes, review of in-flight work and landing are not counted against it.',
-      'A zero allowance is a valid section 10 deferral reason, including in #9283''s spend mode.',
-      '`status: unknown` (an unreachable, malformed or stale status, or an unknown census) is zero allowance on every provider: pacing never authorizes dispatch on missing evidence.',
-      'less the 0.10 reserve',
-      'The pace target (`targetUnitsPerHour`) spends banked credits before they lapse; the pace budget (`paceBudget`) raises the headroom budget by at most two new lanes per run.',
-      'A positive allowance with ready work is a reason to dispatch, not a ceiling to stay under.',
-      'replaces the hand-read AgentPools dashboard routine of 4388/6101785942, which is superseded.')) {
-    Assert-Enforced ($text.Contains($rule,[StringComparison]::Ordinal)) "section 10 lacks pacing rule: $rule"
-  }
+'Run `capacity-pacing.ps1` once with cycle `-NowUtc` before adding lanes.',
+'Provider `newLaneAllowance` bounds fresh lanes; unknown status/census means zero.',
+'Positive allowance and ready work calls for dispatch.',
+'Require live unambiguous ownership, safe memory/verifier capacity, healthy queue/deploy.'
+  )) { Assert-Enforced ($text.Contains($rule,[StringComparison]::Ordinal)) "pacing rule missing: $rule" }
   foreach($needle in @("'capacity-pacing/v1'",'reserve = 0.10','claude = 0.015; codex = 0.009','minLaneHours = 24','windowHours = 168')) {
     Assert-Enforced ($Reducer.Contains($needle,[StringComparison]::Ordinal)) "capacity-pacing.ps1 lacks runtime counterpart: $needle"
   }
   Assert-Enforced (-not $Reducer.Contains('[Math]::Floor($laneBudget / 2)',[StringComparison]::Ordinal)) 'Fable pacing reports only provider-window capacity'
+  Assert-Enforced ($Reducer.Contains('[Math]::Min($pace.paceBudget, $liveLanes + 2)')) 'pace raise remains bounded by two lanes'
 }
 $pacingReducer=Read-Strict 'capacity-pacing.ps1'
-Assert-Enforced ((Compact-Text (Read-Strict 'controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md')).Contains('supersedes 4388/6101785942',[StringComparison]::Ordinal)) 'release note names 4388/6101785942 as superseded for the rule-change row'
+Assert-Enforced ((Compact-Text (Read-Strict 'docs/archive/milestone-orchestrator/rule-provenance-v2.24.md')).Contains('supersedes 4388/6101785942',[StringComparison]::Ordinal)) 'release note names 4388/6101785942 as superseded for the rule-change row'
 Test-PacingPolicy $milestoneText $pacingReducer
-Assert-Mutant 'pacing-allowance-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'add no fresh\s+lane on a provider beyond its `newLaneAllowance`','add lanes freely')) $pacingReducer}
-Assert-Mutant 'pacing-deferral-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'A zero allowance is a valid section 10 deferral\s+reason','A zero allowance is advisory')) $pacingReducer}
-Assert-Mutant 'pacing-supersession-omitted' {Test-PacingPolicy ($milestoneText.Replace('4388/6101785942','4388/0')) $pacingReducer}
-Assert-Mutant 'pacing-unknown-authorizes' {Test-PacingPolicy ([regex]::Replace($milestoneText,'pacing never authorizes dispatch on missing\s+evidence','pacing may authorize dispatch on missing evidence')) $pacingReducer}
+foreach ($rule in @(
+'Run `capacity-pacing.ps1` once with cycle `-NowUtc` before adding lanes.',
+'Provider `newLaneAllowance` bounds fresh lanes; unknown status/census means zero.',
+'Positive allowance and ready work calls for dispatch.',
+'Require live unambiguous ownership, safe memory/verifier capacity, healthy queue/deploy.'
+)) {
+  $pattern = ([regex]::Escape($rule)).Replace('\ ', '\s+')
+  $mutated = [regex]::Replace($milestoneText,$pattern,'MUTANT_REMOVED')
+  Assert-Enforced ($mutated -cne $milestoneText) 'pacing mutant changes its boundary'
+  Assert-Mutant "pacing:$rule" { Test-PacingPolicy $mutated $pacingReducer }
+}
 Assert-Mutant 'pacing-reserve-drifted' {Test-PacingPolicy $milestoneText ($pacingReducer.Replace('reserve = 0.10','reserve = 0.05'))}
-Assert-Mutant 'pacing-credit-raise-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'(?s)The pace target\s+.*?per run\.','')) $pacingReducer}
-Assert-Mutant 'pacing-dispatch-duty-omitted' {Test-PacingPolicy ([regex]::Replace($milestoneText,'A positive allowance with ready work is a reason to dispatch,\s+not a ceiling to stay under\.','')) $pacingReducer}
+Assert-Mutant 'pacing-credit-raise-omitted' {Test-PacingPolicy $milestoneText ($pacingReducer.Replace('[Math]::Min($pace.paceBudget, $liveLanes + 2)', '$pace.paceBudget'))}
 # --- checkout identity and container bootstrap --------------------------------
 # One AGENTS.md serves both the product container (tag install target) and every
 # controller development checkout, so it must open by telling them apart.
@@ -638,11 +622,9 @@ $supervisionRules = @(
   'Criteria for retiring the host loop live in the platform roadmap.'
 )
 $milestonePlatformText = @(
-  '(?ms)^### Orchestration platform\r?\n.*?(?=^## )',
-  '(?ms)^`orchestrator-shared` Platform handoff decides.*?(?=\r?\n\r?\n)',
-  '(?ms)^Enqueue, repair, and landed-integration actions below never touch.*?(?=\r?\n\r?\n)',
-  '(?ms)^These reclamation rules never remove a worktree.*?(?=\r?\n\r?\n)'
+  '(?ms)^Apply `orchestrator-shared` Platform handoff before backfill\..*?(?=\r?\n\r?\n)'
 )
+
 $registerOwnership = 'ownership register|platform-owned|register edit|platform-handoff\.md'
 
 function Edit-Policy([string]$Text, [string]$Old, [string]$New) {
@@ -787,10 +769,10 @@ foreach ($entry in $supervisionHandoffMutants.GetEnumerator()) {
 }
 
 $milestonePlatformMutants = [ordered]@{}
-$milestonePlatformMutants['cycle-text-dated'] = Edit-Policy $milestoneText 'then hands off new ones.' 'then hands off new ones (2026-10-21).'
-$milestonePlatformMutants['selection-text-issue-number'] = Edit-Policy $milestoneText 'milestone membership never does.' 'milestone membership never does (#192).'
-$milestonePlatformMutants['landing-text-iss-identity'] = Edit-Policy $milestoneText 'the platform loop refreshes its own branch.' 'the platform loop refreshes its own branch (ISS-142).'
-$milestonePlatformMutants['reclamation-text-register'] = Edit-Policy $milestoneText 'until `orchestrator-shared` Platform handoff returns the issue.' 'until the ownership register changes.'
+$milestonePlatformMutants['cycle-text-dated'] = Edit-Policy $milestoneText 'before backfill.' 'before backfill (2026-10-21).'
+$milestonePlatformMutants['selection-text-issue-number'] = Edit-Policy $milestoneText 'Never operate' 'Never operate (#192)'
+$milestonePlatformMutants['landing-text-iss-identity'] = Edit-Policy $milestoneText 'held work;' 'held work (ISS-142);'
+$milestonePlatformMutants['reclamation-text-register'] = Edit-Policy $milestoneText 'unknown labels/return means retry.' 'unknown labels/return waits for ownership register.'
 foreach ($entry in $milestonePlatformMutants.GetEnumerator()) {
   Assert-Enforced ($entry.Value -cne $milestoneText) "milestone platform mutant changes the text: $($entry.Key)"
   Assert-Mutant "milestone-platform-$($entry.Key)" { Test-MilestonePlatformText $entry.Value }

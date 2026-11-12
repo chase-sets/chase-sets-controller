@@ -85,7 +85,7 @@ function Test-ReleaseIdentity([string]$Milestone, [string]$Routing, [string]$Exp
   $routingVersion = if ($routingHeaders.Count -eq 1) { $routingHeaders[0].Groups[0].Value -replace '^# Model Routing \(v|,.*$', '' } else { $null }
   return (
     $milestoneHeaders.Count -eq 1 -and
-    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.117, 2026-10-18)" -and
+    $milestoneHeaders[0].Value -ceq "# Milestone Orchestrator (v2.118, 2026-11-12)" -and
     $routingHeaders.Count -eq 1 -and
     $routingVersion -ceq $ExpectedRoutingVersion -and
     -not $Routing.Contains("v4.5", [StringComparison]::Ordinal) -and
@@ -196,74 +196,39 @@ function Test-ControllerBase([string]$Head) {
   return $Head -ceq $baseHead
 }
 
-# Policy pin (v2.52): the candidate keeps the base head's fifteen section titles
-# in order and carries every reviewed required statement verbatim. Section
-# bytes are not frozen; a reviewed rule change edits this statement list.
+# Current compact operating invariants; historical/runtime checks below remain.
 $script:requiredMilestoneStatements = @(
-  'Astra (`gpt-6-astra`) is selectable for Codex tasks and as the registered `astra-high` host arm. Sol high remains the default. Model selection does not relax single-writer exclusivity, exact review authority, release promotion, or spend rules; Astra evidence starts independently from every predecessor.',
-  "Record spend per model-routing's telemetry rules; spend never opens a breaker.",
-  'the host rotates only when Todd says so; no lease freshness, session limit, or spend rotates a host',
-  'the record is identity, not exclusion',
-  'Body size is never a readiness gate',
-  'retry with backoff and open no breaker',
-  'Spend rolls up once per UTC day',
-  'Post a status entry on #4388 only after a landing, a breaker change, or two hours without one, at most 1,500 bytes',
-  'No model USD figure is a ceiling; explicit external-action spend caps still bind.',
-  'a brief takes at most two complete-sweep semantic reviews in its lifetime',
-  'an implementation takes one exact-head code review before ready',
-  'Reviewers apply mechanical fixes (pins, counts, generated outputs, lint) directly on the branch and let hosted CI validate them',
-  'A reviewed draft PR is always the implementation head for its issue',
-  'When the same failure persists across three consecutive heads, the host steps back:',
-  'The host decides the next step; no independent step-back review, threshold decision lane, or threshold-decision lifecycle row is required.',
-  'This rule never parks work or asks Todd for an attempt ceiling.',
-  'Escalate the level, not the count.',
-  'No attempt count, dispatch count, reviewer-eligibility gap, or environment or tooling failure parks work.',
-  'Reviewer exhaustion never parks or stalls an artifact',
-  'This is never self-review.',
-  'Semantic implementation G1 identity and attempt counts persist across repair.',
-  'The lane name identifies the current author or reviewer execution',
-  'reuse on an unrelated issue/head cannot poison a current controller candidate',
-  'Landings are ordered by the merge queue alone.',
-  'A PASS review is authority to push, publish, mark ready, and enqueue',
-  'funding a bounded review, repair, verification, or re-review never needs a Decision',
-  'At most two concurrent lanes serve `kind:ops` or controller work',
-  'A host continuation note is at most 2,000 bytes',
-  'No packet manifest, evidence file, or hash comparison is required of any lane',
-  'the relaunch continues from the partial, never from zero',
-  'the controller never registers push sequences, evidence-only pushes, single-push limits, or a local full battery as a precondition',
-  'the controller enqueues on its own authority and no held landing order exists; Todd never enqueues on the controller''s behalf',
-  'enqueue the product PR directly once with GitHub `enqueuePullRequest`',
-  'the host runs the representative refresh in-cluster itself',
-  'The host reads the failing run''s log itself and dispatches no diagnosis lane',
-  'Two blocking rounds on the same PR force a third repair that applies the reviewer''s prescribed remedies verbatim, never a replan',
-  'An ops-kind issue is dispatched only when a ready product issue is blocked on it or Todd names it',
-  '`bookkeeping`, `note`, and `flow-snapshot` are not accepted',
-  'A decision is one comment on #4388',
-  'There are no tiers, modes, premise-freshness verdicts, or transition rules',
-  'Launch the pinned Codex executable',
-  'Remove nothing else without Todd''s word',
-  'No flow snapshot, replan reconciliation, or metrics check exists in the cycle',
-  'A breaker never blocks its own repair.',
-  'A breaker open more than four hours with no repair candidate in flight is a stall alert',
-  'a repair is re-read as a delta review over its changed hunks that inherits the predecessor sweep',
-  'There is no standing-cap continuation row and no ceiling authority ceremony',
-  'No artifact parks on attempts',
-  'The #6026 protected sweep runs only after a landing that touches its footprint and at most once per 24 hours',
-  'Only confirmed correctness, security, or objective quality findings block',
-  'Every review receipt carries the `G0` gate answer, the quality profile, and a two-sided verdict on all twelve pairs of `contracts/quality-v2.md`, one line per key.',
-  'a side blocks only on its reproducible sub-case at the weight its profile sets',
-  'Non-blocking findings carry stable IDs and stay in the receipt; the controller files no issue, debt slice, or weekly review from them',
-  'A non-blocking finding never delays landing.',
-  'Quality verdicts are retro input: recalibration reads `NOTE` counts by key, side, profile, and author model from the review receipts and tunes the profile weight table only when Todd asks for a recalibration',
-  # v2.116 (Todd 2026-10-17/18): controller releases, batteries, the P0 release
-  # path and runtime rule changes moved to the controller repository; the product
-  # skill keeps only the boundary below. The removed rules remain in v2.115 history.
-  'Scope boundary: this orchestrator builds the Chase Sets platform and nothing else.',
-  # The defect hand-off and install authority moved to orchestrator-shared; they
-  # are pinned there by $script:requiredSharedStatements below.
-  'Record each use of the `orchestrator-shared` Defects exception as `escaped-defect`.',
+  'Only Todd rotates the host, never freshness, session or spend thresholds.',
+  'Hard gates: production and money safety; secrets; Todd-only decisions;',
+  'TCGplayer no contact/no credentials; explicit paid/one-shot action limits.',
+  'Failure counts, reviewer availability, tooling and environment never park it.',
+  'Only Todd parks work, with an un-park condition.',
+  'The host decides non-Todd process questions directly.',
+  'one focused non-author review per change, delta review only for changed reviewed bytes',
+  'hosted CI as proof, local checks sized to blast radius.',
+  'No family pairing, reviewer-history exclusion list or strict prelaunch review log.',
+  'Latest valid current-head review governs; later PASS supersedes older block.',
+  'Older-head PASS never authorizes live bytes.',
+  'PR, reviewed head, reviewer model, verdict and finding counts.',
   'Controller releases are not part of this loop.',
-  'is not a product finding is a controller defect'
+  'at most two semantic sweeps',
+  'Non-blocking findings never delay landing/create debt.',
+  'Same cause across three consecutive judged heads forces host step-back even if others shrink;',
+  'Never park by count',
+  'Replacement never resets history or paid caps.',
+  'no independent step-back/threshold decision lane/permission receipt.',
+  'Live head must equal reviewed head unless runtime proves the patch-equivalent continuation above.',
+  'Landings are ordered by the merge queue alone;',
+  'no Todd enqueue/extra release permission.',
+  'file controller defect.',
+  'enqueue once with GitHub `enqueuePullRequest`',
+  'Ops only for product blocker/Todd request',
+  'No unsolicited debt sweeps.',
+  'No bookkeeping/note/flow-snapshot events.',
+  'Remove automated-away duties after exercised coverage.',
+  'not extra receipt fields.',
+  'except own repair/runtime-proven non-deployables.',
+  'Unrecognized/dirty/unpushed needs Todd.'
 )
 
 $script:requiredSharedStatements = @(
@@ -320,7 +285,7 @@ function Test-BatteryDiscoveryContract([string]$Source) {
 }
 
 $milestonePath = ".orchestrator/controller-skills/milestone-orchestrator/SKILL.md"
-$archivePath = ".orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md"
+$archivePath = ".orchestrator/docs/archive/milestone-orchestrator/rule-provenance-v2.24.md"
 $routingPath = ".orchestrator/controller-skills/model-routing/SKILL.md"
 $contractPath = ".orchestrator/contracts/planning-repair-v1.md"
 $milestone = Get-RepoText $milestonePath
@@ -381,67 +346,15 @@ $sharedDefectMutant = $shared.Replace("files a controller defect as an issue on"
 Add-MutantClaim "shared-defect-handoff-removed" $true (Test-SharedStatements $sharedDefectMutant) "orchestrator-shared defect hand-off"
 $sharedAuthorityMutant = $shared.Replace("Release tags are the only install authority", "Release tags are one install authority", [StringComparison]::Ordinal)
 Add-MutantClaim "shared-install-authority-weakened" $true (Test-SharedStatements $sharedAuthorityMutant) "orchestrator-shared install authority"
-$section13Mutant = $milestone.Replace("## 13. Bookkeeping and digest", "## 13. Bookkeeping and altered digest")
-Add-MutantClaim "unowned-byte" $true (Test-PreservedSections $section13Mutant $baseMilestone) "section 13 byte"
-$astraParagraphMutant = $milestone.Replace(
-  "rules; Astra evidence starts independently from every predecessor.",
-  "rules; Astra evidence starts dependently from every predecessor.",
-  [StringComparison]::Ordinal)
-Add-MutantClaim "astra-section-1-paragraph" $true (Test-PreservedSections $astraParagraphMutant $baseMilestone) "exact reviewed Astra section-1 paragraph"
-$spendCapMutant = $milestone.Replace(
-  "Record spend per model-routing's telemetry rules; spend never opens a",
-  "Apply model-routing's governing spend caps and notification ladder. Stop only",
-  [StringComparison]::Ordinal)
-Add-MutantClaim "spend-telemetry-section-12-delta" $true (Test-PreservedSections $spendCapMutant $baseMilestone) "exact reviewed v2.51 spend-telemetry deltas"
-$attemptCeilingMutant = $milestone.Replace(
-  "When the same failure persists across three consecutive heads",
-  "When any failure occurs on the eighth attempt",
-  [StringComparison]::Ordinal)
-Add-MutantClaim "repeated-failure-counts-consecutive-heads" $true (Test-PreservedSections $attemptCeilingMutant $baseMilestone) "host-owned three-head repeated-failure statement"
-$attemptParkMutant = $milestone -replace 'This rule never parks work or asks Todd for an attempt ceiling\.', 'The host may park the artifact after repeated failures.'
-Add-MutantClaim "attempt-count-park-restored" $true (Test-PreservedSections $attemptParkMutant $baseMilestone) "v2.103 step-back never parks"
-$reviewerParkMutant = $milestone -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+an\s+artifact', 'Reviewer exhaustion parks the artifact'
-Add-MutantClaim "reviewer-exhaustion-parks" $true (Test-PreservedSections $reviewerParkMutant $baseMilestone) "v2.103 reviewer exhaustion fallback"
-$leaseRotationMutant = $milestone.Replace("rotates only`nwhen Todd says so", "rotates daily`nor at the session limit", [StringComparison]::Ordinal)
-Add-MutantClaim "lease-rotation-reintroduced" $true (Test-PreservedSections $leaseRotationMutant $baseMilestone) "v2.58 host rotates only on Todd instruction"
-$noiseBreakerMutant = $milestone.Replace("retry with backoff`nand open no breaker", "open the affected breaker`nand stop")
-Add-MutantClaim "noise-breaker-reintroduced" $true (Test-PreservedSections $noiseBreakerMutant $baseMilestone) "v2.58 tooling noise opens no breaker"
-$sweepCadenceMutant = $milestone.Replace("at most once per 24 hours", "every two hours", [StringComparison]::Ordinal)
-Add-MutantClaim "protected-sweep-fixed-cadence" $true (Test-PreservedSections $sweepCadenceMutant $baseMilestone) "#6026 footprint-triggered, max-once-24h cadence"
-$qualityVerdictMutant = $milestone.Replace("two-sided verdict on all twelve pairs", "one-sided verdict on any pair", [StringComparison]::Ordinal)
-Add-MutantClaim "quality-verdict-partial" $true (Test-PreservedSections $qualityVerdictMutant $baseMilestone) "v2.56 two-sided verdict on all twelve pairs"
-$qualityWeightMutant = $milestone.Replace("its profile sets", "any profile allows", [StringComparison]::Ordinal)
-Add-MutantClaim "quality-weight-ignored" $true (Test-PreservedSections $qualityWeightMutant $baseMilestone) "v2.56 profile weight governs blocking"
-$landingStallMutant = $milestone.Replace("is a controller defect: enqueue", "is a routine refusal: enqueue", [StringComparison]::Ordinal)
-Add-MutantClaim "landing-refusal-not-controller-defect" $true (Test-PreservedSections $landingStallMutant $baseMilestone) "v2.116 landing refusal of a complete-authority PR is a controller defect (was P0 in v2.57)"
-$breakerRepairMutant = $milestone.Replace("A breaker never blocks its own repair.", "A breaker blocks its own repair until cleared.", [StringComparison]::Ordinal)
-Add-MutantClaim "breaker-blocks-own-repair" $true (Test-PreservedSections $breakerRepairMutant $baseMilestone) "v2.57 breaker-repair admission"
-$noteDiscardMutant = $milestone.Replace("stay in the receipt; the controller`nfiles no issue, debt slice, or weekly review from them", "are discarded after landing", [StringComparison]::Ordinal)
-Add-MutantClaim "non-blocking-findings-discarded" $true (Test-PreservedSections $noteDiscardMutant $baseMilestone) "v2.54 non-blocking finding consumption"
-# v2.60: overhead removals pinned against reintroduction.
-$diagnosisLaneMutant = $milestone.Replace("dispatches no diagnosis lane;`na failure gets one author lane", "dispatches a diagnosis lane;`na failure gets one diagnosis lane", [StringComparison]::Ordinal)
-Add-MutantClaim "diagnosis-lane-reintroduced" $true (Test-PreservedSections $diagnosisLaneMutant $baseMilestone) "v2.60 host reads logs, no diagnosis lane"
-$twoBlockReplanMutant = $milestone.Replace("force a third repair`nthat applies the reviewer's prescribed remedies verbatim, never a replan", "force replan;`ndo not buy a third repair with higher effort", [StringComparison]::Ordinal)
-Add-MutantClaim "two-block-replan-reintroduced" $true (Test-PreservedSections $twoBlockReplanMutant $baseMilestone) "v2.60 third repair, never a replan"
-$bookkeepingRowsMutant = $milestone.Replace("``bookkeeping``, ``note``, and ``flow-snapshot`` are not accepted", "``bookkeeping`` and ``note`` rows are accepted", [StringComparison]::Ordinal)
-Add-MutantClaim "bookkeeping-rows-reintroduced" $true (Test-PreservedSections $bookkeepingRowsMutant $baseMilestone) "v2.60 no bookkeeping or note rows"
-$toddEnqueueMutant = $milestone.Replace("Todd never enqueues on the`ncontroller's behalf", "a Todd enqueue is the bounded`nfallback of a controller landing P0", [StringComparison]::Ordinal)
-Add-MutantClaim "todd-enqueue-fallback-reintroduced" $true (Test-PreservedSections $toddEnqueueMutant $baseMilestone) "v2.60 host enqueues on its own authority"
-$decisionMachineMutant = $milestone.Replace("There are no`ntiers, modes, premise-freshness verdicts, or transition rules", "Decision autonomy has exactly two tiers and five modes", [StringComparison]::Ordinal)
-Add-MutantClaim "decision-machine-reintroduced" $true (Test-PreservedSections $decisionMachineMutant $baseMilestone) "v2.60 decision is one comment"
-$recalibrationCadenceMutant = $milestone.Replace("only when Todd asks for a recalibration", "on that evidence every two weeks", [StringComparison]::Ordinal)
-Add-MutantClaim "recalibration-cadence-reintroduced" $true (Test-PreservedSections $recalibrationCadenceMutant $baseMilestone) "v2.60 recalibration on request only"
-$opsTriggerMutant = $milestone.Replace("An ops-kind issue is dispatched only when a`nready product issue is blocked on it or Todd names it", "An ops-kind issue is dispatched whenever a`nlane is free", [StringComparison]::Ordinal)
-Add-MutantClaim "ops-dispatch-trigger-removed" $true (Test-PreservedSections $opsTriggerMutant $baseMilestone) "v2.60 ops dispatch only when product is blocked or Todd names it"
-$qualityGateMutant = $milestone.Replace("Only confirmed correctness, security, or objective quality findings block", "Only confirmed correctness or security findings block", [StringComparison]::Ordinal)
-Add-MutantClaim "quality-gate-removed" $true (Test-PreservedSections $qualityGateMutant $baseMilestone) "v2.54 objective quality blocking class"
-$verdictRetroMutant = $milestone.Replace("Quality verdicts are retro input", "Quality verdicts are advisory only", [StringComparison]::Ordinal)
-Add-MutantClaim "quality-verdict-not-retro-input" $true (Test-PreservedSections $verdictRetroMutant $baseMilestone) "v2.54 recalibration reads verdict counts"
-$sectionTitleMutant = $milestone.Replace("## 8. Landing and deploy", "## 8. Landing, deploy, and manual attempts", [StringComparison]::Ordinal)
-Add-MutantClaim "section-title-moved" $true (Test-PreservedSections $sectionTitleMutant $baseMilestone) "section titles preserved in order"
+foreach ($statement in $script:requiredMilestoneStatements) {
+  $pattern = ([regex]::Escape($statement)).Replace('\ ', '\s+')
+  $mutated = [regex]::Replace($milestone,$pattern,'MUTANT_REMOVED')
+  Assert-6997 ($mutated -cne $milestone) "mutant must change its boundary: $statement"
+  Add-MutantClaim $statement $true (Test-PreservedSections $mutated $baseMilestone) 'current compact operating invariant'
+}
 
 $expectedRoutingVersion = Get-RoutingVersion $routing
-Assert-6997 (Test-ReleaseIdentity $milestone $routing $expectedRoutingVersion) "v2.117/installed model-routing release identity is invalid"
+Assert-6997 (Test-ReleaseIdentity $milestone $routing $expectedRoutingVersion) "v2.118/installed model-routing release identity is invalid"
 $routingMalformedMutant = $routing -replace '(?m)^# Model Routing \(v\d+\.\d+,', '# Model Routing (vmalformed,'
 $malformedRoutingRejected = $false
 try { [void](Get-RoutingVersion $routingMalformedMutant) } catch { $malformedRoutingRejected = $true }
@@ -458,9 +371,9 @@ function Test-NoTrainAuthority([string]$Milestone) {
 Assert-6997 (Test-NoTrainAuthority $milestone) "live skill retains release-train authority outside its retirement text"
 $trainMutant = $milestone.Replace("Controller releases are not part of this loop.", "Controller releases ship on the next weekly train.", [StringComparison]::Ordinal)
 Add-MutantClaim "train-authority-reintroduced" (Test-NoTrainAuthority $milestone) (Test-NoTrainAuthority $trainMutant) "v2.58 no live train authority"
-$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
+$oldPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.118, 2026-11-12)", "# Milestone Orchestrator (v2.105, 2026-10-07)")
 Add-MutantClaim "old-release-pin" $true (Test-ReleaseIdentity $oldPinMutant $routing $expectedRoutingVersion) "milestone release header"
-$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.117, 2026-10-18)", "# Milestone Orchestrator (v2.116, 2026-10-18)")
+$previousPinMutant = $milestone.Replace("# Milestone Orchestrator (v2.118, 2026-11-12)", "# Milestone Orchestrator (v2.116, 2026-10-18)")
 Add-MutantClaim "previous-release-pin" $true (Test-ReleaseIdentity $previousPinMutant $routing $expectedRoutingVersion) "milestone release header"
 
 # v2.116: controller release proof, including the #9373 CI-sourced reuse rule,
@@ -562,9 +475,9 @@ foreach ($token in @(
   Assert-6997 ($archiveCompact.Contains($token, [StringComparison]::Ordinal) -or $milestoneCompact.Contains($token, [StringComparison]::Ordinal)) "v2.47 repair-frontier release omits $token from both the archive and the live skill"
 }
 Assert-6997 ($archiveCompact.Contains('the intervening interval is `not observed`, never zero', [StringComparison]::Ordinal)) "Packet C observation handoff missing from the archive"
-Assert-6997 ($milestoneCompact.Contains("File genuine product, domain, legal, provider-contract, UX, data, and architecture Decisions", [StringComparison]::Ordinal)) "genuine Decision classes were removed"
+Assert-6997 ($milestoneCompact.Contains("Optional decision lanes: real product/architecture tradeoffs inside scope, never process authorization.", [StringComparison]::Ordinal)) "genuine Decision classes were removed"
 Assert-6997 (-not $milestoneCompact.Contains("new-spend-authority", [StringComparison]::Ordinal)) "v2.51 retains the spend-authority Decision class"
-Assert-6997 ($milestoneCompact.Contains("Do not file recurring cap-only, final-review, or park-or-continue Decisions after v2.45 cutover.", [StringComparison]::Ordinal)) "post-cutover cap-only Decision removal missing"
+Assert-6997 ($milestoneCompact.Contains("no independent step-back/threshold decision lane/permission receipt.", [StringComparison]::Ordinal)) "post-cutover cap-only Decision removal missing"
 Assert-6997 ($archiveCompact.Contains('Product main is not authority for those `.orchestrator/` artifacts', [StringComparison]::Ordinal)) "controller premise-artifact authority missing from the archive"
 Assert-6997 ($routingCompact.Contains("neither parks an artifact (4388/6022146271). The controller never files a cap-only Decision.", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("PARK at the one idempotent terminal receipt", [StringComparison]::Ordinal)) "v4.22 artifact checkpoints still park or file cap-only Decisions"
 Assert-6997 ($routingCompact.Contains("No per-dispatch, per-artifact, lineage, daily, or monthly USD limit exists", [StringComparison]::Ordinal)) "v4.8 spend telemetry statement missing"

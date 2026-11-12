@@ -36,30 +36,19 @@ function Get-Section([string]$Text, [int]$Number) {
 }
 
 $script:sectionRules = @(
-  @(4, 'Serial blocking backfills the floor (4388/5845981597).'),
-  @(4, 'When Todd''s current priority outcome has fewer ready product issues than the floor, the remaining product lanes take ready `kind:product` issues from the next committed outcomes in marker order, regardless of track or the per-track pull window.'),
-  @(4, 'Backfill is not a priority change and files no §11 question.'),
-  @(4, 'The current priority keeps first claim on each lane that frees, and backfill never preempts a running lane.'),
-  @(4, 'shared dispatch window or admitted by the floor backfill above.'),
-  @(4, 'A probe, diagnostic or test-infrastructure issue never blocks a product issue unless the product change cannot be written without its output (4388/5845981597).'),
-  @(4, 'The host removes such a link, records it on #4129, and the diagnostic runs in parallel.'),
-  @(7, 'Hosted CI is the proof for every product attempt, not only DB (4388/5845981597).'),
-  @(7, 'The hosted jobs on the pushed head decide it, including E2E, DB Profile, unit, static and build.'),
-  @(7, 'Local E2E, local `verify:test-db` and other local full or harness runs are diagnostics only.'),
-  @(7, 'No brief, decision or host prompt makes one a prerequisite for push, draft, ready or landing.'),
-  @(7, 'A local-harness, environment or lock failure never parks, fails or classifies a candidate.'),
-  @(7, 'The lane pushes its candidate to its draft PR and hosted CI judges it.'),
-  @(7, 'An implementation attempt counts only when a pushed head receives a hosted CI verdict or an exact-head review verdict (4388/5845981597).'),
-  @(7, 'Local-only failures, preparation stops, harness or environment failures, lock refusals and a lane''s own tooling defects do not count; the lane repairs them within the same attempt.'),
-  @(7, 'Existing counts are recounted under this definition.'),
-  @(7, 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'),
-  @(7, 'When the same failure persists across three consecutive heads, the host steps back:'),
-  @(12, 'Replacement never resets an attempt count, and counts follow the §7 attempt definition'),
-  @(4, 'Choose the next committed outcome within Todd''s current product priority by explicit Todd steering first'),
-  @(4, 'while ready, runnable `kind:product` work exists, at least two lanes serve it.'),
-  @(13, 'Actionable ready-idle means current trusted `issue-readiness/v1` accepted by main''s `consumeIssueReadinessReceipt`, independent current-brief semantic PASS, resolved prerequisites and section 4 window/backfill admission.'),
-  @(13, 'Backfill consumes the host''s section 4 priority assessment and marker-order evidence, including current-priority first claim and non-preemption, never an idle-derived permission.'),
-  @(13, 'The host verifies the workflow artifact and complete independent author/repair history before projecting them; comments, prospective results and artifact presence alone confer no authority.')
+  'Backfill next committed marker-order outcomes across tracks/windows, no Todd question.',
+  'Current priority first claim; never preempt live work.',
+  'Remove diagnostic blockers unless product cannot be written without result.',
+  'Hosted CI is proof on pushed head, including E2E, DB Profile, unit, static and build.',
+  'Push a draft once delivery skill scoped checks pass;',
+  'local full E2E/DB/ harness runs are diagnostics, not push/ready/landing prerequisites.',
+  'Do not conceal real failures as environmental; disclose hosted substitutions in the PR.',
+  'Attempts count only pushed heads with hosted/review verdict; local/tooling stops do not count.',
+  'Replacement never resets history or paid caps.',
+  'Same cause across three consecutive judged heads forces host step-back even if others shrink;',
+  'At least two lanes serve ready product;',
+  'Every FLOOR UNMET: act on each qualified ready-idle/held PR or log concrete capacity/ordering reason',
+  'UNKNOWN is not OK/ready/no-work proof; repair named gaps, no corpus sweep.'
 )
 
 $script:contractRules = @(
@@ -68,14 +57,9 @@ $script:contractRules = @(
 )
 
 function Test-VelocityPolicy([string]$Text) {
-  $normalized = Normalize-Text $Text
-  if ((Compact-Text $normalized).Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.')) { return $false }
-  if ([regex]::Matches($normalized, "(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$").Count -ne 1) { return $false }
-  foreach ($rule in $script:sectionRules) {
-    $section = Get-Section $normalized $rule[0]
-    if ($null -eq $section) { return $false }
-    if (-not (Compact-Text $section).Contains((Compact-Text $rule[1]), [StringComparison]::Ordinal)) { return $false }
-  }
+  $compact = Compact-Text $Text
+  if ([regex]::Matches((Normalize-Text $Text), '(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$').Count -ne 1) { return $false }
+  foreach ($rule in $script:sectionRules) { if (-not $compact.Contains((Compact-Text $rule), [StringComparison]::Ordinal)) { return $false } }
   return $true
 }
 
@@ -104,36 +88,15 @@ Assert-8205 (Test-ContractPolicy $contract) "planning-repair consumed-count defi
 $landing = Get-Section $skill 8
 Assert-8205 (-not (Compact-Text $landing).Contains('per-PR Reports', [StringComparison]::Ordinal)) 'section 8 has no velocity collection recipe'
 Assert-8205 (-not (Compact-Text $skill).Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.', [StringComparison]::Ordinal)) 'old no-work rule is absent'
-$archivePath = Join-Path $controller ".orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md"
+$archivePath = Join-Path $controller ".orchestrator/docs/archive/milestone-orchestrator/rule-provenance-v2.24.md"
 Assert-8205 ((Normalize-Text ([IO.File]::ReadAllText($archivePath))).Contains("Version 2.84 codifies Todd's 2026-09-26 velocity ruling on #4388 (5845981597;", [StringComparison]::Ordinal)) "v2.84 release note is not preserved in the provenance archive"
 
-$mutants = [ordered]@{
-  'old-no-work-rule-restored' = $skill.Replace('## 14. Telemetry', "Everything else in the report is diagnostic context that never triggers work or files an issue.`n`n## 14. Telemetry")
-  "backfill-dropped" = Remove-Phrase $skill 'Serial blocking backfills the floor (4388/5845981597).'
-  "backfill-bound-to-pull-window" = $skill.Replace('regardless of track or the per-track pull window', 'within the per-track pull window')
-  "backfill-files-priority-question" = Remove-Phrase $skill 'Backfill is not a priority change and files no §11 question.'
-  "backfill-preempts-or-outranks-priority" = Remove-Phrase $skill 'The current priority keeps first claim on each lane that frees, and backfill never preempts a running lane.'
-  "backfill-not-ready" = Remove-Phrase $skill ' or admitted by the floor backfill above'
-  "diagnostic-blocks-product" = Remove-Phrase $skill 'A probe, diagnostic or test-infrastructure issue never blocks a product issue unless the product change cannot be written without its output (4388/5845981597).'
-  "diagnostic-link-kept" = Remove-Phrase $skill 'The host removes such a link, records it on #4129, and the diagnostic runs in parallel.'
-  "hosted-proof-db-only" = $skill.Replace('Hosted CI is the proof for every product attempt, not only DB', 'Hosted CI is the proof for DB')
-  "hosted-jobs-narrowed" = $skill -replace 'including E2E,\s+DB Profile, unit, static and build', 'including DB Profile'
-  "local-e2e-gate" = Remove-Phrase $skill 'Local E2E, local `verify:test-db` and other local full or harness runs are diagnostics only.'
-  "local-run-prerequisite" = Remove-Phrase $skill 'No brief, decision or host prompt makes one a prerequisite for push, draft, ready or landing.'
-  "local-failure-parks" = Remove-Phrase $skill 'A local-harness, environment or lock failure never parks, fails or classifies a candidate.'
-  "no-push-to-hosted" = Remove-Phrase $skill 'The lane pushes its candidate to its draft PR and hosted CI judges it.'
-  "attempt-unbound-to-hosted-verdict" = Remove-Phrase $skill 'An implementation attempt counts only when a pushed head receives a hosted CI verdict or an exact-head review verdict (4388/5845981597).'
-  "local-stops-count" = Remove-Phrase $skill 'Local-only failures, preparation stops, harness or environment failures, lock refusals and a lane''s own tooling defects do not count; the lane repairs them within the same attempt.'
-  "no-recount" = Remove-Phrase $skill 'Existing counts are recounted under this definition.'
-  "recount-becomes-reset" = Remove-Phrase $skill 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'
-  "repeated-failure-trigger-removed" = Remove-Phrase $skill 'When the same failure persists across three consecutive heads, the host steps back:'
-  "park-ignores-definition" = $skill.Replace('Replacement never resets an attempt count, and counts follow' + "`n" + 'the §7 attempt definition', 'Replacement never resets an attempt count')
-  "floor-dropped" = Remove-Phrase $skill 'at least two lanes serve it.'
-  "idle-without-canonical-authority" = Remove-Phrase $skill 'independent current-brief semantic PASS,'
-  "backfill-idle-derived" = Remove-Phrase $skill 'never an idle-derived permission.'
-  "artifact-presence-authority" = Remove-Phrase $skill 'artifact presence alone confer no authority.'
-  # The exact release version is pinned once, by issue-6997; this test pins only a well-formed header.
-  "header-malformed" = ($skill -replace '(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)', '# Milestone Orchestrator')
+$mutants = [ordered]@{}
+foreach ($rule in $script:sectionRules) {
+  $pattern = ([regex]::Escape($rule)).Replace('\ ', '\s+')
+  $mutated = [regex]::Replace($skill,$pattern,'MUTANT_REMOVED')
+  Assert-8205 ($mutated -cne $skill) "negative control must change its boundary: $rule"
+  $mutants[$rule] = $mutated
 }
 $contractMutants = [ordered]@{
   "contract-consumed-count-undefined" = Remove-Phrase $contract 'The consumed count is the number of pushed heads that received a hosted CI verdict or an exact-head review verdict (milestone-orchestrator section 7); a local-only, preparation, harness or lane-tooling stop consumed no attempt.'

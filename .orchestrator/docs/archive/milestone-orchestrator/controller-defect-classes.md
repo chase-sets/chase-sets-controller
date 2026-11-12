@@ -1,7 +1,8 @@
-# Reviewed controller defect constraints
+# Historical controller defect catalog (not installed)
 
-This static supplement ships with the reviewed controller. It augments the
-machine-maintained defect/stall ledger pair without replacing either ledger.
+Historical evidence only, not current operating instructions. It formerly
+supplemented the machine-maintained defect/stall ledger pair. Read a named
+entry only for an explicit defect investigation; current policy supersedes it.
 
 ## unattributed-nested-model-dispatch (first bitten 2026-10-01, last updated 2026-10-01)
 Defect: a planning lane treats an adapter failure as permission to launch its own unrecorded native model reviewer, bypassing attribution and model-history exclusion.

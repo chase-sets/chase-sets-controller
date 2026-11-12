@@ -35,45 +35,25 @@ function Get-Section([string]$Text, [int]$Number) {
 }
 
 $script:sectionRules = @(
-  @(1, 'Send Todd only product priority or scope questions and packaged operator actions (§11), and never wait globally on either.'),
-  @(4, 'Todd owns product prioritization (4388/5838628573).'),
-  @(4, 'Choose the next committed outcome within Todd''s current product priority by explicit Todd steering first'),
-  @(4, 'These criteria never select a new product priority.'),
-  @(4, 'When evidence suggests such a change, the host files one short priority question under §11 and keeps delivering on the current priority meanwhile.'),
-  @(4, 'Inside that priority, agents still create, split, place and rank outcomes and issues.'),
-  @(4, 'while ready, runnable `kind:product` work exists, at least two lanes serve it.'),
-  @(4, 'Controller, platform, ops and test-infrastructure work take only the remaining capacity.'),
-  @(4, 'When fewer than two product issues are ready, planning lanes that make product issues ready come before new ops or test-infrastructure probes.'),
-  @(4, 'Heavy-verifier slot order is unchanged, and nothing preempts a live heavy owner.'),
-  @(7, 'the normal final-head hosted `DB Profile Tests` job is the DB proof'),
-  @(7, 'While #8159 is open, no brief, decision or host prompt makes a full local `verify:test-db` a prerequisite for push, draft, ready or landing.'),
-  @(7, 'A brief that already names one takes the hosted substitution with a PR-body disclosure, and no per-issue decision is needed.'),
-  @(7, 'Hosted gates, timeouts, skips and reviews are unchanged, and local failures are not classified as environmental.'),
-  @(7, 'Local-gate investigation stays in the #8159 lineage, and no new local-gate probe or diagnostic issue opens outside it.'),
-  @(7, 'When that lineage yields no bounded repair, #8159 escalates through the recovery ladder below; it never parks automatically, and only Todd may defer it.'),
-  @(1, 'Parked means Todd deliberately deferred the work, with a stated un-park condition (4388/6022146271).'),
-  @(1, 'No attempt count, dispatch count, reviewer-eligibility gap, or environment or tooling failure parks work.'),
-  @(7, 'When the same failure persists across three consecutive heads, the host steps back: replan, change the approach, or ask Todd only if product priority or scope must change (§11).'),
-  @(7, 'This rule never parks work or asks Todd for an attempt ceiling.'),
-  @(7, 'It does not reset consumed attempts or relax paid or one-shot external-action limits.'),
-  @(7, 'This step-back takes precedence even if other findings are shrinking while the same failure persists.'),
-  @(12, 'No artifact parks on attempts'),
-  @(11, 'Todd receives exactly two kinds of request'),
-  @(11, 'A decision is one comment on #4388 only when it is a product priority or scope question for Todd.'),
-  @(11, 'Process decisions never become #4388 questions for Todd; the host resolves them directly below.'),
-  @(11, '**Product priority or scope question.**'),
-  @(11, '**Packaged operator action.** A step no lane can perform'),
-  @(11, 'Each request is one concrete runnable step, with its exact command or click path, and Todd can answer it without reading history.'),
-  @(11, 'External approvals themselves, such as counsel sign-off, remain required and are never waived.'),
-  @(11, '**The host decides** non-Todd process questions directly and logs one `decision-resolved` row with its reasoning.'),
-  @(11, '**A decision lane is optional** for a genuine product, domain, legal, provider-contract, UX, data or architecture tradeoff inside accepted product scope'),
-  @(11, 'do not dispatch a decision lane or request a second independent ruling to authorize the process choice.'),
-  @(11, 'Production/money safety, secrets and TCGplayer no contact/no credentials are never process exceptions.'),
-  @(11, 'Process simplification never weakens accepted acceptance criteria or changes the accepted product outcome; those are not process permissions.'),
-  @(11, 'It goes to Todd only as a priority or scope question or a packaged operator action.'),
-  @(11, 'Escalate to Todd only when a tradeoff would change product priority or accepted product scope.'),
-  @(11, 'The existing Todd-reserved rules are unchanged: host rotation (§2) and reclaiming unrecognized worktrees (§9).'),
-  @(11, 'They never list process decisions as waiting on Todd.')
+  'Hard gates: production and money safety; secrets; Todd-only decisions;',
+  'TCGplayer no contact/no credentials; explicit paid/one-shot action limits.',
+  'Only Todd parks work, with an un-park condition.',
+  'Failure counts, reviewer availability, tooling and environment never park it.',
+  'Todd owns product priority and accepted scope changes.',
+  'At least two lanes serve ready product; planning-to-ready precedes ops probes.',
+  'Controller never takes product lanes.',
+  'nothing preempts a live heavy owner.',
+  'Hosted CI is proof on pushed head, including E2E, DB Profile, unit, static and build.',
+  'local full E2E/DB/ harness runs are diagnostics, not push/ready/landing prerequisites.',
+  'Same cause across three consecutive judged heads forces host step-back even if others shrink;',
+  'no independent step-back/threshold decision lane/permission receipt.',
+  'never process authorization.',
+  'Do not change accepted outcome/acceptance or waive required counsel/provider/external approval.',
+  'operator actions no lane can perform.',
+  'Questions on live tracking issue: options, evidence, recommendation, blocked issues; never infer answer.',
+  'now|later|done',
+  'never repeats its list or lists host process decisions as waiting on Todd.',
+  'Owner-authorized attempt/spend caps (zero without authority) survive every failure/replan/rename/ review/replacement.'
 )
 
 $script:forbidden = @(
@@ -121,21 +101,11 @@ function Test-CeilingContract([string]$Contract) {
 }
 
 function Test-EscalationPolicy([string]$Text) {
-  $normalized = Normalize-Text $Text
-  if ([regex]::Matches($normalized, "(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$").Count -ne 1) { return $false }
-  if (-not $normalized.Contains('sending Todd only product priority or scope questions and packaged operator actions.', [StringComparison]::Ordinal)) { return $false }
-  foreach ($rule in $script:sectionRules) {
-    $section = Get-Section $normalized $rule[0]
-    if ($null -eq $section) { return $false }
-    if (-not (Compact-Text $section).Contains((Compact-Text $rule[1]), [StringComparison]::Ordinal)) { return $false }
-  }
-  $compact = Compact-Text $normalized
-  foreach ($phrase in $script:forbidden) {
-    if ($compact.Contains((Compact-Text $phrase), [StringComparison]::Ordinal)) { return $false }
-  }
-  foreach ($token in $script:forbiddenTokens) {
-    if ($normalized.Contains($token, [StringComparison]::Ordinal)) { return $false }
-  }
+  $compact = Compact-Text $Text
+  if ([regex]::Matches((Normalize-Text $Text), '(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$').Count -ne 1) { return $false }
+  foreach ($rule in $script:sectionRules) { if (-not $compact.Contains((Compact-Text $rule), [StringComparison]::Ordinal)) { return $false } }
+  foreach ($phrase in $script:forbidden) { if ($compact.Contains((Compact-Text $phrase))) { return $false } }
+  foreach ($token in $script:forbiddenTokens) { if ($Text.Contains($token)) { return $false } }
   return $true
 }
 
@@ -149,7 +119,7 @@ function Remove-Phrase([string]$Text, [string]$Phrase) {
 Assert-8192 (Test-Path -LiteralPath $skillPath -PathType Leaf) "milestone-orchestrator source is missing"
 $skill = Normalize-Text ([IO.File]::ReadAllText($skillPath))
 Assert-8192 (Test-EscalationPolicy $skill) "#8192 escalation, product-floor or hosted DB-proof policy is incomplete"
-$archivePath = Join-Path $controller ".orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md"
+$archivePath = Join-Path $controller ".orchestrator/docs/archive/milestone-orchestrator/rule-provenance-v2.24.md"
 Assert-8192 ((Normalize-Text ([IO.File]::ReadAllText($archivePath))).Contains("Version 2.82 codifies Todd's three 2026-09-25 rulings on #4388", [StringComparison]::Ordinal)) "v2.82 release note is not preserved in the provenance archive"
 
 $contractRoot = Join-Path $controller ".orchestrator/contracts"
@@ -174,38 +144,12 @@ $contractMutants = [ordered]@{
 }
 
 
-$mutants = [ordered]@{
-  "same-failure-trigger-changed" = $skill.Replace('three consecutive heads', 'four unrelated attempts')
-  "shrinking-findings-avoid-step-back" = Remove-Phrase $skill 'This step-back takes precedence even if other findings are shrinking while the same failure persists.'
-  "process-choice-weakens-acceptance" = Remove-Phrase $skill 'Process simplification never weakens accepted acceptance criteria or changes the accepted product outcome; those are not process permissions.'
-  "hard-boundaries-removed" = Remove-Phrase $skill 'Production/money safety, secrets and TCGplayer no contact/no credentials are never process exceptions.'
-  "process-choice-requires-lane" = Remove-Phrase $skill 'do not dispatch a decision lane or request a second independent ruling to authorize the process choice.'
-  "genuine-tradeoff-route-removed" = Remove-Phrase $skill '**A decision lane is optional**'
-  "operator-action-unpackaged" = Remove-Phrase $skill 'Each request is one concrete runnable step, with its exact command or click path, and Todd can answer it without reading history.'
-  "external-approval-waived" = Remove-Phrase $skill 'External approvals themselves, such as counsel sign-off, remain required and are never waived.'
-  "host-routine-repairs-escalate" = Remove-Phrase $skill '**The host decides** non-Todd process questions directly'
-  "status-lists-process-decisions" = Remove-Phrase $skill 'They never list process decisions as waiting on Todd.'
-  "product-priority-agent-owned" = Remove-Phrase $skill 'Todd owns product prioritization (4388/5838628573).'
-  "product-floor-dropped" = Remove-Phrase $skill 'at least two lanes serve it.'
-  "ready-planning-not-preferred" = Remove-Phrase $skill 'When fewer than two product issues are ready, planning lanes that make product issues ready come before new ops or test-infrastructure probes.'
-  "heavy-owner-preempted" = Remove-Phrase $skill 'Heavy-verifier slot order is unchanged, and nothing preempts a live heavy owner.'
-  "local-db-gate-required" = Remove-Phrase $skill 'While #8159 is open, no brief, decision or host prompt makes a full local `verify:test-db` a prerequisite for push, draft, ready or landing.'
-  "hosted-gates-weakened" = Remove-Phrase $skill 'Hosted gates, timeouts, skips and reviews are unchanged, and local failures are not classified as environmental.'
-  "tooling-lineage-auto-park-restored" = $skill -replace '#8159\s+escalates\s+through\s+the\s+recovery\s+ladder\s+below;\s+it\s+never\s+parks\s+automatically,\s+and\s+only\s+Todd\s+may\s+defer\s+it\.', '#8159 parks with a terminal comment.'
-  "local-gate-probes-unbounded" = Remove-Phrase $skill 'Local-gate investigation stays in the #8159 lineage, and no new local-gate probe or diagnostic issue opens outside it.'
-  "ceiling-goes-to-todd" = Remove-Phrase $skill 'ask Todd only if product priority or scope must change (§11).'
-  "park-definition-widened" = $skill -replace 'Parked means Todd deliberately\s+deferred the work', 'Parked means deliberately deferred work, including work past its attempt ceiling'
-  "attempt-park-restored" = $skill.Replace('No artifact parks on attempts', 'An artifact past the four-attempt ceiling (§7) parks with one terminal comment')
-  "step-back-may-park" = Remove-Phrase $skill 'This rule never parks work or asks Todd for an attempt ceiling.'
-  "paid-attempt-limit-dropped" = Remove-Phrase $skill 'It does not reset consumed attempts or relax paid or one-shot external-action limits.'
-  "todd-reserved-rules-dropped" = Remove-Phrase $skill 'The existing Todd-reserved rules are unchanged'
-  "old-queue-invariant-restored" = $skill.Replace('- Send Todd only product priority or scope questions and packaged operator', '- Queue Todd-only decisions and operator actions without globally waiting.`n- Send Todd only product priority or scope questions and packaged operator')
-  "todd-ruling-outcome-added" = $skill + "`nAccepted decision lane outcomes: FINAL, TODD_RULING_NEEDED."
-  "universal-todd-decision-restored" = $skill.Replace('A decision is one comment on #4388 only when it is a product priority or scope' + "`n" + 'question for Todd. That comment states', 'A decision is one comment on #4388 that states')
-  "process-decisions-become-todd-questions" = Remove-Phrase $skill 'Process decisions never become #4388 questions for Todd; the host resolves them directly below.'
-  "unscoped-next-outcome-restored" = $skill -replace 'Choose the next committed outcome within Todd''s current product priority by\s+explicit', 'Choose the next committed outcome by explicit'
-  "heuristics-may-pick-new-priority" = Remove-Phrase $skill 'These criteria never select a new product priority.'
-  "old-escalation-restored" = $skill.Replace('Other legal and external', 'Escalate when a tradeoff would change the accepted product outcome or requires product, legal, or external authority. Other legal and external')
+$mutants = [ordered]@{}
+foreach ($rule in $script:sectionRules) {
+  $pattern = ([regex]::Escape($rule)).Replace('\ ', '\s+')
+  $mutated = [regex]::Replace($skill,$pattern,'MUTANT_REMOVED')
+  Assert-8192 ($mutated -cne $skill) "negative control must change its boundary: $rule"
+  $mutants[$rule] = $mutated
 }
 foreach ($obsolete in @('At every fourth counted implementation attempt', 'At 15 or more dispatches',
     'query-ledgers.ps1 -DispatchIssue', 'log-event.ps1 -DispatchDecision',

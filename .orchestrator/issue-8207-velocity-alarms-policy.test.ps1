@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $controller = [IO.Path]::GetFullPath($ControllerRoot)
 $skillPath = Join-Path $controller ".orchestrator/controller-skills/milestone-orchestrator/SKILL.md"
-$archivePath = Join-Path $controller ".orchestrator/controller-skills/milestone-orchestrator/references/rule-provenance-v2.24.md"
+$archivePath = Join-Path $controller ".orchestrator/docs/archive/milestone-orchestrator/rule-provenance-v2.24.md"
 $reducerPath = Join-Path $controller ".orchestrator/velocity-metrics.ps1"
 $script:assertions = 0
 
@@ -28,63 +28,21 @@ function Get-Section([string]$Text, [int]$Number) {
 }
 
 $script:rules = @(
-  'Every cycle the host runs `.orchestrator/velocity-metrics.ps1 -Summary`, which records one observation and reports `velocity-report/v1`.',
-  'DROUGHT is the only alarm;',
-  'Other diagnostics do not trigger work except the existing duty to repair named gaps.',
-  'FLOOR: fewer than two product issues have an agent-owned next step (a live lane, running hosted CI, or the unblocked merge queue) while a ready product issue is idle or an exact-head PASS product PR is held.',
-  'count each PR once with its hold identities, never as ready idle or queue-only flow.',
-  'Name both idle and held causes and the host action.',
-  'It needs no retro.',
-  'Log one `decision-resolved` row with `velocity:FLOOR` in the note carrying the observation''s exact `ts` and every `readyIdleIssues`/`heldPrs` identity with its action, concrete reason or marker.',
-  'DROUGHT: no product-milestone merge for 48 hours, re-armed every further 48 hours.',
-  'For these metrics, `committed-product-milestone/v1` counts every issue kind',
-  'canonical dispatch/review controller evidence at any age excludes controller-owned issues. Ownership does not expire with the observation window.',
-  'Kind changes never produce `lateProductRelabels`; that compatibility field remains empty',
-  'The host diagnoses the report directly and logs one `decision-resolved` row with `velocity:DROUGHT` and its reasoning.',
-  'a rule change that removes at least as many skill lines as it adds',
-  'or, only when Todd''s current priority is blocked by something external, one priority question under §11.',
-  'UNKNOWN facts raise no alarm and never read as OK; the host repairs the named gap.',
-  'With incomplete facts, FLOOR is MET only when every gap is additive-only or proven issue-local and at least `FloorLanes` flowing issues remain after removing the named issues.',
-  'Only `merged-issue-labels-incomplete:<n>` and `issue-details-labels-incomplete:<n>` are proven issue-local.',
-  'Every other gap, including malformed dispatch rows, whole-source failures and unknown/future kinds, makes FLOOR UNKNOWN; there is no blanket landing subtraction.',
-  'Below the floor, incomplete facts remain UNKNOWN. Complete-facts behavior, `status`, `factsComplete` and `gaps` are unchanged.',
-  'A miss re-diagnoses; it never auto-reverts and never adds a rule by itself.',
-  'Until the heartbeat ships in #8222, the host checks `unacted` in each cycle''s summary (DROUGHT 4 hours only).',
-  'independent of `status`, `alarms` and observation history.',
-  'For every UNMET cycle, dispatch each ready idle issue, or run its PR''s next permissible step;',
-  '`NO_REVIEW_HISTORY` means a first review.',
-  'A capacity/ordering deferral creates no marker and is reconsidered next cycle.',
-  'Only a cause section 7''s failure-class list already routes to a native blocker or `status:needs-operator` gets that marker, applied there; a product question goes to section 11.',
-  'This response never creates a terminal park, `status:needs-replan` or an attempt change.',
-  'A blocker stops blocking when it closes; remove `status:needs-operator` only after verifying the operator action completed.',
-  'Lift or confirm each listed hold under section 8''s authority; a held PR stays listed while held.',
-  'Identical consecutive cycles bind separately by `ts`.',
-  'A terminal park velocity misses is a facts defect: file it, never re-triage.',
-  '`review-reduction-unknown:<pr>`',
-  'Require zero unmatched identities, distinguish repeated cycles, retain a queued product PR row if any, and prove deleting one action fails the join.',
-  'No observed UNMET cycle is "not exercised"; zero UNMET cycles is unexercised, never invented coverage.',
-  'It asks Todd nothing.',
-  '`unblockedCommittedBacklog` and `backlogQualification` remain diagnostic, with no per-backlog action duty.',
-  'Summary only consumes qualification; it never starts workflows or a corpus sweep.',
-  'Unknown never proves ready or readiness completeness.',
-  'Historical diagnostic rows do not retroactively gain this meaning.',
-  'Qualification never erases flow or holds.'
+  'One foreground `velocity-metrics.ps1 -Summary` per cycle, no per-PR Reports.',
+  'Every FLOOR UNMET: act on each qualified ready-idle/held PR or log concrete capacity/ordering reason',
+  'in `decision-resolved`, `velocity:FLOOR`, exact observation `ts` and every identity/action.',
+  'No deferral marker/park.',
+  'UNKNOWN is not OK/ready/no-work proof; repair named gaps, no corpus sweep.',
+  'DROUGHT: 48 hours without product merge, re-armed each 48 hours;',
+  'host repairs/simplifies, asks Todd only for external-blocked priority change.',
+  'For unknown facts/holds read `references/velocity.md`.'
 )
 
 function Test-VelocityAlarms([string]$Text) {
-  $normalized = Normalize-Text $Text
-  if ([regex]::Matches($normalized, "(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$").Count -ne 1) { return $false }
-  $section = Get-Section $normalized 13
-  if ($null -eq $section) { return $false }
-  $compact = Compact-Text $section
-  foreach ($rule in $script:rules) {
-    if (-not $compact.Contains((Compact-Text $rule), [StringComparison]::Ordinal)) { return $false }
-  }
-  if ($compact.Contains('Everything else in the report is diagnostic context that never triggers work or files an issue.')) { return $false }
-  # Release history lives in the archive; only the current release note remains.
-  $notes = [regex]::Matches($normalized, "(?m)^Version 2\.\d+ ")
-  if ($notes.Count -ne 1 -or -not $notes[0].Value.StartsWith("Version 2.116 ", [StringComparison]::Ordinal)) { return $false }
-  return $true
+  $compact = Compact-Text $Text
+  if ([regex]::Matches((Normalize-Text $Text), '(?m)^# Milestone Orchestrator \(v2\.\d+, \d{4}-\d{2}-\d{2}\)$').Count -ne 1) { return $false }
+  foreach ($rule in $script:rules) { if (-not $compact.Contains((Compact-Text $rule), [StringComparison]::Ordinal)) { return $false } }
+  return $Text -notmatch '(?m)^Version 2\.\d+ '
 }
 
 function Remove-Phrase([string]$Text, [string]$Phrase) {
@@ -256,34 +214,14 @@ foreach ($note in @("Version 2.98 adds", "Version 2.87 adopts", "Version 4.19 re
   Assert-8207 ($archive.Contains($note, [StringComparison]::Ordinal)) "archive lost release note: $note"
 }
 
-$mutants = [ordered]@{
-  'old-no-work-rule-restored' = $skill.Replace('## 14. Telemetry', "Everything else in the report is diagnostic context that never triggers work or files an issue.`n`n## 14. Telemetry")
-  "reducer-not-run" = Remove-Phrase $skill 'Every cycle the host runs'
-  "diagnostics-trigger-work" = Remove-Phrase $skill 'Other diagnostics do not trigger work except the existing duty to repair named gaps.'
-  "floor-without-same-cycle" = Remove-Phrase $skill 'For every UNMET cycle'
-  "floor-not-logged" = Remove-Phrase $skill 'with `velocity:FLOOR` in the note'
-  "floor-needs-retro" = Remove-Phrase $skill 'It needs no retro.'
-  "drought-threshold-moved" = $skill.Replace('merge for 48 hours, re-armed', 'merge for 24 hours, re-armed')
-  "drought-host-decision-removed" = Remove-Phrase $skill 'The host diagnoses the report directly'
-  "drought-rule-growth" = Remove-Phrase $skill 'a rule change that removes at least as many skill lines as it adds'
-  "drought-asks-todd-freely" = Remove-Phrase $skill 'only when Todd''s current priority is blocked by something external,'
-  "unknown-reads-ok" = Remove-Phrase $skill 'UNKNOWN facts raise no alarm and never read as OK; the host repairs the named gap.'
-  "rule-check-autoreverts" = Remove-Phrase $skill 'it never auto-reverts and never adds a rule by itself.'
-  "heartbeat-host-duty-omitted" = Remove-Phrase $skill 'the host checks `unacted` in each cycle''s summary'
-  "heartbeat-present-tense-restored" = $skill.Replace("Until the heartbeat ships in #8222, the host checks ``unacted`` in each cycle's`n  summary (DROUGHT 4 hours only).", 'A heartbeat outside the host runs the same reducer and messages the host only about an alarm unacted past its grace (DROUGHT 4 hours only).')
-  "summary-asks-todd" = Remove-Phrase $skill 'It asks Todd nothing.'
-  "history-restored" = $skill.Replace('Version 2.116 makes', "Version 2.94 adds archived history.`n`nVersion 2.116 makes")
-  "previous-note-restored" = $skill.Replace('Version 2.116 makes', 'Version 2.115 adds')
-  "floor-gap-scope-omitted" = Remove-Phrase $skill 'every gap is additive-only or proven issue-local'
-  "floor-issue-not-removed" = Remove-Phrase $skill 'after removing the named issues.'
-  "floor-unknown-kind-admitted" = Remove-Phrase $skill 'and unknown/future kinds, makes FLOOR UNKNOWN;'
-  "floor-incomplete-becomes-unmet" = Remove-Phrase $skill 'Below the floor, incomplete facts remain UNKNOWN.'
-  "held-counts-as-flow" = Remove-Phrase $skill 'never as ready idle or queue-only flow.'
-  "held-no-host-action" = Remove-Phrase $skill 'Name both idle and held causes and the host action.'
-  "kind-filter-restored" = Remove-Phrase $skill 'counts every issue kind'
-  "controller-ownership-expires" = $skill.Replace('evidence at any', 'evidence at recent')
-  "late-kind-relabel-restored" = Remove-Phrase $skill 'that compatibility field remains empty'
+$mutants = [ordered]@{}
+foreach ($rule in $script:rules) {
+  $pattern = ([regex]::Escape($rule)).Replace('\ ', '\s+')
+  $mutated = [regex]::Replace($skill,$pattern,'MUTANT_REMOVED')
+  Assert-8207 ($mutated -cne $skill) "negative control must change its boundary: $rule"
+  $mutants[$rule] = $mutated
 }
+$mutants['history-restored'] = $skill + "`nVersion 2.1 historical note"
 foreach ($entry in $mutants.GetEnumerator()) {
   Assert-8207 ($entry.Value -cne $skill) "mutant did not change the skill: $($entry.Key)"
   Assert-8207 (-not (Test-VelocityAlarms $entry.Value)) "mutant survived: $($entry.Key)"

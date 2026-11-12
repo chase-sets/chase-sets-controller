@@ -192,7 +192,8 @@ Test-Case 'runtime-retention-report-entry-count-cli' {
     Assert ((Tree $r) -ceq $before) 'CLI report changed fixture'
 }
 Test-Case 'runtime-retention-host-scan-rule' {
-    $rule='The orchestrator and its lanes never run an unscoped recursive enumeration of `.orchestrator`, `logs` or `artifacts`; use exact paths or `rg --files -g <glob>`.'
+    $rule='Host/lanes never recursively enumerate `.orchestrator`, `logs` or `artifacts`;
+use exact paths or `rg --files -g <glob>`.'
     $source=[IO.File]::ReadAllText($SkillPath)
     function Test-ScanRule([string]$Text){$Text.Contains($rule,[StringComparison]::Ordinal)}
     function Test-InstalledRule([string]$Expected,[string]$Installed) {

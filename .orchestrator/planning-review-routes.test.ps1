@@ -24,7 +24,7 @@ foreach ($term in @('PENDING_HOST_REVIEW', 'unsupported_encrypted_delegation', '
   Assert-Route ($failure.StartsWith('ASSERTION FAILED:')) "handoff mutant survived: $term"
 }
 $standing = "Count every in-body brief repair in that model's artifact repair history."
-foreach ($relative in @('controller-skills/milestone-orchestrator/SKILL.md', 'contracts/planning-repair-v1.md', 'contracts/review-v2.md')) {
+foreach ($relative in @('contracts/planning-repair-v1.md', 'contracts/review-v2.md')) {
   $text = [IO.File]::ReadAllText((Join-Path $root $relative)) -replace '\s+', ' '
   foreach ($term in @($standing, 'brief-sweep2-authority-decision-r1', 'current body/dependencies and full findings',
     'trusted readiness and ordinary admission', 'fresh-session reviewer on the row''s policy slot',
@@ -36,11 +36,18 @@ foreach ($relative in @('controller-skills/milestone-orchestrator/SKILL.md', 'co
 Assert-Route (($planning -replace '\s+', ' ').Contains('does not replace the fresh independent semantic PASS required for terminal re-entry')) 'terminal re-entry distinction missing'
 $routing = [IO.File]::ReadAllText((Join-Path $root 'controller-skills/model-routing/SKILL.md'))
 Assert-Route $routing.Contains('fresh lane and session with no shared') 'routing fresh-session independence missing'
-$result = & (Join-Path $root 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Mode dispatch `
-  -Text 'planning-repair independent review unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json | ConvertFrom-Json
-$entry = @($result.entries | Where-Object slug -eq 'unattributed-nested-model-dispatch')
-Assert-Route ($entry.Count -eq 1) 'planning-repair footprint must retrieve the nested-dispatch constraint'
-Assert-Route ($entry[0].instruction.Contains('review-probe-live-provider-credential-inheritance') -and
-  $entry[0].instruction.Contains('review-isolation-opt-in-by-default') -and
-  $entry[0].guard.Contains('CONTRACT_AND_REGRESSION')) 'query must preserve both cross-references and guard status'
-Write-Output 'PASS planning/review handoff, exhausted-roster rule and contract mutants'
+$core = [IO.File]::ReadAllText((Join-Path $root 'controller-skills/milestone-orchestrator/SKILL.md')) -replace '\s+',' '
+$coreTerms = @('Lanes never launch model CLIs/subprocess reviewers;', 'PENDING_HOST_REVIEW',
+  'fresh lane/session, no author transcript/conversation state', 'independent current-brief semantic PASS',
+  'no independent step-back/threshold decision lane/permission receipt.')
+function Test-CoreHandoff([string]$Text) {
+  foreach ($term in $coreTerms) { Assert-Route ($Text.Contains($term)) "compact handoff lacks $term" }
+}
+Test-CoreHandoff $core
+foreach ($term in $coreTerms) {
+  $mutated = $core.Replace($term,'MUTANT_REMOVED')
+  $failure = ''
+  try { Test-CoreHandoff $mutated } catch { $failure = $_.Exception.Message }
+  Assert-Route ($mutated -cne $core -and $failure.StartsWith('ASSERTION FAILED:')) "core handoff mutant survived: $term"
+}
+Write-Output 'PASS planning/review handoff, fresh-session authority and contract mutants'

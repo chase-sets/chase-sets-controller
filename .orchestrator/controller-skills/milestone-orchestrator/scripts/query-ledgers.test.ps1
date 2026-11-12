@@ -93,14 +93,19 @@ Structural guard: visual test.
   Assert-True ($LASTEXITCODE -eq 0) "source skill without mutable ledgers should use the installed reference root"
   $fallback = $fallbackText | ConvertFrom-Json
   Assert-True ($fallback.stallEntries -eq 2) "installed fallback counts stall entries"
-  Assert-True ($fallback.defectEntries -eq 5) "installed fallback preserves two mutable entries and adds three reviewed controller constraints"
+  Assert-True ($fallback.defectEntries -eq 2) "installed fallback does not automatically load archived controller history"
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../../../docs/archive/milestone-orchestrator/controller-defect-classes.md') -Destination $sandbox
   $planningText=@(& pwsh -NoProfile -NonInteractive -File $script -InstalledReferenceRoot $sandbox `
-    -Mode dispatch -Text 'planning-repair unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json) -join "`n"
+    -ReferenceRoot $sandbox -Mode dispatch -Text 'planning-repair unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json) -join "`n"
   Assert-True ($LASTEXITCODE -eq 0) 'planning dispatch query succeeds with reviewed supplement'
   $planning=$planningText|ConvertFrom-Json
   Assert-True (@($planning.entries|Where-Object slug -eq 'unattributed-nested-model-dispatch').Count -eq 1) 'planning dispatch retrieves host-review constraint'
+  $entry = @($planning.entries | Where-Object slug -eq 'unattributed-nested-model-dispatch')
+  Assert-True ($entry[0].instruction.Contains('review-probe-live-provider-credential-inheritance') -and
+    $entry[0].instruction.Contains('review-isolation-opt-in-by-default') -and
+    $entry[0].guard.Contains('CONTRACT_AND_REGRESSION')) 'explicit archive query retains both cross-references and guard status'
   $foregroundText=@(& pwsh -NoProfile -NonInteractive -File $script -InstalledReferenceRoot $sandbox `
-    -Mode dispatch -Text 'Claude lane gate exceeds tool timeout auto-background' -Footprint '.orchestrator/dispatch-lane.ps1' -Json) -join "`n"
+    -ReferenceRoot $sandbox -Mode dispatch -Text 'Claude lane gate exceeds tool timeout auto-background' -Footprint '.orchestrator/dispatch-lane.ps1' -Json) -join "`n"
   Assert-True ($LASTEXITCODE -eq 0) 'Claude foreground dispatch query succeeds with reviewed supplement'
   $foreground=$foregroundText|ConvertFrom-Json
   Assert-True ($foreground.entries[0].slug -eq 'claude-foreground-gate-exceeds-tool-limit' -and $foreground.entries[0].instruction -match 'No auto-backgrounding' -and $foreground.entries[0].instruction -match 'claude-background-task-dies-on-session-exit') 'Claude lane dispatch ranks the foreground-gate constraint first with its overlapping constraints'

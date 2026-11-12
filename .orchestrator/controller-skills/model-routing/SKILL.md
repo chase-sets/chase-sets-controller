@@ -24,8 +24,8 @@ every Astra and Fable policy limit (share cap, row restriction, reserve,
 one-attempt rule and upper-tier authorship), and routes review and decision
 lanes to their policy slot regardless of authorship. `strictPrelogV1` binding
 and launcher-observed void recovery are unchanged. Onboarding a model remains
-a data change. Release notes for v4.26 and earlier are in milestone-orchestrator's
-`references/rule-provenance-v2.24.md`.
+a data change. Release notes for v4.26 and earlier are in the controller repository archive
+`.orchestrator/docs/archive/milestone-orchestrator/rule-provenance-v2.24.md`.
 
 ### Data-bound selection
 

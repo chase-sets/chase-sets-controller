@@ -86,13 +86,12 @@ function Refused([scriptblock]$Body) {
 }
 function Test-Text([string]$Text) {
   $rules=@{
-    7=@('When the same failure persists across three consecutive heads, the host steps back:',
-      'Dispatch counts are telemetry, not dispatch prerequisites.',
-      'Legacy dispatch-count query and lifecycle APIs remain readable for compatibility; the host does not invoke them to obtain permission for new work.',
-      'It does not reset consumed attempts or relax paid or one-shot external-action limits.')
-    11=@('Do not create dispatch-count threshold decisions or lifecycle rows for new work.',
-      'Retain historical rows without rewriting them; they grant no new attempt or external-action authority.',
-      'A real external blocker, paid/one-shot attempt limit or Todd-owned scope decision remains binding.')
+    7=@('Same cause across three consecutive judged heads forces host step-back even if others shrink;',
+      'no independent step-back/threshold decision lane/permission receipt.',
+      'Never park by count or ask Todd for attempt ceilings.',
+      'Replacement never resets history or paid caps.')
+    11=@('Owner-authorized attempt/spend caps (zero without authority) survive every failure/replan/rename/ review/replacement.',
+      'Only limit owner may raise caps.')
   }
   foreach ($number in $rules.Keys) {
     $section=[regex]::Match($Text,"(?ms)^## $number\..*?(?=^## \d+\.|\z)").Value -replace '\s+',' '
@@ -356,15 +355,15 @@ Case 'dispatch-incomplete-history-controls' {
 Case 'dispatch-policy-and-guard-omission-mutants' {
   $text=[IO.File]::ReadAllText($skillPath)
   Assert-Policy (Test-Text $text) 'sections 7/11 retire count-based admission while preserving hard limits'
-  foreach($clause in @('Dispatch counts are telemetry, not dispatch prerequisites.','Do not create dispatch-count threshold decisions or lifecycle rows for new work.')) {
-    Assert-Policy (-not (Test-Text ($text.Replace($clause,'')))) "policy omission killed: $clause"
+  foreach($clause in @('no independent step-back/threshold decision lane/permission receipt.','Only limit owner may raise caps.')) {
+    Assert-Policy (-not (Test-Text ([regex]::Replace($text,([regex]::Escape($clause)).Replace('\ ', '\s+'),'')))) "policy omission killed: $clause"
     Write-Output "KILLED policy: $clause"
   }
 }
 Case 'legacy-history-policy-omission-mutant' {
   $text=[IO.File]::ReadAllText($skillPath)
-  $clause='Retain historical rows without rewriting them; they grant no new attempt or'
-  $changed=$text.Replace($clause,'')
+  $clause='Replacement never resets history or paid caps.'
+  $changed=[regex]::Replace($text,([regex]::Escape($clause)).Replace('\ ', '\s+'),'')
   Assert-Policy ($changed -cne $text) 'legacy-history policy omission target exists'
   Assert-Policy (-not (Test-Text $changed)) 'legacy-history policy omission must fail Test-Text'
   Write-Output 'KILLED policy: legacy-history sentence'

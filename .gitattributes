@@ -2,5 +2,6 @@
 .orchestrator/fixtures/cleanup-orphan-worktree-dirs.pre-8670.ps1 text eol=lf
 .orchestrator/fixtures/brief-attribution-9258-report.txt text eol=lf
 .orchestrator/controller-skills/** -text
+.orchestrator/docs/archive/** -text
 *.sh text eol=lf
 .orchestrator/diagnostics/** -text

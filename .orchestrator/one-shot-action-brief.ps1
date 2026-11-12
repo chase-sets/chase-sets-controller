@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference='Stop'
 
 if ($PSCmdlet.ParameterSetName -ceq 'Template') {
-  $skill = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/SKILL.md'))
+  $skill = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/references/one-shot-actions.md'))
   $match = [regex]::Match($skill, '(?m)^```one-shot-action-brief\r?\n(?<brief>[\s\S]*?)^```\r?$')
   if (-not $match.Success) { throw 'short action brief template is missing' }
   $match.Groups['brief'].Value.TrimEnd("`r", "`n")
