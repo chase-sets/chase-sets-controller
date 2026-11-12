@@ -225,7 +225,7 @@ try{
     Check ($r.exit-eq0-and$r.events[-1].reason-ceq'WINDOW_EXPIRED'-and$observations.Count-ge2-and
       @($observations|Where-Object{$_.status-cne'OBSERVATION_ONLY'-or$_.diagnosis-cne'ORPHAN_NO_WHOLE_TASK_RELEASE'-or$_.relaunch}).Count-eq0-and
       @($r.events|Where-Object event -eq REDUCER_FAILURE).Count-eq0-and@($r.events|Where-Object relaunch -eq $true).Count-eq0) 'generic zero-exit orphan must stay watched and surface its closed diagnosis without replay or terminal success'
-    $transport=New-Producer 'synthetic-claude-transport' transport -Row 6 -Placement measured
+    $transport=New-Producer 'synthetic-claude-transport' transport -Row 5 -Placement override-Todd
     $refuse=Stub 'transport-failed-dispatch' 'exit 19'
     $r=Batch @((Lane $transport)) 'transport-recovers-not-success' @('-ReducerScript',$reducer,'-DispatchScript',$refuse,'-SynchronousDispatch') (Poll-Clock 'transport-death' 2) 8
     Check ($r.exit-eq0-and$r.events[-1].reason-ceq'WINDOW_EXPIRED'-and
