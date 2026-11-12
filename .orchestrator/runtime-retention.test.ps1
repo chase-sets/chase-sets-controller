@@ -195,12 +195,20 @@ Test-Case 'runtime-retention-host-scan-rule' {
     $rule='Host/lanes never recursively enumerate `.orchestrator`, `logs` or `artifacts`;
 use exact paths or `rg --files -g <glob>`.'
     $source=[IO.File]::ReadAllText($SkillPath)
-    function Test-ScanRule([string]$Text){$Text.Contains($rule,[StringComparison]::Ordinal)}
+    $scanRulePattern = ([regex]::Escape(($rule -replace '\s+', ' '))).Replace('\ ', '\s+')
+    function Test-ScanRule([string]$Text){[regex]::IsMatch($Text, $scanRulePattern)}
     function Test-InstalledRule([string]$Expected,[string]$Installed) {
         (Test-ScanRule $Installed) -and $Expected -ceq $Installed
     }
     Assert (Test-ScanRule $source) 'host/lane scan rule missing from staged skill'
-    $missing=$source.Replace($rule,'')
+    $missing=[regex]::Replace($source,$scanRulePattern,'')
+    $eols = @("`n", "`r`n")
+    Assert ($eols.Count -eq 2 -and $eols[0].Length -eq 1 -and $eols[1].Length -eq 2) 'LF/CRLF controls must be distinct exact transports'
+    foreach ($eol in $eols) {
+        $transport=$source.Replace("`r`n","`n").Replace("`n",$eol)
+        Assert (Test-ScanRule $transport) 'scan rule rejects equivalent LF/CRLF transport'
+        Assert (-not (Test-ScanRule ([regex]::Replace($transport,$scanRulePattern,'')))) 'cross-EOL omission control survived'
+    }
     Assert ($missing -cne $source -and -not (Test-ScanRule $missing)) 'missing-rule control survived'
     Assert (Test-InstalledRule $source $source) 'synthetic matching installed rule rejected'
     Assert (-not (Test-InstalledRule $source $missing)) 'synthetic installed missing-rule control survived'

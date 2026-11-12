@@ -228,6 +228,8 @@ $files = @(Get-ControllerSkillInstallInventory | ForEach-Object {
   @{ Source = $_.source; Destination = $_.destination; PreserveGenerated = [bool]$_.preserveGenerated }
 })
 
+$legacyReferences = Get-ControllerLegacyReferenceArchivePlan -ContainerRoot $container -DestinationRoot $destinationRoot -CodexSkillRoot $codexSkillRoot
+
 # Refuse every unsafe historical destination before touching either install
 # surface. Only destination identity matters, not source or preservation flags.
 $droppedFiles = @()
@@ -277,6 +279,7 @@ if (Test-Path -LiteralPath (Join-Path $destinationRoot 'native-db/release.json')
         $ancestor = Split-Path -Parent $ancestor
       }
       $skillName = ($path.Substring($rootPrefix.Length) -split '[/\\]')[0]
+      if (@($legacyReferences.Entries | ForEach-Object Source) -icontains $path) { continue }
       $droppedFiles += [pscustomobject]@{ Path = $path; SkillRoot = Join-Path $destinationRoot $skillName; SkillName = $skillName }
     }
   } catch {
@@ -411,6 +414,7 @@ foreach ($file in $installPlan) {
     }
     }
   }
+  Invoke-WithControllerLegacyReferenceArchive -ContainerRoot $container -DestinationRoot $destinationRoot -CodexSkillRoot $codexSkillRoot -Preview:$WhatIfPreference -Body {
   # Copy verification above must succeed before deleting any old destination.
   # Prune only empty parents, never above the dropped file's skill root.
   foreach ($dropped in $droppedFiles) {
@@ -463,6 +467,7 @@ foreach ($file in $installPlan) {
       commit = $releaseCommit; repository = $ReleaseRepository; installedAt = [DateTime]::UtcNow.ToString('o')
     }
     [IO.File]::WriteAllText($releaseDestination, ($release | ConvertTo-Json -Compress) + [Environment]::NewLine)
+  }
   }
   } finally {
     if ($admissionHeld) { $admissionMutex.ReleaseMutex() }

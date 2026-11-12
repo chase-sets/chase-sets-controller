@@ -1,3 +1,6 @@
+[CmdletBinding()]
+param([switch]$LegacyMigrationOnly)
+
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingScope = Enter-RoutingDataTestScope
@@ -58,7 +61,7 @@ try {
   )
   $skillContractFixture = @"
 # Milestone Orchestrator (v2.59)
-exact-head-review-receipt/v1
+exact-head-review-receipt/v2
 exact-head-review-reducer/v1
 landing-preflight/v1
 "@
@@ -146,6 +149,7 @@ landing-preflight/v1
     Set-Content -LiteralPath $destination -Value "old:$relative"
   }
 
+  if (-not $LegacyMigrationOnly) {
   # --- refusals before anything changes ----------------------------------
   $dirtySource = Join-Path $container ".orchestrator/controller-skills/model-routing/SKILL.md"
   Add-Content -LiteralPath $dirtySource -Value "dirty"
@@ -788,6 +792,58 @@ landing-preflight/v1
     $codexRoot = $originalCodexRoot
     if ($reusedProcess -and -not $reusedProcess.HasExited) { Stop-Process -Id $reusedProcess.Id -Force -ErrorAction SilentlyContinue }
   }
+
+  }
+  # Restore the fixture directory intentionally removed by the earlier refusal.
+  [void][IO.Directory]::CreateDirectory((Join-Path $destinationRoot 'orchestrator-shared'))
+  Import-Module (Join-Path $PSScriptRoot 'controller-install-lock.psm1') -Force -DisableNameChecking
+  Write-ControllerTree $publisher
+  $v60 = Publish-Release 'controller-v6.0'
+  $legacyNames = @('defect-classes.md', 'stall-gotchas.md',
+    'defect-classes.md.bak-20261015T0925', 'defect-classes.md.bak-20261102T1400')
+  $legacyRoot = Join-Path $destinationRoot 'milestone-orchestrator/references'
+  foreach ($name in $legacyNames) { [IO.File]::WriteAllBytes((Join-Path $legacyRoot $name), [byte[]]@(0,255,13,10,65)) }
+  $unknownLegacy = Join-Path $legacyRoot 'defect-classes.md.bak-user'
+  [IO.File]::WriteAllText($unknownLegacy, 'unknown user backup')
+  $legacyPlan = Get-ControllerLegacyReferenceArchivePlan -ContainerRoot $container -DestinationRoot $destinationRoot -CodexSkillRoot $codexRoot
+  $result = Invoke-Installer 'controller-v6.0'
+  Assert-True ($result.ExitCode -eq 0) "tag-authorized legacy migration succeeds: $($result.Output)"
+  Assert-Installed 'controller-v6.0' $v60
+  foreach ($entry in $legacyPlan.Entries) {
+    Assert-True (-not (Test-Path -LiteralPath $entry.Source) -and
+      [Convert]::ToBase64String([IO.File]::ReadAllBytes($entry.Archive)) -ceq [Convert]::ToBase64String($entry.Bytes) -and
+      (Get-FileHash -LiteralPath $entry.Archive).Hash.ToLowerInvariant() -ceq $entry.Hash) 'real tag install archives exact legacy bytes/hash outside discovery'
+  }
+  $archiveSnapshot = @($legacyPlan.Entries | ForEach-Object { "$($_.Archive)|$((Get-Item -LiteralPath $_.Archive).LastWriteTimeUtc.Ticks)" }) -join "`n"
+  $result = Invoke-Installer 'controller-v6.0'
+  Assert-True ($result.ExitCode -eq 0 -and $archiveSnapshot -ceq
+    (@($legacyPlan.Entries | ForEach-Object { "$($_.Archive)|$((Get-Item -LiteralPath $_.Archive).LastWriteTimeUtc.Ticks)" }) -join "`n")) 'same-tag migration is idempotent without rewriting archives'
+  Assert-True ([IO.File]::ReadAllText($unknownLegacy) -ceq 'unknown user backup') 'tag migration leaves unknown backups untouched'
+
+  [IO.File]::WriteAllText((Join-Path $legacyRoot $legacyNames[0]), 'later legacy bytes')
+  $laterPlan = Get-ControllerLegacyReferenceArchivePlan -ContainerRoot $container -DestinationRoot $destinationRoot -CodexSkillRoot $codexRoot
+  $v61 = Publish-Release 'controller-v6.1'
+  $copyHandle = [IO.File]::Open((Join-Path $destinationRoot 'model-routing/SKILL.md'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $result = Invoke-Installer 'controller-v6.1'
+    Assert-True ($result.ExitCode -ne 0 -and [IO.File]::ReadAllText($laterPlan.Entries[0].Source) -ceq 'later legacy bytes' -and
+      -not (Test-Path -LiteralPath $laterPlan.Entries[0].Archive)) 'failed copy never begins archival migration'
+  } finally { $copyHandle.Dispose() }
+  $recordPath = Join-Path $destinationRoot 'native-db/release.json'
+  $priorRecord = [Convert]::ToBase64String([IO.File]::ReadAllBytes($recordPath))
+  $recordHandle = [IO.File]::Open($recordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try {
+    $result = Invoke-Installer 'controller-v6.1'
+    Assert-True ($result.ExitCode -ne 0 -and [IO.File]::ReadAllText($laterPlan.Entries[0].Source) -ceq 'later legacy bytes' -and
+      -not (Test-Path -LiteralPath $laterPlan.Entries[0].Archive) -and
+      [Convert]::ToBase64String([IO.File]::ReadAllBytes($recordPath)) -ceq $priorRecord) 'failed release recording rolls migration back and preserves old release authority'
+  } finally { $recordHandle.Dispose() }
+  $result = Invoke-Installer 'controller-v6.1'
+  Assert-True ($result.ExitCode -eq 0) "same-tag retry after rollback succeeds: $($result.Output)"
+  Assert-Installed 'controller-v6.1' $v61
+  Assert-True (-not (Test-Path -LiteralPath $laterPlan.Entries[0].Source) -and
+    [IO.File]::ReadAllText($laterPlan.Entries[0].Archive) -ceq 'later legacy bytes') 'successful retry commits archival after rollback'
+  Write-Output 'PASS exact legacy references: tag authority, byte/hash archives, idempotence, unknown user files, copy-failure ordering and release-record rollback'
 
   Assert-True ((Get-CodexRootSnapshot $realCodexRoot) -ceq $realCodexBefore) "the real Codex skill root is unchanged"
   Write-Output "PASS install-controller-skills release-tag authority, fetch-only container, and install coverage"

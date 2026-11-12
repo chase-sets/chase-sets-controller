@@ -12,6 +12,13 @@ heads the host steps back to replan/change approach, even if others shrink.
 No step-back review, decision lane or threshold receipt. Ask Todd only for his
 actual decision, never an attempt ceiling.
 
+For an owned issue, `BLOCK_REPLAN` or an ISSUE/SET/EPIC brief, slice or design
+defect: add `status:needs-replan` to each affected owned issue and
+dispatch a `planning` lane under `contracts/planning-repair-v1.md` with the assigned
+ISSUE, SET or EPIC recovery level. The label invalidates ready/terminal status
+until current-brief readiness and independent semantic PASS restore re-entry.
+Never label/mutate platform-held issues; apply shared take-back first.
+
 Attempts are telemetry: a pushed head counts only after hosted CI or exact-head
 review verdict. Local/preparation/harness/tooling stops do not count; replacement
 never resets consumed history. Dispatch counts are not prerequisites/permission

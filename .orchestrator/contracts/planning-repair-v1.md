@@ -61,8 +61,10 @@ anything else, gather and state:
   by work that merely happens to be adjacent: #6105 and #6106 replaced #6058,
   and reading them as covering #5684 would have silently dropped consent bundle
   content, activation authority, and the affirmation UI.
-- **Defect-class sweep.** Read `references/defect-classes.md`. Write every
-  overlapping class constraint into the issue text itself, not just a prompt.
+- **Relevant defect investigation.** Investigate only a named failure or
+  overlapping defect class using concrete evidence. Load a reference only when
+  that need names it, never an automatic historical catalog. Write each
+  relevant constraint into the brief itself, not just a prompt.
 - **Authority-timing probe.** Any acceptance criterion depending on data from
   an external authority carries a captured probe taken at the exact lifecycle
   moment implementation needs it (#5883).

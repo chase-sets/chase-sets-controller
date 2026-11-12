@@ -312,6 +312,158 @@ function Invoke-ReclaimableControllerVerifyOwner {
   return Remove-ClaimedOwnerLock $lockPath $claimPath $snapshot.Raw -RequireDead
 }
 
+function Assert-ControllerLegacyReferencePath([string]$Path) {
+  if (-not [IO.Path]::IsPathFullyQualified($Path) -or $Path.StartsWith('\\') -or $Path.StartsWith('//')) {
+    throw 'legacy reference archive refused: path must be absolute and local'
+  }
+  $cursor = [IO.Path]::GetFullPath($Path)
+  while ($cursor) {
+    $item = $null
+    try { $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop }
+    catch [System.Management.Automation.ItemNotFoundException] {}
+    if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+      throw "legacy reference archive refused: reparse point: $cursor"
+    }
+    if ($cursor -ne $Path -and $item -and -not $item.PSIsContainer) {
+      throw "legacy reference archive refused: non-directory ancestor: $cursor"
+    }
+    $parent = Split-Path -Parent $cursor
+    if ($parent -eq $cursor) { break }
+    $cursor = $parent
+  }
+}
+
+function Test-ControllerLegacyReferenceBytes($Entry, [string]$Path) {
+  Assert-ControllerLegacyReferencePath $Path
+  if (-not (Test-ControllerInstallSafeFile $Path)) { return $false }
+  $bytes = [IO.File]::ReadAllBytes($Path)
+  return [Convert]::ToBase64String($bytes) -ceq [Convert]::ToBase64String($Entry.Bytes) -and
+    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() -ceq $Entry.Hash
+}
+
+function Get-ControllerLegacyReferenceArchivePlan {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$ContainerRoot,
+    [Parameter(Mandatory)][string]$DestinationRoot,
+    [Parameter(Mandatory)][string]$CodexSkillRoot)
+  foreach ($path in @($ContainerRoot, $DestinationRoot, $CodexSkillRoot)) {
+    Assert-ControllerLegacyReferencePath $path
+  }
+  $archiveRoot = [IO.Path]::GetFullPath((Join-Path $ContainerRoot '.orchestrator/archived-skill-references'))
+  Assert-ControllerLegacyReferencePath $archiveRoot
+  if ((Test-Path -LiteralPath $archiveRoot) -and -not (Test-ControllerInstallSafeDirectory $archiveRoot)) {
+    throw 'legacy reference archive refused: archive is not an ordinary directory'
+  }
+  if (-not (Test-ControllerInstallSafeDirectory (Split-Path -Parent $archiveRoot))) {
+    throw 'legacy reference archive refused: canonical runtime directory missing'
+  }
+  $discoveryRoots = @($DestinationRoot, $CodexSkillRoot)
+  foreach ($base in @($HOME, $ContainerRoot)) {
+    foreach ($relative in @('.agents/skills', '.claude/skills', '.codex/skills')) {
+      $discoveryRoots += Join-Path $base $relative
+    }
+  }
+  foreach ($root in $discoveryRoots) {
+    $root = [IO.Path]::GetFullPath($root).TrimEnd('\','/')
+    $prefix = $root + [IO.Path]::DirectorySeparatorChar
+    if ($archiveRoot.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+        $archiveRoot.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $root.StartsWith($archiveRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'legacy reference archive refused: archive overlaps a skill-discovery root'
+    }
+  }
+  if (($archiveRoot -split '[/\\]') -icontains 'skills') {
+    throw 'legacy reference archive refused: archive has a skill-discovery ancestor'
+  }
+  $entries = @()
+  foreach ($name in @('defect-classes.md', 'stall-gotchas.md',
+      'defect-classes.md.bak-20261015T0925', 'defect-classes.md.bak-20261102T1400')) {
+    $source = [IO.Path]::GetFullPath((Join-Path $DestinationRoot "milestone-orchestrator/references/$name"))
+    Assert-ControllerLegacyReferencePath $source
+    $item = $null
+    try { $item = Get-Item -LiteralPath $source -Force -ErrorAction Stop }
+    catch [System.Management.Automation.ItemNotFoundException] {}
+    if (-not $item) { continue }
+    if (-not (Test-ControllerInstallSafeFile $source)) {
+      throw "legacy reference archive refused: not an ordinary file: $source"
+    }
+    $bytes = [IO.File]::ReadAllBytes($source)
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $entry = [pscustomobject]@{ Source = $source; Archive = Join-Path $archiveRoot "$hash-$name"; Bytes = $bytes; Hash = $hash }
+    Assert-ControllerLegacyReferencePath $entry.Archive
+    if ((Test-Path -LiteralPath $entry.Archive) -and -not (Test-ControllerLegacyReferenceBytes $entry $entry.Archive)) {
+      throw "legacy reference archive refused: archive collision, no overwrite: $($entry.Archive)"
+    }
+    $entries += $entry
+  }
+  [pscustomobject]@{ ArchiveRoot = $archiveRoot; Entries = @($entries) }
+}
+
+function Write-ControllerLegacyReferenceNewFile([string]$Path, [byte[]]$Bytes) {
+  $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
+  finally { $stream.Dispose() }
+}
+
+function Invoke-WithControllerLegacyReferenceArchive {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$ContainerRoot,
+    [Parameter(Mandatory)][string]$DestinationRoot,
+    [Parameter(Mandatory)][string]$CodexSkillRoot,
+    [Parameter(Mandatory)][scriptblock]$Body, [switch]$Preview)
+  # Caller holds the existing installer writer lock. Recheck paths and bytes
+  # after verified copies, immediately before archiving any legacy input.
+  $plan = Get-ControllerLegacyReferenceArchivePlan $ContainerRoot $DestinationRoot $CodexSkillRoot
+  if ($Preview -or $plan.Entries.Count -eq 0) { & $Body; return }
+  $created = [Collections.Generic.List[object]]::new()
+  $removed = [Collections.Generic.List[object]]::new()
+  $createdRoot = -not (Test-Path -LiteralPath $plan.ArchiveRoot)
+  try {
+    [void][IO.Directory]::CreateDirectory($plan.ArchiveRoot)
+    foreach ($entry in $plan.Entries) {
+      Assert-ControllerLegacyReferencePath $entry.Archive
+      if (-not (Test-Path -LiteralPath $entry.Archive)) {
+        Write-ControllerLegacyReferenceNewFile $entry.Archive $entry.Bytes
+        $created.Add($entry)
+      }
+      if (-not (Test-ControllerLegacyReferenceBytes $entry $entry.Archive)) { throw 'legacy reference archive verification failed' }
+    }
+    foreach ($entry in $plan.Entries) {
+      if (-not (Test-ControllerLegacyReferenceBytes $entry $entry.Source)) { throw 'legacy reference changed before removal' }
+      [IO.File]::Delete($entry.Source)
+      $removed.Add($entry)
+    }
+    & $Body
+  } catch {
+    $failure = $_
+    $rollbackErrors = [Collections.Generic.List[string]]::new()
+    foreach ($entry in $removed) {
+      try {
+        Assert-ControllerLegacyReferencePath $entry.Source
+        if (-not (Test-Path -LiteralPath $entry.Source)) { Write-ControllerLegacyReferenceNewFile $entry.Source $entry.Bytes }
+        if (-not (Test-ControllerLegacyReferenceBytes $entry $entry.Source)) { throw 'source conflict; verified archive retained' }
+      } catch { $rollbackErrors.Add($_.Exception.Message) }
+    }
+    foreach ($entry in $plan.Entries) {
+      try {
+        if (-not (Test-ControllerLegacyReferenceBytes $entry $entry.Source)) { throw 'original source bytes not restored; archive retained' }
+      } catch { $rollbackErrors.Add($_.Exception.Message) }
+    }
+    if ($rollbackErrors.Count -eq 0) {
+      foreach ($entry in $created) {
+        if (Test-ControllerLegacyReferenceBytes $entry $entry.Archive) { [IO.File]::Delete($entry.Archive) }
+      }
+      if ($createdRoot) {
+        Assert-ControllerLegacyReferencePath $plan.ArchiveRoot
+        try { [IO.Directory]::Delete($plan.ArchiveRoot) } catch [IO.IOException] {}
+      }
+    } else {
+      throw "legacy reference rollback refused to overwrite changed source; archives retained: $($rollbackErrors -join '; '); original: $($failure.Exception.Message)"
+    }
+    throw $failure
+  }
+}
+
 function Get-ControllerSkillInstallInventory {
   [CmdletBinding()]
   param()
@@ -436,6 +588,8 @@ Export-ModuleMember -Function @(
   "Get-ControllerInstallMutexName",
   "Invoke-WithControllerInstallLock",
   "Get-ControllerSkillInstallInventory",
+  "Get-ControllerLegacyReferenceArchivePlan",
+  "Invoke-WithControllerLegacyReferenceArchive",
   "Get-ControllerTransportNormalizedBytes",
   "Merge-ControllerGeneratedMatrixBytes",
   "Invoke-ReclaimableControllerVerifyOwner"
