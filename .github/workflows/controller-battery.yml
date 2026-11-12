@@ -124,6 +124,13 @@ jobs:
         with:
           version: 11.21.0
           run_install: false
+      - name: Provision Node-hosted pnpm for guarded verifier fixtures
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'controller-node-pnpm'
+          npm install --global --prefix "$prefix" --ignore-scripts --no-audit --no-fund pnpm@11.21.0
+          if ($LASTEXITCODE -ne 0) { throw 'Node-hosted pnpm provisioning failed' }
+          if (-not (Test-Path (Join-Path $prefix 'node_modules/pnpm/bin/pnpm.cjs') -PathType Leaf)) { throw 'Node-hosted pnpm entrypoint missing' }
+          $prefix >> $env:GITHUB_PATH
       - name: Provision pinned PowerShell
         run: ./runner/.orchestrator/setup-controller-ci.ps1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

@@ -1491,7 +1491,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     [IO.File]::WriteAllText($history,$valid)
     switch($case){
       malformed {Add-Content $history '{synthetic malformed'}
-      scoped-invalid {$row=(Read-ExactHeadReviewHistory $history).rows[0].value;$row|Add-Member unexpected $true;$row|ConvertTo-Json -Compress|Add-Content $history}
+      scoped-invalid {$authorityRows=@((Read-ExactHeadReviewHistory $history).rows|Where-Object rawSha256 -CEQ $stop);Assert-True ($authorityRows.Count-eq1) 'scoped-invalid fixture binds the exact STOP row';$row=$authorityRows[0].value;$row|Add-Member unexpected $true;$row|ConvertTo-Json -Compress|Add-Content $history}
       unscoped {Add-Content $history '{"integrationAuthoritySchema":"landed-integration-authority/v1","pr":null}'}
       missing {Remove-Item -LiteralPath $history}
     }
