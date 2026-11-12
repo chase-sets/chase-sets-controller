@@ -32,8 +32,11 @@ review of that head supplies the verdict. A later PASS replaces an earlier
 non-PASS; a new reviewed head needs no tree-identical recut to escape an old
 verdict. Re-read only changed bytes and their direct callers after a repair.
 
-A lane that cannot obtain a fresh non-author review returns the scope to the
-host. Do not invent a verdict or launch an unapproved provider fallback.
+A lane must not launch model CLIs or subprocess reviewers itself; any required
+independent review returns to the host for a canonical attributed dispatch.
+A lane that cannot obtain a fresh non-author review returns the scope as
+`PENDING_HOST_REVIEW`, a handoff rather than a semantic verdict. Do not invent
+a verdict or launch an unapproved provider fallback.
 
 ## Disposition
 
