@@ -82,12 +82,14 @@ function Get-8915Hash([string]$Text) {
 # Unrelated pins retain the installed baseline. Routing policy pins reflect the current slot and quota-window contract; generated evidence remains unchanged.
 # #237 (Todd 2026-10-29) re-pinned the closed watchdog, vendor recovery and quota-window sections: quota/session deaths retry on the same configuration and never raise effort or model tier.
 # #237 repair re-pinned the quota-window section: closed table first, then the policy slot, the watchdog tier ordering, and bound-launch recovery.
+# Todd's 2026-11-12 ruling replaces the spend section's fourth-attempt review
+# with the host-owned three-consecutive-head rule; telemetry and other pins stay.
 # Normalize only checkout newline representation; every rule character is pinned.
 $normalized = $skill.Replace("`r`n", "`n")
 foreach ($pin in @(
   @('scope classification', '### Scope classification', 'Keep row 1 on Luna 6', '8e15d31e7350ccfeb6f76f6d7d989370467ccac4e3bd2c3c5459cebd5215fe7a'),
   @('review-history', 'Reviews and decision lanes use their row''s policy slot', 'Review each new configuration at 20', '742b3457390a4758bb5f7dc7867dcffcfd3ba4f16bd16fc64a7f059523e22099'),
-  @('spend', '## Spend telemetry', '## Provider quota windows', '342098efc94d8a9444b61be1c03948a098513de5e94832d5691a2e0852bcdd55'),
+  @('spend', '## Spend telemetry', '## Provider quota windows', '36c218acb233e9c341f34594f09acd1851344c07d7e2766ff2ac6076c31b8042'),
   @('quota windows and concurrency', '## Provider quota windows', '## Challenger quotas and rebalance', 'b516d6d57028325c4d7708ccdd5dca1dc8085b5de474349d60bdc0dc7ba23f03'),
   @('closed watchdog', 'The watchdog stays closed-table', '### September 23 benchmark rebalance', '0af1c9ac8d9910442fd285249a6a2abe93c4b7430c6350691ed38b70389d5c56'),
   @('vendor recovery', 'An Opus low/medium placement requires admission', 'Reviews and decision lanes use their row''s policy slot', '159e547a96a8f2ada4eab63d14ecbe3002d02098bbcbfdc4306c2bcc5503f0da')

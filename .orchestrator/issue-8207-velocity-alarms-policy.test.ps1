@@ -40,7 +40,7 @@ $script:rules = @(
   'For these metrics, `committed-product-milestone/v1` counts every issue kind',
   'canonical dispatch/review controller evidence at any age excludes controller-owned issues. Ownership does not expire with the observation window.',
   'Kind changes never produce `lateProductRelabels`; that compatibility field remains empty',
-  'The host dispatches one independent diagnosis decision lane with the report, bounded to 60 minutes, and logs `velocity:DROUGHT`.',
+  'The host diagnoses the report directly and logs one `decision-resolved` row with `velocity:DROUGHT` and its reasoning.',
   'a rule change that removes at least as many skill lines as it adds',
   'or, only when Todd''s current priority is blocked by something external, one priority question under §11.',
   'UNKNOWN facts raise no alarm and never read as OK; the host repairs the named gap.',
@@ -264,7 +264,7 @@ $mutants = [ordered]@{
   "floor-not-logged" = Remove-Phrase $skill 'with `velocity:FLOOR` in the note'
   "floor-needs-retro" = Remove-Phrase $skill 'It needs no retro.'
   "drought-threshold-moved" = $skill.Replace('merge for 48 hours, re-armed', 'merge for 24 hours, re-armed')
-  "drought-unbounded" = Remove-Phrase $skill 'bounded to 60 minutes,'
+  "drought-host-decision-removed" = Remove-Phrase $skill 'The host diagnoses the report directly'
   "drought-rule-growth" = Remove-Phrase $skill 'a rule change that removes at least as many skill lines as it adds'
   "drought-asks-todd-freely" = Remove-Phrase $skill 'only when Todd''s current priority is blocked by something external,'
   "unknown-reads-ok" = Remove-Phrase $skill 'UNKNOWN facts raise no alarm and never read as OK; the host repairs the named gap.'

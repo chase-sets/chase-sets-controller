@@ -144,7 +144,7 @@ level: <ISSUE|SET|EPIC> - <named siblings or epic when not ISSUE>
     $compact.Contains('A plan that can only repeat a prior hypothesis returns `level` one step higher instead of re-entering at the same level.', [StringComparison]::Ordinal) -and
     $compact.Contains('planning-repair/v1` completion receipt and a fresh independent semantic PASS both bind its exact current body revision/hash', [StringComparison]::Ordinal) -and
     $compact.Contains("It needs no attempt-ceiling authority and no Todd or decision-lane ceiling ruling, and it resets no lineage history or consumed count.", [StringComparison]::Ordinal) -and
-    $compact.Contains("Consumed counts are history and step-back triggers, never a stop.", [StringComparison]::Ordinal) -and
+    $compact.Contains("Consumed counts are history, never a stop.", [StringComparison]::Ordinal) -and
     $compact.Contains("Billed USD is recorded telemetry and is never a ceiling", [StringComparison]::Ordinal) -and
     $compact.Contains("never files a cap-only Decision", [StringComparison]::Ordinal) -and
     $compact.Contains("Reviewer exhaustion never parks or stalls the artifact, and it is never self-review.", [StringComparison]::Ordinal) -and
@@ -213,9 +213,9 @@ $script:requiredMilestoneStatements = @(
   'an implementation takes one exact-head code review before ready',
   'Reviewers apply mechanical fixes (pins, counts, generated outputs, lint) directly on the branch and let hosted CI validate them',
   'A reviewed draft PR is always the implementation head for its issue',
-  'At every fourth counted implementation attempt, the next dispatch for that artifact is one independent step-back review (§11)',
-  'Review, repair, and planning rounds never count toward this step-back trigger.',
-  'The step-back review never parks and never asks Todd for a ceiling.',
+  'When the same failure persists across three consecutive heads, the host steps back:',
+  'The host decides the next step; no independent step-back review, threshold decision lane, or threshold-decision lifecycle row is required.',
+  'This rule never parks work or asks Todd for an attempt ceiling.',
   'Escalate the level, not the count.',
   'No attempt count, dispatch count, reviewer-eligibility gap, or environment or tooling failure parks work.',
   'Reviewer exhaustion never parks or stalls an artifact',
@@ -394,11 +394,11 @@ $spendCapMutant = $milestone.Replace(
   [StringComparison]::Ordinal)
 Add-MutantClaim "spend-telemetry-section-12-delta" $true (Test-PreservedSections $spendCapMutant $baseMilestone) "exact reviewed v2.51 spend-telemetry deltas"
 $attemptCeilingMutant = $milestone.Replace(
-  "At every fourth counted implementation attempt, the next dispatch for that",
-  "At every eighth attempt round across all lane roles, the next dispatch for that",
+  "When the same failure persists across three consecutive heads",
+  "When any failure occurs on the eighth attempt",
   [StringComparison]::Ordinal)
-Add-MutantClaim "attempt-step-back-counts-implementation-only" $true (Test-PreservedSections $attemptCeilingMutant $baseMilestone) "v2.103 fourth-attempt step-back statement"
-$attemptParkMutant = $milestone -replace 'The step-back review never parks and never asks Todd for\s+a ceiling\.', 'The step-back review may park the artifact at its terminal head.'
+Add-MutantClaim "repeated-failure-counts-consecutive-heads" $true (Test-PreservedSections $attemptCeilingMutant $baseMilestone) "host-owned three-head repeated-failure statement"
+$attemptParkMutant = $milestone -replace 'This rule never parks work or asks Todd for an attempt ceiling\.', 'The host may park the artifact after repeated failures.'
 Add-MutantClaim "attempt-count-park-restored" $true (Test-PreservedSections $attemptParkMutant $baseMilestone) "v2.103 step-back never parks"
 $reviewerParkMutant = $milestone -replace 'Reviewer\s+exhaustion\s+never\s+parks\s+or\s+stalls\s+an\s+artifact', 'Reviewer exhaustion parks the artifact'
 Add-MutantClaim "reviewer-exhaustion-parks" $true (Test-PreservedSections $reviewerParkMutant $baseMilestone) "v2.103 reviewer exhaustion fallback"
@@ -570,7 +570,7 @@ Assert-6997 ($routingCompact.Contains("neither parks an artifact (4388/602214627
 Assert-6997 ($routingCompact.Contains("No per-dispatch, per-artifact, lineage, daily, or monthly USD limit exists", [StringComparison]::Ordinal)) "v4.8 spend telemetry statement missing"
 Assert-6997 (-not $routingCompact.Contains("Per dispatch (binding)", [StringComparison]::Ordinal)) "v4.8 retains a binding per-dispatch cap"
 Assert-6997 (-not $milestoneCompact.Contains('$50', [StringComparison]::Ordinal)) "v2.51 retains a USD ceiling literal"
-Assert-6997 ($routingCompact.Contains("fourth-attempt step-back review", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("four-implementation-attempt ceiling", [StringComparison]::Ordinal)) "v4.22 lacks the fourth-attempt step-back review or keeps the retired ceiling"
+Assert-6997 ($routingCompact.Contains("three-consecutive-head failure rule", [StringComparison]::Ordinal) -and -not $routingCompact.Contains("four-implementation-attempt ceiling", [StringComparison]::Ordinal)) "routing lacks the host-owned repeated-failure rule or keeps the retired ceiling"
 Assert-6997 (-not $routingCompact.Contains("eight-round", [StringComparison]::Ordinal)) "v4.9 retains the removed eight-round rule"
 Assert-6997 (-not $routingCompact.Contains("spend authorization", [StringComparison]::Ordinal)) "v4.9 retains a spend authorization stop"
 Assert-6997 ($routingCompact.Contains('Fable means Fable 5.1: pin `claude-fable-5-1` on every Fable dispatch', [StringComparison]::Ordinal)) "v4.10 lacks the Fable 5.1 in-place replacement"

@@ -53,7 +53,7 @@ $script:sectionRules = @(
   @(7, 'Local-only failures, preparation stops, harness or environment failures, lock refusals and a lane''s own tooling defects do not count; the lane repairs them within the same attempt.'),
   @(7, 'Existing counts are recounted under this definition.'),
   @(7, 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'),
-  @(7, 'Review, repair, and planning rounds never count toward this step-back trigger.'),
+  @(7, 'When the same failure persists across three consecutive heads, the host steps back:'),
   @(12, 'Replacement never resets an attempt count, and counts follow the §7 attempt definition'),
   @(4, 'Choose the next committed outcome within Todd''s current product priority by explicit Todd steering first'),
   @(4, 'while ready, runnable `kind:product` work exists, at least two lanes serve it.'),
@@ -126,6 +126,7 @@ $mutants = [ordered]@{
   "local-stops-count" = Remove-Phrase $skill 'Local-only failures, preparation stops, harness or environment failures, lock refusals and a lane''s own tooling defects do not count; the lane repairs them within the same attempt.'
   "no-recount" = Remove-Phrase $skill 'Existing counts are recounted under this definition.'
   "recount-becomes-reset" = Remove-Phrase $skill 'That is a recount, not a reset: an attempt that did receive a hosted or review verdict keeps counting.'
+  "repeated-failure-trigger-removed" = Remove-Phrase $skill 'When the same failure persists across three consecutive heads, the host steps back:'
   "park-ignores-definition" = $skill.Replace('Replacement never resets an attempt count, and counts follow' + "`n" + 'the §7 attempt definition', 'Replacement never resets an attempt count')
   "floor-dropped" = Remove-Phrase $skill 'at least two lanes serve it.'
   "idle-without-canonical-authority" = Remove-Phrase $skill 'independent current-brief semantic PASS,'

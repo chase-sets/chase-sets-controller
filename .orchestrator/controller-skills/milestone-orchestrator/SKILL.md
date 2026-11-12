@@ -671,9 +671,8 @@ level moves the next step up one level: implementation, `ISSUE`, `SET`,
 from one judged head to the next, keep repairing at the current level whatever
 the attempt number; an oscillating or growing set escalates one level.
 
-Implementation attempts are counted as telemetry and step-back triggers, never
-as a stop. Review, repair, and planning rounds never count toward this
-step-back trigger. An implementation attempt counts only when a pushed head
+Implementation attempts are counted as telemetry, never as a stop.
+An implementation attempt counts only when a pushed head
 receives a hosted CI verdict or an exact-head review verdict
 (4388/5845981597). Local-only failures, preparation stops, harness or
 environment failures, lock refusals and a lane's own tooling defects do not
@@ -681,13 +680,15 @@ count; the lane repairs them within the same attempt. Existing counts are
 recounted under this definition. That is a recount, not a reset: an attempt
 that did receive a hosted or review verdict keeps counting. No further dispatch binds to it until that verdict is recorded.
 
-At every fourth counted implementation attempt, the next dispatch for that
-artifact is one independent step-back review (§11) over the whole lineage, its
-siblings and its epic. Its verdict is final and is exactly one of `CONTINUE`
-with a named remedy, `REPLAN` at a named level, `WAIT` on a named native
-blocker, `PRODUCT_QUESTION` (§11), or `RECOMMEND_NOT_COMPLETING` (only Todd
-closes the issue). The step-back review never parks and never asks Todd for
-a ceiling. It complements the three-round repair rule; it never relaxes it.
+When the same failure persists across three consecutive heads, the host steps
+back: replan, change the approach, or ask Todd only if product priority or scope
+must change (§11). Inspect the relevant failure evidence, not a dispatch-count
+query. The host decides the next step; no independent step-back review,
+threshold decision lane, or threshold-decision lifecycle row is required.
+This rule never parks work or asks Todd for an attempt ceiling. It does not
+reset consumed attempts or relax paid or one-shot external-action limits.
+This step-back takes precedence even if other findings are shrinking while
+the same failure persists.
 
 Semantic implementation G1 identity and attempt counts persist across repair.
 The lane name identifies the current author or reviewer execution; it is unique
@@ -697,21 +698,11 @@ never rewritten, but reuse on an unrelated issue/head cannot poison a current
 controller candidate. Causal dispatch and terminal rows still bind one exact
 lane/head tuple.
 
-At 15 or more dispatches without any confirmed canonical landing, route one
-independent step-back review under section 11, only at the pre-dispatch moment
-for the open issue the host is about to route. Never sweep closed, tracking-only or non-candidate issues
-or batch decisions at install. Before any further lane for that candidate, run
-`scripts/query-ledgers.ps1 -DispatchIssue <issue> -DispatchCandidateState open -DispatchAuthority <authority>`.
-Use the installed query with its canonical runtime root, not velocity's window
-or a projection. Count each issue-bearing `kind=dispatch` row once, all roles,
-all history; exclude issue-less aliases and other kinds. Any confirmed canonical
-`landed` row (positive PR and exact head) suppresses the threshold forever.
-UNKNOWN history/admission holds only this candidate for evidence reconciliation.
-The host supplies `clear` only after checking existing terminal authority,
-attempt admission and external gates; otherwise use `terminal-park`,
-`attempt-ceiling`, `counsel`, `operator`, `todd` or `unknown`. These return no
-threshold action. The fourth-attempt step-back review remains independent of
-this count; this count grants no attempt, reset or dispatch authority.
+Dispatch counts are telemetry, not dispatch prerequisites. Legacy dispatch-count
+query and lifecycle APIs remain readable for compatibility; the host does not
+invoke them to obtain permission for new work. Paid or one-shot external actions
+still obey their explicit attempt limits, production/money safety, secrets,
+Todd-only authority, and the TCGplayer no-contact/no-credentials boundary.
 
 Review authorization is exact-head and exact-attempt:
 
@@ -954,26 +945,25 @@ answers in the same thread; the host proceeds on the answer. There are no
 tiers, modes, premise-freshness verdicts, or transition rules; the
 two-tier/five-mode machine is retired (archive). The host keeps delivering on
 the current priority while a question is open. Process decisions never become
-#4388 questions for Todd; they follow the host and decision-lane routes below.
+#4388 questions for Todd; the host resolves them directly below.
 
 Every other decision stays with agents:
 
-- **The host decides** same-attempt, in-scope repairs itself and logs
-  `decision-resolved` with its reasoning. These include stale pins or counts,
-  fixture collisions, sink or path mistakes, host prompt defects, continuation
-  authority, and agent-owned placement.
-- **An independent decision lane decides** a change to accepted acceptance
-  criteria within the current product scope, a step-back review verdict (§7), a
-  proof-route substitution, a bounded capture allowance, a staging data
-  repair, or a cross-lineage choice. Its verdict is final, and the host
-  proceeds on it.
-- A decision lane never returns a Todd ruling for a process question. If it
-  believes Todd must decide something that is not a product priority or scope
-  change, the host resolves the question with a second independent lane.
+- **The host decides** non-Todd process questions directly and logs one
+  `decision-resolved` row with its reasoning. These include repairs, step-backs, proof-route
+  substitutions, bounded capture allowances, staging data repairs and
+  cross-lineage sequencing. Simplify a non-hard process block, say why, and
+  continue; do not dispatch a decision lane or request a second independent
+  ruling to authorize the process choice.
+  Process simplification never weakens accepted acceptance criteria or changes
+  the accepted product outcome; those are not process permissions.
+- **A decision lane is optional** for a genuine product, domain, legal,
+  provider-contract, UX, data or architecture tradeoff inside accepted product
+  scope, not for permission to carry out an in-scope process step.
 - File genuine product, domain, legal, provider-contract, UX, data, and
   architecture Decisions immediately with options, evidence, recommendation,
-  owner, and blocked issues. Each goes to a decision lane when it is inside
-  accepted product scope. It goes to Todd only as a priority or scope question
+  owner, and blocked issues. The host decides or uses a decision lane when it
+  is inside accepted product scope. It goes to Todd only as a priority or scope question
   or a packaged operator action.
 - Continue unrelated work. Never infer Todd's answer to a question he owns.
 
@@ -983,56 +973,12 @@ and enqueue; funding a bounded review, repair, verification, or re-review
 never needs a Decision; and no authorization Decision is filed for work already
 inside a ruled scope.
 
-The section 7 threshold uses one independent decision lane, never a filed
-Decision issue or a Todd question. Pending and final are once-only steady states:
-never launch a second threshold decision. The host consumes the query's action:
-`CLAIM_DECISION` records `CLAIMED` through `log-event.ps1 -DispatchDecision <json>`
-before the sole canonical launch. Use `-Log dispatch -Kind decision-filed -Issue <issue>`;
-this reuses lifecycle kinds, not Decision-issue filing authority. CLAIMED and
-ACKNOWLEDGED still appear in decision-heavy telemetry and the pending digest.
-The closed payload is `{schemaVersion:"dispatch-count-decision/v1",
-id:"dispatch-count-<issue>-v1",phase:"CLAIMED",count:<query.dispatchCount>,
-lane:<unique decision lane>,transcript:<exact canonical transcript>}`.
-The logger validates and serializes each transition against complete history.
-Ledger line order, not `ts`, is authoritative for the reducer.
-Only the uninterrupted successful claim caller may launch `dispatch-lane.ps1`
-with that lane/transcript. On claim/launch/ack interruption, `RECONCILE_DECISION`
-recovers that same identity from canonical ownership/start acknowledgement and
-the exact issue-bearing dispatch row, or reports bounded uncertainty; it never
-blindly relaunches. Persist `ACKNOWLEDGED` with the same payload plus
-`dispatchReceiptIdentity` (the canonical dispatch row's raw SHA256). A pending
-container, lane-complete prose or launch intent is not a FINAL verdict.
-The claim caller launches the decision lane once through
-`dispatch-lane.ps1 -Issue <issue> -LaneRole decision`.
-The worktree leaf must equal the claimed `lane`, and the label must make the
-transcript equal the claimed `transcript`. That launcher's
-`watchdog-dispatch-routing/v2` row is the single issue-bearing dispatch row,
-and `ACKNOWLEDGED.dispatchReceiptIdentity` is its raw SHA256.
-The host appends no other issue-bearing `kind=dispatch` row for that
-lane/transcript: no VERIFIED, attribution or backfill `-Issue` row.
-Multiple matching launches remain UNKNOWN rather than acknowledgement authority.
-After validating that independent lane's final report, record `FINAL` using
-`-Kind decision-resolved`, the same identity/count/dispatch binding and
-the step-back verdict as `disposition`: `CONTINUE`, `REPLAN`, `WAIT`,
-`PRODUCT_QUESTION` or `RECOMMEND_NOT_COMPLETING`; `PARK` is refused.
-`CLAIM_APPLICATION` records `APPLYING`
-before the effect, additionally binding `finalReceiptIdentity` from the query.
-Use the query's stable `applicationId` as the replan lane label/transcript stem
-or the verdict-comment marker, so restart reconciliation addresses the
-same effect rather than constructing a new one.
-Apply the final disposition once: Replan is planning work, not another decision lane;
-every other verdict is one issue comment naming the verdict and its next step,
-plus the native blocker for `WAIT` or the one #4388 question for
-`PRODUCT_QUESTION`. Record `APPLIED`
-only after the exact planning dispatch or verdict comment is confirmed, retaining
-all bindings. `RECONCILE_APPLICATION` checks that same effect after interruption;
-uncertain response means bounded uncertainty, never a second dispatch/comment.
-`NONE` requests no threshold action; APPLIED remains steady across restarts.
-Replan preserves consumed attempts and ordinary admission; counsel/operator
-gates and Todd-only authority remain binding.
-A terminal park or attempt-ceiling decision recorded before v2.103 is
-re-triaged under §7 by one step-back review at its next dispatch moment; it is
-not reopened through this threshold and needs no material changed fact.
+Do not create dispatch-count threshold decisions or lifecycle rows for new work.
+Retain historical rows without rewriting them; they grant no new attempt or
+external-action authority. Re-triage an old process-only stop directly under
+§7. A real external blocker, paid/one-shot attempt limit or Todd-owned scope
+decision remains binding. Production/money safety, secrets and TCGplayer
+no contact/no credentials are never process exceptions.
 
 Do not send routine milestone creation, splitting, rescoping, placement,
 ordering, issue ranking, or scope tradeoffs within an accepted outcome to Todd.
@@ -1150,8 +1096,8 @@ discharge through the §7 recovery ladder.
 No artifact parks on attempts under the §7 implementation rule
 (4388/6022146271); one-shot external action caps still stop the action (§11).
 There is no standing-cap
-continuation row and no ceiling authority ceremony; the fourth-attempt
-step-back review chooses the next step.
+continuation row and no ceiling authority ceremony; the host chooses the next
+step under the repeated-failure rule in §7.
 Replacement never resets an attempt count, and counts follow
 the §7 attempt definition; billed model USD is carried forward as telemetry.
 No model USD figure is a ceiling; explicit external-action spend caps still bind.
@@ -1265,9 +1211,8 @@ not retroactively gain this meaning. Qualification never erases flow or holds.
   parks without admitted live re-entry stay in a separate diagnostic bucket;
   uncertain terminal evidence never becomes ready idle.
 - DROUGHT: no product-milestone merge for 48 hours, re-armed every further 48
-  hours. The host dispatches one independent diagnosis decision lane with the
-  report, bounded to 60 minutes, and logs `velocity:DROUGHT`. Its verdict is
-  final and is exactly one of: a repair of the named blocker; a rule change
+  hours. The host diagnoses the report directly and logs one `decision-resolved`
+  row with `velocity:DROUGHT` and its reasoning. It chooses a repair of the named blocker; a rule change
   that removes at least as many skill lines as it adds; or, only when Todd's
   current priority is blocked by something external, one priority question
   under §11.

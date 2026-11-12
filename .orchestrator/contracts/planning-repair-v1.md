@@ -98,9 +98,8 @@ work, not parked work.
 
 ## Recovery level and re-entry
 
-Every planning-repair dispatch names the recovery level that the host or a
-step-back review assigned (milestone-orchestrator section 7; Todd,
-4388/6022146271):
+Every planning-repair dispatch names the recovery level the host assigned
+(milestone-orchestrator section 7):
 
 - `ISSUE`: repair or replace this brief.
 - `SET`: re-cut this issue together with the named siblings that share the
@@ -111,6 +110,7 @@ step-back review assigned (milestone-orchestrator section 7; Todd,
 
 A product scope conflict is not a planning disposition. Report it under
 `RESIDUAL_DECISIONS` for one section 11 question and finish everything else.
+A process step-back needs no independent decision lane.
 
 A replan of a previously stopped artifact carries exactly this ordered section,
 with each label appearing once and carrying a non-space payload:
@@ -137,8 +137,11 @@ lineage history or consumed count. The consumed count is the number of pushed
 heads that received a hosted CI verdict or an exact-head review verdict
 (milestone-orchestrator section 7); a local-only,
 preparation, harness or lane-tooling stop consumed no attempt.
-Consumed counts are history and step-back triggers, never a stop. Billed USD is recorded telemetry and is never a
-ceiling. The controller never files a cap-only Decision.
+Consumed counts are history, never a stop. Three consecutive heads with the
+same failure require the host to replan or change approach; ask Todd only for
+a product priority or scope change. Paid or one-shot external-action limits
+remain binding. Billed USD is recorded telemetry and is never a ceiling.
+The controller never files a cap-only Decision.
 
 The host dispatches semantic review on the row's policy slot regardless of
 which model authored or repaired this exact body revision. Independence means
