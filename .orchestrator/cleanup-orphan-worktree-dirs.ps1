@@ -11,6 +11,7 @@ or an idle HEAD reachable from base. Unknown authority always retains.
 param([switch]$Remove, [switch]$Json, [string]$ReportPath)
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $entryTimer = [Diagnostics.Stopwatch]::StartNew()
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 
@@ -193,7 +194,7 @@ function Get-ReclamationRegister([string]$RuntimeRoot) {
   try {
     $path=Join-Path $RuntimeRoot 'platform-handoff.md'
     if(-not(Test-Path -LiteralPath $path)){return [pscustomobject]@{active=$false}}
-    $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
+    $text=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path),[Text.UTF8Encoding]::new($false,$true))
     $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
     if(-not$table.Success){throw 'missing ownership register'}
     $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
@@ -225,11 +226,9 @@ function Get-ReclamationRegister([string]$RuntimeRoot) {
 
 function Get-ReclamationDispatch([string]$RuntimeRoot) {
   $paths=@{};$branches=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
-  $reader=$null
   try {
     # The append order is authoritative: never fall back to an older recognizable row.
-    $reader=[IO.File]::OpenText((Join-Path $RuntimeRoot 'dispatch-log.jsonl'))
-    while($null-ne($line=$reader.ReadLine())){
+    foreach($line in (Read-DispatchLedgerLines -Path (Join-Path $RuntimeRoot 'dispatch-log.jsonl') -RequireTerminated)){
       if([string]::IsNullOrWhiteSpace($line)){continue}
       $row=$line|ConvertFrom-Json -DateKind String
       if($row-isnot[pscustomobject]){throw 'malformed dispatch row'}
@@ -241,7 +240,6 @@ function Get-ReclamationDispatch([string]$RuntimeRoot) {
     }
     [pscustomobject]@{complete=$true;paths=$paths;branches=$branches}
   }catch{[pscustomobject]@{complete=$false;paths=@{};branches=@{}}}
-  finally{if($reader){$reader.Dispose()}}
 }
 
 function Get-ReclamationIssue([int]$Number) {

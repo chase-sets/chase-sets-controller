@@ -11,6 +11,7 @@ param(
   [Parameter(DontShow)][switch]$SynchronousDispatch
 )
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 $identity=[ordered]@{pid=$PID;startIdentity=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')}
 $source=$null
 $phase='INPUT'
@@ -115,7 +116,7 @@ try{
   if(-not$IsWindows-or$PollSeconds-le0-or[double]::IsNaN($PollSeconds)-or[double]::IsInfinity($PollSeconds)-or
     $UnchangedPolls-lt1-or$WindowSeconds-le0-or[double]::IsNaN($WindowSeconds)-or[double]::IsInfinity($WindowSeconds)){throw 'INPUT_OPTIONS'}
   if(-not$LanesPath-or-not(Test-Path -LiteralPath $LanesPath -PathType Leaf)){throw 'INPUT_MISSING'}
-  $bytes=[IO.File]::ReadAllBytes((Native-Path $LanesPath))
+  $bytes=[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Native-Path $LanesPath)))
   $inputsHash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
   $values=ConvertFrom-Json -InputObject ([Text.UTF8Encoding]::new($false,$true).GetString($bytes)) -NoEnumerate
   if($values-isnot[array]-or$values.Count-eq0){throw 'INPUT_LANES'}

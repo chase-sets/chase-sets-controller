@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -Force -DisableNameChecking
 
 function Get-ControllerInstallMutexName {
   [CmdletBinding()]
@@ -230,7 +231,7 @@ function Get-ControllerInstallOwnerSnapshot([string]$LockPath) {
     $stream = $null
     for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
       try {
-        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ownerPath), [IO.FileMode]::Open, [IO.FileAccess]::Read,
           ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
       } catch {
         $exception = $_.Exception.GetBaseException()
@@ -260,9 +261,9 @@ function Remove-ClaimedOwnerLock([string]$LockPath, [string]$ClaimPath, [string]
     if (-not (Test-ControllerInstallSafeDirectory $LockPath) -or -not (Test-ControllerInstallSafeFile $ClaimPath)) { return $false }
     $entries = @(Get-ChildItem -LiteralPath $LockPath -Force -ErrorAction Stop)
     if ($entries.Count -ne 1 -or -not (Test-ControllerInstallSamePath $entries[0].FullName $ClaimPath)) { return $false }
-    $stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Delete)
+    $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Delete)
     try {
-      $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true), $false, 1024, $true)
+      $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.UTF8Encoding]::new($false, $true), $false, 1024, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     if ($raw -cne $ExpectedRaw) { return $false }

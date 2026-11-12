@@ -33,6 +33,7 @@ param(
   [switch]$Library
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 # routing-data.ps1 declares its own StateRoot/LkgPath/Library parameters;
 # dot-sourcing it rebinds those names in this scope, so capture ours first.
 $script:PacingInvocation = [ordered]@{
@@ -135,7 +136,7 @@ function Read-PacingStatus([string]$Path, [string]$Url, [DateTimeOffset]$Now) {
   $body = $null
   try {
     if ($Path) {
-      $body = [IO.File]::ReadAllText([IO.Path]::GetFullPath($Path))
+      $body = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ([IO.Path]::GetFullPath($Path))))
     } else {
       $target = if ($Url) { $Url } elseif ($env:CODEX_POOL_STATUS_URL) { $env:CODEX_POOL_STATUS_URL } else { $script:PacingConfig.defaultStatusUrl }
       $body = (Invoke-WebRequest -Uri $target -TimeoutSec $script:PacingConfig.statusTimeoutSeconds -NoProxy -ErrorAction Stop).Content
@@ -289,7 +290,7 @@ function Get-PacingLaneHours([string]$LogPath, [string]$TranscriptDir, [DateTime
     return [pscustomobject]@{hours=$hours;diagnostics=$diagnostics}
   }
   $seen = [hashtable]::new([StringComparer]::Ordinal)
-  foreach ($line in [IO.File]::ReadLines($LogPath)) {
+  foreach ($line in (Read-DispatchLedgerLines -Path $LogPath)) {
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
     $row = $null
     try { $row = $line | ConvertFrom-Json -Depth 50 -DateKind String -ErrorAction Stop } catch { continue }
@@ -353,7 +354,7 @@ function Get-PacingCensus([string]$Path, [string]$Runtime, [string]$Container, [
   $census = $null
   try {
     if ($Path) {
-      $census = [IO.File]::ReadAllText([IO.Path]::GetFullPath($Path)) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
+      $census = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ([IO.Path]::GetFullPath($Path)))) | ConvertFrom-Json -Depth 100 -DateKind String -NoEnumerate -ErrorAction Stop
     } else {
       . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
       $census = Get-LiveDispatchOwnership -RuntimeRoot $Runtime -TempRoot ([IO.Path]::GetTempPath()) -ContainerRoot $Container -DeadlineMs $script:PacingConfig.censusDeadlineMs

@@ -1,4 +1,4 @@
-param([switch]$CapacityOnly,[switch]$CapacityQuarantineOnly,[string]$RefreshPath,[string]$EvidenceDir)
+param([switch]$CapacityOnly,[switch]$CapacityQuarantineOnly,[string]$RefreshPath,[string]$EvidenceDir,[switch]$HistoryOnly)
 $ErrorActionPreference = "Stop"
 
 $refresh = Join-Path $PSScriptRoot "matrix-refresh.ps1"
@@ -355,6 +355,100 @@ function Test-CapacityCalibration {
     }
   }
 }
+function Test-MatrixFullHistory {
+  Reset-Fixtures
+  $saved=@{}
+  foreach($path in @($matrixPath,$ledgerPath,$dispatchPath)) {
+    $saved[$path]=@{bytes=[IO.File]::ReadAllBytes($path);at=[IO.File]::GetLastWriteTimeUtc($path)}
+  }
+  # Same recursive ordinal-key normalization as ConvertTo-TestCanonicalNode in
+  # codex-launch-boundary.test.ps1; array order and every value are conserved.
+  function ConvertTo-HistoryCanonical($Value) {
+    if($null -eq $Value){return $null}
+    if($Value -is [Collections.IDictionary]) {
+      $result=[ordered]@{};$keys=[string[]]@($Value.Keys);[Array]::Sort($keys,[StringComparer]::Ordinal)
+      foreach($key in $keys){$result[$key]=ConvertTo-HistoryCanonical $Value[$key]}
+      return $result
+    }
+    if($Value -is [array]){return ,@($Value|ForEach-Object{ConvertTo-HistoryCanonical $_})}
+    return $Value
+  }
+  function Invoke-HistoryMatrix {
+    [IO.File]::WriteAllBytes($matrixPath,$saved[$matrixPath].bytes)
+    $dispatchHash=(Get-FileHash -LiteralPath $dispatchPath).Hash
+    $dispatchAt=[IO.File]::GetLastWriteTimeUtc($dispatchPath)
+    $costHash=(Get-FileHash -LiteralPath $ledgerPath).Hash
+    $started=[DateTimeOffset]::UtcNow.AddSeconds(-1)
+    $cli=& $refresh -Matrix $matrixPath -CostLedger $ledgerPath -DispatchLog $dispatchPath -SinceDays 36500 -Json |
+      ConvertFrom-Json -AsHashtable -DateKind String
+    $matrix=Get-Content -LiteralPath $matrixPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String
+    # measuredAt.at is existing wall-clock generation metadata, not a history
+    # result. Validate it independently before normalizing ONLY this leaf.
+    $at=[DateTimeOffset]::Parse($matrix.measuredAt.at)
+    Assert-True ($at -ge $started -and $at -le [DateTimeOffset]::UtcNow) 'matrix generation timestamp belongs to this invocation'
+    $matrix.measuredAt.at='<generation-time>'
+    Assert-True ((Get-FileHash -LiteralPath $dispatchPath).Hash -ceq $dispatchHash -and
+      [IO.File]::GetLastWriteTimeUtc($dispatchPath) -eq $dispatchAt -and
+      (Get-FileHash -LiteralPath $ledgerPath).Hash -ceq $costHash) 'matrix history/cost inputs unchanged by actual entrypoint'
+    return [pscustomobject]@{matrix=$matrix;whole=(ConvertTo-HistoryCanonical @{cli=$cli;matrix=$matrix}|ConvertTo-Json -Depth 100 -Compress)}
+  }
+  try {
+    $early='{"ts":"2026-09-30T12:00:00Z","kind":"dispatch","issue":100,"model":"gpt-5.6-sol","effort":"high","transcript":"early.jsonl","row":"4"}'
+    $late='{"ts":"2026-09-30T12:01:00Z","kind":"dispatch","issue":101,"model":"claude-sonnet-5","effort":"medium","transcript":"late.jsonl","row":"3"}'
+    [IO.File]::WriteAllLines($dispatchPath,[string[]]@($early,$late))
+    [IO.File]::WriteAllLines($ledgerPath,[string[]]@(
+      '{"ts":"2026-09-30T12:00:00Z","issue":100,"transcript":"early.jsonl","model":"gpt-5.6-sol","usd":6,"durationSec":60}',
+      '{"ts":"2026-09-30T12:01:00Z","issue":101,"transcript":"late.jsonl","model":"claude-sonnet-5","usd":4,"durationSec":120}'))
+    $oracle=Invoke-HistoryMatrix
+    Assert-True ($oracle.matrix.measuredAt.effortIdentity.byDispatchTranscript -eq 2 -and
+      $oracle.matrix.measuredAt.byRow.'4'.usd -eq 6 -and $oracle.matrix.measuredAt.byRow.'3'.usd -eq 4) 'small complete-history oracle retains early and late attribution'
+    $full=Join-Path $testRoot 'history-full.jsonl';$suffix=Join-Path $testRoot 'history-suffix.jsonl';$prefix=Join-Path $testRoot 'history-prefix.jsonl'
+    $writer=[IO.StreamWriter]::new($full,$false,[Text.UTF8Encoding]::new($false))
+    try {
+      $writer.NewLine="`n";$writer.WriteLine($early)
+      # Both Read-Jsonl and the scorecard skip Trim()-empty physical rows.
+      # 50,000 valid whitespace rows cross both cliffs without reducer noise.
+      $padding=' '*700
+      for($i=0;$i -lt 50000;$i++){$writer.WriteLine($padding)}
+      $writer.WriteLine($late)
+    } finally {$writer.Dispose()}
+    $tailWriter=[IO.StreamWriter]::new($suffix,$false,[Text.UTF8Encoding]::new($false))
+    $prefixWriter=[IO.StreamWriter]::new($prefix,$false,[Text.UTF8Encoding]::new($false))
+    try {
+      $tailWriter.NewLine="`n";$prefixWriter.NewLine="`n";$rows=0;$prefixBytes=0L;$prefixRows=0;$prefixOpen=$true
+      foreach($line in [IO.File]::ReadLines($full)) {
+        if($rows -ge 2){$tailWriter.WriteLine($line)} # actual last 50,000 of 50,002
+        $length=[Text.Encoding]::UTF8.GetByteCount($line)+1
+        if($prefixOpen -and $prefixBytes+$length -le 32MB){$prefixWriter.WriteLine($line);$prefixBytes+=$length;$prefixRows++}
+        else {$prefixOpen=$false}
+        $rows++
+      }
+    } finally {$tailWriter.Dispose();$prefixWriter.Dispose()}
+    $bytes=(Get-Item -LiteralPath $full).Length
+    Assert-True ($rows -eq 50002 -and $bytes -gt 32MB -and $prefixRows -lt 50001) 'matrix fixture exceeds 50,000 physical rows and 32 MiB; byte prefix excludes late row'
+    Copy-Item -LiteralPath $full -Destination $dispatchPath
+    $large=Invoke-HistoryMatrix
+    Assert-True ($large.whole -ceq $oracle.whole) 'matrix full CLI result AND complete generated matrix equal small oracle above both cliffs'
+    Copy-Item -LiteralPath $suffix -Destination $dispatchPath
+    $tail=Invoke-HistoryMatrix
+    Assert-True ($tail.whole -cne $oracle.whole -and $null -eq $tail.matrix.measuredAt.byRow.'4' -and
+      $tail.matrix.measuredAt.byRow.'3'.usd -eq 4) 'matrix actual 50,000-row suffix loses early attribution, not late attribution'
+    Copy-Item -LiteralPath $prefix -Destination $dispatchPath
+    $cut=Invoke-HistoryMatrix
+    Assert-True ($cut.whole -cne $oracle.whole -and $cut.matrix.measuredAt.byRow.'4'.usd -eq 6 -and
+      $null -eq $cut.matrix.measuredAt.byRow.'3') 'matrix line-complete 32 MiB early cutoff loses late attribution, not early attribution'
+    Copy-Item -LiteralPath $full -Destination $dispatchPath
+    Assert-True ((Invoke-HistoryMatrix).whole -ceq $oracle.whole) 'matrix restored full history recovers complete oracle'
+    Write-Output "PASS matrix full-history rows=$rows bytes=$bytes suffixRows=50000 suffixEarly=absent suffixLate=4 prefixRows=$prefixRows prefixBytes=$prefixBytes prefixEarly=6 prefixLate=absent whole=CLI+matrix restored=equal"
+  } finally {
+    foreach($path in $saved.Keys) {
+      [IO.File]::WriteAllBytes($path,$saved[$path].bytes);[IO.File]::SetLastWriteTimeUtc($path,$saved[$path].at)
+      Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($path),[byte[]]$saved[$path].bytes) -and
+        [IO.File]::GetLastWriteTimeUtc($path) -eq $saved[$path].at) "original matrix fixture restored: $path"
+    }
+  }
+}
+if($HistoryOnly){Test-MatrixFullHistory;return}
 if($CapacityQuarantineOnly){Test-CapacityQuarantine;return}
 if($CapacityOnly){Test-CapacityCalibration;return}
 
@@ -730,6 +824,7 @@ try {
   Write-Output 'PASS F2 matrix-refresh counts explicit max configuration without live max admission'
 } finally { Restore-RoutingRegistryBytes $f2MatrixRegistrySnapshot }
 
+Test-MatrixFullHistory
 Test-CapacityCalibration
 Write-Output "ALL matrix-refresh tests passed"
 } finally {

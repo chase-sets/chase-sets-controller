@@ -672,6 +672,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     $copy = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1')).Replace('/opt/chase-sets-native-db/admission.py', "$linuxRoot/admission.py")
     [IO.File]::WriteAllText((Join-Path $runtime 'invoke-heavy-verifier.ps1'), $copy)
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $runtime
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $runtime
     & C:\Windows\System32\wsl.exe -d Ubuntu --exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C /usr/bin/python3 -c $linuxSetup $linuxHelper $linuxRoot
     if ($LASTEXITCODE -ne 0) { throw 'native wrapper fixture setup failed' }
     Set-Content (Join-Path $anchor '.gitignore') ".orchestrator/artifacts/`nnode_modules/"
@@ -733,7 +734,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     $replayText=Complete-NativeFixture $replay 73
     if ($replayText -notmatch 'correlation already consumed' -or (Test-Path (Join-Path $runtime 'verify-lock.d'))) { throw 'duplicate correlation must refuse before acquisition' }
     }
-    foreach ($name in @('heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')) {
+    foreach ($name in @('dispatch-ledger-reader.psm1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')) {
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime
     }
     [IO.File]::WriteAllText((Join-Path $anchor 'package.json'), '{"name":"synthetic-native-exclusion","private":true,"scripts":{"verify:static":"node static-fixture.cjs"}}')
@@ -1070,7 +1071,7 @@ function Invoke-CanonicalRecordScriptPinControl {
     $assumeUnchanged = $null -ne $WorktreePackage
     try {
       New-Item -ItemType Directory -Path $runtime, $worktree, $artifacts, (Join-Path $worktree 'node_modules/.bin') -Force | Out-Null
-      foreach ($file in @('invoke-heavy-verifier.ps1', 'heavy-admission-preload.cjs', 'heavy-slot.cjs', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-holder-launcher.cjs', 'dispatch-ownership.ps1')) {
+      foreach ($file in @('invoke-heavy-verifier.ps1', 'dispatch-ledger-reader.psm1', 'heavy-admission-preload.cjs', 'heavy-slot.cjs', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-holder-launcher.cjs', 'dispatch-ownership.ps1')) {
         Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $runtime $file)
       }
       [IO.File]::WriteAllText((Join-Path $worktree '.gitignore'), ".orchestrator/artifacts/`nnode_modules/`npnpm-lock.yaml`n")
@@ -1241,6 +1242,7 @@ function Complete($Entry, [int]$Exit) {
 }
 try {
   New-Item -ItemType Directory $runtime, $artifacts, (Join-Path $worktree 'scripts'), (Join-Path $worktree 'ordering') -Force | Out-Null
+  if (-not $Baseline) { Copy-Item -LiteralPath (Join-Path $source 'dispatch-ledger-reader.psm1') -Destination $runtime }
   foreach ($file in @('invoke-heavy-verifier.ps1', 'heavy-admission-preload.cjs', 'heavy-slot.cjs', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-holder-launcher.cjs', 'dispatch-ownership.ps1')) {
     if ($Baseline) {
       $text = @(& git.exe -C (Split-Path -Parent $source) show "0e4eb7955bc102216b34d427ecc43933d2e0ff23`:.orchestrator/$file") -join "`n"

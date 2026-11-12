@@ -12,7 +12,10 @@ function Assert-True($Condition,[string]$Message){if(-not$Condition){throw "ASSE
 $root=Join-Path ([IO.Path]::GetTempPath()) ('landed-evidence-128-'+[guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root)|Out-Null
 $imported=@()
+$savedOutputEncoding=[Console]::OutputEncoding
 try {
+  # Git emits UTF8 paths even when a redirected Windows host defaults to OEM.
+  [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
   function Fx([string]$Repo,[string[]]$Arguments,[switch]$AllowFailure) {
     $output=@(& git -C $Repo @Arguments 2>&1);$code=$LASTEXITCODE
     if($code-ne0-and-not$AllowFailure){throw "fixture git $($Arguments -join ' ') exit=$code $($output -join "`n")"}
@@ -27,7 +30,7 @@ try {
   $candidateSource=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence.psm1'))
   $nl=if($candidateSource.Contains("`r`n")){"`r`n"}else{"`n"}
   $candidateCopy=Join-Path $root 'candidate';[IO.Directory]::CreateDirectory($candidateCopy)|Out-Null
-  foreach($name in @('dispatch-ownership.ps1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $candidateCopy}
+  foreach($name in @('dispatch-ownership.ps1','dispatch-ledger-reader.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $candidateCopy}
   function New-Arm([string]$Name,[string]$Path){ $module=Import-Module $Path -Force -DisableNameChecking -PassThru; $script:imported+=$module; [pscustomobject]@{name=$Name;module=$module} }
   function New-Mutant([string]$Name,[string]$Old,[string]$New) {
     Assert-True (([regex]::Matches($candidateSource,[regex]::Escape($Old))).Count-eq1) "mutant $Name anchor must occur exactly once"
@@ -261,6 +264,7 @@ try {
   $classes=@($results|ForEach-Object{ if($_.outcome.StartsWith('RETURN')){"$($_.kind) RETURN"}else{"$($_.kind) $(($_.outcome -split ':')[0])"} }|Sort-Object -Unique)
   Write-Output "PASS 128 interrupted-resume internals: $($results.Count) cases equal to base $($BaselineHead.Substring(0,8)) across classes [$($classes -join '; ')]; $($allMutants.Count) mutants RED; exact native Git process savings asserted on every valid case"
 } finally {
+  [Console]::OutputEncoding=$savedOutputEncoding
   Remove-Item Env:GIT_TRACE2_EVENT -ErrorAction SilentlyContinue
   Remove-Item Env:GIT_COMMITTER_DATE -ErrorAction SilentlyContinue
   Remove-Item Env:GIT_TEMPLATE_DIR -ErrorAction SilentlyContinue

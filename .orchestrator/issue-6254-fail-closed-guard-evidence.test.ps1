@@ -159,14 +159,15 @@ function Insert-ProductionPointer($Preserved, [string]$Pointer, $Value) {
   return $copy
 }
 
-function New-ProductionClaim($Mutation) {
+function New-ProductionClaim($Mutation, [string]$ProductionBlob) {
+  if ($ProductionBlob -cnotmatch '^[a-f0-9]{40}$') { throw 'measured production blob required' }
   $pointer = "/productionGuards/$($Mutation.guardId)/clauseEnabled"
   $preserved = [ordered]@{
     batteryCommand = "pwsh -NoProfile -NonInteractive -File .orchestrator/landing-preflight.test.ps1 -RegressionOnly SensitivityRequired"
     controllerRoot = "."
     fixtureSet = "installed-final-16-control-sensitivity"
     parallelism = 1
-    productionBlob = "3cf2824ca386245b5309f6981b75b245ec979175"
+    productionBlob = $ProductionBlob
   }
   $signature = if ($Mutation.mutantId -ceq "D15") {
     "ASSERTION FAILED: a nonzero gh run list exit with valid runs JSON is terminal unreadable with no jobs query"
@@ -232,8 +233,13 @@ try {
   # unchanged 16-mutation manifest (all applied once and killed).
   # 3f89a50 added exact-head check-suite identity and changed the production
   # blob; the same 16-mutation manifest remains the guard against regressions.
+  # Shared-reader path guards change the blob, not the mutation manifest.
+  # Qualification below must still execute the candidate and all 16 mutants.
+  # History bounds: MaxHistoryRows default/range now int MaxValue and
+  # MaxHistoryBytes default now long MaxValue. Requalify this exact blob with
+  # candidate sensitivity, complete landing, and all 16 unchanged mutations.
   Assert-6254Evidence ($LASTEXITCODE -eq 0 -and
-    $candidateBlob -ceq "ad64f4780ac2c4bb1c19218a4d37290ec56da33f") `
+    $candidateBlob -ceq "e1b5e5edd397fab5357718dd5392060789cf5fbe") `
     "production landing-preflight blob changed (observed=$candidateBlob)"
 
   $applied = 0
@@ -273,7 +279,7 @@ try {
         )) "D15 mutant failed through a different clause: $($mutant.output)"
     }
     $killed += 1
-    Write-Host "CLAIM $($mutation.guardId) candidate=PASS mutant=$($mutation.mutantId):FAIL signature=$((New-ProductionClaim $mutation).failureSignature)"
+    Write-Host "CLAIM $($mutation.guardId) candidate=PASS mutant=$($mutation.mutantId):FAIL signature=$((New-ProductionClaim $mutation $candidateBlob).failureSignature)"
   }
 
   Assert-6254Evidence ($applied -eq 16 -and $killed -eq 16) "production summary is not 16/16"
@@ -282,7 +288,7 @@ try {
   Assert-6254Evidence (-not [string]::IsNullOrWhiteSpace($d15Mutant)) "D15 mutant observation missing"
 
   if ($resolvedOut) {
-    $claims = foreach ($mutation in $mutations) { New-ProductionClaim $mutation }
+    $claims = foreach ($mutation in $mutations) { New-ProductionClaim $mutation $candidateBlob }
     $suiteResult = [ordered]@{
       schemaVersion = "fail-closed-guard-suite-result/v1"
       subject = [ordered]@{ controllerHead = $ExpectedControllerHead }

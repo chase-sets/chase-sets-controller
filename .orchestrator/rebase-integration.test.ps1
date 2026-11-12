@@ -29,10 +29,11 @@ try{
   Invoke-TestGit $repo @('checkout','synthetic/feature')|Out-Null
   $injected=Join-Path $root 'rebase-integration-injected.ps1';$sourceText=[IO.File]::ReadAllText($integration);$needle='    return $result'+[Environment]::NewLine+'  } finally'
   Assert-True ([regex]::Matches($sourceText,[regex]::Escape($needle)).Count-eq1) 'branch capture injection point changed'
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
   $injection='    if (($Arguments -contains ''--show-current'' -or $Arguments -contains ''symbolic-ref'') -and -not $script:EmptyBranchInjected) { $script:EmptyBranchInjected=$true; $result.stdout='''' }'
   [IO.File]::WriteAllText($injected,$sourceText.Replace($needle,$injection+[Environment]::NewLine+$needle))
   $recovered=& pwsh -NoProfile -NonInteractive -File $injected @branchCli 2>&1;$recoveredCode=$LASTEXITCODE
-  Assert-True ($recoveredCode-eq0-and(($recovered-join"`n")|ConvertFrom-Json -DateKind String).status-ceq'REVIEW_REQUIRED') 'attached zero-exit empty branch read was not recovered by a bounded re-read'
+  Assert-True ($recoveredCode-eq0-and(($recovered-join"`n")|ConvertFrom-Json -DateKind String).status-ceq'REVIEW_REQUIRED') "attached zero-exit empty branch read was not recovered by a bounded re-read: exit=$recoveredCode output=$($recovered-join' ')"
   $alwaysEmpty=Join-Path $root 'rebase-integration-always-empty.ps1'
   [IO.File]::WriteAllText($alwaysEmpty,$sourceText.Replace($needle,'    if ($Arguments -contains ''symbolic-ref'') { $result.stdout='''' }'+[Environment]::NewLine+$needle))
   $emptyOutput=& pwsh -NoProfile -NonInteractive -File $alwaysEmpty @branchCli 2>&1;$emptyCode=$LASTEXITCODE

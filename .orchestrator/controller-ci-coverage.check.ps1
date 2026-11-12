@@ -731,8 +731,13 @@ foreach($mutant in $heldDiagnosticMutants){
   Refuses-Coverage { Assert-R3HeldCarrierDiagnostics $r3Source.Replace($mutant[0],$mutant[1]) }
 }
 Write-Output 'PASS r3 held-carrier diagnostics: failure-only stderr publication, closed carrier/pair projections, secret/path suppression, UTF-8 bounds and original failure preservation; removal, unbounded, stdout, unredacted, over-limit and swallowed-throw mutants refused'
-# Keep the full proof/helper source immutable: only entrypoint routing changes.
+# Keep every proof/control/mutant immutable. The sole reader owner is an
+# additional dependency in exactly three existing disposable fixture copies.
 $completedBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','1238d8ae56ba7142013a2c0076a7349b1d569266'))
+$completedReaderDependencyOld="'fleet-exclusive-admission.psm1','review-head-contract.psm1'"
+$completedReaderDependencyNew="'fleet-exclusive-admission.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1'"
+Assert-Ci (([regex]::Matches($completedBaseline,[regex]::Escape($completedReaderDependencyOld))).Count -eq 3) 'completed-rebase reader dependency baseline anchor drifted'
+$completedBaseline=$completedBaseline.Replace($completedReaderDependencyOld,$completedReaderDependencyNew)
 $completedSupport=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence-test-support.ps1'))
 $completedOwners=[ordered]@{
   'three-completed-rebase-prospective'='prospective'
@@ -784,6 +789,7 @@ Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('-Modes 
 Refuses-Coverage { Assert-R3CompletedRebaseOwnership ($r3Source.Replace('if(-not (& $runPart $partName)){continue}','')) $completedSupport }
 Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport.Replace('Proof ($consumerReplay.exit -eq 0','Proof ($true -or $consumerReplay.exit -eq 0')) }
 Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport+"`n"+$completedSupport) }
+Refuses-Coverage { Assert-R3CompletedRebaseOwnership $r3Source ($completedSupport.Replace($completedReaderDependencyNew,$completedReaderDependencyOld)) }
 Write-Output 'PASS r3 completed-rebase exact mode ownership: ten independent modes; immutable proofs, controls, mutants and fixtures; dropped/duplicate/misowned/forwarding/guard/weakened-proof negatives refused'
 foreach($part in @($r3Item.parts.name)){
   Assert-Ci ($r3Source.Contains("'$part'")) "r3 selector missing: $part"

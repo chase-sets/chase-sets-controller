@@ -454,7 +454,7 @@ exit $LASTEXITCODE
   function Fixture([string]$Incident,[switch]$SecondStop,[switch]$HoldDescendant,[switch]$CopiedHelper,[switch]$CurrentRequest) {
     $case=Join-Path $root ($Incident+'-'+[guid]::NewGuid().ToString('N'));$repo=Join-Path $case 'lane';$runtime=Join-Path $case 'runtime';$remote=Join-Path $case 'remote.git'
     [IO.Directory]::CreateDirectory($repo)|Out-Null;[IO.Directory]::CreateDirectory($runtime)|Out-Null
-    foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1')){
+    foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')){
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $runtime $name)
       if((Get-FileHash -LiteralPath (Join-Path $runtime $name)).Hash-cne(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name)).Hash){throw '7963 canonical fixture helper source differs'}
     }
@@ -494,7 +494,7 @@ exit $LASTEXITCODE
     }
     if($CopiedHelper){
       $copyRoot=Join-Path $case 'synthetic-copied-helper';[IO.Directory]::CreateDirectory($copyRoot)|Out-Null
-      foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1')){
+      foreach($name in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')){
         Copy-Item -LiteralPath (Join-Path $runtime $name) -Destination (Join-Path $copyRoot $name)
         if((Get-FileHash (Join-Path $copyRoot $name)).Hash-cne(Get-FileHash (Join-Path $runtime $name)).Hash){throw '7963 copied helper bytes differ'}
       }
@@ -1339,7 +1339,7 @@ exit $LASTEXITCODE
   function Fixture9334([string]$Name,[switch]$SecondStop,[switch]$Live) {
     $case=Join-Path $root ($Name+'-'+[guid]::NewGuid().ToString('N'));$repo=Join-Path $case 'lane';$runtime=Join-Path $case 'runtime';$remote=Join-Path $case 'remote.git'
     [IO.Directory]::CreateDirectory($repo)|Out-Null;[IO.Directory]::CreateDirectory($runtime)|Out-Null
-    foreach($file in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1','integration-dispatch-contract.ps1','routing-data.ps1')){
+    foreach($file in @('rebase-integration.ps1','landed-integration-evidence.psm1','dispatch-ownership.ps1','integration-dispatch-contract.ps1','routing-data.ps1','dispatch-ledger-reader.psm1')){
       Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $runtime $file)
       if((Get-FileHash -LiteralPath (Join-Path $runtime $file)).Hash-cne(Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $file)).Hash){throw '9334 canonical fixture helper source differs'}
     }

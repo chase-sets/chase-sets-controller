@@ -22,6 +22,7 @@ param(
     [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 function Add-ScorecardGap([string]$Gap) { $null = $script:ScorecardGaps.Add($Gap) }
 
@@ -41,7 +42,7 @@ function Test-ScorecardNumber($Value) {
 }
 function Test-ScorecardInteger($Value) { return (Test-ScorecardNumber $Value) -and [math]::Truncate([double]$Value) -eq $Value }
 function Read-ScorecardJson([string]$Path) {
-    return ([IO.File]::ReadAllText($Path) | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop)
+    return ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -AsHashtable -DateKind String -ErrorAction Stop)
 }
 function Invoke-ScorecardGraphQL([string]$Query, [hashtable]$Variables) {
     $arguments = @('api','graphql','-f',"query=$Query")
@@ -273,7 +274,7 @@ function Read-ScorecardLedgers([string]$Container) {
     $runtime=Join-Path $Container '.orchestrator'
     $dispatches=[Collections.Generic.List[object]]::new();$latest=@{};$dispatchComplete=$true;$costComplete=$true
     try {
-        foreach($line in [IO.File]::ReadLines((Join-Path $runtime 'dispatch-log.jsonl'))){
+        foreach($line in (Read-DispatchLedgerLines -Path (Join-Path $runtime 'dispatch-log.jsonl'))){
             if(-not $line.Trim()){continue}
             $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
             if($null -eq $row -or $row -isnot [System.Collections.IDictionary]){throw 'invalid dispatch row'}
@@ -284,12 +285,16 @@ function Read-ScorecardLedgers([string]$Container) {
         }
     } catch {$dispatchComplete=$false;Add-ScorecardGap 'dispatch-ledger-unavailable'}
     try {
-        foreach($line in [IO.File]::ReadLines((Join-Path $runtime 'cost-ledger.jsonl'))){
-            if(-not $line.Trim()){continue}
-            $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
-            if(-not $row.transcript){throw 'cost transcript missing'}
-            $latest[$row.transcript] = $row
-        }
+        $costLines=[IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $runtime 'cost-ledger.jsonl'))).GetEnumerator()
+        try {
+            while($costLines.MoveNext()){
+                $line=$costLines.Current
+                if(-not $line.Trim()){continue}
+                $row=$line | ConvertFrom-Json -AsHashtable -DateKind String
+                if(-not $row.transcript){throw 'cost transcript missing'}
+                $latest[$row.transcript] = $row
+            }
+        } finally {$costLines.Dispose()}
     } catch {$costComplete=$false;Add-ScorecardGap 'cost-ledger-unavailable'}
     return @{dispatches=@($dispatches);costs=@($latest.Values);dispatchComplete=$dispatchComplete;costComplete=$costComplete}
 }

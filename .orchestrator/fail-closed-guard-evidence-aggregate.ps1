@@ -17,6 +17,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $controllerRoot = Split-Path -Parent $PSScriptRoot
 $checker = Join-Path $PSScriptRoot "fail-closed-guard-evidence.ps1"
 $partitions = [ordered]@{
@@ -131,7 +132,7 @@ function Read-Suite([string]$Path, [string]$ExpectedSuiteId) {
     Stop-Aggregate "AGGREGATE_SUITE_MISSING:$ExpectedSuiteId"
   }
   try {
-    $bytes = [IO.File]::ReadAllBytes($resolved)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $resolved))
     if ($bytes.Length -lt 1 -or $bytes.Length -gt 1MB) {
       Stop-Aggregate "AGGREGATE_SUITE_INCONSISTENT:$ExpectedSuiteId"
     }

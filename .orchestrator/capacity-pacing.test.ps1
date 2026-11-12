@@ -543,6 +543,86 @@ try {
   $codex = $r.providers.codex
   Assert-Near $codex.laneHours 4 'AC3 codex lane-hours'
   Assert-Pacing ($codex.burnSource -ceq 'default' -and $codex.burnReason -ceq 'LANE_HOURS_BELOW_MINIMUM' -and $codex.burnPerLaneHour -eq 0.009) 'AC3 below 24 lane-hours uses the default'
+  # Exercise the real pacing CLI and its Get-PacingLaneHours caller, not only
+  # the reader API. All dispatch facts are after both former history cliffs.
+  $caseLarge = New-Case 'ac3-large-history' $mixed
+  Add-DispatchRow $caseLarge 'fable' 30 'large-claude' 2
+  Add-DispatchRow $caseLarge 'sol' 35 'large-codex' 3
+  $small = Invoke-Pacing $caseLarge
+  Assert-Near $small.data.providers.claude.laneHours 28 'large caller small control claude hours'
+  Assert-Near $small.data.providers.codex.laneHours 32 'large caller small control codex hours'
+  $seed = [IO.File]::ReadAllText($caseLarge.log)
+  $writer = [IO.StreamWriter]::new($caseLarge.log, $false, $utf8, 65536)
+  try {
+    for ($i=0; $i -lt 50000; $i++) { $writer.Write("{}`n") }
+    $writer.Write('{"padding":"' + ('x' * 33554432) + '"}'); $writer.Write("`n")
+    $writer.Write($seed)
+  } finally { $writer.Dispose() }
+  $physicalRows = 0
+  foreach ($line in [IO.File]::ReadLines($caseLarge.log)) { $physicalRows += 1 }
+  Assert-Pacing ($physicalRows -eq 50003 -and (Get-Item -LiteralPath $caseLarge.log).Length -gt 33554432) 'large caller fixture crosses row and byte cliffs before facts'
+  $beforeHash = (Get-FileHash -LiteralPath $caseLarge.log -Algorithm SHA256).Hash
+  $large = Invoke-Pacing $caseLarge
+  Assert-Pacing ($large.raw -ceq $small.raw) 'actual pacing CLI large history equals small control byte-for-byte'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseLarge.log -Algorithm SHA256).Hash -ceq $beforeHash) 'large pacing query leaves ledger unchanged'
+  Add-DispatchRow $caseLarge 'sol' 24 'large-append' 0
+  $beforeHash = (Get-FileHash -LiteralPath $caseLarge.log -Algorithm SHA256).Hash
+  $after = Invoke-Pacing $caseLarge
+  Assert-Near $after.data.providers.claude.laneHours 28 'large caller append preserves claude hours'
+  Assert-Near $after.data.providers.codex.laneHours 56 'large caller append adds codex hours beyond both cliffs'
+  Assert-Pacing ($after.data.laneHours.rows -eq 3 -and $after.data.laneHours.counted -eq 3 -and
+    $after.data.laneHours.duplicates -eq 0 -and $after.data.laneHours.transcriptsMissing -eq 0) 'large caller append preserves dispatch diagnostics'
+  Assert-Pacing ($after.data.providers.codex.burnSource -ceq 'measured' -and
+    $null -eq $after.data.providers.codex.burnReason) 'large caller append keeps measured burn'
+  Assert-Near $after.data.providers.codex.burnPerLaneHour (0.02 * 168 / 56) 'large caller append updates measured codex burn'
+  Assert-Pacing ((Invoke-Pacing $caseLarge).raw -ceq $after.raw) 'large caller replay is byte-identical after append'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseLarge.log -Algorithm SHA256).Hash -ceq $beforeHash) 'large pacing append queries leave ledger unchanged'
+  Write-Output "PASS large pacing caller physicalRows=$physicalRows appendedDispatches=1 claudeHours=28 codexHours=56"
+  # A suffix-only reader must not pass by seeing all meaningful facts after
+  # the padding. Keep an unsuperseded dispatch before both former cliffs.
+  $caseEarly = New-Case 'ac3-early-large-history' $mixed
+  Add-DispatchRow $caseEarly 'fable' 30 'early-claude' 2
+  Add-DispatchRow $caseEarly 'sol' 35 'late-codex' 3
+  $smallEarly = Invoke-Pacing $caseEarly
+  Assert-Near $smallEarly.data.providers.claude.laneHours 28 'early caller small control claude hours'
+  Assert-Near $smallEarly.data.providers.codex.laneHours 32 'early caller small control codex hours'
+  $seedRows = @([IO.File]::ReadLines($caseEarly.log))
+  $writer = [IO.StreamWriter]::new($caseEarly.log, $false, $utf8, 65536)
+  try {
+    $writer.WriteLine($seedRows[0])
+    for ($i=0; $i -lt 50000; $i++) { $writer.Write("{}`n") }
+    $writer.Write('{"padding":"' + ('x' * 33554432) + '"}'); $writer.Write("`n")
+    $writer.WriteLine($seedRows[1])
+  } finally { $writer.Dispose() }
+  $earlyPhysicalRows = 0
+  foreach ($line in [IO.File]::ReadLines($caseEarly.log)) { $earlyPhysicalRows += 1 }
+  Assert-Pacing ($earlyPhysicalRows -eq 50003 -and (Get-Item -LiteralPath $caseEarly.log).Length -gt 33554432) 'early caller fixture separates current facts across both cliffs'
+  $earlyHash = (Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash
+  $earlyStamp = [IO.File]::GetLastWriteTimeUtc($caseEarly.log)
+  $largeEarly = Invoke-Pacing $caseEarly
+  Assert-Pacing ($largeEarly.raw -ceq $smallEarly.raw) 'actual pacing CLI retains the early fact in complete large history'
+  $tailLog = Join-Path $caseEarly.dir 'last-50000.jsonl'
+  $tailRows = @([IO.File]::ReadLines($caseEarly.log) | Select-Object -Last 50000)
+  Assert-Pacing ($tailRows.Count -eq 50000) 'early caller negative control contains exactly the physical suffix'
+  [IO.File]::WriteAllLines($tailLog, [string[]]$tailRows, $utf8)
+  $tailEarly = Invoke-Pacing $caseEarly @{DispatchLogPath=$tailLog}
+  Assert-Pacing ($tailEarly.raw -cne $smallEarly.raw -and $tailEarly.data.laneHours.rows -eq 1 -and
+    $tailEarly.data.laneHours.counted -eq 1 -and $tailEarly.data.providers.claude.laneHours -eq 0 -and
+    $tailEarly.data.providers.codex.laneHours -eq 32) 'actual last50000rows negative control loses only the early dispatch'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash -ceq $earlyHash -and
+    [IO.File]::GetLastWriteTimeUtc($caseEarly.log) -eq $earlyStamp) 'early full and tail queries do not rewrite the canonical fixture'
+  Add-DispatchRow $caseEarly 'sol' 24 'early-case-append' 0
+  $earlyHash = (Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash
+  $earlyStamp = [IO.File]::GetLastWriteTimeUtc($caseEarly.log)
+  $afterEarly = Invoke-Pacing $caseEarly
+  Assert-Near $afterEarly.data.providers.claude.laneHours 28 'early caller append retains the early claude dispatch'
+  Assert-Near $afterEarly.data.providers.codex.laneHours 56 'early caller append adds late codex hours'
+  Assert-Pacing ($afterEarly.data.laneHours.rows -eq 3 -and $afterEarly.data.laneHours.counted -eq 3 -and
+    $afterEarly.data.laneHours.duplicates -eq 0 -and $afterEarly.data.laneHours.transcriptsMissing -eq 0) 'early caller append retains all three dispatches'
+  Assert-Pacing ((Invoke-Pacing $caseEarly).raw -ceq $afterEarly.raw) 'early caller replay is byte-identical after append'
+  Assert-Pacing ((Get-FileHash -LiteralPath $caseEarly.log -Algorithm SHA256).Hash -ceq $earlyHash -and
+    [IO.File]::GetLastWriteTimeUtc($caseEarly.log) -eq $earlyStamp) 'early append queries do not rewrite the canonical fixture'
+  Write-Output "PASS early pacing caller physicalRows=$earlyPhysicalRows tailCounted=1 fullCounted=2 appendedCounted=3"
   Set-Forecast 0.01 0.02 20 14
   $r = (Invoke-Pacing $caseBurn).data
   Assert-Pacing ($r.forecastStatus -ceq 'stale' -and $r.providers.claude.burnSource -ceq 'default' -and $r.providers.claude.burnReason -ceq 'FORECAST_STALE' -and $r.providers.claude.burnPerLaneHour -eq 0.015) 'AC3 stale forecast uses the default'
@@ -761,6 +841,7 @@ try {
     if ($Edit) { $source = & $Edit $source }
     [IO.File]::WriteAllText((Join-Path $dir 'capacity-pacing.ps1'), $source, $utf8)
     [IO.File]::Copy((Join-Path $PSScriptRoot 'routing-data.ps1'), (Join-Path $dir 'routing-data.ps1'))
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'), (Join-Path $dir 'dispatch-ledger-reader.psm1'))
     $record = Join-Path $dir 'census-args.json'
     $fake = @(
       'function Get-LiveDispatchOwnership { param([string]$RuntimeRoot, [string]$TempRoot, [string]$ContainerRoot, [int]$MaxRecords = 64, [int]$DeadlineMs = 5000)',

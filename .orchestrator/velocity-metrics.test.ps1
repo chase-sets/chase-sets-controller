@@ -5,6 +5,9 @@ param()
 # ownership probe, no dispatch-log read.
 
 $ErrorActionPreference = "Stop"
+$readerCompatibilityRuntime=$PSScriptRoot
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'velocity' -RuntimeRoot $readerCompatibilityRuntime
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {
@@ -963,7 +966,7 @@ Case '9056-shared-product-census-next-page' {
 function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{health=[pscustomobject]@{status='ok'};activeLanes=@()}}
 '@)
     $logPath=Join-Path $runtime 'dispatch-log.jsonl'
-    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress)+"`n")
     function Census-Issue([int]$Number,[string]$Kind='kind:product',[int]$Milestone=148,[string]$Status='committed'){
       [pscustomobject]@{number=$Number;title='Synthetic ordinary issue';body='';labels=[pscustomobject]@{totalCount=1;nodes=@([pscustomobject]@{name=$Kind})};blockedBy=[pscustomobject]@{totalCount=0;nodes=@()};milestone=[pscustomobject]@{number=$Milestone;state='OPEN';description="<!-- outcome: {`"version`":1,`"track`":`"commerce`",`"status`":`"$Status`"} -->"}}
     }
@@ -1003,16 +1006,16 @@ function Get-LiveDispatchOwnership($Runtime,$Temp,$Container){[pscustomobject]@{
     # Terminal exclusion and admitted re-entry use canonical routing/history,
     # not a PR title, kind label, plain dispatch note or stale observation window.
     $stop=@{ts=$at.AddMinutes(-2).ToString('o');kind='lane-blocked';issue=905601;lane='synthetic-905601';outcome='REPLAN_REQUIRED'}
-    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($stop|ConvertTo-Json -Compress))
+    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($stop|ConvertTo-Json -Compress)+"`n")
     $stopped=Get-VelocityLandingCandidates $root $at
     Assert-Velocity ($stopped.complete -and @($stopped.candidates.pr) -notcontains 906101) '9056 durable terminal stop excludes product candidate'
     $route=Get-Content (Join-Path $PSScriptRoot 'fixtures/velocity-launch-routes-8674.jsonl') -First 1|ConvertFrom-Json -DateKind String
     $route.ts=$at.AddMinutes(-1).ToString('o');$route.issue=905601;$route.lane='synthetic-905601-reentry';$route.label='synthetic-905601-reentry';$route.attemptId='synthetic-905601-reentry'
     $route.worktree=Join-Path $root 'synthetic-905601-reentry';$route.branch='synthetic/905601-reentry';$route.head='a'*40;$route.transcript=Join-Path $runtime 'synthetic-905601-reentry.jsonl'
-    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($route|ConvertTo-Json -Compress -Depth 30))
+    [IO.File]::AppendAllText($logPath,[Environment]::NewLine+($route|ConvertTo-Json -Compress -Depth 30)+"`n")
     $reentered=Get-VelocityLandingCandidates $root $at
     Assert-Velocity ($reentered.complete -and @($reentered.candidates.pr) -contains 906101) "9056 canonical admitted re-entry is retained: $($reentered.gaps -join ',')"
-    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($logPath,(@{ts=$at.AddDays(-30).ToString('o');kind='review-complete';issue=905610;lane='controller-905610-review';reviewTarget='controller'}|ConvertTo-Json -Compress)+"`n")
     $savedSearch=(Get-Item Function:Invoke-VelocitySearch).ScriptBlock
     try {
       function Invoke-VelocitySearch($SearchQuery,$Fields){if($SearchQuery -like '*is:pr is:open*'){$script:censusPrs|Select-Object -First 100}else{@()}}
@@ -1224,6 +1227,72 @@ function Get-LiveDispatchOwnership($Runtime,$Temp,$Container) {
     $script:syntheticPr.mergeQueueEntry=$null;$script:syntheticPr.commits.nodes[0].commit.statusCheckRollup.state='FAILURE'
     $facts=Collect;$r=Get-VelocityReport $facts ([datetime]::UtcNow) @()
     Assert-Velocity (@($r.metrics.flowingProductIssues) -contains $issueNumber -and @($r.metrics.readyNotInFlight).Count -eq 0) 'collector retains >7d origin and .wd alias with no queue or CI flow'
+    Case 'collector-whole-history-above-both-cliffs' {
+      $largeOriginal=[IO.File]::ReadAllBytes($dispatchPath)
+      $largeUtf8=[Text.UTF8Encoding]::new($false)
+      $largeClock=[datetime]::UtcNow
+      function Get-LargeVelocityOracle($VelocityFacts,$VelocityReport) {
+        [ordered]@{complete=$VelocityFacts.complete;gaps=@($VelocityFacts.gaps);metrics=$VelocityReport.metrics;dispatch=@(
+          $VelocityFacts.dispatchRows|ForEach-Object{$copy=$_.PSObject.Copy();$copy.PSObject.Properties.Remove('line');$copy}
+        )}|ConvertTo-Json -Depth 64 -Compress
+      }
+      try {
+        $largeSmallFacts=Get-VelocityFacts $root $largeClock
+        $largeSmallReport=Get-VelocityReport $largeSmallFacts $largeClock @()
+        Assert-Velocity ($largeSmallFacts.complete -and $largeSmallReport.factsComplete -and
+          @($largeSmallFacts.dispatchRows).Count -eq 2 -and $largeSmallReport.metrics.flowingProductIssues -contains $issueNumber) 'large collector small control has complete old-origin flow'
+        $largeSmallOracle=Get-LargeVelocityOracle $largeSmallFacts $largeSmallReport
+        $largeSeed=@([IO.File]::ReadLines($dispatchPath))
+        $largeWriter=[IO.StreamWriter]::new($dispatchPath,$false,$largeUtf8,65536)
+        try {
+          $largeWriter.WriteLine($largeSeed[0])
+          for($largeIndex=0;$largeIndex -lt 50000;$largeIndex++){$largeWriter.Write("{}`n")}
+          $largeWriter.Write('{"padding":"'+('x'*33554432)+'"}');$largeWriter.Write("`n")
+          $largeWriter.WriteLine($largeSeed[1])
+        } finally {$largeWriter.Dispose()}
+        $largePhysicalRows=0
+        foreach($largeLine in [IO.File]::ReadLines($dispatchPath)){$largePhysicalRows++}
+        Assert-Velocity ($largePhysicalRows -eq 50003 -and (Get-Item -LiteralPath $dispatchPath).Length -gt 33554432) 'collector current origin and alias span both history cliffs'
+        $largeHash=(Get-FileHash -LiteralPath $dispatchPath).Hash
+        $largeStamp=[IO.File]::GetLastWriteTimeUtc($dispatchPath)
+        $largeFacts=Get-VelocityFacts $root $largeClock
+        $largeReport=Get-VelocityReport $largeFacts $largeClock @()
+        Assert-Velocity ((Get-LargeVelocityOracle $largeFacts $largeReport) -ceq $largeSmallOracle) 'actual full collector preserves all semantic rows and metrics beyond both cliffs'
+        Assert-Velocity ($largeReport.factsComplete -and @($largeFacts.dispatchRows).Count -eq 2 -and
+          $largeFacts.dispatchRows[0].line -eq 1 -and $largeFacts.dispatchRows[1].line -eq 50003 -and
+          @($largeFacts.legacyDispatchRows).Count -eq 50001) 'collector retains physical identity and inert-row diagnostics separately from metrics'
+        $largeSuffixRoot=Join-Path $root 'whole-history-suffix'
+        $largeSuffixRuntime=Join-Path $largeSuffixRoot '.orchestrator'
+        [void][IO.Directory]::CreateDirectory($largeSuffixRuntime)
+        $largeSuffixRows=@([IO.File]::ReadLines($dispatchPath)|Select-Object -Last 50000)
+        [IO.File]::WriteAllLines((Join-Path $largeSuffixRuntime 'dispatch-log.jsonl'),[string[]]$largeSuffixRows,$largeUtf8)
+        $largeSuffix=Get-VelocityLandingCandidates $largeSuffixRoot $largeClock
+        $largeSuffixMap=Get-VelocityLaneIssueMap @($largeSuffix.dispatchRows) @($issueNumber)
+        Assert-Velocity ($largeSuffixRows.Count -eq 50000 -and $largeSuffix.complete -and
+          @($largeSuffix.dispatchRows).Count -eq 1 -and $largeSuffix.dispatchRows[0].line -eq 50000 -and
+          -not $largeSuffixMap.ContainsKey($label) -and -not $largeSuffixMap.ContainsKey('synthetic-seat')) 'actual suffix collector loses the early origin and cannot resolve the retained alias'
+        Assert-Velocity ((Get-FileHash -LiteralPath $dispatchPath).Hash -ceq $largeHash -and
+          [IO.File]::GetLastWriteTimeUtc($dispatchPath) -eq $largeStamp) 'full and suffix collector queries do not rewrite the canonical fixture'
+        $largeAppend=[ordered]@{ts=$largeClock.AddMinutes(-1).ToString('o');kind='dispatch';issue=$issueNumber;lane='synthetic-large-extra'}
+        [IO.File]::AppendAllText($dispatchPath,($largeAppend|ConvertTo-Json -Compress)+"`n",$largeUtf8)
+        $largeHash=(Get-FileHash -LiteralPath $dispatchPath).Hash
+        $largeStamp=[IO.File]::GetLastWriteTimeUtc($dispatchPath)
+        $largeAfter=Get-VelocityFacts $root $largeClock
+        $largeAfterReport=Get-VelocityReport $largeAfter $largeClock @()
+        Assert-Velocity ($largeAfter.complete -and $largeAfterReport.factsComplete -and
+          @($largeAfter.dispatchRows).Count -eq 3 -and $largeAfter.dispatchRows[0].line -eq 1 -and
+          $largeAfter.dispatchRows[2].line -eq 50004 -and $largeAfter.dispatchRows[2].lane -ceq 'synthetic-large-extra' -and
+          $largeAfterReport.metrics.flowingProductIssues -contains $issueNumber) 'actual collector append retains the early origin and the new physical row'
+        $largeReplay=Get-VelocityFacts $root $largeClock
+        $largeReplayReport=Get-VelocityReport $largeReplay $largeClock @()
+        Assert-Velocity ((Get-LargeVelocityOracle $largeReplay $largeReplayReport) -ceq
+          (Get-LargeVelocityOracle $largeAfter $largeAfterReport)) 'actual collector append replay is semantically byte-identical at the fixed clock'
+        Assert-Velocity ((Get-FileHash -LiteralPath $dispatchPath).Hash -ceq $largeHash -and
+          [IO.File]::GetLastWriteTimeUtc($dispatchPath) -eq $largeStamp) 'collector append and replay queries do not rewrite the canonical fixture'
+      } finally {[IO.File]::WriteAllBytes($dispatchPath,$largeOriginal)}
+      Assert-Velocity ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dispatchPath)) -ceq
+        [Convert]::ToBase64String($largeOriginal)) 'large fixture restores the original ledger bytes before prior tests continue'
+    }
     Case 'ownership-projection-launcher-start' {
       # Captured b54c6450 record's projection fields; no live record access.
       $record=[pscustomobject]@{launchId='b54c6450-d77d-46fc-8994-7d74680aeac0';label='8952-impl-g1-cont2';head='c86379e85c4d411243a5099104e53de9af876504';recordedAt='2026-10-07T12:41:28.2694043Z';launcherStartIdentity='2026-10-07T12:40:48.3674298Z'}

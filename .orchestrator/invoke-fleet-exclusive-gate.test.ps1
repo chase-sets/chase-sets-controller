@@ -75,6 +75,9 @@ function Invoke-Wrapper(
   $environment = @{
     FLEET_TEST_RESULT = $result
     FLEET_TEST_EXIT = $VerifierExit.ToString()
+    # The real verifier installs this fixture's preload. An inherited preload
+    # from another container would inspect that container's unrelated owner.
+    NODE_OPTIONS = ''
   }
   foreach ($key in $ExtraEnvironment.Keys) { $environment[$key] = $ExtraEnvironment[$key] }
   $arguments = @(
@@ -111,6 +114,7 @@ try {
     $moduleSourcePath,
     $ownershipSourcePath,
     $leaseContractSourcePath,
+    (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'),
     (Join-Path $PSScriptRoot 'routing-data.ps1')
   )) {
     Copy-Item -LiteralPath $file -Destination (Join-Path $runtime (Split-Path -Leaf $file))
@@ -292,7 +296,7 @@ exit [int]$env:FLEET_TEST_EXIT
   Assert-True ($wrapperSource.Contains($captureAnchor)) 'real fleet child diagnostic seam exists'
   $captureSource = $wrapperSource.Replace($captureAnchor, '-WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $env:FLEET_TEST_RUNTIME "heavy.out") -RedirectStandardError (Join-Path $env:FLEET_TEST_RUNTIME "heavy.err")')
   Commit-WrapperSource $captureSource 'restore fleet wrapper with child diagnostic capture'
-  foreach($name in @('invoke-heavy-verifier.ps1','heavy-admission-preload.cjs','heavy-slot.cjs',
+  foreach($name in @('invoke-heavy-verifier.ps1','dispatch-ledger-reader.psm1','heavy-admission-preload.cjs','heavy-slot.cjs',
       'heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $runtime -Force
   }

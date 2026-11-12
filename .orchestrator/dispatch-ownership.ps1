@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 
 function Get-DispatchCanonicalRoot([string]$Path) {
   return [IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
@@ -583,7 +584,7 @@ function Get-ValidatedDispatchOwnershipRecord(
     if ($MaxRecordBytes -le 0 -or $recordFile.Length -le 0 -or $recordFile.Length -gt $MaxRecordBytes) {
       return $null
     }
-    $json = [IO.File]::ReadAllText($RecordPath, [Text.Encoding]::UTF8)
+    $json = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $RecordPath), [Text.Encoding]::UTF8)
     $record = if ($null -eq $DateKindSupported) {
       ConvertFrom-DispatchOwnershipJson $json
     } else {
@@ -963,7 +964,7 @@ function Get-DispatchRebaseBranch([string]$Worktree, [string]$RequestedBranch) {
   if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw 'dispatch-ownership: native operation unknown' }
   $headNamePath = Join-Path $path 'head-name'
   if (-not (Test-Path -LiteralPath $headNamePath -PathType Leaf)) { throw 'dispatch-ownership: native operation incomplete' }
-  $headName = [IO.File]::ReadAllText($headNamePath).Trim()
+  $headName = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $headNamePath)).Trim()
   if ($headName -cnotmatch '^refs/heads/(.+)$') { throw 'dispatch-ownership: native operation malformed' }
   & git --no-optional-locks -C $Worktree check-ref-format $headName 2>$null
   if ($LASTEXITCODE -ne 0) { throw 'dispatch-ownership: native operation malformed' }
@@ -975,7 +976,7 @@ function Get-DispatchRebaseBranch([string]$Worktree, [string]$RequestedBranch) {
   foreach ($name in @('orig-head','onto')) {
     $file = Join-Path $path $name
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'dispatch-ownership: native operation incomplete' }
-    $values[$name] = [IO.File]::ReadAllText($file).Trim()
+    $values[$name] = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file)).Trim()
   }
   if ($values['orig-head'] -cnotmatch '^[a-f0-9]{40}$' -or $values.onto -cnotmatch '^[a-f0-9]{40}$') {
     throw 'dispatch-ownership: native operation malformed'
@@ -1138,7 +1139,7 @@ function Get-DispatchAttemptState(
   $stream = $null
   try {
     $stream = [IO.File]::Open(
-      $TranscriptPath,
+      (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $TranscriptPath),
       [IO.FileMode]::Open,
       [IO.FileAccess]::Read,
       [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete

@@ -14,8 +14,8 @@ param(
   [ValidatePattern("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")]
   [string]$Repository = "chase-sets/chase-sets",
   [string]$HistoryPath = (Join-Path $PSScriptRoot "dispatch-log.jsonl"),
-  [ValidateRange(1, 1000000)][int]$MaxHistoryRows = 50000,
-  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = 33554432,
+  [ValidateRange(1, [int]::MaxValue)][int]$MaxHistoryRows = [int]::MaxValue,
+  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = [long]::MaxValue,
   # A hard operational fuse. Live dry runs set this even though Report is
   # already non-mutating. Apply with this switch always refuses.
   [switch]$MutationDisabled,
@@ -30,6 +30,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $preflightSchema = "landing-preflight/v1"
 $frontierAuthorityPath = Join-Path $PSScriptRoot "breaker-repair-frontier-authority.json"
 $frontierRetryAuthorityPath = Join-Path $PSScriptRoot "breaker-repair-frontier-retry-authority.json"
@@ -1090,7 +1091,7 @@ function Get-BreakerRepairAuthorityRecord {
     return [ordered]@{ present = $false; complete = $true; reason = "AUTHORITY_RECORD_ABSENT"; raw = $null }
   }
   try {
-    $bytes = [IO.File]::ReadAllBytes($frontierRetryAuthorityPath)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $frontierRetryAuthorityPath))
     $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
     [ordered]@{ present = $true; complete = $true; reason = "RETRY_AUTHORITY_RECORD_READ"; kind = "retry"; raw = $raw }
   } catch {
@@ -2813,7 +2814,7 @@ function Get-FixtureScenario {
     throw "landing-preflight fixture not found: $AuthorityFixture"
   }
   try {
-    $fixture = Get-Content -LiteralPath $AuthorityFixture -Raw |
+    $fixture = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $AuthorityFixture) -Raw |
       ConvertFrom-Json -DateKind String -ErrorAction Stop
   } catch {
     throw "landing-preflight fixture is malformed"

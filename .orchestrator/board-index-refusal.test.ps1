@@ -16,7 +16,7 @@ function Invoke-RefusalCase([string]$Path, [string]$Case, [string]$Arm) {
     $source = $source.Replace('function Test-BoardObservationUnchanged($Before, $After) {', 'function Test-BoardObservationUnchanged($Before, $After) { return $true')
   }
   [IO.File]::WriteAllText((Join-Path $runtime 'board-reconcile.ps1'), $source)
-  foreach ($file in @('board-set.ps1','dispatch-ownership.ps1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $runtime }
+  foreach ($file in @('board-set.ps1','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')) { Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $runtime }
   $logger = (Join-Path $PSScriptRoot 'log-event.ps1').Replace("'", "''")
   [IO.File]::WriteAllText((Join-Path $runtime 'log-event.ps1'), "& '$logger' @args")
   if ($Case -eq 'history-error') { [IO.File]::WriteAllText($f.log, "`n{broken`n") }

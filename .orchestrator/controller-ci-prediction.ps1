@@ -1,14 +1,15 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$EvidenceDirectory,[string]$CalibrationPlanPath,[switch]$WriteProfile)
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'controller-ci.ps1') -Mode Library
 . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
 if(-not$CalibrationPlanPath){$CalibrationPlanPath=Join-Path $EvidenceDirectory 'calibration/plan/plan.json'}
-$calibration=Get-Content -LiteralPath $CalibrationPlanPath -Raw|ConvertFrom-Json -Depth 50 -DateKind String
+$calibration=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $CalibrationPlanPath) -Raw|ConvertFrom-Json -Depth 50 -DateKind String
 $profilePath=Join-Path $PSScriptRoot 'controller-ci-durations.json'
 $profile=Read-CiTimingProfile $profilePath
 Assert-Ci ($null-ne$profile) 'measured timing profile required'
-$manifest=Get-Content (Join-Path $PSScriptRoot 'controller-ci-parts.json') -Raw|ConvertFrom-Json -Depth 50
+$manifest=Get-Content (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $PSScriptRoot 'controller-ci-parts.json')) -Raw|ConvertFrom-Json -Depth 50
 $root=Split-Path -Parent $PSScriptRoot
 # Every estimate must be a hosted observation of that exact execution identity
 # (the slowest one within 30 days); fallback and equal-weight split estimates

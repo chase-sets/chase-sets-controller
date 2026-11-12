@@ -16,6 +16,7 @@ param(
   [switch]$FunctionsOnly
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 
 function Invoke-BoardQuery([string]$Cli, [string[]]$Arguments) {
@@ -50,23 +51,21 @@ function Get-BoardHistory([string]$Path) {
   $count = 0
   try {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'canonical lifecycle log unavailable' }
-    # A 400-row tail cannot establish absence. Scan canonical history in bounded
-    # pages and keep lifecycle rows, not unrelated telemetry payloads.
-    Get-Content -LiteralPath $Path -ReadCount 400 -ErrorAction Stop | ForEach-Object {
-      foreach ($line in $_) {
-        if (-not "$line".Trim()) { continue }
-        $count++
-        try {
-          $row = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop
-          # Attribution evidence for unlinked specs only; typed where it is used.
-          if ($row.kind -is [string] -and $null -ne $row.issue -and $row.transcript -is [string]) { $records.Add($row) }
-          if (-not $row.kind) { continue }
-          if ($row.kind -in @('dispatch','lane-complete','repair-complete','review-complete','lane-blocked','landed') -or
-              $row.outcome -in @('PARKED_DECISION','REPLAN_REQUIRED','REPLAN_REPLACED','REPLAN_COMPLETE')) {
-            $rows.Add($row)
-          }
-        } catch { $errors.Add("malformed lifecycle row $count") }
-      }
+    # Keep the uncapped board fold and nonblank error ordinals. An incomplete
+    # append cannot establish absence or authorize a board mutation.
+    $history=dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path
+    if (-not $history.complete) { throw "canonical lifecycle log refused: $($history.reason)" }
+    if ($history.partialTrailingRow) { throw 'canonical lifecycle log refused: HISTORY_UNTERMINATED' }
+    foreach ($line in $history.lines) {
+      if (-not "$line".Trim()) { continue }
+      $count++
+      try {
+        $row = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop
+        if ($row.kind -is [string] -and $null -ne $row.issue -and $row.transcript -is [string]) { $records.Add($row) }
+        if (-not $row.kind) { continue }
+        if ($row.kind -in @('dispatch','lane-complete','repair-complete','review-complete','lane-blocked','landed') -or
+            $row.outcome -in @('PARKED_DECISION','REPLAN_REQUIRED','REPLAN_REPLACED','REPLAN_COMPLETE')) { $rows.Add($row) }
+      } catch { $errors.Add("malformed lifecycle row $count") }
     }
   } catch { $errors.Add($_.Exception.Message) }
   $specs = @{}
@@ -74,7 +73,7 @@ function Get-BoardHistory([string]$Path) {
     foreach ($file in @(Get-ChildItem -LiteralPath (Split-Path -Parent $Path) -Filter 'watchdog-lane-*.json' -File -ErrorAction Stop)) {
       $label = $file.BaseName.Substring('watchdog-lane-'.Length)
       try {
-        $spec = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String
+        $spec = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName) -Raw -ErrorAction Stop | ConvertFrom-Json -DateKind String
         if ($spec.label -cne $label) { throw 'watchdog filename/label mismatch' }
         $specs[$label] = @{ value = $spec; error = $null }
       } catch { $specs[$label] = @{ value = $null; error = "unreadable/malformed watchdog $label" } }

@@ -9,6 +9,9 @@ param(
   [switch]$SkipMutants
 )
 $ErrorActionPreference = 'Stop'
+$readerCompatibilityRuntime=(Join-Path $ControllerRoot '.orchestrator')
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'dispatch' -RuntimeRoot $readerCompatibilityRuntime
 $removeEvidence = -not $PSBoundParameters.ContainsKey('EvidenceRoot')
 if ($ExpectedControllerHead) {
   $actualHead=(& git -C $ControllerRoot rev-parse HEAD | Out-String).Trim()
@@ -136,23 +139,31 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   $started=Join-Path $isolated 'parse-started'
   $release=Join-Path $isolated 'parse-release'
   $trace=Join-Path $isolated 'parse-bytes'
-  $reader=[IO.File]::ReadAllText((Join-Path $runtime 'review-head-contract.psm1'))
+  Copy-Item -LiteralPath (Join-Path $runtime 'review-head-contract.psm1') -Destination $isolated
+  $reader=[IO.File]::ReadAllText((Join-Path $runtime 'dispatch-ledger-reader.psm1'))
   $pause=@'
-  [IO.File]::AppendAllText('__TRACE__',([IO.FileInfo]::new($Path).Length.ToString())+"`n")
+  if ($lineNumber -eq 0) {
+  [IO.File]::AppendAllText('__TRACE__',(($length-$prefixLength).ToString())+"`n")
   if (-not [IO.File]::Exists('__STARTED__')) {
     [IO.File]::WriteAllText('__STARTED__','prefix parser entered')
     $deadline=[datetime]::UtcNow.AddSeconds(10)
     while (-not [IO.File]::Exists('__RELEASE__') -and [datetime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 20 }
     if (-not [IO.File]::Exists('__RELEASE__')) { throw 'synthetic parse handshake expired' }
   }
+  }
 '@
   $pause=$pause.Replace('__STARTED__',$started.Replace("'","''")).Replace('__RELEASE__',$release.Replace("'","''")).Replace('__TRACE__',$trace.Replace("'","''"))
-  $reader=$reader.Replace('  $audit = [ordered]@{',$pause+"`n  `$audit = [ordered]@{")
-  [IO.File]::WriteAllText((Join-Path $isolated 'review-head-contract.psm1'),$reader)
+  # ReadLine has captured the fixture block before the one-shot parser pause,
+  # matching the old snapshot-array seam's captured-prefix rewrite check.
+  $seam='          $lineNumber++'
+  Assert-Policy ($reader.Split($seam,[StringSplitOptions]::None).Count -eq 2) 'unique streaming strict parser instrumentation seam exists'
+  $reader=$reader.Replace($seam,$pause+"`n"+$seam)
+  [IO.File]::WriteAllText((Join-Path $isolated 'dispatch-ledger-reader.psm1'),$reader)
   foreach ($mode in @('query','query-append','logger','logger-tail','logger-rewrite','logger-unterminated')) {
     Case "F2-$mode" {
     Seed 15
     $initialLength=(Get-Item -LiteralPath $historyPath).Length
+    Assert-Policy ($initialLength -le 65536) 'rewrite fixture fits the actual streaming capture block'
     foreach($marker in @($started,$release,$trace)){if(Test-Path -LiteralPath $marker){Remove-Item -LiteralPath $marker}}
     $shell=[powershell]::Create()
     $mutex=[Threading.Mutex]::new($false,$mutexName)
@@ -174,7 +185,11 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
       Write-Output "F2 $mode concurrent writer acquired=$acquired waitMs=$($timer.ElapsedMilliseconds)"
       if($owned -and $mode -ceq 'logger-tail'){Add-Row @{kind='dispatch';issue=908527}}
       if($owned -and $mode -ceq 'query-append'){Add-Row @{kind='dispatch';issue=908527}}
-      if($owned -and $mode -ceq 'logger-rewrite'){[IO.File]::WriteAllText($historyPath,[IO.File]::ReadAllText($historyPath).Replace('synthetic-0','synthetic-X'))}
+      if($owned -and $mode -ceq 'logger-rewrite'){
+        $oldBytes=[IO.File]::ReadAllText($historyPath);$rewritten=$oldBytes.Replace('synthetic-0','synthetic-X')
+        Assert-Policy ($rewritten -cne $oldBytes -and [Text.Encoding]::UTF8.GetByteCount($rewritten) -eq $initialLength) 'same-length rewrite changes captured prefix'
+        [IO.File]::WriteAllText($historyPath,$rewritten)
+      }
       if($owned -and $mode -ceq 'logger-unterminated'){[IO.File]::AppendAllText($historyPath,'{"kind":"dispatch"}')}
       $before=[IO.File]::ReadAllText($historyPath)
       if($owned){$mutex.ReleaseMutex();$owned=$false}
@@ -326,7 +341,7 @@ Case 'dispatch-park-disposition-refused' {
 }
 Case 'dispatch-incomplete-history-controls' {
   Seed 15
-  . $query -Library
+  . $query -Library -RuntimeRoot $runtime
   $h=Read-ExactHeadReviewHistory -Path $historyPath -MaxRows 14
   $r=Get-DispatchCountDecision -History $h -Issue 908527 -CandidateState open -Authority clear
   Assert-Policy ($r.state -ceq 'UNKNOWN' -and $null -eq $r.dispatchCount) 'decisive 15th row beyond cap cannot report below threshold'

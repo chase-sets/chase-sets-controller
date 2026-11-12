@@ -22,6 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $root = [IO.Path]::GetFullPath($Worktree).TrimEnd('\','/')
 
 function Invoke-IntegrationGit([string[]]$Arguments, [switch]$AllowFailure, [switch]$RequireOutput) {
@@ -102,7 +103,7 @@ if ($ContinueInterruptedIntegration) {
   if (-not [IO.Path]::IsPathFullyQualified($nativePath)) { $nativePath = Join-Path $root $nativePath }
   foreach ($key in @('head-name','orig-head','onto')) {
     $expected = switch ($key) { 'head-name' { "refs/heads/$($o.branch)" }; 'orig-head' { $o.targetHead }; 'onto' { $o.newBase } }
-    if ([IO.File]::ReadAllText((Join-Path $nativePath $key)).Trim() -cne $expected) { throw 'INTEGRATION_RESUME_CHILD: native operation mismatch' }
+    if ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $nativePath $key))).Trim() -cne $expected) { throw 'INTEGRATION_RESUME_CHILD: native operation mismatch' }
   }
   $result = Invoke-IntegrationGit @('-c','core.editor=true','rebase','--continue') -AllowFailure
   if ($result.exitCode -ne 0) {

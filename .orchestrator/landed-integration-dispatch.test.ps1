@@ -1,5 +1,8 @@
 param([switch]$AuthorityOnly,[string]$ControllerRoot=(Split-Path -Parent $PSScriptRoot),[switch]$OwnershipOnly,[string]$OwnershipControl='*',[switch]$SkipOwnershipMutants,[string]$DispatcherPath,[switch]$ProductCensusOnly,[switch]$RetainedCensusOnly,[switch]$OtherBranch,[string]$CensusMutant='',[string]$Part=''); $ErrorActionPreference='Stop'; . (Join-Path $PSScriptRoot 'suite-parts.ps1'); Assert-SuiteSelection $Part @('product','authority','core','graph','ownership-cases','ownership-mutants') $PSBoundParameters @('AuthorityOnly','OwnershipOnly','OwnershipControl','SkipOwnershipMutants','ProductCensusOnly','RetainedCensusOnly','OtherBranch','CensusMutant'); if($Part-ceq'product'){$ProductCensusOnly=$true}
 $ErrorActionPreference='Stop'
+$readerCompatibilityRuntime=(Join-Path $ControllerRoot '.orchestrator')
+. (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'landed' -RuntimeRoot $readerCompatibilityRuntime
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
 try {

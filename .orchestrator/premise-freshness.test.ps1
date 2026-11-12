@@ -979,7 +979,8 @@ Invoke-Test "predicate exposes no runtime caller or write token" {
       'Invoke-PremiseFreshness(Check|Request)|premise-freshness\.ps1' `
       -- '*.ps1' '*.psm1' '*.cjs' '*.mjs' 2>$null)
   $unexpectedCallers = @($callerLines | Where-Object {
-      $_ -notmatch '^\.orchestrator/premise-freshness(?:\.test)?\.ps1:'
+      $_ -notmatch '^\.orchestrator/premise-freshness(?:\.test)?\.ps1:' -and
+      $_ -notmatch '^\.orchestrator/ledger-reader-json-paths\.test\.ps1:'
     })
   Assert-True ($unexpectedCallers.Count -eq 0) "no runtime file outside the predicate test may call this inert slice"
 

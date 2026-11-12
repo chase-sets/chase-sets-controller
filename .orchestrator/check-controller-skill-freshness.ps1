@@ -21,11 +21,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "controller-install-lock.psm1") -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 $files = @(Get-ControllerSkillInstallInventory | Where-Object { $_.transportText })
 
 function Get-NormalizedSkillHash([string]$Path, [bool]$TransportText) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-  $bytes = Get-ControllerTransportNormalizedBytes -Bytes ([IO.File]::ReadAllBytes($Path)) -TransportText $TransportText
+  $bytes = Get-ControllerTransportNormalizedBytes -Bytes ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))) -TransportText $TransportText
   ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))).ToUpperInvariant()
 }
 
@@ -52,7 +53,7 @@ $markerPath = Join-Path ([IO.Path]::GetFullPath($ContainerRoot)) ".orchestrator/
 $marker = [ordered]@{ path = $markerPath; state = "absent-pre-strict"; sha256 = $null }
 if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
   try {
-    $bytes = [IO.File]::ReadAllBytes($markerPath)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $markerPath))
     if ($bytes.Length -lt 3 -or $bytes[0] -eq 0xEF -or $bytes[-1] -ne 0x0A -or ($bytes.Length -gt 1 -and $bytes[-2] -eq 0x0D)) { throw "marker bytes invalid" }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
     $value = $text | ConvertFrom-Json -DateKind String -ErrorAction Stop
@@ -80,7 +81,7 @@ $release = [ordered]@{ installed = $null; installedCommit = $null; containerHead
 $releaseRecord = Join-Path $DestinationRoot "native-db/release.json"
 if (Test-Path -LiteralPath $releaseRecord -PathType Leaf) {
   try {
-    $record = Get-Content -LiteralPath $releaseRecord -Raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $record = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $releaseRecord) -Raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($record.schemaVersion -ceq "controller-release/v1" -and (Get-ReleaseVersion ([string]$record.tag))) {
       $release.installed = [string]$record.tag
       $release.installedCommit = [string]$record.commit
