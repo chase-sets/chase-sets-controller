@@ -2,6 +2,8 @@
 param([switch]$LegacyMigrationOnly)
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+$reviewContract = Get-ExactHeadReviewContract
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingScope = Enter-RoutingDataTestScope
 
@@ -61,8 +63,8 @@ try {
   )
   $skillContractFixture = @"
 # Milestone Orchestrator (v2.59)
-exact-head-review-receipt/v2
-exact-head-review-reducer/v1
+$($reviewContract.receiptSchema)
+$($reviewContract.reducerSchema)
 landing-preflight/v1
 "@
 
@@ -307,6 +309,8 @@ landing-preflight/v1
   $controlDestination = Join-Path $sandbox 'control-live'
   $controlCodexRoot = Join-Path $sandbox 'control-codex-skills'
   & git clone --quiet --no-hardlinks $container $controlContainer
+  & git -C $controlContainer config user.email "installer-test@example.invalid"
+  & git -C $controlContainer config user.name "Controller installer test"
   & git -C $controlContainer remote remove origin
   [IO.File]::WriteAllText((Join-Path $controlContainer '.orchestrator/install-controller-skills.ps1'), $handoverMutantText)
   & git -C $controlContainer add .orchestrator/install-controller-skills.ps1

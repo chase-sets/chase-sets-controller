@@ -50,4 +50,23 @@ foreach ($term in $coreTerms) {
   try { Test-CoreHandoff $mutated } catch { $failure = $_.Exception.Message }
   Assert-Route ($mutated -cne $core -and $failure.StartsWith('ASSERTION FAILED:')) "core handoff mutant survived: $term"
 }
-Write-Output 'PASS planning/review handoff, fresh-session authority and contract mutants'
+$sandbox = Join-Path ([IO.Path]::GetTempPath()) "planning-review-routes-$([guid]::NewGuid().ToString('N'))"
+try {
+  New-Item -ItemType Directory -Path $sandbox | Out-Null
+  # Named historical-query proof: use the committed archive explicitly, with
+  # isolated mutable catalogs, never the host's installed skill or a default load.
+  [IO.File]::WriteAllText((Join-Path $sandbox 'stall-gotchas.md'), "# Synthetic empty stall ledger`n")
+  [IO.File]::WriteAllText((Join-Path $sandbox 'defect-classes.md'), "# Synthetic empty defect ledger`n")
+  Copy-Item -LiteralPath (Join-Path $root 'docs/archive/milestone-orchestrator/controller-defect-classes.md') -Destination $sandbox
+  $query = Join-Path $root 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+  $text = (& pwsh -NoProfile -NonInteractive -File $query -InstalledReferenceRoot $sandbox -ReferenceRoot $sandbox -Mode dispatch -Text 'planning-repair unsupported_encrypted_delegation' -Footprint '.orchestrator/contracts/planning-repair-v1.md' -Json | Out-String)
+  Assert-Route ($LASTEXITCODE -eq 0) 'explicit archive query succeeds without installed catalogs'
+  $result = $text | ConvertFrom-Json
+  $entry = @($result.entries | Where-Object slug -eq 'unattributed-nested-model-dispatch')
+  Assert-Route ($entry.Count -eq 1 -and $entry[0].instruction.Contains('review-probe-live-provider-credential-inheritance') -and
+    $entry[0].instruction.Contains('review-isolation-opt-in-by-default') -and
+    $entry[0].guard.Contains('CONTRACT_AND_REGRESSION')) 'query must preserve both cross-references and guard status'
+} finally {
+  if (Test-Path -LiteralPath $sandbox) { Remove-Item -LiteralPath $sandbox -Recurse -Force }
+}
+Write-Output 'PASS planning/review handoff, fresh-session authority, explicit archived query and contract mutants'

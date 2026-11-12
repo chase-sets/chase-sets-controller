@@ -5,6 +5,7 @@
       "selector": "-Part",
       "parts": [
         { "name": "dispatch-foundation", "weight": 1 },
+        { "name": "controller-review", "weight": 1 },
         { "name": "refusal-foundation", "weight": 1 },
         { "name": "refusal-harness", "weight": 1 },
         { "name": "dispatch-incident-a-route", "weight": 1 },
@@ -27,7 +28,7 @@
         { "name": "native-branch-resume", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["dispatch-foundation", "refusal-foundation", "refusal-harness", "dispatch-incident-a-route", "dispatch-incident-a-binding", "dispatch-incident-a-source-native", "dispatch-incident-b-route-baseline", "dispatch-incident-b-route-matrix", "dispatch-incident-b-binding-structure", "dispatch-incident-b-binding-mutants", "dispatch-incident-b-source-binding", "dispatch-incident-b-source-remote", "dispatch-incident-b-native", "dispatch-guard-pid", "dispatch-guard-omission", "dispatch-guard-reuse", "dispatch-guard-arm", "dispatch-guard-timed", "dispatch-guard-regression", "native-branch-scope", "native-branch-resume"]
+        "parts": ["dispatch-foundation", "controller-review", "refusal-foundation", "refusal-harness", "dispatch-incident-a-route", "dispatch-incident-a-binding", "dispatch-incident-a-source-native", "dispatch-incident-b-route-baseline", "dispatch-incident-b-route-matrix", "dispatch-incident-b-binding-structure", "dispatch-incident-b-binding-mutants", "dispatch-incident-b-source-binding", "dispatch-incident-b-source-remote", "dispatch-incident-b-native", "dispatch-guard-pid", "dispatch-guard-omission", "dispatch-guard-reuse", "dispatch-guard-arm", "dispatch-guard-timed", "dispatch-guard-regression", "native-branch-scope", "native-branch-resume"]
       }
     },
     {

@@ -220,10 +220,53 @@ function Assert-DispatchPartNames($Names){
 }
 Assert-DispatchPartNames @($dispatchItem.parts.name)
 $dispatchBaseline=(ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob',"${BaselineHead}:.orchestrator/dispatch-lane.test.ps1"))).Replace("`r`n","`n")
-$baselineKeys=Get-DispatchCoverageKeys $dispatchBaseline
-$candidateKeys=Get-DispatchCoverageKeys $dispatchSource
-foreach($key in $baselineKeys){Assert-Ci ($candidateKeys -contains $key) "dispatch-lane baseline proof key lost: $key"}
-# Every base assertion command (Assert-*) and throw keeps its exact text and
+# The five-concept receipt policy retired the strict prelog/void/recovery
+# ceremony, not ordinary launch admission. Bind that exact baseline block to
+# its exact direct-review replacement: head/issue/source guards, inert launch,
+# no-write preparation, v3 capacity evidence and consumed forecast bytes.
+$dispatchReviewRetirement=@{
+  baselineSha256='011bfa85488aaefa4c4c8b3f852fbf60490cdc15c063b71dfb194cb9bedd2a31'
+  replacementSha256='1444f91940fac5d74099016f54521888c045a1556bea8665d060b089546ce70a'
+  helpers=@('function:Set-StrictForecast','function:Get-StrictInventory','function:New-StrictPrelog','function:Complete-StrictRecovery')
+}
+function Get-DispatchReviewBlock([string]$Source,[string]$Start,[string]$End) {
+  Assert-Ci ([regex]::Matches($Source,[regex]::Escape($Start)).Count -eq 1) 'review retirement start is missing/duplicate'
+  $offset=$Source.IndexOf($Start,[StringComparison]::Ordinal)
+  $limit=$Source.IndexOf($End,$offset,[StringComparison]::Ordinal)
+  Assert-Ci ($limit -gt $offset) 'review retirement end missing'
+  return $Source.Substring($offset,$limit-$offset).TrimEnd("`n")
+}
+function Get-DispatchReviewRetirement([string]$Source,[string]$Baseline,$Binding=$dispatchReviewRetirement) {
+  Assert-Ci ($null -ne $Binding -and @($Binding.helpers).Count -eq 4) 'missing/unused review retirement binding'
+  $old=Get-DispatchReviewBlock $Baseline '  # Controller prelaunch uses the public producer and the real inert launcher.' '  Invoke-FleetLauncherOrderingControls'
+  $replacement=Get-DispatchReviewBlock $Source '  # Controller reviews use ordinary launch admission, not receipt prelogging.' '  if($Part -ceq ''controller-review''){return}'
+  foreach($pair in @(@($old,$Binding.baselineSha256),@($replacement,$Binding.replacementSha256))) {
+    $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($pair[0]))).ToLowerInvariant()
+    Assert-Ci ($digest -ceq $pair[1]) 'review retirement/replacement source binding changed'
+  }
+  $retired=Get-DispatchAssertionCensus $old
+  $bound=Get-DispatchAssertionCensus $replacement
+  Assert-Ci ($retired.all.Count -eq 47 -and $bound.all.Count -eq 15) 'review retirement/replacement assertion census changed'
+  $oldKeys=Get-DispatchCoverageKeys $old
+  $newKeys=Get-DispatchCoverageKeys $Source
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($key in $Binding.helpers) {
+    Assert-Ci ($seen.Add($key) -and $key -cin $oldKeys -and $key -cnotin $newKeys) "missing/duplicate/unused retired review helper: $key"
+  }
+  $after=Get-DispatchAssertionCensus $Source
+  foreach($key in $retired.all.Keys) {
+    Assert-Ci ($retired.all[$key] -eq 1 -and -not $after.all.ContainsKey($key)) "unused review assertion retirement: $key"
+  }
+  return $retired.all
+}
+function Assert-DispatchCoverageKeys([string]$Source,[string]$Baseline,$Binding=$dispatchReviewRetirement) {
+  $null=Get-DispatchReviewRetirement $Source $Baseline $Binding
+  $keys=Get-DispatchCoverageKeys $Source
+  foreach($key in (Get-DispatchCoverageKeys $Baseline)) {
+    Assert-Ci ($key -cin $keys -or $key -cin $Binding.helpers) "dispatch-lane baseline proof key lost: $key"
+  }
+}
+# Outside the bound review retirement, every base Assert-* and throw keeps its text and
 # multiplicity, so deleting an Assert-only block is red even though its command
 # name survives elsewhere. The listed base assertions moved with the installed
 # Claude probe or were replaced by the pinned historical fixture refusal; each
@@ -253,10 +296,13 @@ $dispatchAssertionMoves=[ordered]@{
   'CommandAst:Assert-True ($claudeHelpProcess.ExitCode -eq 0) "installed Claude CLI accepts the exact disallowed-tool argument shape"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: installed Claude --help exit')
   'CommandAst:Assert-True ((Get-Content -Raw -LiteralPath $claudeHelpOutput) -match "--disallowedTools") "installed Claude help confirms the supported disallowed-tools option"'=@('dispatch-lane-installed-claude.test.ps1','CLAUDE_HELP_FIXTURE: hosted option check missing --disallowedTools')
 }
-$dispatchAssertionParts=@{'unscoped'=152;'dispatch-foundation'=7;'refusal-foundation'=60;'refusal-harness'=149}
+# Only the unscoped review block changes: 152 - 47 retired + 15 replacements = 120.
+$dispatchAssertionParts=@{'unscoped'=120;'dispatch-foundation'=7;'refusal-foundation'=60;'refusal-harness'=149}
 function Assert-DispatchAssertionCensus([string]$Source,[string]$Baseline) {
   $before=Get-DispatchAssertionCensus $Baseline;$after=Get-DispatchAssertionCensus $Source
+  $retired=Get-DispatchReviewRetirement $Source $Baseline
   foreach($key in $before.all.Keys){
+    if($retired.ContainsKey($key)){continue}
     if($dispatchAssertionMoves.Contains($key)){
       $move=$dispatchAssertionMoves[$key]
       Assert-Ci ([IO.File]::ReadAllText((Join-Path $PSScriptRoot $move[0])).Contains($move[1])) "dispatch moved assertion lost its replacement: $key"
@@ -268,7 +314,26 @@ function Assert-DispatchAssertionCensus([string]$Source,[string]$Baseline) {
   $expectedParts=(@($dispatchAssertionParts.Keys|Sort-Object|ForEach-Object{"$_=$($dispatchAssertionParts[$_])"})-join',')
   Assert-Ci ($actualParts -ceq $expectedParts) "dispatch per-part assertion census changed: $actualParts"
 }
+Assert-DispatchCoverageKeys $dispatchSource $dispatchBaseline
 Assert-DispatchAssertionCensus $dispatchSource $dispatchBaseline
+$savedReviewRetirement=$dispatchReviewRetirement
+Refuses-Coverage { Assert-DispatchCoverageKeys $dispatchSource $dispatchBaseline $null }
+$unusedReviewRetirement=$dispatchReviewRetirement.Clone();$unusedReviewRetirement.helpers+=@('function:NotARetiredReviewHelper')
+Refuses-Coverage { Assert-DispatchCoverageKeys $dispatchSource $dispatchBaseline $unusedReviewRetirement }
+$duplicateReviewRetirement=$dispatchReviewRetirement.Clone();$duplicateReviewRetirement.helpers=@($dispatchReviewRetirement.helpers)
+$duplicateReviewRetirement.helpers[0]=$duplicateReviewRetirement.helpers[1]
+Refuses-Coverage { Assert-DispatchCoverageKeys $dispatchSource $dispatchBaseline $duplicateReviewRetirement }
+$dispatchReviewRetirement=$savedReviewRetirement
+$reviewReplacement=Get-DispatchReviewBlock $dispatchSource '  # Controller reviews use ordinary launch admission, not receipt prelogging.' '  if($Part -ceq ''controller-review''){return}'
+foreach($replacementMutant in @(
+  $dispatchSource.Replace($reviewReplacement,''),
+  $dispatchSource.Replace($reviewReplacement,"$reviewReplacement`n$reviewReplacement"),
+  $dispatchSource.Replace('$preparedFlip.harness -ceq ''claude''','$preparedFlip.harness -cne ''claude'''),
+  $dispatchSource.Replace($reviewReplacement,"if (& `$runPart 'refusal-foundation') {`n$reviewReplacement`n}")
+)) {
+  Refuses-Coverage { Assert-DispatchCoverageKeys $replacementMutant $dispatchBaseline }
+}
+Write-Output 'PASS review proof retirement: 47 exact strict assertions and four helpers bound to 15 direct-review assertions; missing/unused/duplicate bindings and omitted/duplicate/changed-predicate/misowned replacements refused'
 $assertOnly="`n  Assert-True (`$codex.laneRole -eq `"review`") `"omitted lane role defaults to review without prompting`"`n"
 Assert-Ci ($dispatchSource.Contains($assertOnly)) 'dispatch Assert-only mutant anchor missing'
 Assert-Ci (@(Get-DispatchCoverageKeys $dispatchSource.Replace($assertOnly,"`n")) -contains 'call:Assert-True') 'Assert-only mutant control: command-name keys alone stay green'
