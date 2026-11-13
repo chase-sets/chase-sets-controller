@@ -14,6 +14,9 @@ $node = Get-Command node -CommandType Application -ErrorAction Stop |
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
 $root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
 $privateTemp = Join-Path $root "fixture-temp"
+function Assert-True($Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
 function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
   if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
     $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
@@ -84,9 +87,6 @@ foreach ($dependency in @("heavy-nested-owner.cs", "heavy-nested-client.cjs", "d
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $orchestrator $dependency)
 }
 
-function Assert-True($Condition, [string]$Message) {
-  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
-}
 function Invoke-RepoGit([string]$Worktree, [string[]]$Arguments) {
   $output = @(& git -C $Worktree @Arguments 2>&1)
   if ($LASTEXITCODE -ne 0) {

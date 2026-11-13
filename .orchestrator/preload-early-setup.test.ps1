@@ -17,10 +17,8 @@ $setup = @($outer[0].Body.Statements | Where-Object {
 })
 if ($setup.Count -ne 1) { throw 'expected one pnpm resolution boundary' }
 $prefix = @($outer[0].Body.Statements | Where-Object { $_.Extent.EndOffset -lt $setup[0].Extent.StartOffset } | ForEach-Object { $_.Extent.Text }) -join "`n"
-$assert = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Assert-True' }, $true))
-if ($assert.Count -ne 1) { throw 'expected real preload assertion helper' }
 $finally = $outer[0].Finally.Extent.Text
-$script = "`$PSScriptRoot = '$($PSScriptRoot.Replace("'", "''"))'`n" + $assert[0].Extent.Text + "`ntry {`n$prefix`nthrow 'synthetic early setup failure'`n} finally $finally"
+$script = "`$PSScriptRoot = '$($PSScriptRoot.Replace("'", "''"))'`ntry {`n$prefix`nthrow 'synthetic early setup failure'`n} finally $finally"
 foreach ($mutant in @($false, $true)) {
   & {
     param($PassUnknownSpawnShapeMutant, $Body)
