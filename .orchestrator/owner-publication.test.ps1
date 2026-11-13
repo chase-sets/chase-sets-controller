@@ -439,7 +439,7 @@ function Invoke-ReaderInventory {
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
     'heavy-admission-preload.test.ps1'=@(125,610,639,747,1041,1047,1140,1197,1344,1391,1911,1915)
-    'heavy-slot.test.ps1'=@(91,94,117,1889,2215,2392)
+    'heavy-slot.test.ps1'=@(91,94,117,1898,2224,2401)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)

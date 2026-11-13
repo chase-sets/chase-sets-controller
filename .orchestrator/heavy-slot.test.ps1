@@ -1316,7 +1316,16 @@ function Test-RenameTypeBeforeAcquire {
   foreach ($variant in @('candidate','late-load')) {
     $copy=$invalid
     if ($variant -ceq 'late-load') {
-      $copy=$copy.Replace($load,'# MUTANT load at first non-create transition')
+      # Queue publication also uses this type before child launch. Keep its
+      # implementation intact under a separate name in this owner-only mutant.
+      $guardAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$null)
+      $initializers=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Initialize-OwnerRename'},$true))
+      $queueWriters=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Write-VerifyQueue'},$true))
+      Assert-True ($initializers.Count -eq 1 -and $queueWriters.Count -eq 1) 'late-load queue isolation has exact production seams'
+      $queueInitializer=$initializers[0].Extent.Text.Replace('OwnerRename','QueueOwnerRename')
+      $queueWriter=$queueWriters[0].Extent.Text
+      $copy=$copy.Replace($queueWriter,$queueWriter.Replace('OwnerRename','QueueOwnerRename'))
+      $copy=$copy.Replace($load,$queueInitializer + "`n# MUTANT load at first non-create transition")
       $copy=$copy.Replace('  $temporaryPath = Join-Path $lockPath ("owner.transition."','  Initialize-OwnerRename' + "`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')
     }
     $marker=Join-Path $root "rename-type-$variant.exit"
