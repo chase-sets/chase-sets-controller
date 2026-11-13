@@ -3,6 +3,7 @@ param([switch]$ClassifierOnly, [switch]$IdentityOnly, [switch]$DerivedOnly, [swi
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
+$admissionFailure = $null
 try {
 
 $preloadSource = Join-Path $PSScriptRoot "heavy-admission-preload.cjs"
@@ -2009,8 +2010,12 @@ for (const [name, before, after, expectedFailure] of [
     Remove-Item -LiteralPath $root -Recurse -Force
   }
 }
+} catch {
+  $admissionFailure = $_
+  throw
 } finally {
   try {
+    if ($null -eq $admissionFailure) {
     # Exercise the actual native guard with inert endpoints, including ABIs this
     # Node cannot execute. Unknown shapes must never reach even the stub.
     $nativeGuardProbe = @'
@@ -2114,5 +2119,6 @@ console.log(`PASS native-spawn guard object=process_wrap,spawn_sync positional=p
     Write-Output $nativeGuardStdout.GetAwaiter().GetResult()
     [Console]::Error.Write($nativeGuardStderr.GetAwaiter().GetResult())
     Assert-True ($nativeGuardProcess.ExitCode -eq 0) "native spawn shape/refusal control exits 0 (actual=$($nativeGuardProcess.ExitCode))"
+    }
   } finally { Exit-RoutingDataTestScope $routingTestScope }
 }
