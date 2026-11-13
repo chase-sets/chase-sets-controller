@@ -12,17 +12,9 @@ $guardSource = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 $launcherSource = Join-Path $PSScriptRoot "heavy-admission-holder-launcher.cjs"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-$pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
-  Where-Object { $_.Source -like "*\pnpm.CMD" } |
-  Select-Object -First 1
-$pnpmCommandText = Get-Content -LiteralPath $pnpmCommandShim.Source -Raw
-if ($pnpmCommandText -notmatch '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') {
-  throw "unable to resolve the active pnpm.CMD direct binary"
-}
-$nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmCommandShim.Source) $Matches.relative))
-$alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction Stop |
-  Where-Object { -not [string]::Equals([IO.Path]::GetFullPath($_.Source), $nativePnpm, [StringComparison]::OrdinalIgnoreCase) } |
-  Select-Object -First 1 -ExpandProperty Source
+. (Join-Path $PSScriptRoot 'pnpm-test-support.ps1')
+$pnpmCommandShim = Resolve-NativePnpmTestCommand
+$nativePnpm = $pnpmCommandShim.NativePath
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
@@ -42,6 +34,10 @@ $laneB = Join-Path $container "lane-b"
 $startedProcesses = [Collections.Generic.List[object]]::new()
 $descendantRelease = $null
 New-Item -ItemType Directory -Path $orchestrator, $laneA, $laneB, $privateTemp | Out-Null
+$alternatePnpmDirectory = Join-Path $root 'alternate native pnpm'
+[void][IO.Directory]::CreateDirectory($alternatePnpmDirectory)
+$alternatePnpm = Join-Path $alternatePnpmDirectory 'pnpm.exe'
+Copy-Item -LiteralPath $nativePnpm -Destination $alternatePnpm
 Copy-Item -LiteralPath $preloadSource -Destination $preload
 Copy-Item -LiteralPath $clientSource -Destination $client
 Copy-Item -LiteralPath $guardSource -Destination $guard

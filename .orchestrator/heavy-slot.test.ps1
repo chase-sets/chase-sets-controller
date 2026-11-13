@@ -18,13 +18,9 @@ $dispatchOwnershipSource = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
 $baselineClientBlob = "71deeaae2c999d377d3d2ffe9b933219d62a06ff"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-$pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
-  Where-Object { $_.Source -like "*\pnpm.CMD" } | Select-Object -First 1
-$pnpmCommandText = Get-Content -LiteralPath $pnpmCommandShim.Source -Raw
-if ($pnpmCommandText -notmatch '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') {
-  throw "unable to resolve the active pnpm.CMD direct binary"
-}
-$nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmCommandShim.Source) $Matches.relative))
+. (Join-Path $PSScriptRoot 'pnpm-test-support.ps1')
+$pnpmCommandShim = Resolve-NativePnpmTestCommand
+$nativePnpm = $pnpmCommandShim.NativePath
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")

@@ -120,10 +120,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.15.0
+      # Keep both forms: native-binary admission controls and Node-hosted guards.
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 11.21.0
           run_install: false
+          standalone: true
       - name: Provision Node-hosted pnpm for guarded verifier fixtures
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP 'controller-node-pnpm'
