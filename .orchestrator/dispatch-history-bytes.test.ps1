@@ -98,17 +98,17 @@ $shape = @($callTokens | Where-Object { $_.Kind -notin @('NewLine', 'LineContinu
   ForEach-Object { "$($_.Kind):$($_.Text)" }) -join "`n"
 $callSha = Get-BytesHash ($utf8.GetBytes($shape))
 $manifest = [IO.File]::ReadAllText($sourcePaths[2]) | ConvertFrom-Json
-$row = $manifest.rows[11]
+$row = $manifest.rows[10]
 $expectedRow = [ordered]@{ path = '.orchestrator/dispatch-ledger-reader.psm1'; scope = 'Read-DispatchLedgerBytes'
   api = 'read-dispatchledgersnapshot'; ordinal = 1; mode = 'one-pass-snapshot'; projection = 'captured-bytes+lines'
   peakEnvelope = 'captured-history'; callSha256 = '21cef66d6825258e0914d4ce072b536e86652114687e8dad175e5218e049e91a' }
 Check-BytesHistory ($manifest.schemaVersion -ceq 'dispatch-history-callers/v1' -and
-  @($row.PSObject.Properties).Count -eq $expectedRow.Count) 'literal manifest index11 row13 schema and full tuple fields'
+  @($row.PSObject.Properties).Count -eq $expectedRow.Count) 'literal manifest index10 row13 schema and full tuple fields'
 foreach ($key in $expectedRow.Keys) {
   Check-BytesHistory ($row.$key -ceq $expectedRow[$key]) "literal row13 tuple: $key"
 }
 Check-BytesHistory ($callErrors.Count -eq 0 -and $callSha -ceq $expectedRow.callSha256) 'row13 full call token SHA256'
-Write-BytesPacket 'BINDING' ([ordered]@{ literalRow = 13; manifestIndex = 11; row = $row
+Write-BytesPacket 'BINDING' ([ordered]@{ literalRow = 13; manifestIndex = 10; row = $row
   literalCall = $calls[0].Extent.Text; callSha256 = $callSha; functions = $bindings; inputs = $sourceBefore
   invocation = 'Read-DispatchLedgerBytes -Path $path (only; default arguments)' })
 
