@@ -186,16 +186,28 @@ $runtime=$PSScriptRoot
     } finally { $held.Dispose() }
     Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToHexString($bytes)) "scorecard alias untouched $alias"
   }
-  foreach ($guarded in @($true,$false)) {
-    $body=$ledgerFunction[0].Extent.Text
-    if (-not $guarded) { $body=$body.Replace($costGuard,'(Join-Path $runtime ''cost-ledger.jsonl'')') }
-    [IO.File]::WriteAllText($sourcePath,$import+"`n"+$body)
-    $census=Get-LedgerReaderCensus -Root $root
-    $rows=@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'IO.File.ReadLines' })
-    Check ($rows.Count -eq 1) "actual scorecard native row guarded=$guarded"
-    Check ([bool]$rows[0].handled -eq $guarded) "actual scorecard per-use census proof guarded=$guarded"
-    Check (@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'owner-api' -and $_.owner -and $_.handled }).Count -eq 1) "canonical scorecard API retained guarded=$guarded"
+  # Prove the guard on uncertain and dispatch-derived leaves, not on a fixed
+  # cost leaf that independently proves a non-dispatch path. Directory-base
+  # provenance must not contaminate that unrelated fixed child.
+  $costPath='(Join-Path $runtime ''cost-ledger.jsonl'')'
+  foreach ($pathInput in @('(Join-Path $runtime $CostLeaf)','(Join-Path $runtime ''dispatch-log.jsonl'')')) {
+    foreach ($guarded in @($true,$false)) {
+      $body=$ledgerFunction[0].Extent.Text
+      Check ($body.Contains($costGuard,[StringComparison]::Ordinal)) 'actual scorecard guard mutation anchor'
+      if (-not $guarded) { $body=$body.Replace($costGuard,$costPath) }
+      $body=$body.Replace($costPath,$pathInput)
+      [IO.File]::WriteAllText($sourcePath,$import+"`n"+$body)
+      $census=Get-LedgerReaderCensus -Root $root
+      $rows=@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'IO.File.ReadLines' })
+      Check ($rows.Count -eq 1) "actual scorecard native row guarded=$guarded"
+      Check ([bool]$rows[0].handled -eq $guarded) "actual scorecard per-use census proof guarded=$guarded path=$pathInput"
+      Check (@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'owner-api' -and $_.owner -and $_.handled }).Count -eq 1) "canonical scorecard API retained guarded=$guarded"
+    }
   }
+  [IO.File]::WriteAllText($sourcePath,$import+"`n"+$ledgerFunction[0].Extent.Text.Replace($costGuard,$costPath))
+  $fixedCost=Get-LedgerReaderCensus -Root $root
+  $fixedRows=@($fixedCost.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.family -ceq 'IO.File.ReadLines' })
+  Check ($fixedRows.Count -eq 1 -and $fixedRows[0].handled -and -not $fixedRows[0].dispatchInput) 'actual fixed cost child is independent of dispatch directory provenance'
   . $scorecardPath -FunctionsOnly
   $script:ScorecardGaps=[Collections.Generic.List[string]]::new()
   [IO.File]::WriteAllText((Join-Path $root '.orchestrator/dispatch-log.jsonl'),'{"kind":"dispatch","issue":101}'+"`n")
