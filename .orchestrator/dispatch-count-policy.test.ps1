@@ -16,7 +16,7 @@ if ($ExpectedControllerHead) {
 }
 try {
 $runtime = Join-Path $ControllerRoot '.orchestrator'
-$query = Join-Path $runtime 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+$query = Join-Path $runtime 'dispatch-count-history.ps1'
 if ($QueryScriptPath) { $query=$QueryScriptPath }
 $logger = Join-Path $runtime 'log-event.ps1'
 if ($LoggerScriptPath) { $logger=$LoggerScriptPath }
@@ -125,9 +125,9 @@ Case 'F1-canonical-non-authority-rows' {
 if (-not $RegressionOnly -or $RegressionOnly -ceq 'F2') {
 Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
   $isolated=Join-Path $scratch 'synthetic-runtime'
-  $scripts=Join-Path $isolated 'controller-skills/milestone-orchestrator/scripts'
+  $scripts=$isolated
   New-Item -ItemType Directory -Path $scripts -Force | Out-Null
-  Copy-Item -LiteralPath $query -Destination (Join-Path $scripts 'query-ledgers.ps1')
+  Copy-Item -LiteralPath $query -Destination (Join-Path $scripts 'dispatch-count-history.ps1')
   Copy-Item -LiteralPath $logger -Destination (Join-Path $isolated 'log-event.ps1')
   Copy-Item -LiteralPath (Join-Path $runtime 'routing-data.ps1') -Destination $isolated
   Copy-Item -LiteralPath (Join-Path $runtime 'orchestration-log-lock.psm1') -Destination $isolated
@@ -160,7 +160,7 @@ Case 'F2-query-and-writer-parse-outside-synthetic-lock' {
     try {
       [void]$shell.AddScript({param($root,$path,$mode,$payload)
         if($mode -clike 'query*') {
-          & (Join-Path $root 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -DispatchIssue 908527 -DispatchCandidateState open -DispatchAuthority clear -DispatchLogPath $path -RuntimeRoot $root
+          & (Join-Path $root 'dispatch-count-history.ps1') -DispatchIssue 908527 -DispatchCandidateState open -DispatchAuthority clear -DispatchLogPath $path -RuntimeRoot $root
         } else {
           & (Join-Path $root 'log-event.ps1') -Log dispatch -Kind decision-filed -Issue 908527 -DispatchDecision $payload -OutFile $path -NoBoard
         }

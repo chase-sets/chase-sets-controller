@@ -43,8 +43,6 @@ try {
     "milestone-orchestrator/references/brief-attribution.md",
     "milestone-orchestrator/references/one-shot-actions.md",
     "milestone-orchestrator/references/replan.md",
-    "milestone-orchestrator/scripts/query-ledgers.ps1",
-    "milestone-orchestrator/scripts/query-ledgers.test.ps1",
     "milestone-orchestrator/agents/openai.yaml",
     "orchestrator-shared/SKILL.md",
     "orchestrator-shared/agents/openai.yaml"
@@ -642,7 +640,9 @@ landing-preflight/v1
       (New-InventoryEntry 'user-kept-skill/old.txt'),
       (New-InventoryEntry 'model-routing/old.txt'),
       (New-InventoryEntry 'model-routing/generated.json' $true),
-      (New-InventoryEntry 'native-db2/old.txt')
+      (New-InventoryEntry 'native-db2/old.txt'),
+      (New-InventoryEntry 'milestone-orchestrator/scripts/query-ledgers.ps1'),
+      (New-InventoryEntry 'milestone-orchestrator/scripts/query-ledgers.test.ps1')
     )
     $retainedEntry = New-InventoryEntry 'model-routing/keep.txt'
     # Do not inherit the earlier telemetry fixture's extra trailing newline.
@@ -665,6 +665,7 @@ landing-preflight/v1
     $removedPaths = @($pathsBeforeDrop | Where-Object { $_ -notin $pathsAfterDrop })
     $expectedRemoved = @($dropEntries | ForEach-Object { Join-Path $destinationRoot $_.destination }) + @(
       (Join-Path $destinationRoot 'removed-skill/nested'), (Join-Path $destinationRoot 'removed-skill'),
+      (Join-Path $destinationRoot 'milestone-orchestrator/scripts'),
       (Join-Path $destinationRoot 'native-db2'), (Join-Path $codexRoot 'removed-skill'), (Join-Path $codexRoot 'native-db2')
     )
     Assert-True (@(Compare-Object $expectedRemoved $removedPaths).Count -eq 0) 'only exact declared drops, their empty parents and their matching Codex junctions are removed'
