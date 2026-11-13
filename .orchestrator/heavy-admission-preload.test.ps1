@@ -11,6 +11,39 @@ $guardSource = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 $launcherSource = Join-Path $PSScriptRoot "heavy-admission-holder-launcher.cjs"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
+$systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
+$root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
+$privateTemp = Join-Path $root "fixture-temp"
+function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
+    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
+    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
+      [void]$Start.Environment.Remove("NODE_OPTIONS")
+    } else {
+      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
+    }
+  }
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
+    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
+    if ([string]::IsNullOrEmpty($originalScriptShell)) {
+      [void]$Start.Environment.Remove("npm_config_script_shell")
+    } else {
+      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
+    }
+  }
+  foreach ($name in @(
+      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_SLOT_ID",
+      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
+    )) {
+    [void]$Start.Environment.Remove($name)
+  }
+  $Start.Environment["TEMP"] = $privateTemp
+  $Start.Environment["TMP"] = $privateTemp
+}
 $pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
   Where-Object { $_.Source -like "*\pnpm.CMD" } |
   Select-Object -First 1
@@ -24,9 +57,6 @@ $alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction
   Select-Object -First 1 -ExpandProperty Source
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-$systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
-$root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
-$privateTemp = Join-Path $root "fixture-temp"
 $container = Join-Path $root "container with spaces"
 $orchestrator = Join-Path $container ".orchestrator"
 $preload = Join-Path $orchestrator "heavy-admission-preload.cjs"
@@ -146,36 +176,6 @@ function Stop-ExactProcess($Identity) {
   $candidate = Get-Process -Id ([int]$Identity.pid) -ErrorAction Stop
   Stop-Process -InputObject $candidate -Force
   $candidate.WaitForExit()
-}
-function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
-    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
-    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
-      [void]$Start.Environment.Remove("NODE_OPTIONS")
-    } else {
-      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
-    }
-  }
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
-    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
-    if ([string]::IsNullOrEmpty($originalScriptShell)) {
-      [void]$Start.Environment.Remove("npm_config_script_shell")
-    } else {
-      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
-    }
-  }
-  foreach ($name in @(
-      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_SLOT_ID",
-      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
-    )) {
-    [void]$Start.Environment.Remove($name)
-  }
-  $Start.Environment["TEMP"] = $privateTemp
-  $Start.Environment["TMP"] = $privateTemp
 }
 function Assert-FreshChildEnvironmentBoundary {
   $admissionNames = @(
