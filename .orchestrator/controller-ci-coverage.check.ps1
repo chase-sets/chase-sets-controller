@@ -1111,13 +1111,42 @@ $carrierBaselineBlobs=@{
 }
 $carrierOwnerCounts=@{
   rebase=@{'rebase-foundation'=23;'rebase-historical'=1;'rebase-ordinary-live'=1;'rebase-ordinary-retry'=1;'rebase-successor'=1;'rebase-publication'=1;'rebase-amend'=1}
-  watchdog=@{'watchdog-foundation'=166;'watchdog-capacity'=5;'watchdog-historical'=1;'watchdog-ordinary'=1;'watchdog-successor'=1;'watchdog-no-escalation'=25
+  # The 166 historical keys plus 14 transport and one scoped-invalid STOP proof.
+  watchdog=@{'watchdog-foundation'=181;'watchdog-capacity'=5;'watchdog-historical'=1;'watchdog-ordinary'=1;'watchdog-successor'=1;'watchdog-no-escalation'=25
     'watchdog-host-hold-cases'=52;'watchdog-host-hold-mutants'=12
     'watchdog-policy-ac'=12;'watchdog-policy-protected'=1;'watchdog-policy-consumed'=2;'watchdog-policy-unlinked'=6
     'watchdog-policy-authentication'=32;'watchdog-policy-scalars'=13;'watchdog-policy-joins'=7;'watchdog-policy-legacy'=1
     'watchdog-policy-pos'=12;'watchdog-policy-mutants-admission'=8;'watchdog-policy-mutants-lineage'=4
     'watchdog-policy-mutants-envelope'=4;'watchdog-policy-mutants-history'=4;'watchdog-policy-mutants-binding'=9;'watchdog-policy-mutants-joins'=6}
 }
+function Get-WatchdogTransportProof([string]$Source,[switch]$RequireEntry) {
+  $tokens=$null;$errors=$null
+  $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+  Assert-Ci ($errors.Count-eq0) 'transport proof source parse failed'
+  $functions=@($ast.FindAll({param($n)$n-is[Management.Automation.Language.FunctionDefinitionAst]-and$n.Name-ceq'Test-TransportDeath'},$true))
+  Assert-Ci ($functions.Count-eq1) 'transport proof function missing or duplicated'
+  if($RequireEntry){
+    $calls=@($ast.FindAll({param($n)$n-is[Management.Automation.Language.CommandAst]-and$n.GetCommandName()-ceq'Test-TransportDeath'},$true))
+    Assert-Ci ($calls.Count-eq1) 'transport ordinary entry missing or duplicated'
+    $guards=@();$owner=$calls[0].Parent
+    while($owner){
+      Assert-Ci ($owner-isnot[Management.Automation.Language.FunctionDefinitionAst]) 'transport entry hidden in a function'
+      if($owner-is[Management.Automation.Language.IfStatementAst]){$guards+=,$owner}
+      $owner=$owner.Parent
+    }
+    Assert-Ci ($guards.Count-eq1-and$guards[0].Clauses.Count-eq1-and$null-eq$guards[0].ElseClause-and
+      $guards[0].Clauses[0].Item1.Extent.Text-ceq'-not$BeforeFixControl-and-not$Row15MeasuredControl-and-not$Named8098Control-and-not$Named8186Control') 'transport ordinary foundation guard changed'
+    $stop=@($ast.FindAll({param($n)$n-is[Management.Automation.Language.CommandAst]-and$n.Extent.Text-ceq"Assert-True (`$changed.Count-eq0-and(Get-CallCount)-eq0) 'watchdog stop wrote prompt/request/resume/ack/history or dispatched'"},$true))
+    Assert-Ci ($stop.Count-eq1-and$calls[0].Extent.StartOffset-gt$stop[0].Extent.EndOffset) 'transport entry must follow the unchanged zero-call STOP control'
+  }
+  return $functions[0].Extent.Text
+}
+# Public, reviewed transport proof source. This adds proofs; it does not replace
+# or retire any historical STOP predicate, assertion, selector or mutant.
+$transportBaselineSource=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('show','1bc59a35d568509c45596b589728640ec997458d:.orchestrator/lane-stall-watchdog.test.ps1'))
+$transportProofBaseline=Get-WatchdogTransportProof $transportBaselineSource
+$scopedStopProof="Assert-True (`$authorityRows.Count-eq1) 'scoped-invalid fixture binds the exact STOP row'"
+Assert-Ci ($transportBaselineSource.Contains($scopedStopProof)) 'scoped-invalid STOP proof baseline missing'
 function Assert-NativeFailureDiagnostics([string]$Source) {
   $tokens=$null;$errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
@@ -1183,6 +1212,25 @@ foreach($leaf in $carrierBaselineBlobs.Keys){
   if($leaf -cne 'interrupted-integration-test-support.ps1'){
     $suite=if($leaf -ceq 'rebase-integration.test.ps1'){'rebase'}else{'watchdog'}
     $expectedOwners=Get-HistoricalSuitePartOwners $suite $baseline
+    if($suite-ceq'watchdog'){
+      $transportProof=Get-WatchdogTransportProof $candidate -RequireEntry
+      Assert-CarrierProofCensus $transportProof $transportProofBaseline
+      Assert-CarrierProofCensus $candidate $scopedStopProof
+      $transportOwners=Get-HistoricalSuitePartOwners watchdog ($transportProofBaseline+"`n"+$scopedStopProof)
+      $addedProofKeys=@($transportOwners.Keys|Where-Object{$_-clike'proof:*'})
+      Assert-Ci ($addedProofKeys.Count-eq15) 'transport and STOP proof baseline ownership census changed'
+      foreach($key in $addedProofKeys){
+        Assert-Ci ($transportOwners[$key]-ceq'watchdog-foundation') 'transport proof has a nonfoundation owner'
+        if(-not$expectedOwners.Contains($key)){$expectedOwners[$key]='watchdog-foundation'}
+      }
+      Refuses-Coverage { Get-WatchdogTransportProof ($candidate.Replace('{Test-TransportDeath}','{Write-Output ''removed transport entry''}')) -RequireEntry }
+      Refuses-Coverage { Get-WatchdogTransportProof ($candidate.Replace('{Test-TransportDeath}','{if($false){Test-TransportDeath}}')) -RequireEntry }
+      Refuses-Coverage { Get-WatchdogTransportProof ($candidate.Replace('-not$Named8186Control){Test-TransportDeath}','-not$Named8186Control-and$false){Test-TransportDeath}')) -RequireEntry }
+      Refuses-Coverage { Assert-CarrierProofCensus ($transportProof.Replace('Assert-True ','REMOVED-PROOF ')) $transportProofBaseline }
+      Refuses-Coverage { Assert-CarrierProofCensus ($transportProof.Replace("`$result.relaunchKind-ceq'same-config'","`$result.relaunchKind-cne'same-config'")) $transportProofBaseline }
+      Refuses-Coverage { Assert-CarrierProofCensus ($candidate.Replace($scopedStopProof,'Write-Output ''removed scoped STOP proof''')) $scopedStopProof }
+      Write-Output 'PASS transport foundation conservation: 15 added proof keys (14 transport, one scoped STOP), historical proofs retained; missing/hidden/guarded entry, dropped assertions and changed predicates refused'
+    }
     $owners=Get-HistoricalSuitePartOwners $suite $candidate
     $entries=@($owners.GetEnumerator())
     $parts=Get-SuiteExpectedParts (Join-Path $PSScriptRoot $leaf)

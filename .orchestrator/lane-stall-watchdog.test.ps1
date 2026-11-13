@@ -1,9 +1,9 @@
-param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[switch]$TransportOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control,[ValidateSet('','cases','all')][string]$HostHoldControl='', [string]$Part='')
+param([switch]$BeforeFixControl,[ValidateSet('v2','v1')][string]$Row15MeasuredControl,[switch]$AuthorityOnly,[switch]$RetiredOnly,[switch]$SonnetOnly,[switch]$ExplicitRoutingOnly,[switch]$CapacityOnly,[switch]$PolicyFallbackOnly,[switch]$PolicyFallbackMutantsOnly,[string]$PolicyFallbackCase,[string]$WatchdogScript,[ValidateSet('pool-quota-envelope-classifies-provider-quota','sol-quota-relaunches-ruled-opus-fallback','non-quota-503-stays-owner-dead','claude-result-quota-envelope-classifies-provider-quota','claude-result-without-quota-error-stays-owner-dead')][string]$Named8098Control,[ValidateSet('role-envelope','observation-without-relaunch')][string]$Named8186Control,[ValidateSet('','cases','all')][string]$HostHoldControl='', [string]$Part='')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
 $SuitePartOwners=Get-HistoricalSuitePartOwners 'watchdog' ([IO.File]::ReadAllText($PSCommandPath))
 $watchdogParts=@((Get-LaneWatchdogPartMap).Keys)
-Assert-SuiteSelection $Part (@('all')+$watchdogParts) $PSBoundParameters @('BeforeFixControl','Row15MeasuredControl','AuthorityOnly','RetiredOnly','SonnetOnly','ExplicitRoutingOnly','CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','TransportOnly','PolicyFallbackCase','WatchdogScript','Named8098Control','Named8186Control','HostHoldControl')
+Assert-SuiteSelection $Part (@('all')+$watchdogParts) $PSBoundParameters @('BeforeFixControl','Row15MeasuredControl','AuthorityOnly','RetiredOnly','SonnetOnly','ExplicitRoutingOnly','CapacityOnly','PolicyFallbackOnly','PolicyFallbackMutantsOnly','PolicyFallbackCase','WatchdogScript','Named8098Control','Named8186Control','HostHoldControl')
 if($Part -ceq 'all'){$Part=''}
 if($Part -eq 'watchdog-capacity'){$CapacityOnly=$true}
 if($Part -eq 'watchdog-host-hold-cases'){$HostHoldControl='cases'}
@@ -818,7 +818,6 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
 '@
   $env:SYNTHETIC_WATCHDOG_CALLS=$calls
   $env:SYNTHETIC_WATCHDOG_ORCH=$PSScriptRoot
-  if($TransportOnly){Test-TransportDeath;return}
   # AC5 (BR8490-H1): a host hold is exact-lane authority. Every case drives the
   # real watchdog entrypoint as a subprocess in this private runtime and varies
   # only the hold record; the lane, observation and inert dispatch stub match.
@@ -1248,7 +1247,6 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   if($SonnetOnly){Test-SonnetCutover;return}
   if($PolicyFallbackOnly){Test-PolicyFallback;return}
   if($PolicyFallbackMutantsOnly){Test-PolicyFallbackMutants;return}
-  if(-not$BeforeFixControl-and-not$Row15MeasuredControl-and-not$Named8098Control-and-not$Named8186Control){Test-TransportDeath}
   # 8186: planning/review/decision lanes are observed on dispatch-lane's own envelope and never recovered here.
   function New-RoleSpec([string]$Label,[string]$Role,[int]$Row=0,[string]$Placement='',[string]$Model='claude-opus-5-5',[string]$Effort='medium',[string]$State='exited',$ExitCode=1,[string]$Branch='synthetic/branch'){
     $item=New-Spec $Label $Model $Effort 0 $Row $Placement
@@ -1461,14 +1459,13 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
   & $logger @binding -AuthorityState STOP|Out-Null
   $stop=(Read-ExactHeadReviewHistory $history).rows[-1].rawSha256
   $observation=New-Observation 'synthetic-authority'
-  $stopCallsBefore=Get-CallCount
   $before=@{};foreach($f in Get-ChildItem $runtime -File){$before[$f.Name]=(Get-FileHash $f.FullName).Hash}
   foreach($day in 1..2){
     $result=& $watchdog -Label $item.spec.label -RuntimeRoot $runtime -HistoryPath $history -ObservationFixture $observation -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json
     Assert-True ($result.status-ceq'TERMINAL_AUTHORITY_STOP'-and-not$result.relaunch-and$result.stopRows.Count-eq1-and$result.stopRows[0]-ceq$stop) 'watchdog STOP gate did not bind exact active hash'
   }
   $changed=@(Get-ChildItem $runtime -File|Where-Object{-not$before.ContainsKey($_.Name)-or$before[$_.Name]-cne(Get-FileHash $_.FullName).Hash})
-  Assert-True ($changed.Count-eq0-and(Get-CallCount)-eq$stopCallsBefore) 'watchdog stop wrote prompt/request/resume/ack/history or dispatched'
+  Assert-True ($changed.Count-eq0-and(Get-CallCount)-eq0) 'watchdog stop wrote prompt/request/resume/ack/history or dispatched'
   Write-Output 'CONTROL watchdog-relaunch-refused-by-terminal-stop PASS'
   $mutantRoot=Join-Path $root 'mutant-stop-gate';New-Item -ItemType Directory $mutantRoot|Out-Null
   Get-ChildItem $PSScriptRoot -File|Where-Object Extension -in @('.ps1','.psm1')|Copy-Item -Destination $mutantRoot
@@ -2047,6 +2044,7 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   Write-Output 'MUTANT watchdog-constant-route RED (frozen 7|fable/high and 7|astra/high deletion rejected)'
   $ordinary=New-Spec 'synthetic-row7-ordinary' 'gpt-6.1-sol' 'high' 0 7 'provisional';$before=Get-CallCount;$ordinaryResult=Invoke-Watchdog $ordinary 'ordinary';Assert-Recovery $ordinary $ordinaryResult 'gpt-6.1-sol' 'high' 'provisional' $before
   $invalid=New-Spec 'unqualified-cross-row' 'gpt-6.1-sol' 'medium' 0 7;$invalidFailed=$false;try{& $watchdog -Label unqualified-cross-row -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $invalid.partial -ObservationFixture (New-Observation 'unqualified' 'live' 'none') -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$invalidFailed=$_.Exception.Message-match'UNKNOWN_SPEC_INVALID'};Assert-True $invalidFailed 'unqualified cross-row config accepted'
+  if(-not$BeforeFixControl-and-not$Row15MeasuredControl-and-not$Named8098Control-and-not$Named8186Control){Test-TransportDeath}
   Write-Output 'PASS watchdog v2 closure, uniquely bound v2.61 routing adapter, provider-envelope-only classification, exhaustive row/config admission, qualified fallback or closed block, acknowledged exact-once relaunch, retryable launch failure, ceiling, live-slow, reused-PID, descendant, partial, and deadline controls'
 }finally{
   Remove-Item Env:SYNTHETIC_WATCHDOG_CALLS -ErrorAction SilentlyContinue;Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL -ErrorAction SilentlyContinue
