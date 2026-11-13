@@ -81,6 +81,7 @@ function Get-LedgerReaderCensus {
   Write-Verbose "Ledger census: parsing $($paths.Count) tracked sources"
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
   $variableKeys=@{};$factParts=@{};$outputFactParts=@{};$readerInputFactParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
+  $localShadowProof=@{};$blockEffects=@{}
   $pathAssignments=@{};$pathParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -199,6 +200,35 @@ function Get-LedgerReaderCensus {
     $variableKeys[$Node]=$key
     return $key
   }
+  function LocalAssignmentShadowsScript($Node,$Unit) {
+    if ($localShadowProof.ContainsKey($Node)) { return $localShadowProof[$Node] }
+    $localShadowProof[$Node]=$false
+    $key=Key $Node $Unit
+    if ($Unit.traps.Count -or $Node.VariablePath.UserPath -match ':' -or -not $pathAssignments.ContainsKey($key)) { return $false }
+    $statement=$Node
+    while ($statement.Parent -and $statement.Parent -isnot [Management.Automation.Language.StatementBlockAst] -and
+        $statement.Parent -isnot [Management.Automation.Language.NamedBlockAst]) { $statement=$statement.Parent }
+    $block=$statement.Parent
+    if (-not $block -or ($statement -is [Management.Automation.Language.LoopStatementAst] -and
+        $statement -isnot [Management.Automation.Language.ForEachStatementAst])) { return $false }
+    foreach ($assignment in $pathAssignments[$key]) {
+      # Only an unconditional local assignment in this block shadows the
+      # inherited script value. Local facts still retain mixed/opaque inputs.
+      if ($assignment.Parent -ne $block -or $assignment.Extent.EndOffset -gt $statement.Extent.StartOffset -or
+          $assignment.Operator -ne [Management.Automation.Language.TokenKind]::Equals -or
+          $assignment.Left.VariablePath.UserPath -match ':') { continue }
+      if (-not $blockEffects.ContainsKey($block)) {
+        $blockEffects[$block]=@(Find-LedgerCensusAst $block @([Management.Automation.Language.CommandAst],
+          [Management.Automation.Language.InvokeMemberExpressionAst],[Management.Automation.Language.AssignmentStatementAst]))
+      }
+      # An intervening invocation or aliased write may change the local binding.
+      if (@($blockEffects[$block] | Where-Object { $_.Extent.StartOffset -ge $assignment.Extent.EndOffset -and
+          $_.Extent.EndOffset -le $Node.Extent.StartOffset }).Count) { continue }
+      $localShadowProof[$Node]=$true
+      return $true
+    }
+    return $false
+  }
   function LiteralString($Node,[int]$Depth=0) {
     if ($Depth -ge 12) { return $null }
     if ($Node -is [Management.Automation.Language.StringConstantExpressionAst]) { return $Node.Value }
@@ -290,7 +320,8 @@ function Get-LedgerReaderCensus {
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
         # A self-referencing default evaluates before that parameter is bound.
         $outerDefault=$Node.Parent -is [Management.Automation.Language.ParameterAst] -and (Key $Node.Parent.Name $Unit) -ceq $key
-        if ((-not $pathParameters.Contains($key) -or $outerDefault) -and $facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
+        if ((-not $pathParameters.Contains($key) -or $outerDefault) -and $facts.ContainsKey($scriptKey) -and
+            -not (LocalAssignmentShadowsScript $part $Unit)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
         # Unresolved composition is uncertainty, not a safety proof.
         # Cache immutable syntax only; variable facts still flow to a fixed point.

@@ -122,6 +122,19 @@ try {
     ownerDataMixed=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;$value=$snapshot;if($flag){$value=$Path};Invoke-Unclassified -Value $value')
     ownerDataOpaque=@(1,'$Path="dispatch-log.jsonl";$snapshot=& Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Value $snapshot')
     ownerDataNative=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;[IO.File]::ReadAllText($snapshot)')
+    localDataShadow=@(0,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;if(-not $history.complete){throw "incomplete"};foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowArgument=@(0,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Value $history}')
+    localDataShadowConditional=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);if($flag){$history=Read-DispatchLedgerSnapshot -Path $Path};foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowMixed=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=if($flag){Read-DispatchLedgerSnapshot -Path $Path}else{$Path};foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowAlias=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$alias=$history;$history=Read-DispatchLedgerSnapshot -Path $Path;foreach($line in $alias){$line.Trim()}}')
+    localDataShadowReference=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;$alias=[ref]$history;$alias.Value="dispatch-log.jsonl";foreach($line in $history){$line.Trim()}}')
+    localDataShadowOpaque=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=& Read-DispatchLedgerSnapshot -Path $Path;foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowPrior=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);foreach($line in $history.lines){$line.Trim()};$history=Read-DispatchLedgerSnapshot -Path $Path}')
+    localDataShadowScript=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;foreach($line in $script:history){$line.Trim()}}')
+    localDataShadowEffect=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;Remove-Variable history;foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowTrap=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);trap {continue};$history=Read-DispatchLedgerSnapshot -Path $Path;foreach($line in $history.lines){$line.Trim()}}')
+    localDataShadowLoop=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;while($history.Trim()){Remove-Variable history}}')
+    localDataShadowNative=@(1,'$history="dispatch-log.jsonl";function Read-Synthetic {param($Path);$history=Read-DispatchLedgerSnapshot -Path $Path;[IO.File]::ReadAllText($history)}')
     ownerDataConditional=@(0,'$p="dispatch-log.jsonl";$v=if($flag){Read-DispatchLedgerSnapshot -Path $p}else{Read-DispatchLedgerBytes -Path $p};Invoke-Unclassified -Value $v')
     ownerDataMixedRhs=@(1,'$p="dispatch-log.jsonl";$v=if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p};Invoke-Unclassified -Value $v')
     ownerDataMixedWrapper=@(2,'function Wrapper {param($p);if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p}};$v=Wrapper -p "dispatch-log.jsonl";Invoke-Unclassified -Value $v')
@@ -155,6 +168,8 @@ try {
     if ($name -ceq 'ownerDataMixed' -and -not @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count) { $failures.Add("dispatch:$name") }
     if ($name -in @('ownerDataMixedRhs','ownerDataMixedWrapper','ownerDataMixedForeach','ownerDataMixedArgument','ownerDataMixedBound') -and @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
     if ($name -ceq 'ownerDataNative' -and -not @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' }).Count) { $failures.Add("native:$name") }
+    if ($name -like 'localDataShadow*' -and $name -notin @('localDataShadow','localDataShadowArgument','localDataShadowNative') -and @($violations | Where-Object { $_.family -ceq 'unknown-instance-type' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
+    if ($name -ceq 'localDataShadowNative' -and @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' }).Count -ne 1) { $failures.Add("native:$name") }
     if ($name -like 'ownerDataWrapper*' -and $ownerCases[$name][0] -gt 0 -and @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
     if ($name -ceq 'ownerDataWrapperNative' -and @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("native:$name") }
     $observed.Add([pscustomobject]@{case=$name;expectedViolation=([int]$ownerCases[$name][0] -gt 0);violations=$violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)})
