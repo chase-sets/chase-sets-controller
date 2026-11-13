@@ -20,6 +20,12 @@ try {
     uncertainInstance=@(0,'param($root,$name,$x);$p="$root/$name";$x.Read($p)')
     mixedHelper=@(1,'param($root,$name);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};Invoke-Synthetic -Path $p')
     mixedInstance=@(1,'param($root,$name,$x);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};$x.Read($p)')
+    shadowedParameter=@(0,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic "receipt.json"')
+    shadowedDefault=@(0,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path="receipt.json");Invoke-Unclassified -Path $Path};Invoke-Synthetic')
+    shadowedMixed=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic "receipt.json";Invoke-Synthetic "dispatch-log.jsonl"')
+    explicitScriptParameter=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $script:Path};Invoke-Synthetic "receipt.json"')
+    unshadowedScript=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {Invoke-Unclassified -Path $Path};Invoke-Synthetic')
+    shadowedNative=@(1,'$Path="dispatch-log.jsonl";function Read-Synthetic {param([string]$Path);[IO.File]::ReadAllText($Path)};Read-Synthetic "receipt.json"')
     literal=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';[IO.File]::ReadAllText($p)')
     split=@(1,'$p=Join-Path $HOME (''dispatch-''+''log.jsonl'');[IO.File]::ReadAllText($p)')
     unknown=@(1,'param([string]$Path);[IO.File]::ReadAllText($Path)')
@@ -65,9 +71,13 @@ try {
       $diagnostic=@($result.rows | Where-Object { -not $_.handled -and -not $_.dispatchInput -and -not $_.violationReason })
       if (-not $diagnostic.Count) { $failures.Add("diagnostic:$name") }
     }
-    if ($name -in @('mixedHelper','mixedInstance','dispatchUnknownType')) {
+    if ($name -in @('mixedHelper','mixedInstance','dispatchUnknownType','shadowedMixed','explicitScriptParameter','unshadowedScript')) {
       $dispatch=@($result.violations | Where-Object { $_.dispatchInput -and $_.violationReason -ceq 'dispatch-provenance' })
       if (-not $dispatch.Count) { $failures.Add("dispatch:$name") }
+    }
+    if ($name -ceq 'shadowedNative') {
+      $native=@($result.violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' })
+      if ($native.Count -ne 1) { $failures.Add("native:$name") }
     }
     Write-Output "PROVENANCE case=$name violations=$($result.violations.Count) expected=$($cases[$name][0])"
   }

@@ -244,7 +244,7 @@ function Get-LedgerReaderCensus {
         # Script-scope defaults are visible to functions; same-named local
         # parameters still gain facts only from actual call binding below.
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
-        if ($facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
+        if (-not $pathParameters.Contains($key) -and $facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
         # Unresolved composition is uncertainty, not a safety proof.
         # Cache immutable syntax only; variable facts still flow to a fixed point.
