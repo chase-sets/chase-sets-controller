@@ -87,7 +87,8 @@ function Get-LedgerReaderCensus {
   $dataFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $memoryFactFunctions=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   [void]$memoryFactFunctions.Add('get-ledgermemorybytes')
-  foreach ($name in @('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')) { [void]$dataFunctions.Add($name) }
+  $ownerDataFunctions=@('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')
+  foreach ($name in $ownerDataFunctions) { [void]$dataFunctions.Add($name) }
   $rows=[Collections.Generic.List[object]]::new()
   $terminalTrapProof=@{}
   $memoryBindingProof=@{};$aliasRebindings=@{}
@@ -218,6 +219,9 @@ function Get-LedgerReaderCensus {
   }
   function MemoryFactCommand($Node,$Unit) {
     $name=CommandName $Node $Unit
+    # Owner readers return data, not their input path. Internal instance I/O
+    # does not revoke that partition; opaque invocation is checked separately.
+    if ($name -in $ownerDataFunctions) { return $false }
     return $memoryFactFunctions.Contains($name) -or $memoryFactFunctions.Contains(($name -split ':')[-1])
   }
   function Fact($Node,$Unit) {

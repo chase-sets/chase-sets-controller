@@ -89,9 +89,32 @@ try {
     }
     Write-Output "PROVENANCE case=$name violations=$($result.violations.Count) expected=$($cases[$name][0])"
   }
+  # Use the actual owner so its internal instance reads participate in the
+  # transitive function analysis, not an unimplemented synthetic reader name.
+  $ownerDirectory=Join-Path $temporary '.orchestrator'
+  [void][IO.Directory]::CreateDirectory($ownerDirectory)
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $ownerDirectory
+  & git -C $temporary add .orchestrator/dispatch-ledger-reader.psm1
+  if ($LASTEXITCODE) { throw 'owner fixture track failed' }
+  $ownerCases=[ordered]@{
+    ownerData=@(0,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Value $snapshot')
+    ownerDataMixed=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;$value=$snapshot;if($flag){$value=$Path};Invoke-Unclassified -Value $value')
+    ownerDataOpaque=@(1,'$Path="dispatch-log.jsonl";$snapshot=& Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Value $snapshot')
+    ownerDataNative=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;[IO.File]::ReadAllText($snapshot)')
+  }
+  foreach ($name in $ownerCases.Keys) {
+    [IO.File]::WriteAllText($path,$ownerCases[$name][1])
+    $result=Get-LedgerReaderCensus -Root $temporary
+    $violations=@($result.violations | Where-Object path -ceq 'reader.ps1')
+    if ($result.scanned -ne 2 -or $result.total -ne 2 -or $violations.Count -ne $ownerCases[$name][0]) { $failures.Add($name) }
+    if ($name -ceq 'ownerDataMixed' -and -not @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count) { $failures.Add("dispatch:$name") }
+    if ($name -ceq 'ownerDataNative' -and -not @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' }).Count) { $failures.Add("native:$name") }
+    $observed.Add([pscustomobject]@{case=$name;expectedViolation=([int]$ownerCases[$name][0] -gt 0);violations=$violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)})
+    Write-Output "PROVENANCE case=$name violations=$($violations.Count) expected=$($ownerCases[$name][0])"
+  }
   if ($EvidencePath) { $observed.ToArray() | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED provenance controls: $($failures -join ',')" }
-  Write-Output "PASS ledger reader provenance controls=$($cases.Count) realTrackedInventory=true"
+  Write-Output "PASS ledger reader provenance controls=$($cases.Count+$ownerCases.Count) realTrackedInventory=true"
 } finally {
   $full=[IO.Path]::GetFullPath($temporary)
   if ((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or (Split-Path -Leaf $full) -cnotlike 'ledger-provenance-*') { throw 'unsafe provenance fixture cleanup' }
