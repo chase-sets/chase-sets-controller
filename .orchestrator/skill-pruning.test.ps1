@@ -99,6 +99,11 @@ foreach ($needle in @('Only committed outcomes', 'Live head must equal reviewed 
 }
 $inventory = @(Get-ControllerSkillInstallInventory)
 $milestone = @($inventory | Where-Object source -like 'milestone-orchestrator/*')
+$retiredScripts = @('scripts/query-ledgers.ps1', 'scripts/query-ledgers.test.ps1')
+foreach ($relative in $retiredScripts) {
+  Assert-Pruned (-not (Test-Path -LiteralPath (Join-Path $skillRoot $relative))) "retired catalog command absent: $relative"
+  Assert-Pruned ($milestone.source -notcontains ('milestone-orchestrator/' + $relative)) "retired catalog command not installed: $relative"
+}
 $references = @($milestone | Where-Object source -like '*/references/*')
 Assert-Pruned ($references.Count -gt 0) 'focused operation references must ship'
 foreach ($entry in $references) {

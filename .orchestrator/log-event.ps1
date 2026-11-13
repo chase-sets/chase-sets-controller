@@ -1083,7 +1083,7 @@ $line = $entry | ConvertTo-Json -Compress -Depth $(if($briefPresent){20}else{8})
 if ($toddAction) { Assert-ToddActionRow ($line | ConvertFrom-Json -DateKind String) }
 
 $dispatchHistory = if ($dispatchDecisionPresent) { & {
-  . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library
+  . (Join-Path $PSScriptRoot 'dispatch-count-history.ps1') -Library
   Read-DispatchCountHistory $target
 } }
 
@@ -1187,7 +1187,7 @@ Invoke-WithOrchestrationLogLock -Root $targetParent -Body {
     if ($rebound.Count) { throw "TODD_ACTION_ID_CONFLICT: $ActionId is bound to #$($rebound[0].value.issue)" }
   }
   if ($dispatchDecisionPresent) { & {
-    . (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library
+    . (Join-Path $PSScriptRoot 'dispatch-count-history.ps1') -Library
     $history=Read-DispatchCountHistory $target -PrefixHistory $dispatchHistory
     $before=Get-DispatchCountDecision $history $Issue open clear
     if ($before.state -ceq 'UNKNOWN') { throw 'DISPATCH_DECISION_HISTORY_UNKNOWN' }
