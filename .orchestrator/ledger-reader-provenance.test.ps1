@@ -26,6 +26,10 @@ try {
     explicitScriptParameter=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $script:Path};Invoke-Synthetic "receipt.json"')
     unshadowedScript=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {Invoke-Unclassified -Path $Path};Invoke-Synthetic')
     shadowedNative=@(1,'$Path="dispatch-log.jsonl";function Read-Synthetic {param([string]$Path);[IO.File]::ReadAllText($Path)};Read-Synthetic "receipt.json"')
+    selfDefault=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path=$Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic')
+    abbreviatedDispatch=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic -Pa $Path')
+    abbreviatedOther=@(0,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic -Pa "receipt.json"')
+    exactNamedDispatch=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path,$PathOther);Invoke-Unclassified -Path $Path};Invoke-Synthetic -Path $Path')
     literal=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';[IO.File]::ReadAllText($p)')
     split=@(1,'$p=Join-Path $HOME (''dispatch-''+''log.jsonl'');[IO.File]::ReadAllText($p)')
     unknown=@(1,'param([string]$Path);[IO.File]::ReadAllText($Path)')
@@ -78,6 +82,10 @@ try {
     if ($name -ceq 'shadowedNative') {
       $native=@($result.violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' })
       if ($native.Count -ne 1) { $failures.Add("native:$name") }
+    }
+    if ($name -in @('selfDefault','abbreviatedDispatch','exactNamedDispatch')) {
+      $forwarded=@($result.violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput })
+      if ($forwarded.Count -ne 1) { $failures.Add("forwarded:$name") }
     }
     Write-Output "PROVENANCE case=$name violations=$($result.violations.Count) expected=$($cases[$name][0])"
   }

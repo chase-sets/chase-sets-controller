@@ -244,7 +244,9 @@ function Get-LedgerReaderCensus {
         # Script-scope defaults are visible to functions; same-named local
         # parameters still gain facts only from actual call binding below.
         $scriptKey="$($Unit.path)::script::$($part.VariablePath.UserPath.ToLowerInvariant())"
-        if (-not $pathParameters.Contains($key) -and $facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
+        # A self-referencing default evaluates before that parameter is bound.
+        $outerDefault=$Node.Parent -is [Management.Automation.Language.ParameterAst] -and (Key $Node.Parent.Name $Unit) -ceq $key
+        if ((-not $pathParameters.Contains($key) -or $outerDefault) -and $facts.ContainsKey($scriptKey)) { $mask=$mask -bor $facts[$scriptKey] }
       } else {
         # Unresolved composition is uncertainty, not a safety proof.
         # Cache immutable syntax only; variable facts still flow to a fixed point.
@@ -462,10 +464,15 @@ function Get-LedgerReaderCensus {
   }
   function Arguments($Call,$Parameters) {
     $bound=@{};$position=0;$elements=$Call.CommandElements
+    $names=@($Parameters | ForEach-Object { $_.Name.VariablePath.UserPath.ToLowerInvariant() })
     for ($i=1;$i -lt $elements.Count;$i++) {
       $element=$elements[$i]
       if ($element -is [Management.Automation.Language.CommandParameterAst]) {
         $name=$element.ParameterName.ToLowerInvariant()
+        if ($name -notin $names) {
+          $candidates=@($names | Where-Object { $_.StartsWith($name,[StringComparison]::OrdinalIgnoreCase) })
+          if ($candidates.Count -eq 1) { $name=$candidates[0] }
+        }
         if ($element.Argument) { $bound[$name]=$element.Argument }
         elseif ($i+1 -lt $elements.Count -and $elements[$i+1] -isnot [Management.Automation.Language.CommandParameterAst]) { $i++;$bound[$name]=$elements[$i] }
       } elseif ($position -lt $Parameters.Count) { $bound[$Parameters[$position].Name.VariablePath.UserPath.ToLowerInvariant()]=$element;$position++ }
