@@ -107,7 +107,7 @@ try {
     (Join-Path $worktree 'bounded-contexts/payments/node_modules/.bin') -Force | Out-Null
   foreach ($file in @('invoke-heavy-verifier.ps1', 'heavy-admission-preload.cjs', 'heavy-slot.cjs',
       'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-holder-launcher.cjs',
-      'dispatch-ownership.ps1', 'workspace-db-test.mjs')) {
+      'dispatch-ledger-reader.psm1', 'dispatch-ownership.ps1', 'workspace-db-test.mjs')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $file) -Destination (Join-Path $runtime $file)
   }
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') @'

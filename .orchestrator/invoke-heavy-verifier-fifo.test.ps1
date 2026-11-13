@@ -110,7 +110,7 @@ $drivers=[Collections.Generic.List[object]]::new(); $attempts=[Collections.Gener
 $pwsh=(Get-Command pwsh).Source; $node=(Get-Command node).Source
 [void][IO.Directory]::CreateDirectory($runtime); [void][IO.Directory]::CreateDirectory($tree)
 $guard=Join-Path $runtime 'invoke-heavy-verifier.ps1';[IO.File]::WriteAllText($guard,$source)
-foreach($name in @('dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) { Copy-Item (Join-Path $PSScriptRoot $name) $runtime }
+foreach($name in @('dispatch-ledger-reader.psm1','dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) { Copy-Item (Join-Path $PSScriptRoot $name) $runtime }
 $runner=Join-Path $root 'runner.ps1'
 [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
 $body=Join-Path $root 'body.cjs'
