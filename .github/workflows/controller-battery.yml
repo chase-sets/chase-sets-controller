@@ -71,10 +71,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.15.0
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - id: native_pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 11.21.0
           standalone: true
+          dest: ~/setup-native-pnpm
+          run_install: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.21.0
+          standalone: false
           run_install: false
       - name: Provision pinned PowerShell
         run: ./runner/.orchestrator/setup-controller-ci.ps1
@@ -121,10 +128,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.15.0
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - id: native_pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: 11.21.0
           standalone: true
+          dest: ~/setup-native-pnpm
+          run_install: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.21.0
+          standalone: false
           run_install: false
       - name: Provision pinned PowerShell
         run: ./runner/.orchestrator/setup-controller-ci.ps1
@@ -136,6 +150,7 @@ jobs:
         env:
           PRODUCT_SHA: ${{ needs.plan.outputs.product_sha }}
           SHARD: ${{ matrix.shard }}
+          CONTROLLER_NATIVE_PNPM_SHIM: ${{ steps.native_pnpm.outputs.bin_dest }}/pnpm.cmd
         run: |
           & $env:CONTROLLER_PWSH -NoProfile -NonInteractive -File ./runner/.orchestrator/controller-ci.ps1 -Mode Shard -ControllerRoot "$env:GITHUB_WORKSPACE/container/controller" -ProductSha $env:PRODUCT_SHA -PlanPath "$env:GITHUB_WORKSPACE/plan/plan.json" -Shard $env:SHARD -OutputDirectory "$env:GITHUB_WORKSPACE/shard"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

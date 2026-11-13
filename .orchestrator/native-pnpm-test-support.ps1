@@ -1,3 +1,8 @@
+function Get-NativePnpmFixtureShim([string]$ActiveShimPath, [string]$ConfiguredShimPath = $env:CONTROLLER_NATIVE_PNPM_SHIM) {
+  if ($ConfiguredShimPath) { return $ConfiguredShimPath }
+  return $ActiveShimPath
+}
+
 function Resolve-NativePnpmFixture([string]$ShimPath) {
   $text = Get-Content -LiteralPath $ShimPath -Raw
   if ($text -notmatch '"%~dp0\\(?<relative>[^"]*\\pnpm(?:\.exe)?)"') {

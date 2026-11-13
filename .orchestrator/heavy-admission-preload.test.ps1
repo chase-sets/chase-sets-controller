@@ -51,7 +51,7 @@ function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
 $pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
   Where-Object { $_.Source -like "*\pnpm.CMD" } |
   Select-Object -First 1
-$nativePnpm = Resolve-NativePnpmFixture $pnpmCommandShim.Source
+$nativePnpm = Resolve-NativePnpmFixture (Get-NativePnpmFixtureShim $pnpmCommandShim.Source)
 $alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction SilentlyContinue |
   Where-Object { -not [string]::Equals([IO.Path]::GetFullPath($_.Source), $nativePnpm, [StringComparison]::OrdinalIgnoreCase) } |
   Select-Object -First 1 -ExpandProperty Source
