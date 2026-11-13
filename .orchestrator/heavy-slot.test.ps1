@@ -1,6 +1,7 @@
 param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'heavy-slot-fixture-test-support.ps1')
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
 if ($MeasurementsAndMutantsOnly) { $NestedOnly = $true }
 if ($BrowserOnly -or $BrowserBaseline) { $NestedOnly = $true }
@@ -909,15 +910,15 @@ const timer = setInterval(() => {
     Assert-True ((Get-FileHash -LiteralPath $dispatchRecord.Path -Algorithm SHA256).Hash -ceq $selectedHash) "$Name unchanged selected bytes"
   }
 
-  # Genuine original C# and integrated #7956 wrapper; no policy mutant is used
+  # Genuine original C# and pre-fix parent guard; no policy mutant is used
   # as the before-fix artifact. Each barrier changes just the foreign lifecycle.
   foreach ($source in @(
-      @{ Ref="436a548cd8a1b9239ce43c4358a632c9d730261f:.orchestrator/heavy-nested-owner.cs"; Path=$nestedOwner },
-      @{ Ref="0c99b24a4586a6c9d9990afa20ddec98e238f2dc:.orchestrator/invoke-heavy-verifier.ps1"; Path=$guard })) {
-    $lines = @(& git -C $controllerRoot show $source.Ref)
-    Assert-True ($LASTEXITCODE -eq 0) "genuine census baseline source $($source.Ref)"
-    [IO.File]::WriteAllText($source.Path, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
-    Write-Output "CENSUS_BASELINE source=$($source.Ref) blob=$(& git -C $controllerRoot rev-parse $source.Ref)"
+      @{ Name="heavy-nested-owner.cs"; Path=$nestedOwner },
+      @{ Name="invoke-heavy-verifier.ps1"; Path=$guard })) {
+    $text = Read-CensusBaselineFixture $source.Name
+    Assert-True (-not [string]::IsNullOrEmpty($text)) "genuine census baseline source $($source.Name)"
+    [IO.File]::WriteAllText($source.Path, $text, [Text.UTF8Encoding]::new($false))
+    Write-Output "CENSUS_BASELINE source=fixtures/historical-census-before-7958/$($source.Name) rawBlobVerified=True"
   }
   foreach ($transition in @("start", "lifecycle", "scavenged-exit")) {
     $foreign = if ($transition -cne "start") { Write-DispatchOwnership @foreignArgs } else { $null }
@@ -1073,11 +1074,11 @@ const timer = setInterval(() => {
     Restore-FixtureSources
     if ($case.Baseline) {
       foreach ($source in @(
-          @{Ref="436a548cd8a1b9239ce43c4358a632c9d730261f:.orchestrator/heavy-nested-owner.cs"; Path=$nestedOwner},
-          @{Ref="0c99b24a4586a6c9d9990afa20ddec98e238f2dc:.orchestrator/invoke-heavy-verifier.ps1"; Path=$guard})) {
-        $lines=@(& git -C $controllerRoot show $source.Ref)
-        Assert-True ($LASTEXITCODE -eq 0) "admission original source available"
-        [IO.File]::WriteAllText($source.Path, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          @{Name="heavy-nested-owner.cs"; Path=$nestedOwner},
+          @{Name="invoke-heavy-verifier.ps1"; Path=$guard})) {
+        $text=Read-CensusBaselineFixture $source.Name
+        Assert-True (-not [string]::IsNullOrEmpty($text)) "admission original source available"
+        [IO.File]::WriteAllText($source.Path, $text, [Text.UTF8Encoding]::new($false))
       }
     }
     [IO.File]::WriteAllText($foreign.Path, $foreign.Raw, [Text.UTF8Encoding]::new($false))
