@@ -30,4 +30,34 @@ $controls = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.Fun
 Assert-Fixture ($controls.Count -eq 1) 'one ordinary census control'
 $body = $controls[0].Extent.Text
 Assert-Fixture (-not $body.Contains('git -C $controllerRoot show') -and ([regex]::Matches($body, 'Read-CensusBaselineFixture')).Count -eq 2) 'both original census baseline legs use pinned public fixtures instead of private history'
-Write-Output 'PASS pinned census fixture originals, missing/one-byte negatives and both ordinary baseline legs; native execution NOT_RUN'
+$selectors = @($controls[0].FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$anchor'}, $true))
+Assert-Fixture ($selectors.Count -eq 1) 'one real admission anchor selector'
+$candidate = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'))
+$candidateAst = [Management.Automation.Language.Parser]::ParseInput($candidate, [ref]$null, [ref]$null)
+$statement = @($candidateAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Extent.Text.StartsWith('$before = Get-HeavyCallerAncestry ', [StringComparison]::Ordinal)}, $true))
+Assert-Fixture ($statement.Count -eq 1) 'one complete current ancestry assignment'
+function Select-ActualAnchor([string]$Source, [bool]$Baseline) {
+  $sourceText = $Source; $case = @{Baseline=$Baseline}
+  return & ([scriptblock]::Create($selectors[0].Extent.Text + "`n" + '$anchor'))
+}
+$anchor = Select-ActualAnchor $candidate $false
+Assert-Fixture ($anchor -ceq $statement[0].Extent.Text) 'real builder anchors after every ancestry argument'
+$baseline = Read-CensusBaselineFixture 'invoke-heavy-verifier.ps1'
+$baselineAnchor = Select-ActualAnchor $baseline $true
+Assert-Fixture ($baselineAnchor -ceq '$beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)') 'historical admission anchor stays unchanged'
+function Get-HeavyCallerAncestry { $script:received = @($args); return @{} }
+$rootPid=1; $rootStart='inert'; $oldestLaunch=0; $candidatePids=@(1)
+$records=@{foreign=[pscustomobject]@{label='inert-foreign'}}
+$assignment=$statement[0].Extent.Text
+$modified=$assignment.Replace($anchor, $anchor + "`n# inert no-output barrier`n")
+$output=@(& ([scriptblock]::Create($modified)))
+Assert-Fixture ($output.Count -eq 0 -and $received.Count -eq 5 -and $received[4].label -ceq 'inert-foreign') 'actual candidate anchor preserves dispatch-record argument without stray output'
+$extended=$candidate.Replace($assignment, $assignment + ' -FutureArgument inert')
+Assert-Fixture ((Select-ActualAnchor $extended $false) -ceq ($assignment + ' -FutureArgument inert')) 'future trailing arguments remain inside the statement anchor'
+foreach ($invalid in @($candidate.Replace('function Get-HeavyCallerObservation(', 'function MissingObservation('),
+    $candidate.Replace($assignment, $assignment + "`n" + $assignment), 'function Get-HeavyCallerObservation {')) {
+  $refused=$false
+  try { Select-ActualAnchor $invalid $false | Out-Null } catch { $refused=$_.Exception.Message.Contains('CENSUS_ADMISSION_ANCHOR') }
+  Assert-Fixture $refused 'missing, ambiguous or malformed candidate statement fails closed'
+}
+Write-Output 'PASS pinned census fixtures and real admission anchor: complete arguments, no stray output, baseline unchanged; native execution NOT_RUN'
