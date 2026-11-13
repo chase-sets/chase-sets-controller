@@ -238,6 +238,15 @@ WorkspaceTest allowlist changes.
 
 ## Focused controls
 
+Scoped compiler checks and explicit one-worker non-DB test files run directly;
+do not add `acquireHeavySlot` or an `invoke-heavy-verifier` wrapper to them.
+This is a command choice before admission, not permission to rerun an unknown
+heavy command unadmitted after refusal. Full-workspace, DB and browser checks,
+including aliases and mixed commands, retain heavy admission. Hosted exact-head
+CI remains authoritative. Product-owned scripts that explicitly acquire a slot
+must be changed through the product loop, not by weakening the controller's
+ownership proof or changing the meaning of `repository-gate`.
+
 Run from the container worktree, with no dependency installation:
 
 ```powershell
