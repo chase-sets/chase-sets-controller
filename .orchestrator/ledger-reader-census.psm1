@@ -954,6 +954,15 @@ function Get-LedgerMemoryBytes {
           }
           continue
         }
+        # An instance invocation on a literal CLR type inspects type metadata,
+        # not a FileStream. Keep dispatch-derived arguments visible to policy.
+        if (-not $node.Static -and $node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+            $node.Member -is [Management.Automation.Language.StringConstantExpressionAst] -and
+            $node.Member.Value -ieq 'GetProperty' -and -not $node.GenericTypeArguments.Count -and -not $node.NullConditional) {
+          $invocationMask=Fact $node $unit $true $true
+          $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='type-metadata.GetProperty';role='unclassified';authority='indeterminate';dispatchInput=([bool]($invocationMask -band 1));owner=$false;test=$unit.test;handled=$false})
+          continue
+        }
         # A mutable type alias or nonliteral invocation shape cannot inherit
         # native reader/writer authority from an earlier assignment or a guard.
         $unknown=-not $node.Static -or $node.GenericTypeArguments.Count -gt 0 -or $node.NullConditional -or

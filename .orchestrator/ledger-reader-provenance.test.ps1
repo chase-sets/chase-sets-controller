@@ -18,6 +18,12 @@ try {
   $cases=[ordered]@{
     uncertainHelper=@(0,'param($root,$name);$p="$root/$name";Invoke-Synthetic -Path $p')
     uncertainInstance=@(0,'param($root,$name,$x);$p="$root/$name";$x.Read($p)')
+    nativeTypeMetadata=@(0,'[IO.FileStream].GetProperty("Name")')
+    nativeTypeMetadataDispatch=@(1,'[IO.FileStream].GetProperty("dispatch-log.jsonl")')
+    nativeFileStreamParameter=@(1,'param($Path);[IO.FileStream]::new($Path,[IO.FileMode]::Open)')
+    nativeStreamReaderParameter=@(1,'param($Path);[IO.StreamReader]::new($Path)')
+    nativeTypeMetadataAlias=@(1,'$T=[IO.FileStream];$T.GetProperty("Name")')
+    nativeTypeMetadataDynamic=@(1,'[IO.FileStream].$Method("Name")')
     mixedHelper=@(1,'param($root,$name);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};Invoke-Synthetic -Path $p')
     mixedInstance=@(1,'param($root,$name,$x);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};$x.Read($p)')
     mixedNativeRhs=@(1,'$p="dispatch-log.jsonl";$v=if($flag){[IO.File]::ReadAllBytes("receipt.json")}else{$p};Invoke-Unclassified -Value $v')
@@ -72,13 +78,17 @@ try {
     $row=[pscustomobject]@{case=$name;expectedViolation=([int]$cases[$name][0] -gt 0);violations=$result.violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)}
     $observed.Add($row)
     if ($result.scanned -ne 1 -or $result.total -ne 1 -or (($result.violations.Count -gt 0) -ne $row.expectedViolation)) { $failures.Add($name) }
-    if ($name -in @('uncertainHelper','uncertainInstance','unknownType')) {
+    if ($name -in @('uncertainHelper','uncertainInstance','unknownType','nativeTypeMetadata')) {
       $diagnostic=@($result.rows | Where-Object { -not $_.handled -and -not $_.dispatchInput -and -not $_.violationReason })
       if (-not $diagnostic.Count) { $failures.Add("diagnostic:$name") }
     }
-    if ($name -in @('mixedHelper','mixedInstance','dispatchUnknownType','shadowedMixed','explicitScriptParameter','unshadowedScript')) {
+    if ($name -in @('mixedHelper','mixedInstance','dispatchUnknownType','shadowedMixed','explicitScriptParameter','unshadowedScript','nativeTypeMetadataDispatch')) {
       $dispatch=@($result.violations | Where-Object { $_.dispatchInput -and $_.violationReason -ceq 'dispatch-provenance' })
       if (-not $dispatch.Count) { $failures.Add("dispatch:$name") }
+    }
+    if ($name -in @('nativeTypeMetadata','nativeTypeMetadataDispatch')) {
+      $metadata=@($result.rows | Where-Object { $_.family -ceq 'type-metadata.GetProperty' -and $_.role -ceq 'unclassified' -and -not $_.handled })
+      if ($metadata.Count -ne 1) { $failures.Add("metadata:$name") }
     }
     if ($name -ceq 'shadowedNative') {
       $native=@($result.violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' })
