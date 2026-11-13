@@ -438,8 +438,8 @@ function Invoke-ReaderInventory {
   $fixtures=@{
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
-    'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
-    'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
+    'heavy-admission-preload.test.ps1'=@(125,610,639,747,1041,1047,1140,1197,1344,1391,1911,1915)
+    'heavy-slot.test.ps1'=@(92,95,118,1899,2225,2402)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -447,7 +447,7 @@ function Invoke-ReaderInventory {
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
-    'long-product-gate.test.ps1'=@(208,215,231,871)
+    'long-product-gate.test.ps1'=@(212,219,235,875)
     'host-heavy-verifier.test.ps1'=@(1277)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
@@ -456,7 +456,7 @@ function Invoke-ReaderInventory {
     'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)
     'landed-integration-r3.test.ps1'=@(52)
-    'lane-stall-watchdog.test.ps1'=@(566,612,615)
+    'lane-stall-watchdog.test.ps1'=@(658,704,707)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(396,455,509,548)
     # Source-conservation checker reads a synthetic ownership path for its
@@ -493,7 +493,7 @@ function Invoke-ReaderInventory {
   $stalePinMutant=$fixtures.Clone(); $stalePinMutant['install-controller-skills.ps1']=@(137,138)
   Assert-Owner ((@(& $findStale $stalePinMutant)) -ccontains 'install-controller-skills.ps1:137') 'stale fixture pin control is RED'
   # Pinned historical fixture bytes (fixtures/historical-*/README.md blob pins)
-  # are only copied into synthetic temp roots by New-HistoricalDispatchFixture.
+  # are only copied into synthetic temp roots by historical fixture loaders.
   # Their sites are keyed by repository-relative path, so a historical opener
   # can never borrow the classification of a current file with the same name
   # and line. Each pinned site must still name a discovered opener.
@@ -508,6 +508,8 @@ function Invoke-ReaderInventory {
     '.orchestrator/fixtures/historical-b3b4ac2/.orchestrator/landed-integration-evidence.psm1'=@(924)
     '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/dispatch-ownership.ps1'=@(278)
     '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
+    '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/heavy-nested-owner.cs'=@(900,939)
+    '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/invoke-heavy-verifier.ps1'=@(433,704,751)
   }
   function Get-ReaderSiteKey([string]$Relative,[int]$Line) {
     if($Relative -clike '.orchestrator/fixtures/historical-*/*'){ return "${Relative}:$Line" }
@@ -531,7 +533,8 @@ function Invoke-ReaderInventory {
     $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
     foreach($line in $historicalSites[$relative]) {
       $key=Get-ReaderSiteKey $relative $line
-      $table.Add(@{site=$key;api=$lines[$line-1].Trim();shareBefore='pinned historical bytes';shareAfter='unchanged';decoder='unchanged historical decoder';callers='New-HistoricalDispatchFixture copy into a synthetic temp root';owner="pinned historical fixture bytes (blob $($pin[0])), never live publication"})
+      $caller=if($fixtureRoot -ceq '.orchestrator/fixtures/historical-census-before-7958'){'Read-CensusBaselineFixture copy into a synthetic temp root'}else{'New-HistoricalDispatchFixture copy into a synthetic temp root'}
+      $table.Add(@{site=$key;api=$lines[$line-1].Trim();shareBefore='pinned historical bytes';shareAfter='unchanged';decoder='unchanged historical decoder';callers=$caller;owner="pinned historical fixture bytes (blob $($pin[0])), never live publication"})
       $classified[$key]=$true
     }
   }

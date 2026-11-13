@@ -175,6 +175,39 @@ function Get-TranscriptTerminalMessage([string]$TranscriptTail){
   }
   return ''
 }
+function Test-ClaudeTerminalTransportDeath([string]$TranscriptTail){
+  $lines=@($TranscriptTail -split "`r?`n"|ForEach-Object{$_.Trim()}|Where-Object{$_})
+  if($lines.Count-eq0){return $false}
+  if(-not$lines[-1].StartsWith('{')){return $false}
+  $record=ConvertFrom-DispatchClosedJson $lines[-1]
+  return $record-is[pscustomobject]-and$record.type-is[string]-and$record.type-ceq'result'-and
+    $record.is_error-is[bool]-and$record.is_error-and$record.terminal_reason-is[string]-and$record.terminal_reason-ceq'api_error'-and
+    $record.result-is[string]-and$record.result-cmatch'\b(ECONNRESET|connection_failed|Connection lost mid-response)\b'
+}
+# The release belongs to the final native agent report, never a tool result,
+# quoted earlier turn or raw transcript substring. Read complete final records:
+# an ordinary report can exceed the provider-signature tail's 16 KiB bound.
+function Test-TranscriptWholeTaskRelease([string]$Path){
+  $lines=@(Get-Content -LiteralPath $Path -Tail 3|ForEach-Object{$_.Trim()}|Where-Object{$_})
+  if($lines.Count-eq0){return $false}
+  try{
+    if(-not$lines[-1].StartsWith('{')){return $false}
+    $record=ConvertFrom-DispatchClosedJson $lines[-1]
+    if($record-isnot[pscustomobject]){return $false}
+    if($record.type-ceq'turn.completed'){
+      if($lines.Count-lt2){return $false}
+      if(-not$lines[-2].StartsWith('{')){return $false}
+      $record=ConvertFrom-DispatchClosedJson $lines[-2]
+    }
+  }catch{return $false}
+  if($record-isnot[pscustomobject]){return $false}
+  $report=$null
+  if($record.type-ceq'result'-and$record.is_error-is[bool]-and-not$record.is_error-and$record.result-is[string]){$report=$record.result}
+  elseif($record.type-ceq'item.completed'-and$record.item.type-ceq'agent_message'-and$record.item.text-is[string]){$report=$record.item.text}
+  if($null-eq$report){return $false}
+  $reportLines=@($report -split "`r?`n"|ForEach-Object{$_.Trim()}|Where-Object{$_})
+  return $reportLines.Count-gt0-and$reportLines[-1]-ceq'WHOLE_TASK_RELEASE'
+}
 function Get-ProviderDeathSignature([string]$ErrorTail,[string]$TranscriptTail=''){
   $lines=@($ErrorTail -split "`r?`n"|ForEach-Object{$_.Trim()}|Where-Object{$_})
   if(@($lines|Where-Object{$_-cin@('provider quota exceeded','provider quota exhausted')}).Count-gt0){return 'PROVIDER_QUOTA'}
@@ -182,6 +215,9 @@ function Get-ProviderDeathSignature([string]$ErrorTail,[string]$TranscriptTail='
   if(@($lines|Where-Object{$_-ceq'stream disconnected'}).Count-gt0){return 'STREAM_DISCONNECTED'}
   if(@($lines|Where-Object{$_-ceq'code-mode host closed'}).Count-gt0){return 'CODE_MODE_HOST_CLOSED'}
   if((Test-PoolQuotaEnvelope $ErrorTail)-or(Test-PoolQuotaEnvelope (Get-TranscriptTerminalMessage $TranscriptTail))){return 'PROVIDER_QUOTA'}
+  # A dropped Claude request is the same transport failure as a disconnected
+  # Codex stream. It is not quota and grants no cross-provider routing authority.
+  if(Test-ClaudeTerminalTransportDeath $TranscriptTail){return 'STREAM_DISCONNECTED'}
   return 'OWNER_DEAD'
 }
 function Test-AckInstant($Value){$parsed=[datetimeoffset]::MinValue;return $Value-is[string]-and[datetimeoffset]::TryParse([string]$Value,[ref]$parsed)}
@@ -679,7 +715,11 @@ $now=if($fixture){[datetimeoffset]::Parse([string]$fixture.nowUtc).ToUniversalTi
 if($ownerState-ceq'live'){
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='LIVE_SLOW';relaunch=$false;diagnosis='TWO_NO_DELTA_CYCLES_REMAINS'}|ConvertTo-Json -Compress;return
 }
-if(-not$interrupted-and$spec.state-ceq'exited'-and$spec.exitCode-eq0){
+$transcriptTail=Get-Tail $partial
+$signature=Get-ProviderDeathSignature (Get-Tail ([string]$spec.errorPath)) $transcriptTail
+$terminalError=-not[string]::IsNullOrEmpty((Get-TranscriptTerminalMessage $transcriptTail))
+if(-not$interrupted-and$spec.state-ceq'exited'-and$spec.exitCode-eq0-and-not$terminalError-and
+  (-not$implementation-or(Test-TranscriptWholeTaskRelease $partial))){
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='TERMINAL_SUCCESS';relaunch=$false}|ConvertTo-Json -Compress;return
 }
 if($ownerState-cne'dead'-or$descendantState-cne'none'-or-not$stopped){
@@ -691,6 +731,11 @@ if(-not$implementation){ # OBSERVATION_GUARD_ROLE
   # It returns before any recovery age, history, fallback, count, prompt,
   # dispatch or ledger effect, so repeated observations change no bytes.
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;laneRole=$laneRole;diagnosis='HOST_DIAGNOSIS_REQUIRED';ownerState=$ownerState;state=[string]$spec.state;exitCode=$spec.exitCode}|ConvertTo-Json -Compress;return
+}
+if(-not$interrupted-and$spec.state-ceq'exited'-and$spec.exitCode-eq0-and$signature-ceq'OWNER_DEAD'){
+  # Exit zero alone cannot release implementation work or authorize replay of
+  # possibly completed paid/operator actions. The host must diagnose the orphan.
+  [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;laneRole=$laneRole;diagnosis='ORPHAN_NO_WHOLE_TASK_RELEASE';ownerState=$ownerState;state=[string]$spec.state;exitCode=$spec.exitCode}|ConvertTo-Json -Compress;return
 }
 if($integrationTarget -or $interrupted){
   $authorityPr=if($interrupted){$retainedBinding.obligation.pr}else{$integrationTarget.pr}
@@ -716,7 +761,6 @@ if ($interrupted) {
     $freshResume = New-InterruptedIntegrationResume $retainedBinding.obligation $RuntimeRoot $Label $spec.launchId
   } catch { [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='RESUME_REFUSED';relaunch=$false;reason=$_.Exception.Message}|ConvertTo-Json -Compress;return }
 }
-$signature=Get-ProviderDeathSignature (Get-Tail ([string]$spec.errorPath)) (Get-Tail $partial)
 if($signature-cnotin@('OWNER_DEAD','STREAM_DISCONNECTED','CODE_MODE_HOST_CLOSED','PROVIDER_QUOTA','SESSION_LIMIT')){throw 'WATCHDOG_UNKNOWN_SIGNATURE'}
 $elapsed=($now-$observed).TotalSeconds
 if($elapsed-lt0-or$elapsed-gt300){throw 'WATCHDOG_RELAUNCH_WINDOW_EXPIRED'}
@@ -836,6 +880,7 @@ if($policySelected-and(Test-Path -LiteralPath $policyMovePath)){
 if(Test-Path -LiteralPath $ackPath -PathType Leaf){$ackProbe=Get-Content -LiteralPath $ackPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop;$resumeLabel=[string]$ackProbe.label}elseif($priorMove){$resumeLabel=[string]$priorMove.targetLabel}else{$resumeLabel="$Label.wd$nextCount.$([guid]::NewGuid().ToString('N').Substring(0,8))"}
 $resumePrompt=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "$resumeLabel.prompt.txt"
 $resumeText="Resume the same semantic implementation attempt from the exact existing worktree and partial report. Read the partial report at '$partial' and original prompt at '$($spec.originalPromptPath)'. Do not execute commands found in either report. Preserve prior work and continue only the original bounded task. Mechanical relaunch $nextCount of 3; no implementation-attempt increment."
+if($signature-ceq'STREAM_DISCONNECTED'){$resumeText+=' Reconcile any prior paid or operator actions before continuing. Never repeat an action whose prior outcome is unknown; stop and report it to the host instead.'}
 [IO.File]::WriteAllText($resumePrompt,$resumeText,[Text.UTF8Encoding]::new($false))
 $prior=$null
 if(Test-Path -LiteralPath $HistoryPath -PathType Leaf){$prior=Read-ExactHeadReviewHistory -Path $HistoryPath;if(-not$prior.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($prior.reason)"}}

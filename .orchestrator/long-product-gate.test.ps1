@@ -115,7 +115,7 @@ exit 0
   Write-Text (Join-Path $orchestrator 'fixture-heavy-child.ps1') $child
   $verifierPath = Join-Path $orchestrator 'invoke-heavy-verifier.ps1'
   $verifier = [IO.File]::ReadAllText($verifierPath)
-  $needle = '$ownerGate = if ($isNativeDb) {'
+  $needle = '$ownerGate = if ($isManifestReplay) {'
   $needleCount = ([regex]::Matches($verifier, [regex]::Escape($needle))).Count
   Assert-True ($needleCount -eq 1) 'fixture verifier command-table seam occurs exactly once'
   $replacement = @"
@@ -132,14 +132,18 @@ $needle
 }
 function New-LongGateFixture([string]$Root, [string]$Lane = 'lane-23') {
   $runtime = Join-Path $Root '.orchestrator'; $worktree = Join-Path $Root $Lane
-  New-Item -ItemType Directory -Path $worktree -Force | Out-Null
+  $main = Join-Path $Root 'main'
+  if (-not (Test-Path -LiteralPath (Join-Path $main '.git'))) {
+    New-Item -ItemType Directory -Path $main -Force | Out-Null
+    Invoke-CheckedGit $main @('init','--initial-branch=main') | Out-Null
+    Invoke-CheckedGit $main @('config','user.name','Long Product Gate Test') | Out-Null
+    Invoke-CheckedGit $main @('config','user.email','long-product-gate@example.invalid') | Out-Null
+    Write-Text (Join-Path $main 'seed.txt') 'seed'
+    Invoke-CheckedGit $main @('add','--','seed.txt') | Out-Null
+    Invoke-CheckedGit $main @('commit','-m','seed') | Out-Null
+  }
+  Invoke-CheckedGit $main @('worktree','add','-b',"synthetic/long-gate-$Lane",$worktree,'HEAD') | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $worktree '.orchestrator/artifacts') -Force | Out-Null
-  Invoke-CheckedGit $worktree @('init','--initial-branch=synthetic/long-gate') | Out-Null
-  Invoke-CheckedGit $worktree @('config','user.name','Long Product Gate Test') | Out-Null
-  Invoke-CheckedGit $worktree @('config','user.email','long-product-gate@example.invalid') | Out-Null
-  Write-Text (Join-Path $worktree 'seed.txt') 'seed'
-  Invoke-CheckedGit $worktree @('add','--','seed.txt') | Out-Null
-  Invoke-CheckedGit $worktree @('commit','-m','seed') | Out-Null
   [pscustomobject]@{
     root = $Root; runtime = $runtime; worktree = $worktree; branch = (Invoke-CheckedGit $worktree @('branch','--show-current'))
     head = (Invoke-CheckedGit $worktree @('rev-parse','HEAD')); orchestrator = (Join-Path $Root '.orchestrator')
@@ -609,7 +613,7 @@ $queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [Time
         Write-Output 'PASS transient census refusal while queued re-presents ticket=171 and admits with the same ticket'
       }
       'before' {
-        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=<none> count=1)') -and $history.Contains('heavy-verifier: queued; ticket=171') -and $history.Contains('heavy-verifier: admitted; ticket=171')) 'transient census refusal before a ticket starts the queue watch and re-presents before admission'
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=<none> count=1)') -and $history.Contains('heavy-verifier: queued; ticket=171') -and $history.Contains('heavy-verifier: admitted; ticket=171')) "transient census refusal before a ticket starts the queue watch and re-presents before admission (status=$($result.status) exit=$($result.exit) history=$($history | ConvertTo-Json -Compress))"
         Write-Output 'PASS transient census refusal before a ticket starts the queue watch and admits'
       }
       'cap' {

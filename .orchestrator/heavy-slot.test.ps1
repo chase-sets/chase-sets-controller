@@ -1,6 +1,7 @@
 param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'heavy-slot-fixture-test-support.ps1')
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
 if ($MeasurementsAndMutantsOnly) { $NestedOnly = $true }
 if ($BrowserOnly -or $BrowserBaseline) { $NestedOnly = $true }
@@ -18,13 +19,9 @@ $dispatchOwnershipSource = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
 $baselineClientBlob = "71deeaae2c999d377d3d2ffe9b933219d62a06ff"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-$pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
-  Where-Object { $_.Source -like "*\pnpm.CMD" } | Select-Object -First 1
-$pnpmCommandText = Get-Content -LiteralPath $pnpmCommandShim.Source -Raw
-if ($pnpmCommandText -notmatch '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') {
-  throw "unable to resolve the active pnpm.CMD direct binary"
-}
-$nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmCommandShim.Source) $Matches.relative))
+. (Join-Path $PSScriptRoot 'pnpm-test-support.ps1')
+$pnpmCommandShim = Resolve-NativePnpmTestCommand
+$nativePnpm = $pnpmCommandShim.NativePath
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
@@ -913,15 +910,15 @@ const timer = setInterval(() => {
     Assert-True ((Get-FileHash -LiteralPath $dispatchRecord.Path -Algorithm SHA256).Hash -ceq $selectedHash) "$Name unchanged selected bytes"
   }
 
-  # Genuine original C# and integrated #7956 wrapper; no policy mutant is used
+  # Genuine original C# and pre-fix parent guard; no policy mutant is used
   # as the before-fix artifact. Each barrier changes just the foreign lifecycle.
   foreach ($source in @(
-      @{ Ref="436a548cd8a1b9239ce43c4358a632c9d730261f:.orchestrator/heavy-nested-owner.cs"; Path=$nestedOwner },
-      @{ Ref="0c99b24a4586a6c9d9990afa20ddec98e238f2dc:.orchestrator/invoke-heavy-verifier.ps1"; Path=$guard })) {
-    $lines = @(& git -C $controllerRoot show $source.Ref)
-    Assert-True ($LASTEXITCODE -eq 0) "genuine census baseline source $($source.Ref)"
-    [IO.File]::WriteAllText($source.Path, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
-    Write-Output "CENSUS_BASELINE source=$($source.Ref) blob=$(& git -C $controllerRoot rev-parse $source.Ref)"
+      @{ Name="heavy-nested-owner.cs"; Path=$nestedOwner },
+      @{ Name="invoke-heavy-verifier.ps1"; Path=$guard })) {
+    $text = Read-CensusBaselineFixture $source.Name
+    Assert-True (-not [string]::IsNullOrEmpty($text)) "genuine census baseline source $($source.Name)"
+    [IO.File]::WriteAllText($source.Path, $text, [Text.UTF8Encoding]::new($false))
+    Write-Output "CENSUS_BASELINE source=fixtures/historical-census-before-7958/$($source.Name) rawBlobVerified=True"
   }
   foreach ($transition in @("start", "lifecycle", "scavenged-exit")) {
     $foreign = if ($transition -cne "start") { Write-DispatchOwnership @foreignArgs } else { $null }
@@ -1077,18 +1074,18 @@ const timer = setInterval(() => {
     Restore-FixtureSources
     if ($case.Baseline) {
       foreach ($source in @(
-          @{Ref="436a548cd8a1b9239ce43c4358a632c9d730261f:.orchestrator/heavy-nested-owner.cs"; Path=$nestedOwner},
-          @{Ref="0c99b24a4586a6c9d9990afa20ddec98e238f2dc:.orchestrator/invoke-heavy-verifier.ps1"; Path=$guard})) {
-        $lines=@(& git -C $controllerRoot show $source.Ref)
-        Assert-True ($LASTEXITCODE -eq 0) "admission original source available"
-        [IO.File]::WriteAllText($source.Path, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          @{Name="heavy-nested-owner.cs"; Path=$nestedOwner},
+          @{Name="invoke-heavy-verifier.ps1"; Path=$guard})) {
+        $text=Read-CensusBaselineFixture $source.Name
+        Assert-True (-not [string]::IsNullOrEmpty($text)) "admission original source available"
+        [IO.File]::WriteAllText($source.Path, $text, [Text.UTF8Encoding]::new($false))
       }
     }
     [IO.File]::WriteAllText($foreign.Path, $foreign.Raw, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($foreign.TranscriptPath, "{`"type`":`"item.completed`"}`n", [Text.UTF8Encoding]::new($false))
     $barrier = Join-Path $root $case.Name
     $sourceText = [IO.File]::ReadAllText($guard)
-    $anchor = if($case.Baseline) { '$beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)' } else { '$before = Get-HeavyCallerAncestry $rootPid $rootStart $oldestLaunch $candidatePids' }
+    $anchor = Get-CensusAdmissionAnchor $sourceText -Baseline:$case.Baseline
     Assert-True (($sourceText.Split($anchor)).Count -eq 2) "one admission barrier anchor"
     $barrierCode = @'
     [IO.File]::WriteAllText($env:CENSUS_BARRIER + '.ready', 'captured')
@@ -1320,7 +1317,16 @@ function Test-RenameTypeBeforeAcquire {
   foreach ($variant in @('candidate','late-load')) {
     $copy=$invalid
     if ($variant -ceq 'late-load') {
-      $copy=$copy.Replace($load,'# MUTANT load at first non-create transition')
+      # Queue publication also uses this type before child launch. Keep its
+      # implementation intact under a separate name in this owner-only mutant.
+      $guardAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$null)
+      $initializers=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Initialize-OwnerRename'},$true))
+      $queueWriters=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Write-VerifyQueue'},$true))
+      Assert-True ($initializers.Count -eq 1 -and $queueWriters.Count -eq 1) 'late-load queue isolation has exact production seams'
+      $queueInitializer=$initializers[0].Extent.Text.Replace('OwnerRename','QueueOwnerRename')
+      $queueWriter=$queueWriters[0].Extent.Text
+      $copy=$copy.Replace($queueWriter,$queueWriter.Replace('OwnerRename','QueueOwnerRename'))
+      $copy=$copy.Replace($load,$queueInitializer + "`n# MUTANT load at first non-create transition")
       $copy=$copy.Replace('  $temporaryPath = Join-Path $lockPath ("owner.transition."','  Initialize-OwnerRename' + "`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')
     }
     $marker=Join-Path $root "rename-type-$variant.exit"
