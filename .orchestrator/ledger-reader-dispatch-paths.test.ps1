@@ -74,7 +74,31 @@ try {
     Check ($writes.Count -eq 1 -and $writes[0].Extent.Text -ceq "[IO.File]::Open($writePath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)") "create-only writer overload unchanged $name"
     $history=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Read-ExactHeadReviewHistory'},$true))
     if($name -ceq 'dispatch-lane.ps1') {
-      Check ($history.Count -eq 1 -and $history[0].Extent.Text -ceq "Read-ExactHeadReviewHistory -Path (Join-Path `$PSScriptRoot 'dispatch-log.jsonl')") 'canonical launcher history owner retained'
+      Check ($history.Count -eq 0) 'launcher delegates canonical history instead of retaining a second adapter'
+      $capacity=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Resolve-CapacityRouting'},$true))
+      Check ($capacity.Count -eq 1) 'one actual launcher capacity resolver'
+      $routingImport=". (Join-Path `$PSScriptRoot 'routing-data.ps1') -Library -StateRoot `$RoutingStateRoot -LkgPath `$RoutingLkgPath"
+      $routingImports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $routingImport})
+      Check ($routingImports.Count -eq 1 -and $routingImports[0].Extent.EndOffset -lt $capacity[0].Extent.StartOffset) 'actual routing library loaded before history delegation'
+      $historyParameters=@($capacity[0].CommandElements|Where-Object {$_ -is [Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -ceq 'HistoryPath'})
+      Check ($historyParameters.Count -eq 1) 'one canonical history path argument'
+      $pathIndex=$capacity[0].CommandElements.IndexOf($historyParameters[0])+1
+      Check ($pathIndex -lt $capacity[0].CommandElements.Count -and $capacity[0].CommandElements[$pathIndex].Extent.Text -ceq "(Join-Path `$runtimeRoot 'dispatch-log.jsonl')") 'launcher passes canonical runtime ledger to capacity owner'
+      # Follow the real delegation; an arbitrary resolver call is not proof
+      # that canonical history still reaches the sole reader.
+      $routingErrors=$null
+      $routingAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'routing-data.ps1'),[ref]$null,[ref]$routingErrors)
+      Check ($routingErrors.Count -eq 0) 'production routing library parses'
+      $resolver=@($routingAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Resolve-CapacityRouting'},$true))
+      $authorHistory=@($routingAst.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-CapacityAuthorHistory'},$true))
+      Check ($resolver.Count -eq 1 -and $authorHistory.Count -eq 1) 'complete actual capacity history bodies'
+      $forward=@($resolver[0].Body.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Get-CapacityAuthorHistory'},$true))
+      Check ($forward.Count -eq 1 -and $forward[0].Extent.Text -ceq 'Get-CapacityAuthorHistory -Path $HistoryPath @historyArguments -Registry $data.registry') 'resolver preserves canonical history argument and attribution inputs'
+      $snapshots=@($authorHistory[0].Body.FindAll({param($node)$node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'dispatch-ledger-reader\Read-DispatchLedgerSnapshot'},$true))
+      Check ($snapshots.Count -eq 1 -and $snapshots[0].Extent.Text -ceq 'dispatch-ledger-reader\Read-DispatchLedgerSnapshot -Path $Path -RequireTerminated') 'capacity history retains sole-reader ownership and terminated-ledger requirement'
+      $ownerImport=$import.Replace(' -DisableNameChecking',' -Global -DisableNameChecking')
+      $ownerImports=@($routingAst.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $ownerImport})
+      Check ($ownerImports.Count -eq 1 -and $ownerImports[0].Extent.EndOffset -lt $authorHistory[0].Extent.StartOffset) 'literal routing owner import precedes canonical reader'
       $priority=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-LanePriority'},$true))
       Check ($priority.Count -eq 1) 'complete actual priority body'
       [IO.File]::WriteAllText($probe,$import+"`n"+$priority[0].Extent.Text)
