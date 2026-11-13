@@ -98,6 +98,7 @@ if ($Mutant) {
 }
 function Assert-Fifo($Condition,[string]$Name,[string]$Detail='') { if (-not $Condition) { [Console]::Error.WriteLine(("ASSERTION FAILED: $Name $Detail" -split "\r?\n")[0]); throw "ASSERTION FAILED: $Name $Detail" } }
 function Write-Json($Path,$Value) { [IO.File]::WriteAllText($Path,($Value | ConvertTo-Json -Depth 16 -Compress)) }
+function Write-DispatchRouting($Value) { [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'), ($Value | ConvertTo-Json -Depth 16 -Compress) + "`n") }
 function Read-Json($Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 16 -DateKind String }
 function Hash-File($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Wait-For([scriptblock]$Predicate,[string]$Name) {
@@ -261,8 +262,7 @@ function New-DispatchFixture($Driver,[string]$Label) {
     label=$Label;transcriptPath=(Join-Path $runtime "$Label.jsonl")
   }
   Write-Json $path $record;[IO.File]::WriteAllText($record.promptPath,'inert');[IO.File]::WriteAllText($record.transcriptPath,"{`"type`":`"item.completed`"}`n")
-  Write-Json (Join-Path $runtime 'dispatch-log.jsonl') @{ts=$record.recordedAt;kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v1';attemptId=$Label;label=$Label;lane='tree';laneRole='implementation';transcript="$Label.jsonl";harness='codex';model='gpt-6-astra';effort='high';row='7';placement='override-Todd';worktree=$tree;branch=$branch;head=$head}
-  [IO.File]::AppendAllText((Join-Path $runtime 'dispatch-log.jsonl'), "`n")
+  Write-DispatchRouting @{ts=$record.recordedAt;kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v1';attemptId=$Label;label=$Label;lane='tree';laneRole='implementation';transcript="$Label.jsonl";harness='codex';model='gpt-6-astra';effort='high';row='7';placement='override-Todd';worktree=$tree;branch=$branch;head=$head}
   return [pscustomobject]@{Path=$path;Record=$record}
 }
 try {
@@ -501,7 +501,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   if($Part -eq 'authority'){
     Clear-Queue;[IO.File]::WriteAllText($queue,'{invalid authority fixture');$hash=Hash-File $queue
     $dispatch=New-DispatchFixture $recoveryDriver 'fifo-authority'
-    $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='7';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+    $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='7';Write-DispatchRouting $routing
     $r=Invoke-Attempt $recoveryDriver Gate @{QuarantineQueue=$hash} -Production
     Assert-Fifo ($r.Code -eq 73 -and -not $r.Body) "MUTANT $Mutant AC4 authority guard refuses unbound reset" $r.Output
     Assert-Fifo (-not(Test-Path $recovery) -and (Hash-File $queue) -ceq $hash) "MUTANT $Mutant AC4 authority guard leaves queue and quarantine unchanged" "output=$($r.Output)"
@@ -544,10 +544,10 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
     Assert-Fifo (-not(Test-Path $recovery)-and(Hash-File $queue)-ceq$hash) 'AC4 token refusal preserves evidence'
   }
   $dispatch=New-DispatchFixture $recoveryDriver 'fifo-recovery'
-  $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='13';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+  $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='13';Write-DispatchRouting $routing
   Assert-Refused (Invoke-Attempt $recoveryDriver Gate) 'AC4 ineligible caller never touches queue' 'caller eligibility:.*routing-row=13'
   Assert-Fifo ((Hash-File $queue)-ceq$hash-and-not(Test-Path $recovery)) 'AC4 ineligible refusal preserves queue'
-  $routing.row='7';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+  $routing.row='7';Write-DispatchRouting $routing
   $r=Invoke-Attempt $recoveryDriver Gate $recover -Production
   Assert-Refused $r 'AC4 reset requires unbound host authority' 'host-only'
   Assert-Fifo (-not(Test-Path $recovery)-and(Hash-File $queue)-ceq$hash) 'AC4 lane cannot create recovery marker'
