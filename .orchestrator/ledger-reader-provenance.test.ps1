@@ -70,6 +70,12 @@ try {
     otherAssignedConditionally=@(1,'if($false){$p=''receipt.json''};[IO.File]::ReadAllText($p)')
     otherPassedByReference=@(1,'$p=''receipt.json'';Set-Synthetic -Value ([ref]$p);[IO.File]::ReadAllText($p)')
     owned=@(0,'$p=Join-Path $HOME ''dispatch-log.jsonl'';Read-DispatchLedgerSnapshot -Path $p')
+    ownerSharedRoot=@(0,'param($root);Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path (Join-Path $root ''receipt.json'')')
+    ownerSharedRootDispatch=@(1,'param($root);Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path (Join-Path $root ''dispatch-log.jsonl'')')
+    ownerUnknownPath=@(1,'param($Path);Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Path $Path')
+    ownerMixedPath=@(1,'param($root,$Path);Read-DispatchLedgerSnapshot -Path (Join-Path $root $Path);Invoke-Unclassified -Path $Path')
+    ownerSharedRootPriorFact=@(1,'$root="dispatch-log.jsonl";Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path $root')
+    ownerOtherLeaf=@(1,'param($root);Read-DispatchLedgerSnapshot -Path (Join-Path $root ''custom.jsonl'');Invoke-Unclassified -Path $root')
     alias=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';Set-Alias ledgerRead Get-Content;ledgerRead -LiteralPath $p')
   }
   foreach ($name in $cases.Keys) {

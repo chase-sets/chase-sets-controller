@@ -889,6 +889,13 @@ function Get-LedgerMemoryBytes {
           # acquiring facts must never suppress an unseen path variable.
           if ($argument) {
             foreach ($variable in (Find-LedgerCensusAst $argument ([Management.Automation.Language.VariableExpressionAst]))) {
+              # A fixed canonical child names the ledger, not its directory.
+              # Keep prior facts and all uncertain path components monotone.
+              $join=$variable.Parent
+              if ($join -is [Management.Automation.Language.CommandAst] -and $join.GetCommandName() -ieq 'Join-Path' -and
+                  $join.CommandElements.Count -eq 3 -and $join.CommandElements[1] -eq $variable -and
+                  $join.CommandElements[2] -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                  $join.CommandElements[2].Value -match '(?i)(^|[/\\])dispatch-log\.jsonl$') { continue }
               if (AddFact (Key $variable $unit) 1) { $changed=$true }
             }
           }
