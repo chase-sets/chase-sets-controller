@@ -161,6 +161,11 @@ function Get-LedgerReaderCensus {
       # proof, calls in other branches/scopes conservatively retain uncertainty.
       # This is static-analysis conservatism, not an in-process security boundary.
       if ($Unit.instanceCall -or $Node.Arguments.Count -ne 3 -or $stream.Arguments.Count -ne 2 -or ((Fact $Node $Unit) -band 5)) { return $false }
+      # Returning data instead of a path does not prove absence of instance
+      # effects. Retain that separate proof for owner calls and their wrappers.
+      foreach ($call in $Unit.calls) {
+        if ((MemoryEffectCommand $call $Unit) -and -not (NativeMemoryBytes $call $Unit)) { return $false }
+      }
       $bytes=$stream.Arguments[0];$writable=$stream.Arguments[1]
       $encoding=$Node.Arguments[1];$detectBom=$Node.Arguments[2]
       return $bytes -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -217,12 +222,16 @@ function Get-LedgerReaderCensus {
     }
     return $false
   }
+  function MemoryEffectCommand($Node,$Unit) {
+    $name=CommandName $Node $Unit
+    return $memoryFactFunctions.Contains($name) -or $memoryFactFunctions.Contains(($name -split ':')[-1])
+  }
   function MemoryFactCommand($Node,$Unit) {
     $name=CommandName $Node $Unit
     # Owner readers return data, not their input path. Internal instance I/O
     # does not revoke that partition; opaque invocation is checked separately.
     if ($name -in $ownerDataFunctions) { return $false }
-    return $memoryFactFunctions.Contains($name) -or $memoryFactFunctions.Contains(($name -split ':')[-1])
+    return MemoryEffectCommand $Node $Unit
   }
   function Fact($Node,$Unit) {
     if ($null -eq $Node) { return 0 }
@@ -743,7 +752,7 @@ function Get-LedgerMemoryBytes {
         # A wrapper mixing row data with a native copy or opaque result has
         # no proved return partition. Preserve uncertainty transitively rather
         # than granting the generic data-function assignment exemption.
-        if (($target.instanceCall -or @($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or (MemoryFactCommand $_ $target.unit) }).Count) -and
+        if (($target.instanceCall -or @($calls | Where-Object { (OpaqueInvocation $_ $target.unit) -or (MemoryEffectCommand $_ $target.unit) }).Count) -and
             $memoryFactFunctions.Add($name)) { $changed=$true }
         # Scope-qualified declarations are callable by their unscoped names.
         # Add only uncertainty aliases, never function/data/purity authority.
