@@ -80,7 +80,7 @@ function Get-LedgerReaderCensus {
   if ($LASTEXITCODE -ne 0 -or -not $paths.Count) { throw 'LEDGER_CENSUS_INVENTORY_MISSING' }
   Write-Verbose "Ledger census: parsing $($paths.Count) tracked sources"
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
-  $variableKeys=@{};$factParts=@{};$outputFactParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
+  $variableKeys=@{};$factParts=@{};$outputFactParts=@{};$readerInputFactParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
   $pathAssignments=@{};$pathParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -242,7 +242,7 @@ function Get-LedgerReaderCensus {
       $Node.Member.Value -match '^Read(All|Lines)' -and $Node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
       $Node.Expression.TypeName.FullName -match '^(System\.)?IO\.File$'
   }
-  function Fact($Node,$Unit,[bool]$Output=$false) {
+  function Fact($Node,$Unit,[bool]$Output=$false,[bool]$ReaderInputs=$false) {
     if ($null -eq $Node) { return 0 }
     $mask=0
     if (-not $factParts.ContainsKey($Node)) {
@@ -259,12 +259,17 @@ function Get-LedgerReaderCensus {
         -not $nested
       })
     }
-    if ($Output -and -not $outputFactParts.ContainsKey($Node)) {
+    $outputParts=if ($ReaderInputs) { $readerInputFactParts } else { $outputFactParts }
+    if ($Output -and -not $outputParts.ContainsKey($Node)) {
       # A data reader partitions its own result, not a sibling return branch.
       # Function/effect resolution is complete before assignment facts flow.
-      $outputFactParts[$Node]=@($factParts[$Node] | Where-Object {
+      $outputParts[$Node]=@($factParts[$Node] | Where-Object {
         $ancestor=$_;$dataResult=$false
         while ($ancestor) {
+          # Classification retains inputs consumed by nested native reads,
+          # even when their resulting data is passed through another call.
+          if ($ReaderInputs -and $ancestor -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+              (DataResult $ancestor $Unit)) { break }
           if (DataResult $ancestor $Unit) { $dataResult=$true;break }
           if ($ancestor -eq $Node) { break }
           $ancestor=$ancestor.Parent
@@ -272,7 +277,7 @@ function Get-LedgerReaderCensus {
         -not $dataResult
       })
     }
-    $parts=if ($Output) { $outputFactParts[$Node] } else { $factParts[$Node] }
+    $parts=if ($Output) { $outputParts[$Node] } else { $factParts[$Node] }
     foreach ($part in $parts) {
       if ($part -is [Management.Automation.Language.VariableExpressionAst]) {
         $key=Key $part $Unit
@@ -884,7 +889,7 @@ function Get-LedgerMemoryBytes {
           $opaqueStatic=$node.Static -and
             ($node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
              $node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst])
-          $invocationMask=Fact $node $unit $true
+          $invocationMask=Fact $node $unit $true $true
           $constructorCandidate=$node.Static -and $node.Member.Value -ieq 'new' -and
             $type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)'
           if ($opaqueStatic -or ($invocationMask -band 5) -or $constructorCandidate -or
@@ -982,7 +987,7 @@ function Get-LedgerMemoryBytes {
         }
         continue
       }
-      $mask=Fact $argument $unit $true
+      $mask=Fact $argument $unit $true $true
       $pathArgument=if ($family -eq 'Get-Content') { ReaderPath $argument } elseif ($argument -isnot [Management.Automation.Language.CommandAst]) { $argument } else { $null }
       # Inventory every native I/O shape, including non-ledger exclusions.
       # Only path-forwarders with no ledger provenance are irrelevant.
