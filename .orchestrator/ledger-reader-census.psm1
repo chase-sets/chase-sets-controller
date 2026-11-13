@@ -89,6 +89,8 @@ function Get-LedgerReaderCensus {
   [void]$memoryFactFunctions.Add('get-ledgermemorybytes')
   $ownerDataFunctions=@('read-dispatchledgersnapshot','read-dispatchledgerlines','read-dispatchledgerbytes','read-dispatchcounthistory','read-exactheadreviewhistory')
   foreach ($name in $ownerDataFunctions) { [void]$dataFunctions.Add($name) }
+  $ownerDataWrappers=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  $functionNameCounts=@{}
   $rows=[Collections.Generic.List[object]]::new()
   $terminalTrapProof=@{}
   $memoryBindingProof=@{};$aliasRebindings=@{}
@@ -235,8 +237,9 @@ function Get-LedgerReaderCensus {
   }
   function DataResult($Node,$Unit) {
     if ($Node -is [Management.Automation.Language.CommandAst]) {
-      return $dataFunctions.Contains((CommandName $Node $Unit)) -and
-        -not (OpaqueInvocation $Node $Unit) -and -not (MemoryFactCommand $Node $Unit)
+      $name=CommandName $Node $Unit
+      return -not (OpaqueInvocation $Node $Unit) -and
+        ($ownerDataWrappers.Contains($name) -or ($dataFunctions.Contains($name) -and -not (MemoryFactCommand $Node $Unit)))
     }
     return $Node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $Node.Static -and
       $Node.Member.Value -match '^Read(All|Lines)' -and $Node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
@@ -392,6 +395,43 @@ function Get-LedgerReaderCensus {
     $element=$Node.PipelineElements[0]
     if ($element -isnot [Management.Automation.Language.CommandExpressionAst] -or $element.Redirections.Count) { return $null }
     return $element.Expression
+  }
+  function OwnerDataExpression($Node,$Unit) {
+    if ($Node -is [Management.Automation.Language.PipelineAst]) {
+      if ($Node.Background -or $Node.PipelineElements.Count -ne 1) { return $false }
+      $Node=$Node.PipelineElements[0]
+    }
+    if ($Node -is [Management.Automation.Language.CommandExpressionAst]) {
+      if ($Node.Redirections.Count) { return $false }
+      $Node=$Node.Expression
+    }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return OwnerDataExpression $Node.Pipeline $Unit }
+    if ($Node -isnot [Management.Automation.Language.CommandAst] -or $Node.Redirections.Count -or (OpaqueInvocation $Node $Unit)) { return $false }
+    $name=CommandName $Node $Unit
+    return $name -in $ownerDataFunctions -or $ownerDataWrappers.Contains($name)
+  }
+  function OwnerDataWrapper($Target) {
+    $body=$Target.node.Body
+    if ($Target.node.IsFilter -or $Target.node.IsWorkflow -or $body.BeginBlock -or $body.ProcessBlock -or
+        $body.CleanBlock -or $body.DynamicParamBlock -or -not $body.EndBlock -or $body.EndBlock.Traps.Count -or
+        $body.ParamBlock.Attributes.Count -or @($Target.parameters | Where-Object { $_.DefaultValue -or $_.Attributes.Count }).Count) { return $false }
+    $statements=@($body.EndBlock.Statements)
+    if ($statements.Count -eq 1) {
+      $output=$statements[0]
+      if ($output -is [Management.Automation.Language.ReturnStatementAst]) { $output=$output.Pipeline }
+      return OwnerDataExpression $output $Target.unit
+    }
+    if ($statements.Count -ne 2) { return $false }
+    $assignment=$statements[0];$return=$statements[1]
+    if ($assignment -isnot [Management.Automation.Language.AssignmentStatementAst] -or
+        $assignment.Operator -ne [Management.Automation.Language.TokenKind]::Equals -or
+        $assignment.Left -isnot [Management.Automation.Language.VariableExpressionAst] -or
+        $assignment.Left.VariablePath.UserPath -match ':' -or
+        $return -isnot [Management.Automation.Language.ReturnStatementAst]) { return $false }
+    $value=SingleExpression $return.Pipeline
+    return $value -is [Management.Automation.Language.VariableExpressionAst] -and
+      $value.VariablePath.UserPath -ieq $assignment.Left.VariablePath.UserPath -and
+      (OwnerDataExpression $assignment.Right $Target.unit)
   }
   function TerminalUnitTrap($Unit) {
     if (-not $Unit.traps.Count) { return $true }
@@ -553,6 +593,8 @@ function Get-LedgerReaderCensus {
     }
     foreach ($function in (Find-LedgerCensusAst $ast ([Management.Automation.Language.FunctionDefinitionAst]))) {
       $name=$function.Name.ToLowerInvariant()
+      $leaf=($name -split ':')[-1]
+      $functionNameCounts[$leaf]++
       if (-not $functions.ContainsKey($name)) { $functions[$name]=@() }
       $parameters=@($(if ($function.Parameters) { $function.Parameters } elseif ($function.Body.ParamBlock) { $function.Body.ParamBlock.Parameters }) | Where-Object { $null -ne $_ })
       $functions[$name]+=[pscustomobject]@{unit=$unit;parameters=$parameters;node=$function
@@ -764,6 +806,16 @@ function Get-LedgerMemoryBytes {
     }
   }
   Write-Verbose 'Ledger census: resolving data functions'
+  # Only direct data output or assignment followed by returning that same local
+  # is proved here. Any-reader-call reachability is not an output partition.
+  $changed=$true
+  while ($changed) {
+    $changed=$false
+    foreach ($name in @($functions.Keys)) {
+      if ($name -match ':' -or $functionNameCounts[$name] -ne 1 -or $ownerDataWrappers.Contains($name)) { continue }
+      if ((OwnerDataWrapper $functions[$name][0]) -and $ownerDataWrappers.Add($name)) { $changed=$true }
+    }
+  }
   # A reader's output is row data, not a path alias. Derive that partition
   # transitively so a transcript selected by a dispatch row is not mistaken
   # for the canonical ledger itself. Literal path/filter scriptblocks are

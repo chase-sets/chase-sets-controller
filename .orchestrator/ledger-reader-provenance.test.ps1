@@ -112,6 +112,18 @@ try {
     ownerDataMixedForeach=@(1,'$p="dispatch-log.jsonl";foreach($v in $(if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p})){Invoke-Unclassified -Value $v}')
     ownerDataMixedArgument=@(1,'$p="dispatch-log.jsonl";Invoke-Unclassified -Value $(if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p})')
     ownerDataMixedBound=@(1,'function Consumer {param($Value);Invoke-Unclassified -Value $Value};$p="dispatch-log.jsonl";Consumer -Value $(if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p})')
+    ownerDataWrapper=@(0,'function Wrapper {param($p);Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperReturn=@(0,'function Wrapper {param($p);return (Read-DispatchLedgerSnapshot -Path $p)};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperAssignment=@(0,'function Wrapper {param($p);$data=Read-DispatchLedgerSnapshot -Path $p;return $data};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperTransitive=@(0,'function Wrapper {param($p);$data=Inner -p $p;return $data};function Inner {param($p);Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperNative=@(3,'function Wrapper {param($p);Read-DispatchLedgerSnapshot -Path $p;[IO.File]::ReadAllText($p)};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperRawReturn=@(2,'function Wrapper {param($p);$data=Read-DispatchLedgerSnapshot -Path $p;return $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperReassigned=@(2,'function Wrapper {param($p);$data=Read-DispatchLedgerSnapshot -Path $p;$data=$p;return $data};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperDuplicate=@(2,'function Wrapper {param($p);Read-DispatchLedgerSnapshot -Path $p};function Wrapper {param($p);$p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperScopeCollision=@(2,'function Wrapper {param($p);Read-DispatchLedgerSnapshot -Path $p};function global:Wrapper {param($p);$p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperOpaque=@(2,'function Wrapper {param($p);& Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperTrap=@(2,'function Wrapper {param($p);trap {continue};Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperDefault=@(2,'function Wrapper {param($p=$(return "dispatch-log.jsonl"));Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
   }
   foreach ($name in $ownerCases.Keys) {
     [IO.File]::WriteAllText($path,$ownerCases[$name][1])
@@ -121,6 +133,8 @@ try {
     if ($name -ceq 'ownerDataMixed' -and -not @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count) { $failures.Add("dispatch:$name") }
     if ($name -in @('ownerDataMixedRhs','ownerDataMixedWrapper','ownerDataMixedForeach','ownerDataMixedArgument','ownerDataMixedBound') -and @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
     if ($name -ceq 'ownerDataNative' -and -not @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' }).Count) { $failures.Add("native:$name") }
+    if ($name -like 'ownerDataWrapper*' -and $ownerCases[$name][0] -gt 0 -and @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
+    if ($name -ceq 'ownerDataWrapperNative' -and @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("native:$name") }
     $observed.Add([pscustomobject]@{case=$name;expectedViolation=([int]$ownerCases[$name][0] -gt 0);violations=$violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)})
     Write-Output "PROVENANCE case=$name violations=$($violations.Count) expected=$($ownerCases[$name][0])"
   }
