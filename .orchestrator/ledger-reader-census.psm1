@@ -813,7 +813,7 @@ function Get-LedgerMemoryBytes {
         if (AddFact (Key $parameter.Name $unit) (Fact $parameter.DefaultValue $unit)) { $changed=$true }
       }
       foreach ($loop in $unit.loops) {
-        if (AddFact (Key $loop.Variable $unit) (Fact $loop.Condition $unit)) { $changed=$true }
+        if (AddFact (Key $loop.Variable $unit) (Fact $loop.Condition $unit $true)) { $changed=$true }
       }
       foreach ($call in $unit.calls) {
         $name=CommandName $call $unit
@@ -839,7 +839,7 @@ function Get-LedgerMemoryBytes {
           $bound=Arguments $call $target.parameters
           foreach ($parameter in $target.parameters) {
             $p=$parameter.Name.VariablePath.UserPath.ToLowerInvariant()
-            if ($bound.ContainsKey($p) -and (AddFact (Key $parameter.Name $target.unit) (Fact $bound[$p] $unit))) { $changed=$true }
+            if ($bound.ContainsKey($p) -and (AddFact (Key $parameter.Name $target.unit) (Fact $bound[$p] $unit $true))) { $changed=$true }
             if ($bound.ContainsKey($p) -and (AddScriptAlias (Key $parameter.Name $target.unit) @(ScriptNames $bound[$p] $unit))) { $changed=$true }
           }
         }
@@ -884,7 +884,7 @@ function Get-LedgerMemoryBytes {
           $opaqueStatic=$node.Static -and
             ($node.Expression -isnot [Management.Automation.Language.TypeExpressionAst] -or
              $node.Member -isnot [Management.Automation.Language.StringConstantExpressionAst])
-          $invocationMask=Fact $node $unit
+          $invocationMask=Fact $node $unit $true
           $constructorCandidate=$node.Static -and $node.Member.Value -ieq 'new' -and
             $type -match '(^|\.)(File|FileStream|StreamReader)(\[|$)'
           if ($opaqueStatic -or ($invocationMask -band 5) -or $constructorCandidate -or
@@ -982,7 +982,7 @@ function Get-LedgerMemoryBytes {
         }
         continue
       }
-      $mask=Fact $argument $unit
+      $mask=Fact $argument $unit $true
       $pathArgument=if ($family -eq 'Get-Content') { ReaderPath $argument } elseif ($argument -isnot [Management.Automation.Language.CommandAst]) { $argument } else { $null }
       # Inventory every native I/O shape, including non-ledger exclusions.
       # Only path-forwarders with no ledger provenance are irrelevant.
