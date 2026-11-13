@@ -407,6 +407,8 @@ function Get-LedgerReaderCensus {
     }
     if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return OwnerDataExpression $Node.Pipeline $Unit }
     if ($Node -isnot [Management.Automation.Language.CommandAst] -or $Node.Redirections.Count -or (OpaqueInvocation $Node $Unit)) { return $false }
+    # Argument evaluation can return from the wrapper before the reader runs.
+    if (@(Find-LedgerCensusAst $Node ([Management.Automation.Language.ReturnStatementAst])).Count) { return $false }
     $name=CommandName $Node $Unit
     return $name -in $ownerDataFunctions -or $ownerDataWrappers.Contains($name)
   }

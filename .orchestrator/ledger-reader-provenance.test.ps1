@@ -124,6 +124,8 @@ try {
     ownerDataWrapperOpaque=@(2,'function Wrapper {param($p);& Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
     ownerDataWrapperTrap=@(2,'function Wrapper {param($p);trap {continue};Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
     ownerDataWrapperDefault=@(2,'function Wrapper {param($p=$(return "dispatch-log.jsonl"));Read-DispatchLedgerSnapshot -Path $p};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperArgumentReturn=@(2,'function Wrapper {param($p);Read-DispatchLedgerSnapshot -Path $(return $p)};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
+    ownerDataWrapperAssignedArgumentReturn=@(2,'function Wrapper {param($p);$data=Read-DispatchLedgerSnapshot -Path $(if($flag){return $p}else{$p});return $data};$p="dispatch-log.jsonl";$v=Wrapper -p $p;Invoke-Unclassified -Value $v')
   }
   foreach ($name in $ownerCases.Keys) {
     [IO.File]::WriteAllText($path,$ownerCases[$name][1])
