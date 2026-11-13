@@ -386,6 +386,7 @@ Case 'legacy-history-policy-omission-mutant' {
 if (-not $SkipMutants -and $script:failures -eq 0) {
   Case 'dispatch-scripted-guard-omission-mutants' {
     $source=[IO.File]::ReadAllText($query)
+    Copy-Item -LiteralPath (Join-Path $runtime 'dispatch-ledger-reader.psm1') -Destination $scratch
     $mutants=@(
       @('threshold', '$count -ge 15', '$count -ge 16'),
       @('event-kind', '$row.kind -ceq ''dispatch''', '$row.kind -cin @(''dispatch'',''decision-filed'')'),
