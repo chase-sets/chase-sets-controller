@@ -892,7 +892,10 @@ function Get-LedgerMemoryBytes {
               # A fixed canonical child names the ledger, not its directory.
               # Keep prior facts and all uncertain path components monotone.
               $join=$variable.Parent
-              if ($join -is [Management.Automation.Language.CommandAst] -and $join.GetCommandName() -ieq 'Join-Path' -and
+              if ($argument -is [Management.Automation.Language.ParenExpressionAst] -and -not $argument.Pipeline.Background -and
+                  $argument.Pipeline.PipelineElements.Count -eq 1 -and $argument.Pipeline.PipelineElements[0] -eq $join -and
+                  $join -is [Management.Automation.Language.CommandAst] -and $join.GetCommandName() -ieq 'Join-Path' -and
+                  -not $functionNameCounts.ContainsKey('join-path') -and -not (OpaqueInvocation $join $unit) -and -not $join.Redirections.Count -and
                   $join.CommandElements.Count -eq 3 -and $join.CommandElements[1] -eq $variable -and
                   $join.CommandElements[2] -is [Management.Automation.Language.StringConstantExpressionAst] -and
                   $join.CommandElements[2].Value -match '(?i)(^|[/\\])dispatch-log\.jsonl$') { continue }

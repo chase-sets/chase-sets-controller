@@ -76,6 +76,10 @@ try {
     ownerMixedPath=@(1,'param($root,$Path);Read-DispatchLedgerSnapshot -Path (Join-Path $root $Path);Invoke-Unclassified -Path $Path')
     ownerSharedRootPriorFact=@(1,'$root="dispatch-log.jsonl";Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path $root')
     ownerOtherLeaf=@(1,'param($root);Read-DispatchLedgerSnapshot -Path (Join-Path $root ''custom.jsonl'');Invoke-Unclassified -Path $root')
+    ownerShadowedJoin=@(1,'param($root);function Join-Path { param($base,$child);$base };Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path $root')
+    ownerScopedShadowedJoin=@(1,'param($root);function script:Join-Path { param($base,$child);$base };Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path $root')
+    ownerAliasedJoin=@(1,'param($root);Set-Alias Join-Path Invoke-Unclassified;Read-DispatchLedgerSnapshot -Path (Join-Path $root ''dispatch-log.jsonl'');Invoke-Unclassified -Path $root')
+    ownerTransformedJoin=@(1,'param($root);Read-DispatchLedgerSnapshot -Path ((Join-Path $root ''dispatch-log.jsonl'') -replace ''dispatch-log.jsonl'','''');Invoke-Unclassified -Path $root')
     alias=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';Set-Alias ledgerRead Get-Content;ledgerRead -LiteralPath $p')
   }
   foreach ($name in $cases.Keys) {
