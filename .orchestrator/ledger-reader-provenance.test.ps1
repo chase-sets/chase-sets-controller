@@ -20,6 +20,7 @@ try {
     uncertainInstance=@(0,'param($root,$name,$x);$p="$root/$name";$x.Read($p)')
     mixedHelper=@(1,'param($root,$name);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};Invoke-Synthetic -Path $p')
     mixedInstance=@(1,'param($root,$name,$x);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};$x.Read($p)')
+    mixedNativeRhs=@(1,'$p="dispatch-log.jsonl";$v=if($flag){[IO.File]::ReadAllBytes("receipt.json")}else{$p};Invoke-Unclassified -Value $v')
     shadowedParameter=@(0,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic "receipt.json"')
     shadowedDefault=@(0,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path="receipt.json");Invoke-Unclassified -Path $Path};Invoke-Synthetic')
     shadowedMixed=@(1,'$Path="dispatch-log.jsonl";function Invoke-Synthetic {param($Path);Invoke-Unclassified -Path $Path};Invoke-Synthetic "receipt.json";Invoke-Synthetic "dispatch-log.jsonl"')
@@ -83,7 +84,7 @@ try {
       $native=@($result.violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' })
       if ($native.Count -ne 1) { $failures.Add("native:$name") }
     }
-    if ($name -in @('selfDefault','abbreviatedDispatch','exactNamedDispatch')) {
+    if ($name -in @('selfDefault','abbreviatedDispatch','exactNamedDispatch','mixedNativeRhs')) {
       $forwarded=@($result.violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput })
       if ($forwarded.Count -ne 1) { $failures.Add("forwarded:$name") }
     }
@@ -101,6 +102,9 @@ try {
     ownerDataMixed=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;$value=$snapshot;if($flag){$value=$Path};Invoke-Unclassified -Value $value')
     ownerDataOpaque=@(1,'$Path="dispatch-log.jsonl";$snapshot=& Read-DispatchLedgerSnapshot -Path $Path;Invoke-Unclassified -Value $snapshot')
     ownerDataNative=@(1,'$Path="dispatch-log.jsonl";$snapshot=Read-DispatchLedgerSnapshot -Path $Path;[IO.File]::ReadAllText($snapshot)')
+    ownerDataConditional=@(0,'$p="dispatch-log.jsonl";$v=if($flag){Read-DispatchLedgerSnapshot -Path $p}else{Read-DispatchLedgerBytes -Path $p};Invoke-Unclassified -Value $v')
+    ownerDataMixedRhs=@(1,'$p="dispatch-log.jsonl";$v=if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p};Invoke-Unclassified -Value $v')
+    ownerDataMixedWrapper=@(2,'function Wrapper {param($p);if($flag){Read-DispatchLedgerSnapshot -Path $p}else{$p}};$v=Wrapper -p "dispatch-log.jsonl";Invoke-Unclassified -Value $v')
   }
   foreach ($name in $ownerCases.Keys) {
     [IO.File]::WriteAllText($path,$ownerCases[$name][1])
@@ -108,6 +112,7 @@ try {
     $violations=@($result.violations | Where-Object path -ceq 'reader.ps1')
     if ($result.scanned -ne 2 -or $result.total -ne 2 -or $violations.Count -ne $ownerCases[$name][0]) { $failures.Add($name) }
     if ($name -ceq 'ownerDataMixed' -and -not @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count) { $failures.Add("dispatch:$name") }
+    if ($name -in @('ownerDataMixedRhs','ownerDataMixedWrapper') -and @($violations | Where-Object { $_.family -ceq 'invoke-unclassified' -and $_.dispatchInput }).Count -ne 1) { $failures.Add("dispatch:$name") }
     if ($name -ceq 'ownerDataNative' -and -not @($violations | Where-Object { $_.family -ceq 'IO.File.ReadAllText' -and -not $_.dispatchInput -and $_.violationReason -ceq 'native-reader' }).Count) { $failures.Add("native:$name") }
     $observed.Add([pscustomobject]@{case=$name;expectedViolation=([int]$ownerCases[$name][0] -gt 0);violations=$violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)})
     Write-Output "PROVENANCE case=$name violations=$($violations.Count) expected=$($ownerCases[$name][0])"

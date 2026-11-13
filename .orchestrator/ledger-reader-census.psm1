@@ -80,7 +80,7 @@ function Get-LedgerReaderCensus {
   if ($LASTEXITCODE -ne 0 -or -not $paths.Count) { throw 'LEDGER_CENSUS_INVENTORY_MISSING' }
   Write-Verbose "Ledger census: parsing $($paths.Count) tracked sources"
   $units=[Collections.Generic.List[object]]::new();$functions=@{};$facts=@{};$types=@{}
-  $variableKeys=@{};$factParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
+  $variableKeys=@{};$factParts=@{};$outputFactParts=@{};$scriptParts=@{};$assignmentShapes=@{};$literalFacts=@{}
   $pathAssignments=@{};$pathParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $stringParameters=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $scriptAliases=@{};$trackedScripts=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -233,7 +233,16 @@ function Get-LedgerReaderCensus {
     if ($name -in $ownerDataFunctions) { return $false }
     return MemoryEffectCommand $Node $Unit
   }
-  function Fact($Node,$Unit) {
+  function DataResult($Node,$Unit) {
+    if ($Node -is [Management.Automation.Language.CommandAst]) {
+      return $dataFunctions.Contains((CommandName $Node $Unit)) -and
+        -not (OpaqueInvocation $Node $Unit) -and -not (MemoryFactCommand $Node $Unit)
+    }
+    return $Node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $Node.Static -and
+      $Node.Member.Value -match '^Read(All|Lines)' -and $Node.Expression -is [Management.Automation.Language.TypeExpressionAst] -and
+      $Node.Expression.TypeName.FullName -match '^(System\.)?IO\.File$'
+  }
+  function Fact($Node,$Unit,[bool]$Output=$false) {
     if ($null -eq $Node) { return 0 }
     $mask=0
     if (-not $factParts.ContainsKey($Node)) {
@@ -250,7 +259,21 @@ function Get-LedgerReaderCensus {
         -not $nested
       })
     }
-    foreach ($part in $factParts[$Node]) {
+    if ($Output -and -not $outputFactParts.ContainsKey($Node)) {
+      # A data reader partitions its own result, not a sibling return branch.
+      # Function/effect resolution is complete before assignment facts flow.
+      $outputFactParts[$Node]=@($factParts[$Node] | Where-Object {
+        $ancestor=$_;$dataResult=$false
+        while ($ancestor) {
+          if (DataResult $ancestor $Unit) { $dataResult=$true;break }
+          if ($ancestor -eq $Node) { break }
+          $ancestor=$ancestor.Parent
+        }
+        -not $dataResult
+      })
+    }
+    $parts=if ($Output) { $outputFactParts[$Node] } else { $factParts[$Node] }
+    foreach ($part in $parts) {
       if ($part -is [Management.Automation.Language.VariableExpressionAst]) {
         $key=Key $part $Unit
         if ($facts.ContainsKey($key)) { $mask=$mask -bor $facts[$key] }
@@ -773,18 +796,11 @@ function Get-LedgerMemoryBytes {
         if ($assignment.Left -is [Management.Automation.Language.VariableExpressionAst]) {
           if (-not $assignmentShapes.ContainsKey($assignment)) {
             $assignmentShapes[$assignment]=@{
-              dataCall=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { $dataFunctions.Contains((CommandName $_ $unit)) } | Select-Object -First 1
-              dataRead=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.InvokeMemberExpressionAst]) | Where-Object { $_.Member.Value -match '^Read(All|Lines)' -and $_.Expression -is [Management.Automation.Language.TypeExpressionAst] -and $_.Expression.TypeName.FullName -match '^(System\.)?IO\.File$' } | Select-Object -First 1
-              memoryCopy=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.CommandAst]) | Where-Object { (OpaqueInvocation $_ $unit) -or (MemoryFactCommand $_ $unit) } | Select-Object -First 1
               type=Find-LedgerCensusAst $assignment.Right ([Management.Automation.Language.TypeExpressionAst]) | Select-Object -First 1
             }
           }
-          $dataCall=$assignmentShapes[$assignment].dataCall;$dataRead=$assignmentShapes[$assignment].dataRead
-          # A data partition cannot suppress opaque values on another branch.
-          # Preserve uncertainty as well as every native-copy input fact.
-          $mask=Fact $assignment.Right $unit
-          if (($assignmentShapes[$assignment].memoryCopy -or (-not $dataCall -and -not $dataRead) -or ($mask -band 4)) -and
-              (AddFact (Key $assignment.Left $unit) $mask)) { $changed=$true }
+          $mask=Fact $assignment.Right $unit $true
+          if (AddFact (Key $assignment.Left $unit) $mask) { $changed=$true }
           $type=$assignmentShapes[$assignment].type
           # Only a type-valued alias has static members. The result of
           # [IO.File]::Open(...) is a stream, not an alias for IO.File.
