@@ -12,7 +12,7 @@ try {
   $expected=[ordered]@{
     'install-controller-skills.ps1'=@('$SourcePath','$DestinationPath','$recordPath','$milestoneSkillPath',
       '$source','$helperPath','$identityDestination','$helperDestination','$helperDestination','$destination','$destination')
-    'controller-install-lock.psm1'=@('$ownerPath','$ClaimPath')
+    'controller-install-lock.psm1'=@('$ownerPath','$ClaimPath','$Path','$source')
     'check-controller-skill-freshness.ps1'=@('$Path','$markerPath','$releaseRecord')
   }
   $asts=@{}
@@ -32,12 +32,24 @@ try {
     $expectedImport=if($file -ceq 'controller-install-lock.psm1'){$import.Replace(' -Force',' -Global -Force')}else{$import}
     $imports=@($ast.EndBlock.Statements|Where-Object {$_.Extent.Text -ceq $expectedImport})
     Check ($imports.Count -eq 1) "literal unconditional owner import: $file"
-    $reads=@($ast.FindAll({param($node)
+    $native=@($ast.FindAll({param($node)
       ($node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -cin @('Get-Content','Get-FileHash')) -or
       ($node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
         $node.Expression.Extent.Text -ceq '[IO.File]' -and $node.Member.Value -cin @('ReadAllBytes','Open'))
     },$true))
+    $reads=@($native|Where-Object {
+      $_ -is [Management.Automation.Language.CommandAst] -or $_.Member.Value -ceq 'ReadAllBytes' -or
+      ($_.Member.Value -ceq 'Open' -and $_.Arguments.Count -eq 4 -and
+        $_.Arguments[1].Extent.Text -ceq '[IO.FileMode]::Open' -and $_.Arguments[2].Extent.Text -ceq '[IO.FileAccess]::Read')
+    })
+    $writes=@($native|Where-Object {$_ -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+      $_.Member.Value -ceq 'Open' -and $_.Arguments.Count -eq 4 -and
+      $_.Arguments[1].Extent.Text -ceq '[IO.FileMode]::CreateNew' -and $_.Arguments[2].Extent.Text -ceq '[IO.FileAccess]::Write'})
+    Check ($native.Count -eq $reads.Count+$writes.Count) "complete native read/write classification: $file"
     Check ($reads.Count -eq $expected[$file].Count) "native path census: $file"
+    if($file -ceq 'controller-install-lock.psm1'){
+      Check ($writes.Count -eq 1 -and $writes[0].Extent.Text -ceq '[IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)') 'archive create-only writer overload unchanged'
+    }else{Check ($writes.Count -eq 0) "no unexpected native writer: $file"}
     for($index=0;$index -lt $reads.Count;$index++){
       $read=$reads[$index];$original=$expected[$file][$index];$readCount++
       Check ($read.Extent.Text.Contains("(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $original)",[StringComparison]::Ordinal)) "original path guarded: ${file}:$($read.Extent.StartLineNumber)"
@@ -75,7 +87,7 @@ try {
       }
     }
   }
-  Check ($readCount -eq 16) 'sixteen native path expressions covered'
+  Check ($readCount -eq 18) 'eighteen native read path expressions covered'
   $lockText=$asts['controller-install-lock.psm1'].Extent.Text
   Check ($lockText.Contains('([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)')) 'snapshot sharing flags retained'
   Check ($lockText.Contains('$openAttempt -ge 8 -or $openDeadline.ElapsedMilliseconds -ge 1000')) 'snapshot retry/deadline bound retained'

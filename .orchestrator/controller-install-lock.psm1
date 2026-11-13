@@ -345,7 +345,7 @@ function Test-ControllerLegacyReferenceBytes($Entry, [string]$Path) {
   $trustedRoot = if ($Path -ceq $Entry.Archive) { $Entry.ArchiveTrustedRoot } else { $Entry.TrustedRoot }
   Assert-ControllerLegacyReferencePath $Path $trustedRoot
   if (-not (Test-ControllerInstallSafeFile $Path)) { return $false }
-  $bytes = [IO.File]::ReadAllBytes($Path)
+  $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))
   return [Convert]::ToBase64String($bytes) -ceq [Convert]::ToBase64String($Entry.Bytes) -and
     [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() -ceq $Entry.Hash
 }
@@ -396,7 +396,7 @@ function Get-ControllerLegacyReferenceArchivePlan {
     if (-not (Test-ControllerInstallSafeFile $source)) {
       throw "legacy reference archive refused: not an ordinary file: $source"
     }
-    $bytes = [IO.File]::ReadAllBytes($source)
+    $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $source))
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
     $entry = [pscustomobject]@{ Source = $source; Archive = Join-Path $archiveRoot "$hash-$name"; Bytes = $bytes; Hash = $hash; TrustedRoot = $DestinationRoot; ArchiveTrustedRoot = $ContainerRoot }
     Assert-ControllerLegacyReferencePath $entry.Archive $entry.ArchiveTrustedRoot
