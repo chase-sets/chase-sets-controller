@@ -2446,8 +2446,12 @@ if ($isHostVerifier) {
   # Resolve the standard Node distribution, not a shell shim or embedded Node
   # executable whose process.execPath is pnpm.exe. Never execute shim text.
   foreach ($entry in @(Get-Command pnpm -All -CommandType Application -ErrorAction SilentlyContinue)) {
-    $candidate = Join-Path (Split-Path -Parent $entry.Source) "node_modules/pnpm/bin/pnpm.cjs"
-    if (Test-PrecursorSafeFile $candidate) { $pnpmScript = [IO.Path]::GetFullPath($candidate); break }
+    foreach ($relative in @('node_modules/pnpm/bin/pnpm.cjs', 'node_modules/pnpm/bin/pnpm.mjs',
+        '../pnpm/bin/pnpm.cjs', '../pnpm/bin/pnpm.mjs')) {
+      $candidate = Join-Path (Split-Path -Parent $entry.Source) $relative
+      if (Test-PrecursorSafeFile $candidate) { $pnpmScript = [IO.Path]::GetFullPath($candidate); break }
+    }
+    if ($pnpmScript) { break }
   }
   if (-not $hostNode -or (-not $isManifestReplay -and -not $pnpmScript)) {
     throw "heavy-verifier: invoke-heavy-verifier.ps1 requires a plain Node executable and Node-hosted pnpm distribution; no unguarded fallback"
