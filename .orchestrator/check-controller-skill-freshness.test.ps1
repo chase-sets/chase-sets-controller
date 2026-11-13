@@ -21,8 +21,6 @@ try {
     "milestone-orchestrator/references/brief-attribution.md",
     "milestone-orchestrator/references/one-shot-actions.md",
     "milestone-orchestrator/references/replan.md",
-    "milestone-orchestrator/scripts/query-ledgers.ps1",
-    "milestone-orchestrator/scripts/query-ledgers.test.ps1",
     "milestone-orchestrator/agents/openai.yaml",
     "orchestrator-shared/SKILL.md",
     "orchestrator-shared/agents/openai.yaml"

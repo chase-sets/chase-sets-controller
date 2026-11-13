@@ -481,6 +481,33 @@ function Test-ControllerSkillUndated([string]$Skill) {
   Assert-Enforced ($body -notmatch '\b\d{4}-\d{2}-\d{2}\b|\bTodd,\s+\d') 'controller-orchestrator body carries no dates or dated Todd attributions'
 }
 Test-ControllerSkillUndated $controllerSkill
+function Test-ControllerTestOnlyVerification([string]$Skill) {
+  $section = [regex]::Match($Skill, '(?ms)^### Test-only verification\r?\n(.*?)(?=^### |^## |\z)')
+  Assert-Enforced $section.Success 'test-only release scope is explicit'
+  $text = Compact-Text $section.Groups[1].Value
+  foreach ($required in @(
+    'affected tests, transitive consumers and relevant safety-boundary controls',
+    'not filenames alone', 'Unknown impact expands the verification scope.',
+    'Each selected identity must PASS on the published head.',
+    'A relevant failure or nonexecution blocks release',
+    'Applicable LOCAL_ONLY checks still need local proof',
+    'A test-only follow-up does not clear the remaining proof for a broader runtime feature.',
+    'Keep ordinary tests and relevant safety controls.',
+    'production or money safety, secrets, Todd-only authority, TCGplayer no-contact and no-credentials, paid or one-shot attempt limits',
+    'review, scan, release-tag and install safeguards'
+  )) {
+    Assert-Enforced ($text.Contains($required, [StringComparison]::Ordinal)) "test-only verification retains $required"
+  }
+  Assert-Enforced ((Compact-Text $Skill) -notmatch 'informational until its LOCAL_ONLY items are resolved') 'hosted proof is not deferred by unrelated portability'
+}
+Test-ControllerTestOnlyVerification $controllerSkill
+Assert-Mutant 'test-only-policy-section-removed' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('### Test-only verification', '### Verification details')) }
+Assert-Mutant 'test-only-selection-missing-transitive' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('transitive consumers', 'direct consumers')) }
+Assert-Mutant 'test-only-unknown-impact-downgraded' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('Unknown impact expands', 'Unknown impact narrows')) }
+Assert-Mutant 'test-only-relevant-failure-waived' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('nonexecution blocks release', 'nonexecution permits release')) }
+Assert-Mutant 'test-only-local-proof-omitted' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('still need local proof', 'need no local proof')) }
+Assert-Mutant 'test-only-broader-runtime-proof-waived' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('does not', 'does')) }
+Assert-Mutant 'test-only-safety-controls-omitted' { Test-ControllerTestOnlyVerification ($controllerSkill.Replace('Keep ordinary tests and relevant safety controls.', 'Keep selected tests.')) }
 # This loop decides fixes, repairs, reruns, sequencing and releases itself.
 function Test-ControllerOwnsDecisions([string]$Skill, [string]$Supervision) {
   $section = [regex]::Match($Skill, '(?ms)^## \d+\. Defects and rulings\r?\n(.*?)(?=^## |\z)')

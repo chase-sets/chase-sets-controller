@@ -3,7 +3,7 @@ name: controller-orchestrator
 description: Run the chase-sets controller loop - improve and release the orchestration controller (the .orchestrator runtime, the milestone-orchestrator and model-routing skills), own the orchestration-platform migration, and work routing, velocity and capacity, without taking capacity the product loop needs. Use in the controller dev container for controller code, controller releases, the controller issue backlog, or platform supervision.
 ---
 
-# Controller Orchestrator (v1.3, 2026-10-19)
+# Controller Orchestrator (v1.4, 2026-11-13)
 
 Read `orchestrator-shared` first (`~/.claude/skills/orchestrator-shared/SKILL.md`); its contract applies here and is not restated.
 
@@ -56,12 +56,14 @@ controller battery runs only in a window with no product heavy work queued.
 ## 5. Change and release
 
 1. Branch `codex/<topic>` from `origin/main` in `controller/`.
-2. Make the change. Run the changed tests and every test that reads a changed
-   file with `tools/run-tests.ps1` (pass the list via `pwsh -Command`). Use the
-   battery (`controller-release-battery.ps1`) only when the change touches
-   shared runtime that many tests read; tests that read private container
-   history run with `GIT_ALTERNATE_OBJECT_DIRECTORIES` set to the container's
-   `.git/objects` (read-only; never fetch private history into this clone).
+2. Make the change. Hosted CI on the published head is the proof. Select the
+   changed tests and every test that reads a changed file. Size local checks
+   to the blast radius, using `tools/run-tests.ps1` (pass the list via
+   `pwsh -Command`), not a mandatory local full rerun. Use the battery
+   (`controller-release-battery.ps1`) when changed shared runtime needs broad
+   coverage. Tests that need private container history use
+   `GIT_ALTERNATE_OBJECT_DIRECTORIES` set to the container's `.git/objects`
+   (read-only; never fetch private history into this clone).
 3. Get one focused review from a fresh session that did not author the change.
    Model-family pairing and strict dispatch prelogs are not required. Record
    only the PR, reviewed head, reviewer model, verdict and finding counts.
@@ -95,9 +97,27 @@ controller battery runs only in a window with no product heavy work queued.
    retries next cycle). Any other refused or failed install the product loop
    reports is a controller defect.
 
-Tags older than `controller-v2.116` cannot be installed by tag. Hosted CI
-(`controller-battery.yml`) is informational until its LOCAL_ONLY items are
-resolved; it is not a release gate.
+Tags older than `controller-v2.116` cannot be installed by tag.
+
+### Test-only verification
+
+For a test-only change, select affected tests, transitive consumers and relevant
+safety-boundary controls; do not require an unrelated full battery. Select by
+the behavior changed, not filenames alone: include production paths whose
+verification could be weakened. Unknown impact expands the verification scope.
+Record the selection and actual results on the PR, including unexecuted checks.
+Each selected identity must PASS on the published head. A relevant failure or
+nonexecution blocks release; never hide it or weaken a check merely for a pass.
+Applicable LOCAL_ONLY checks still need local proof; unrelated LOCAL_ONLY
+portability work is not a prerequisite. Hosted per-identity results are proof:
+an aggregate incomplete status from unselected items is not a full-battery PASS
+and does not negate passing selected items. A test-only follow-up does not
+clear the remaining proof for a broader runtime feature.
+
+Keep ordinary tests and relevant safety controls. This rule never waives
+production or money safety, secrets, Todd-only authority, TCGplayer no-contact
+and no-credentials, paid or one-shot attempt limits, or the review, scan,
+release-tag and install safeguards above. It adds no release tier or receipt.
 
 ### WorkspaceDbTest contract
 

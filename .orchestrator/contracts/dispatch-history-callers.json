@@ -42,7 +42,7 @@
       "callSha256": "f7645b68344e9b28ab6ad66e73f73b15c45b748121ca15420b745271b306591c"
     },
     {
-      "path": ".orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1",
+      "path": ".orchestrator/dispatch-count-history.ps1",
       "scope": "Read-DispatchCountHistory",
       "api": "read-dispatchcounthistory",
       "ordinal": 1,
@@ -52,7 +52,7 @@
       "callSha256": "323f15ff25457da042aa0fd1163c69f82840e35142b36cd577adbaeffec38b47"
     },
     {
-      "path": ".orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1",
+      "path": ".orchestrator/dispatch-count-history.ps1",
       "scope": "<script>",
       "api": "read-dispatchcounthistory",
       "ordinal": 1,
@@ -60,16 +60,6 @@
       "projection": "dispatch-count/v1",
       "peakEnvelope": "parsed-history",
       "callSha256": "2488820f73cbbe241de4e03ff910bf34c2d5324195cd60a83beed4ccb86fc3cc"
-    },
-    {
-      "path": ".orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1",
-      "scope": "<script>",
-      "api": "read-exactheadreviewhistory",
-      "ordinal": 1,
-      "mode": "one-pass-stream",
-      "projection": "dispatch-count/v1",
-      "peakEnvelope": "parsed-history",
-      "callSha256": "7de467c34094b7e12b8af4cafd343053ab929878260282c6770136da215c678f"
     },
     {
       "path": ".orchestrator/cost-harvest.ps1",

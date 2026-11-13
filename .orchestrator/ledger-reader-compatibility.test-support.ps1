@@ -36,7 +36,7 @@ function Test-DispatchLedgerConsumerCompatibility {
     }
     $query=& {
       param($runtime,$p)
-      . (Join-Path $runtime 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library -RuntimeRoot $runtime
+      . (Join-Path $runtime 'dispatch-count-history.ps1') -Library -RuntimeRoot $runtime
       Read-DispatchCountHistory -Path $p
     } $RuntimeRoot $path
     if ($Consumer -eq 'board') {
@@ -68,7 +68,7 @@ function Test-DispatchLedgerConsumerCompatibility {
       if (($oldAuthority | ConvertTo-Json -Depth 40 -Compress) -cne ($newAuthority | ConvertTo-Json -Depth 40 -Compress)) { throw "$Consumer landed reduction changed" }
       $decisions=& {
         param($runtime,$old,$new)
-        . (Join-Path $runtime 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library -RuntimeRoot $runtime
+        . (Join-Path $runtime 'dispatch-count-history.ps1') -Library -RuntimeRoot $runtime
         @((Get-DispatchCountDecision $old 985 open clear),(Get-DispatchCountDecision $new 985 open clear))
       } $RuntimeRoot $before $history
       if (($decisions[0] | ConvertTo-Json -Depth 20 -Compress) -cne ($decisions[1] | ConvertTo-Json -Depth 20 -Compress)) { throw "$Consumer dispatch/query reduction changed" }

@@ -7,74 +7,55 @@ function Check([bool]$Condition,[string]$Message) {
 $root=Join-Path ([IO.Path]::GetTempPath()) ('ledger-query-paths-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($root)
 try {
-  $source=Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+  $source=Join-Path $PSScriptRoot 'dispatch-count-history.ps1'
   $errors=$null
   $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$null,[ref]$errors)
-  Check ($errors.Count -eq 0) 'query source parses'
-  $reads=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Get-Content'},$true))
-  Check ($reads.Count -eq 2) 'complete native query reader inventory'
-  $paths=@('$Path','$resolvedQueryFile')
-  $layouts=[ordered]@{
-    source=@((Join-Path $root 'source/.orchestrator'),(Join-Path $root 'missing-runtime'))
-    installed=@((Join-Path $root 'installed'),(Join-Path $root 'installed-runtime'))
-  }
-  $payload='synthetic ledger text'
-  $positive=Join-Path $root 'ordinary.md'
-  [IO.File]::WriteAllText($positive,$payload,[Text.UTF8Encoding]::new($false))
-  $bytes=[IO.File]::ReadAllBytes($positive)
+  Check ($errors.Count -eq 0) 'runtime history source parses'
+  Check (-not (Test-Path (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'))) 'retired catalog query stays absent'
+  $redirect=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Read-DispatchCountHistory'},$true)
+  $calls=@($redirect.Body.FindAll({param($n)$n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'dispatch-ledger-reader\Read-DispatchCountHistory'},$true))
+  Check ($calls.Count -eq 1 -and $redirect.Extent.Text -notmatch 'IO\.File|GetTempFileName|ReadExactly|ConvertFrom-Json') 'runtime adapter delegates without a second reader'
+  $payload='{"kind":"dispatch","issue":985}'+[char]10
   $aliases=@('dispatch-log.jsonl','DISPATCH-LOG.JSONL','./dispatch-log.jsonl','dispatch-log.jsonl.',
     'dispatch-log.jsonl ','dispatch-log.jsonl:query','dispatch-log.jsonl.:query')
-  foreach($layout in $layouts.Keys) {
-    $runtime=$layouts[$layout][0];$fallback=$layouts[$layout][1]
-    $scripts=Join-Path $runtime 'controller-skills/milestone-orchestrator/scripts'
-    [void][IO.Directory]::CreateDirectory($scripts)
-    $entry=Join-Path $scripts 'query-ledgers.ps1'
-    Copy-Item -LiteralPath $source -Destination $entry
-    if($layout -ceq 'source') {
-      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'review-head-contract.psm1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $runtime
-    } else {
-      [void][IO.Directory]::CreateDirectory($fallback)
-      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $fallback
+  foreach($layout in @('source','installed')) {
+    $runtime=Join-Path $root $layout
+    [void][IO.Directory]::CreateDirectory($runtime)
+    $entry=Join-Path $runtime 'dispatch-count-history.ps1'
+    Copy-Item -LiteralPath $source,(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $runtime
+    . $entry -Library
+    foreach($alias in $aliases) {
+      $path=Join-Path $runtime $alias
+      [IO.File]::WriteAllText($path,$payload,[Text.UTF8Encoding]::new($false))
+      $before=[IO.File]::ReadAllBytes($path)
+      $history=Read-DispatchCountHistory $path -RequireTerminated
+      Check ($history.complete -and $history.rows.Count -eq 1 -and $history.rows[0].value.issue -eq 985) "canonical dispatch history/$layout/$alias"
+      Check ($history.snapshotLength -eq $before.Length -and $history.snapshotLines -eq 1 -and -not $history.partialTrailingRow) 'captured boundary preserved'
+      Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($path)) -ceq [Convert]::ToHexString($before)) 'history bytes unchanged'
     }
-    $preamble='param([string]$ProbePath)'+"`n. '"+$entry.Replace("'","''")+"' -Library -RuntimeRoot '"+$fallback.Replace("'","''")+"'`n"+
-      '$Path=$resolvedQueryFile=$ProbePath'+"`n"
-    for($i=0;$i -lt $reads.Count;$i++) {
-      $read=$reads[$i];$path=$paths[$i]
-      $guard="(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path)"
-      $probe=Join-Path $root 'probe.ps1'
-      [IO.File]::WriteAllText($probe,$preamble+$read.Extent.Text)
-      Check ((& $probe $positive) -ceq $payload) "actual native raw text/$layout/$i"
-      foreach($alias in $aliases) {
-        $target=Join-Path $root $alias;[IO.File]::WriteAllBytes($target,$bytes)
-        $held=[IO.File]::Open($target,'Open','ReadWrite','None')
-        try {
-          $failure='';try{& $probe $target|Out-Null}catch{$failure=$_.Exception.Message}
-          Check ($failure -match 'DISPATCH_LEDGER_OWNER_REQUIRED') "owner refusal before actual native query read/$layout/$i/$alias : $failure"
-        } finally {$held.Dispose()}
-        Check ([Convert]::ToHexString([IO.File]::ReadAllBytes($target)) -ceq [Convert]::ToHexString($bytes)) 'canonical alias bytes unchanged'
-      }
-      Check ($read.Extent.Text -ceq "Get-Content -LiteralPath $guard -Raw") 'literal raw native flags and original operand preserved'
-      $removed=$read.Extent.Text.Replace($guard,$path)
-      Check ($removed -cne $read.Extent.Text) 'exact guard-removal mutant changes operand'
-      [IO.File]::WriteAllText($probe,$preamble+$removed)
-      $held=[IO.File]::Open((Join-Path $root 'dispatch-log.jsonl'),'Open','ReadWrite','None')
-      try {
-        $failure='';try{& $probe (Join-Path $root 'dispatch-log.jsonl')|Out-Null}catch{$failure=$_.Exception.Message}
-        Check ($failure -and $failure -notmatch 'DISPATCH_LEDGER_OWNER_REQUIRED') 'guard removal reaches actual sharing refusal'
-      } finally {$held.Dispose()}
-    }
+    $path=Join-Path $runtime 'dispatch-log.jsonl'
+    [IO.File]::WriteAllText($path,$payload,[Text.UTF8Encoding]::new($false))
+    $prefix=Read-DispatchCountHistory $path -RequireTerminated
+    [IO.File]::AppendAllText($path,$payload,[Text.UTF8Encoding]::new($false))
+    $history=Read-DispatchCountHistory $path -PrefixHistory $prefix -RequireTerminated
+    Check ($history.complete -and $history.rows.Count -eq 2 -and $history.snapshotLines -eq 2) "prefix fold survives relocation/$layout"
+    [IO.File]::WriteAllText($path,$payload+$payload.TrimEnd([char]10),[Text.UTF8Encoding]::new($false))
+    $partial=Read-DispatchCountHistory $path
+    Check ($partial.complete -and $partial.partialTrailingRow) 'permissive snapshot reports partial tail'
+    Check ((Get-DispatchCountDecision $partial 985 open clear).state -ceq 'UNKNOWN') 'partial history never grants a decision'
+    Check (-not (Read-DispatchCountHistory $path -RequireTerminated).complete) 'logger termination requirement preserved'
+    [IO.File]::WriteAllText($path,('{broken'+[char]10),[Text.UTF8Encoding]::new($false))
+    Check (-not (Read-DispatchCountHistory $path).complete) 'malformed history refuses'
+
+    $missing=Join-Path $root "$layout-missing-owner"
+    [void][IO.Directory]::CreateDirectory($missing)
+    $missingEntry=Join-Path $missing 'dispatch-count-history.ps1'
+    Copy-Item -LiteralPath $source -Destination $missingEntry
+    $failure=''
+    try { & {param($e,$p). $e -Library; Read-DispatchCountHistory $p} $missingEntry $path|Out-Null } catch {$failure=$_.Exception.Message}
+    Check ($failure -match 'dispatch-ledger-reader.psm1') 'missing sibling owner refuses despite loaded modules; no runtime is borrowed'
   }
-  $missing=Join-Path $root 'missing-source'
-  $scripts=Join-Path $missing 'controller-skills/milestone-orchestrator/scripts'
-  [void][IO.Directory]::CreateDirectory($scripts)
-  Copy-Item -LiteralPath $source -Destination $scripts
-  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Destination $missing
-  foreach($entry in @((Join-Path $scripts 'query-ledgers.ps1'),(Join-Path $root 'installed/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'))) {
-    $fallback=if($entry.StartsWith($scripts,[StringComparison]::Ordinal)){Join-Path $root 'installed-runtime'}else{Join-Path $root 'absent-runtime'}
-    $failure='';try{& $entry -Library -RuntimeRoot $fallback|Out-Null}catch{$failure=$_.Exception.Message}
-    Check ($failure -match 'dispatch-ledger-reader.psm1') 'source owner never borrowed; missing installed owner refuses despite loaded modules'
-  }
-  Write-Output "PASS ledger-reader-query-paths checks=$checks native=2 layouts=2 aliases=7 guardRemoval=RED missingOwners=REFUSED"
+  Write-Output "PASS ledger-reader-query-paths checks=$checks runtimeAdapter=canonical layouts=2 aliases=7 prefix=preserved partial=refused missingOwners=REFUSED retiredQuery=absent"
 } finally {
   $full=[IO.Path]::GetFullPath($root)
   if((Split-Path -Parent $full).TrimEnd('\','/') -cne ([IO.Path]::GetFullPath([IO.Path]::GetTempPath())).TrimEnd('\','/') -or

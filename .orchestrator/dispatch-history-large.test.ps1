@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 if($CheckpointOnly){Import-Module (Join-Path $PSScriptRoot 'dispatch-history-checkpoint.psm1') -DisableNameChecking}
-. (Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1') -Library -RuntimeRoot $PSScriptRoot
+. (Join-Path $PSScriptRoot 'dispatch-count-history.ps1') -Library -RuntimeRoot $PSScriptRoot
 $temporary=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $root=Join-Path $temporary ('dispatch-history-large-'+[guid]::NewGuid().ToString('N'))
 $failures=[Collections.Generic.List[string]]::new()
@@ -188,7 +188,7 @@ try {
       }
     }
   }
-  $queryScript=Join-Path $PSScriptRoot 'controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+  $queryScript=Join-Path $PSScriptRoot 'dispatch-count-history.ps1'
   $claim=[ordered]@{schemaVersion='dispatch-count-decision/v1';id="dispatch-count-$issue-v1";
     phase='CLAIMED';count=16;lane='synthetic-large-decision';transcript='synthetic-large-decision.jsonl'}
   $claimJson=$claim | ConvertTo-Json -Compress

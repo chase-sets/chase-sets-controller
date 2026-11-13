@@ -49,7 +49,7 @@ Assert-Reader (@($census.rows | Where-Object test).Count -gt 0) 'test/fixture re
 Assert-Reader (@($census.rows | Where-Object { $_.role -eq 'retention-pattern' }).Count -gt 0) 'retention role lost'
 Assert-Reader (@($census.rows | Where-Object { $_.authority -eq 'cost' }).Count -gt 0) 'cost exclusions lost'
 
-$queryPath='.orchestrator/controller-skills/milestone-orchestrator/scripts/query-ledgers.ps1'
+$queryPath='.orchestrator/dispatch-count-history.ps1'
 $query=[IO.File]::ReadAllText((Join-Path $ControllerRoot $queryPath))
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseInput($query,[ref]$tokens,[ref]$errors)
