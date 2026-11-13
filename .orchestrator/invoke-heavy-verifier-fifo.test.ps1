@@ -113,7 +113,7 @@ $pwsh=(Get-Command pwsh).Source; $node=(Get-Command node).Source
 $guard=Join-Path $runtime 'invoke-heavy-verifier.ps1';[IO.File]::WriteAllText($guard,$source)
 foreach($name in @('dispatch-ledger-reader.psm1','dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) { Copy-Item (Join-Path $PSScriptRoot $name) $runtime }
 $runner=Join-Path $root 'runner.ps1'
-[IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
+[IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $(if ($?) { 0 } else { $LASTEXITCODE })')
 $body=Join-Path $root 'body.cjs'
 [IO.File]::WriteAllText($body,@'
 const fs=require('fs'); const [marker,release,result]=process.argv.slice(2);
@@ -266,6 +266,19 @@ function New-DispatchFixture($Driver,[string]$Label) {
   return [pscustomobject]@{Path=$path;Record=$record}
 }
 try {
+  $runnerControl=Join-Path $root 'runner-control.ps1';$runnerInput=Join-Path $root 'runner-control.json'
+  Write-Json $runnerInput @{}
+  foreach($control in @(
+    @{name='normal return after native failure';source='& (Join-Path $PSHOME ''pwsh.exe'') -NoProfile -NonInteractive -Command ''exit 128''; return';code=0},
+    @{name='explicit refusal';source='exit 73';code=73},
+    @{name='explicit failure';source='exit 1';code=1},
+    @{name='thrown failure';source='throw ''runner refusal control''';code=1}
+  )) {
+    [IO.File]::WriteAllText($runnerControl,$control.source)
+    $controlOutput=@(& $pwsh -NoProfile -NonInteractive -File $runner $runnerControl $runnerInput 2>&1)
+    $controlExit=$LASTEXITCODE
+    Assert-Fifo ($controlExit-eq$control.code) "SETUP runner exit semantics $($control.name)" "exit=$controlExit expected=$($control.code) $controlOutput"
+  }
   & git -C $tree init --quiet
   [IO.File]::WriteAllText((Join-Path $tree '.gitignore'),".orchestrator/artifacts/`nnode_modules/`n")
   [IO.File]::WriteAllText((Join-Path $tree 'package.json'),'{"name":"inert-heavy-fifo","private":true,"scripts":{"verify:static":"node gate.cjs"}}')
