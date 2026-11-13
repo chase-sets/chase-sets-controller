@@ -168,10 +168,15 @@ try {
   $historicalReceipt.authorModel='claude-sonnet-5'
   $historicalReceipt.reviewerAttempt='synthetic-retired-sonnet'
   $historicalPath=Join-Path $root 'historical-sonnet-review.jsonl'
-  [IO.File]::WriteAllText($historicalPath,($historicalReceipt|ConvertTo-Json -Compress -Depth 20))
+  [IO.File]::WriteAllText($historicalPath,(($historicalReceipt|ConvertTo-Json -Compress -Depth 20)+"`n"))
   $beforeHash=(Get-FileHash $historicalPath).Hash
   $r=& (Join-Path $PSScriptRoot 'review-head-reducer.ps1') -Pr 9901 -CurrentHead ('a'*40) -HistoryPath $historicalPath|ConvertFrom-Json
   Check ($r.state-ceq'authorized'-and(Get-FileHash $historicalPath).Hash-ceq$beforeHash) 'historical Sonnet receipt unreadable or rewritten'
+  $uncommittedPath=Join-Path $root 'uncommitted-historical-sonnet-review.jsonl'
+  [IO.File]::WriteAllText($uncommittedPath,($historicalReceipt|ConvertTo-Json -Compress -Depth 20))
+  $uncommittedHash=(Get-FileHash $uncommittedPath).Hash
+  $uncommitted=& (Join-Path $PSScriptRoot 'review-head-reducer.ps1') -Pr 9901 -CurrentHead ('a'*40) -HistoryPath $uncommittedPath|ConvertFrom-Json
+  Check ($uncommitted.state-cne'authorized'-and(Get-FileHash $uncommittedPath).Hash-ceq$uncommittedHash) 'uncommitted historical receipt must not authorize or be rewritten'
   Write-Output 'PASS versioned host arms, pinned host identity, and historical/successor exact-head receipts'
 
   $transcripts=Join-Path $root 'transcripts';[IO.Directory]::CreateDirectory($transcripts)|Out-Null
@@ -265,7 +270,15 @@ try {
   $nativeMatrix=Join-Path $root 'native-matrix.json';Copy-Item $sourceMatrix $nativeMatrix
   & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $nativeMatrix -CostLedger $nativeMatrixLedger -DispatchLog $dispatch|Out-Null
   Check (@((Get-Content $nativeMatrix -Raw|ConvertFrom-Json).configs|Where-Object {$_.model-ceq'gpt-6.1-sol'-and$_.PSObject.Properties['measured']}).Count-eq0) 'native model borrowed conflicting filename effort'
-  [IO.File]::WriteAllText((Join-Path $nativeDir 'dispatch-log.jsonl'),('{"kind":"dispatch","transcript":"'+$nativeName+'","model":"gpt-6.1-sol","effort":"high"}'))
+  $nativeDispatch=Join-Path $nativeDir 'dispatch-log.jsonl'
+  $nativeDispatchRow='{"kind":"dispatch","transcript":"'+$nativeName+'","model":"gpt-6.1-sol","effort":"high"}'
+  [IO.File]::WriteAllText($nativeDispatch,$nativeDispatchRow)
+  $nativeDispatchHash=(Get-FileHash $nativeDispatch).Hash
+  $uncommittedMatrix=Join-Path $root 'uncommitted-dispatch-matrix.json';Copy-Item $sourceMatrix $uncommittedMatrix
+  & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $uncommittedMatrix -CostLedger $nativeMatrixLedger -DispatchLog $nativeDispatch|Out-Null
+  Check (@((Get-Content $uncommittedMatrix -Raw|ConvertFrom-Json).configs|Where-Object {$_.model-ceq'gpt-6.1-sol'-and$_.PSObject.Properties['measured']}).Count-eq0) 'uncommitted dispatch supplied exact effort'
+  Check ((Get-FileHash $nativeDispatch).Hash-ceq$nativeDispatchHash) 'uncommitted dispatch was rewritten'
+  [IO.File]::AppendAllText($nativeDispatch,"`n")
   $dispatchMatrix=Join-Path $root 'dispatch-matrix.json';Copy-Item $sourceMatrix $dispatchMatrix
   & (Join-Path $PSScriptRoot 'matrix-refresh.ps1') -SinceDays $fixtureSinceDays -Matrix $dispatchMatrix -CostLedger $nativeMatrixLedger -DispatchLog (Join-Path $nativeDir 'dispatch-log.jsonl')|Out-Null
   Check ((@((Get-Content $dispatchMatrix -Raw|ConvertFrom-Json).configs|Where-Object id -CEQ 'gpt-6.1-sol/high')[0]).measured.n-eq1) 'independent exact dispatch effort lost'
@@ -324,7 +337,7 @@ try {
     (Get-Item $path).LastWriteTimeUtc=[datetime]'2026-09-29T13:00:00Z'
     $caseDispatch=Join-Path $dir 'dispatch-log.jsonl'
     $dispatchRow=if($case.dispatch){'{"kind":"dispatch","transcript":"'+$file+'","model":"'+$case.dispatch+'"}'}else{''}
-    [IO.File]::WriteAllText($caseDispatch,$dispatchRow)
+    [IO.File]::WriteAllText($caseDispatch, $(if($dispatchRow){$dispatchRow+"`n"}else{''}))
     $caseLedger=Join-Path $dir 'cost-ledger.jsonl'
     & (Join-Path $PSScriptRoot 'cost-harvest.ps1') -TranscriptDir $dir -Ledger $caseLedger -Force|Out-Null
     $caseCost=Get-Content $caseLedger|ConvertFrom-Json

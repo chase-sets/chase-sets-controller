@@ -49,12 +49,15 @@ function Remove-LongGateTempRoot([string]$Path, [switch]$DoubleSeparator) {
     Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
-function Remove-LongGateFixtureRoot([string]$Path, [string]$ControllerRoot) {
+function Remove-LongGateFixtureRoot([string]$Path, [string]$TempRoot) {
   $resolved = [IO.Path]::GetFullPath($Path)
-  $controllerPrefix = [IO.Path]::GetFullPath($ControllerRoot).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
-  if ($resolved.StartsWith($controllerPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
-  }
+  $parent = [IO.Path]::GetFullPath($TempRoot).TrimEnd('\','/')
+  $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+  if ((Split-Path -Parent $parent).TrimEnd('\','/') -cne $temp -or
+      (Split-Path -Leaf $parent) -cnotlike 'long-product-gate-test-*' -or
+      (Split-Path -Parent $resolved).TrimEnd('\','/') -cne $parent -or
+      (Split-Path -Leaf $resolved) -cnotlike '.long-product-gate-fixture-*') { throw 'unsafe long-gate fixture cleanup' }
+  if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue }
 }
 function Test-LongGateCleanupFailurePreservesBodyException {
   function Invoke-ControlledCleanupFailure {
@@ -115,7 +118,7 @@ exit 0
   Write-Text (Join-Path $orchestrator 'fixture-heavy-child.ps1') $child
   $verifierPath = Join-Path $orchestrator 'invoke-heavy-verifier.ps1'
   $verifier = [IO.File]::ReadAllText($verifierPath)
-  $needle = '$ownerGate = if ($isNativeDb) {'
+  $needle = '$ownerGate = if ($isManifestReplay) {'
   $needleCount = ([regex]::Matches($verifier, [regex]::Escape($needle))).Count
   Assert-True ($needleCount -eq 1) 'fixture verifier command-table seam occurs exactly once'
   $replacement = @"
@@ -779,7 +782,7 @@ function Test-ClockContractMutant($Fixture) {
 
 $controllerRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('long-product-gate-test-' + [guid]::NewGuid().ToString('N'))
-$fixtureRoot = Join-Path $controllerRoot ('.long-product-gate-fixture-' + [guid]::NewGuid().ToString('N'))
+$fixtureRoot = Join-Path $testRoot ('.long-product-gate-fixture-' + [guid]::NewGuid().ToString('N'))
 $cleanupMutant = $Mutant -ceq 'temp-cleanup'
 try {
   New-Item -ItemType Directory -Path $testRoot, $fixtureRoot | Out-Null
@@ -789,7 +792,7 @@ try {
       $failure = $null
       try { Assert-LongGateTempCleanup $testRoot $controllerRoot -Mutant } catch { $failure = $_.Exception.Message }
       Assert-True ($failure -ceq 'ASSERTION FAILED: long-product-gate temp root is gone after cleanup') 'MUTANT temp-cleanup reaches its named cleanup assertion'
-      Remove-LongGateFixtureRoot $fixtureRoot $controllerRoot
+      Remove-LongGateFixtureRoot $fixtureRoot $testRoot
       Remove-LongGateTempRoot $testRoot
       Write-Output 'PASS MUTANT temp-cleanup reaches its named cleanup assertion'
       return
@@ -797,7 +800,7 @@ try {
     Assert-LongGateTempCleanup $testRoot $controllerRoot
   }
 } catch {
-  Remove-LongGateFixtureRoot $fixtureRoot $controllerRoot
+  Remove-LongGateFixtureRoot $fixtureRoot $testRoot
   Remove-LongGateTempRoot $testRoot
   throw
 }
@@ -966,7 +969,7 @@ try {
       Write-Text $fixture.release 'release'
       $dispatch.WaitForExit()
     }
-    Remove-LongGateFixtureRoot $fixtureRoot $controllerRoot
+    Remove-LongGateFixtureRoot $fixtureRoot $testRoot
     Remove-LongGateTempRoot $testRoot
     if (Test-Path -LiteralPath ([IO.Path]::GetFullPath($testRoot))) {
       $cleanupFailure = [InvalidOperationException]::new('ASSERTION FAILED: long-product-gate temp root is gone after cleanup')

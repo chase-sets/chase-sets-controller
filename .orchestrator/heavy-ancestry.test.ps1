@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 (Get-Process -Id $PID).PriorityClass = 'BelowNormal'
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
@@ -16,7 +17,11 @@ function Read-Source([string]$Name) {
   if ($LASTEXITCODE -ne 0) { throw "cannot read $Name at $GuardRevision" }
   return $lines -join "`n"
 }
-. ([scriptblock]::Create((Read-Source 'dispatch-ownership.ps1')))
+$ownershipTokens = $null; $ownershipErrors = $null
+$ownershipAst = [Management.Automation.Language.Parser]::ParseInput((Read-Source 'dispatch-ownership.ps1'),
+  (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), [ref]$ownershipTokens, [ref]$ownershipErrors)
+Assert-True ($ownershipErrors.Count -eq 0) 'ownership source retains production source identity'
+. $ownershipAst.GetScriptBlock()
 $source = Read-Source 'invoke-heavy-verifier.ps1'
 $mutations = @{
   'unbound-root' = @(@{ Find = '$boundDispatchRoot = $false'; Replace = '$boundDispatchRoot = $true' })
@@ -40,7 +45,10 @@ Assert-True ($errors.Count -eq 0) 'guard source parses'
 foreach ($definition in $ast.FindAll({ param($n)
     $n -is [Management.Automation.Language.FunctionDefinitionAst]
   }, $false)) {
-  . ([scriptblock]::Create($definition.Extent.Text))
+  $definitionAst=[Management.Automation.Language.Parser]::ParseInput($definition.Extent.Text,
+    (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'),[ref]$tokens,[ref]$errors)
+  Assert-True ($errors.Count -eq 0) 'extracted definition retains production source identity'
+  . $definitionAst.GetScriptBlock()
 }
 
 # Real binding, census, closed record validator, routing reader and filesystem;

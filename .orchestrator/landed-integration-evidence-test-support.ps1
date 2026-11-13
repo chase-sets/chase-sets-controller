@@ -378,7 +378,7 @@ exit $LASTEXITCODE
       $reportCandidate=Run-Process $producer $producerArgs (Join-Path $case 'report-authority-candidate')
       Proof ($reportCandidate.exit -ne 0 -and -not(Test-Path $completionPath) -and (Test-Path $owedPath)) 'author report with actual synthetic execution fields is not completion authority'
       $reportSubject=Join-Path $case 'report-is-authority';New-Item -ItemType Directory -Path $reportSubject|Out-Null
-      foreach($name in @('integration-dispatch-contract.ps1','dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-dispatch.ps1','landed-integration-consume.ps1','log-event.ps1','orchestration-log-lock.psm1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $reportSubject}
+      foreach($name in @('integration-dispatch-contract.ps1','dispatch-ownership.ps1','fleet-exclusive-admission.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1','landed-integration-dispatch.ps1','landed-integration-consume.ps1','log-event.ps1','orchestration-log-lock.psm1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $reportSubject}
       Copy-Item -LiteralPath $producer -Destination (Join-Path $reportSubject 'landed-integration-dispatch.ps1') -Force
       $moduleText=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'landed-integration-evidence.psm1'))
       $recoveryGuard='function Get-RebaseRecoveryEvidence($References,$Obligation,[string]$Runtime,[string]$Launch,[string]$Result,[string]$Tree,[switch]$Retained) {'
@@ -428,7 +428,7 @@ exit $LASTEXITCODE
       $failed=Run-Process $producer ($producerArgs+@('-LogScript',$failedLogger)) (Join-Path $case 'append-failure-candidate')
       Proof ($failed.exit -ne 0 -and [IO.File]::ReadAllText($owedPath) -ceq $owedJson -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($ackPath)) -ceq [Convert]::ToBase64String($ackBytes)) 'v3 append failure retains exact owed and acknowledgement'
       $subject=Join-Path $case 'delete-before-terminal';New-Item -ItemType Directory -Path $subject|Out-Null
-      foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $subject}
+      foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $subject}
       Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$subject}) $CensusLatencyMs
       $text=[IO.File]::ReadAllText($producer);$guard='    if($alreadySuccessful.Count-eq0){'
       Assert-True ([regex]::Matches($text,[regex]::Escape($guard)).Count -eq 1) 'terminal ordering single mutation carrier'
@@ -517,7 +517,7 @@ exit $LASTEXITCODE
       # and the other completion fields stay fixed across the pair.
       $modulePath=Join-Path $controlRuntime 'landed-integration-evidence.psm1';$source=[IO.File]::ReadAllText($modulePath)
       $mutantRoot=Join-Path $case 'mutant';New-Item -ItemType Directory -Path $mutantRoot|Out-Null
-      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1') -Destination $mutantRoot
+      Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'fleet-exclusive-admission.psm1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $mutantRoot
       Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$mutantRoot}) $CensusLatencyMs
       $mutantPath=Join-Path $mutantRoot 'landed-integration-evidence.psm1';$check=Join-Path $case 'check-evidence.ps1'
       [IO.File]::WriteAllText($check,@'
@@ -576,7 +576,7 @@ Assert-RebaseAcknowledgement $a $o $Runtime $Git
       Proof ($candidate.exit -ne 0 -and $bypass.exit -eq 0) 'candidate versus allow-missing-proof bypass discriminates absent completion'
       [IO.File]::WriteAllBytes($completionPath,$completionBytes)
       $ackSubject=Join-Path $case 'ack-before-proof';New-Item -ItemType Directory -Path $ackSubject|Out-Null
-      foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $ackSubject}
+      foreach($name in @('dispatch-ownership.ps1','fleet-exclusive-admission.psm1','dispatch-ledger-reader.psm1','review-head-contract.psm1','landed-integration-evidence.psm1','integration-dispatch-contract.ps1','routing-data.ps1')){Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $ackSubject}
       Install-CensusDeterministicBudgetMeter ([pscustomobject]@{runtime=$ackSubject}) $CensusLatencyMs
       $consumerText=[IO.File]::ReadAllText($consumer);$ackGuard='    Assert-RebaseAcknowledgement $ack $obligation $runtime $GitExecutable'
       Assert-True ([regex]::Matches($consumerText,[regex]::Escape($ackGuard)).Count -eq 1) 'ack proof ordering mutation carrier'

@@ -101,6 +101,7 @@ $installLockModule = Join-Path $PSScriptRoot "controller-install-lock.psm1"
 Import-Module $installLockModule -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "review-head-contract.psm1") -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot "controller-heavy-paths.psm1") -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 # capability-matrix.json is the only installed file with TWO owners. Its cell
 # scores, vetoes and bars are authored in the tracked source and reviewed like
@@ -124,8 +125,8 @@ Import-Module (Join-Path $PSScriptRoot "controller-heavy-paths.psm1") -Force -Di
 function Merge-GeneratedBlocks {
   param([string]$SourcePath, [string]$DestinationPath)
   $bytes = Merge-ControllerGeneratedMatrixBytes `
-    -CandidateBytes ([IO.File]::ReadAllBytes($SourcePath)) `
-    -LiveBytes ([IO.File]::ReadAllBytes($DestinationPath))
+    -CandidateBytes ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $SourcePath))) `
+    -LiveBytes ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $DestinationPath)))
   [Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimEnd("`r", "`n")
 }
 
@@ -142,7 +143,7 @@ function Get-PreviousReleaseInventory {
   if ($null -ne $script:previousReleaseInventory) { return $script:previousReleaseInventory }
   $recordPath = Join-Path $destinationRoot 'native-db/release.json'
   if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { throw 'no installed release record' }
-  $previousCommit = [string](Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).commit
+  $previousCommit = [string](Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $recordPath) -Raw | ConvertFrom-Json).commit
   if ($previousCommit -notmatch '^[a-f0-9]{40}$') { throw 'installed release record names no commit' }
   $previousModule = Invoke-ContainerGit @('show', "$($previousCommit):.orchestrator/controller-install-lock.psm1") -AllowFailure
   if ($previousModule.ExitCode -ne 0) { throw "installed release $previousCommit is unreadable" }
@@ -152,6 +153,7 @@ function Get-PreviousReleaseInventory {
   try {
     $modulePath = Join-Path $scratch 'previous-release-install-lock.psm1'
     [IO.File]::WriteAllText($modulePath, ($previousModule.Lines -join [Environment]::NewLine))
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $scratch
     $module = Import-Module $modulePath -Prefix 'PreviousRelease' -PassThru -Force -DisableNameChecking
     $inventory = @(& (Get-Command -Module $module.Name -Name 'Get-PreviousReleaseControllerSkillInstallInventory'))
     if ($inventory.Count -eq 0) { throw 'installed release inventory is empty' }
@@ -159,6 +161,7 @@ function Get-PreviousReleaseInventory {
     return $inventory
   } finally {
     if ($module) { Remove-Module -ModuleInfo $module -Force }
+    Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
@@ -174,6 +177,7 @@ $runtimeFiles = @(
   "lease-contract.psm1",
   "lease.ps1",
   "review-head-contract.psm1",
+  "dispatch-ledger-reader.psm1",
   "landed-integration-evidence.psm1",
   "dispatch-lane.ps1",
   "rebase-integration.ps1",
@@ -212,7 +216,7 @@ $milestoneSkillPath = Join-Path $sourceRoot "milestone-orchestrator/SKILL.md"
 if (-not (Test-Path -LiteralPath $milestoneSkillPath -PathType Leaf)) {
   throw "controller skill install refused: source missing: $milestoneSkillPath"
 }
-$milestoneSkillText = Get-Content -LiteralPath $milestoneSkillPath -Raw
+$milestoneSkillText = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $milestoneSkillPath) -Raw
 $reviewMarkers = @(
   $reviewContract.receiptSchema,
   $reviewContract.reducerSchema,
@@ -314,7 +318,7 @@ foreach ($file in $files) {
     Destination = $destination
     PreserveGenerated = [bool]$file.PreserveGenerated
     MergedContent = $null
-    SourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash
+    SourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $source)).Hash
   }
 }
 
@@ -353,7 +357,7 @@ Invoke-WithControllerInstallLock -Body {
       }
     }
     $helperPath = Join-Path $PSScriptRoot 'native-db-admission.py'
-    $helperBytes = [IO.File]::ReadAllBytes($helperPath)
+    $helperBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $helperPath))
     $helperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($helperBytes)).ToLowerInvariant()
     # The helper and its identity live beside the skills. Every reader (the
     # heavy-path classifier, the release battery, the freshness check) reads
@@ -363,8 +367,8 @@ Invoke-WithControllerInstallLock -Body {
     $releaseDestination = Join-Path $destinationRoot 'native-db/release.json'
     if (Test-Path -LiteralPath $helperDestination) {
       if (-not (Test-Path -LiteralPath $identityDestination)) { throw 'controller skill install refused: native helper identity missing' }
-      $prior = Get-Content -LiteralPath $identityDestination -Raw | ConvertFrom-Json
-      if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $prior.digest) {
+      $prior = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $identityDestination) -Raw | ConvertFrom-Json
+      if ((Get-FileHash -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $helperDestination) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $prior.digest) {
         throw 'controller skill install refused: native helper drift'
       }
     }
@@ -372,7 +376,7 @@ Invoke-WithControllerInstallLock -Body {
       [void][IO.Directory]::CreateDirectory((Split-Path -Parent $helperDestination))
       [IO.File]::WriteAllBytes($helperDestination, $helperBytes)
       [IO.File]::WriteAllText($identityDestination, (@{head=$releaseCommit;digest=$helperDigest} | ConvertTo-Json -Compress))
-      if ((Get-FileHash -LiteralPath $helperDestination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $helperDigest) { throw 'native helper install verification failed' }
+      if ((Get-FileHash -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $helperDestination) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $helperDigest) { throw 'native helper install verification failed' }
     }
 foreach ($file in $installPlan) {
   if (-not $file.PreserveGenerated) { continue }
@@ -400,14 +404,14 @@ foreach ($file in $installPlan) {
       Set-Content -LiteralPath $destination -Encoding utf8 -Value $file.MergedContent
       # Verified by content rather than by source hash: the installed file is
       # deliberately not byte-identical to the source here.
-      $written = (Get-Content -LiteralPath $destination -Raw)
+      $written = (Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $destination) -Raw)
       if ($written.Trim() -ne $file.MergedContent.Trim()) {
         throw "controller skill install verification failed for $destination"
       }
     }
     else {
       Copy-Item -LiteralPath $source -Destination $destination -Force
-      $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $destination).Hash
+      $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $destination)).Hash
       if ($file.SourceHash -ne $destinationHash) {
         throw "controller skill install verification failed for $destination"
       }

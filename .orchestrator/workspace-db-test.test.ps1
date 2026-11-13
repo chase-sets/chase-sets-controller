@@ -107,7 +107,7 @@ try {
     (Join-Path $worktree 'bounded-contexts/payments/node_modules/.bin') -Force | Out-Null
   foreach ($file in @('invoke-heavy-verifier.ps1', 'heavy-admission-preload.cjs', 'heavy-slot.cjs',
       'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-holder-launcher.cjs',
-      'dispatch-ownership.ps1', 'workspace-db-test.mjs')) {
+      'dispatch-ledger-reader.psm1', 'dispatch-ownership.ps1', 'workspace-db-test.mjs')) {
     Copy-Item -LiteralPath (Join-Path $sourceRoot $file) -Destination (Join-Path $runtime $file)
   }
   Set-Content -LiteralPath (Join-Path $worktree '.gitignore') @'
@@ -289,7 +289,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $head = Git @('rev-parse', 'HEAD')
 
   $invalid = @(
-    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='ValidateSet'},
+    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='heavy-verifier: invalid closed route value'},
     @{Name='outside-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='dotdot'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/payments/../ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='absolute'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile',(Join-Path $worktree $validFile),'-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},

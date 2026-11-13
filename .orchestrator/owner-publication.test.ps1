@@ -5,6 +5,7 @@ param(
   [switch]$Stress
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 (Get-Process -Id $PID).PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal
 $root = Split-Path -Parent $PSScriptRoot
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ('owner-publication-' + [guid]::NewGuid().ToString('N'))
@@ -63,10 +64,10 @@ function Get-PreRepairSource([string]$Source, [switch]$ReaderOnly) {
   Assert-Owner (([regex]::Matches($Source, [regex]::Escape($replace))).Count -eq 1) 'pre-repair publication seam exists once'
   $reverted = $Source.Replace($replace, '[IO.File]::Move($temporaryPath, $ownerPath, $true)')
   $newline = if ($Source.Contains("`r`n")) { "`r`n" } else { "`n" }
-  $claimPathPattern = '\$' + 'ClaimPath'
+  $claimPathPattern = [regex]::Escape('(dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath)')
   $catchPattern = '(?ms)    try \{\r?\n      \$stream = \[IO\.File\]::Open\(' + $claimPathPattern + ', \[IO\.FileMode\]::Open, \[IO\.FileAccess\]::Read, \$share\)\r?\n    \} catch \[IO\.IOException\] \{\r?\n      if \(\(\$_.Exception\.GetBaseException\(\)\.HResult -band 0xffff\) -eq 32\) \{ return \$false \}\r?\n      throw\r?\n    \}\r?\n'
   Assert-Owner (([regex]::Matches($reverted, $catchPattern)).Count -eq 1) 'pre-repair claim opener seam exists once'
-  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open(' + ('$' + 'ClaimPath') + ', [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
+  $open = '    ' + ('$' + 'stream') + ' = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + ('$' + 'ClaimPath') + '), [IO.FileMode]::Open, [IO.FileAccess]::Read, ' + ('$' + 'share') + ')' + $newline
   return [regex]::Replace($reverted, $catchPattern, [Text.RegularExpressions.MatchEvaluator]{ param($match) $open })
 }
 function Get-Definition([string]$Source, [string]$Name) {
@@ -212,7 +213,7 @@ function Invoke-Primitive {
     Assert-Owner (-not$removed-and(Get-Hex (Read-Bytes $ownerPath))-ceq$before) "$control refusal retains exact bytes"
     $results.Add(@{test='owner-lifecycle-held-reader';control=$control;removed=$removed;bytes=$before})
   }
-  $open='$stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
+  $open='$stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
   Import-GuardFunctions ($source.Replace($open,"throw [IO.IOException]::new('injected non-sharing IO', 5)"))
   New-Lock
   $raw=Write-OwnerRecord @{schemaVersion=4} -CreateNew
@@ -436,32 +437,37 @@ function Invoke-ReaderInventory {
   # Each fixture exception is a site, not a file exemption. These observations
   # inspect fixture-owned retained records; they do not define live publication.
   $fixtures=@{
-    # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
-    'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
+    # 3338: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
+    'controller-release-battery.test.ps1'=@(1016,1025,1035,1054,1669,2004,3338)
     'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
     'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
-    'install-controller-skills.ps1'=@(145)
+    'install-controller-skills.ps1'=@(146)
     'install-controller-skills.test.ps1'=@(233,250,255,286,392,413,427,853,854,859)
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
-    'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
-    'long-product-gate.test.ps1'=@(208,215,231,871)
-    'host-heavy-verifier.test.ps1'=@(1277)
+    'invoke-heavy-verifier.test.ps1'=@(426,746,1311,1358,1370,1419,1423,1434,1459,1541,1555,1766,2162,2242,2252,2266,2561,2566,2585,2591,2818,2825,2837,2840,2850,2861,2883,2888,2900,2905,2922,2936)
+    'long-product-gate.test.ps1'=@(211,218,234,874)
+    'host-heavy-verifier.test.ps1'=@(1279)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
-    'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
-    'landed-integration-dispatch.test.ps1'=@(540)
+    'invoke-fleet-exclusive-gate.test.ps1'=@(313,314)
+    'landed-integration-dispatch.test.ps1'=@(543)
     'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)
     'landed-integration-r3.test.ps1'=@(52)
     'lane-stall-watchdog.test.ps1'=@(566,612,615)
     'lease-contract.test.ps1'=@(87,88)
-    'product-census-budget.test.ps1'=@(396,455,509,548)
+    'product-census-budget.test.ps1'=@(397,456,510,549)
     # Source-conservation checker reads a synthetic ownership path for its
     # static contract; it is not a production owner publication reader.
     'controller-ci-coverage.check.ps1'=@(143)
+    # Exact native-expression baselines in the battery boundary fixture, not
+    # executed reads of a production owner record.
+    'ledger-reader-battery-paths.test.ps1'=@(27,28)
+    # Retained synthetic owner bytes during the in-process disposal control.
+    'ledger-reader-memory-value.test.ps1'=@(225)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
@@ -475,8 +481,8 @@ function Invoke-ReaderInventory {
   foreach($line in @(374,387,446,477,478,507,515,527,546,547,556,559,667,750,753,764,938,939,965,967)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='Python read_text/read_bytes or pipe read';shareAfter='unchanged';decoder='unchanged Python decoder';callers='embedded native fixture setup / proc observation / pipe transport';owner='#9624; non-heavy-owner fixture/proc/transport reads, explicitly retained'})
   }
-  $table.Add(@{site='controller-install-lock.psm1:230';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
-  $table.Add(@{site='controller-install-lock.psm1:263';api='File.Open / StreamReader (claim bytes read once)';shareBefore='new in #207';shareAfter=4;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Remove-ClaimedOwnerLock (renamed claim, not live owner.json)';owner='#207 installer dead-owner reclaim (#210)'})
+  $table.Add(@{site='controller-install-lock.psm1:234';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
+  $table.Add(@{site='controller-install-lock.psm1:264';api='File.Open / StreamReader (claim bytes read once)';shareBefore='new in #207';shareAfter=4;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Remove-ClaimedOwnerLock (renamed claim, not live owner.json)';owner='#207 installer dead-owner reclaim (#210)'})
   $table.Add(@{site='fleet-exclusive-admission.psm1:92';api='File.ReadAllText(paths.record)';shareBefore=1;shareAfter=1;decoder='strict UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Read-FleetAdmissionRecord';owner='separate fleet-admission.d protocol, not the heavy owner'})
   $table.Add(@{site='dispatch-ownership.ps1:518';api='File.ReadAllText(RecordPath)';shareBefore=1;shareAfter=1;decoder='UTF8 / ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record, never heavy owner.json'})
   # Discover owner/transition reads across tracked source languages, including
@@ -563,18 +569,19 @@ function Invoke-ReaderInventory {
   $ownerVariable='$' + 'ownerPath'
   $claimVariable='$' + 'ClaimPath'
   $writerExpression='[IO.File]::Open(' + $ownerVariable + ', [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)'
-  $claimExpression='[IO.File]::Open(' + $claimVariable + ', [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
+  $claimExpression='[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + $claimVariable + '), [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)'
   $writerSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($writerExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $claimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($claimExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $ownershipSource=Read-Source 'dispatch-ownership.ps1'
-  $ownershipExpression='[IO.File]::ReadAllText(' + '$' + 'RecordPath, [Text.Encoding]::UTF8)'
+  $ownershipExpression='[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + '$' + 'RecordPath), [Text.Encoding]::UTF8)'
+  Assert-Owner ($ownershipSource.Contains($ownershipExpression,[StringComparison]::Ordinal)) 'ownership UTF8 reader anchor exists'
   $ownershipSite="dispatch-ownership.ps1:$((1+[regex]::Matches($ownershipSource.Substring(0,$ownershipSource.IndexOf($ownershipExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $productionSites=@{
     $writerSite=@{site=$writerSite;api='File.Open($ownerPath, CreateNew, Write, None)';shareBefore=0;shareAfter=0;decoder='none';callers='Write-OwnerRecord -CreateNew';owner='writer, not a snapshot reader'}
     $claimSite=@{site=$claimSite;api='File.Open($ClaimPath, Open, Read, native/ordinary share)';shareBefore='Delete (native Read|Delete)';shareAfter='unchanged';decoder='unchanged';callers='Remove-ClaimedOwnerLock';owner='exclusive removal proof, not an observational reader'}
     $ownershipSite=@{site=$ownershipSite;api='ReadAllText(RecordPath, UTF8)';shareBefore='unchanged';shareAfter='unchanged';decoder='ConvertFrom-DispatchOwnershipJson';callers='Get-ValidatedDispatchOwnershipRecord';owner='dispatch-launch record reader, not heavy owner publication'}
   }
-  $replayClaimExpression='[IO.File]::Open(' + '$' + 'claimPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)'
+  $replayClaimExpression='[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path ' + '$' + 'claimPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)'
   Assert-Owner ($invokeSource.Contains($replayClaimExpression)) 'replay immutable phase claim opener has its exact source site'
   $replayClaimSite="invoke-heavy-verifier.ps1:$((1+[regex]::Matches($invokeSource.Substring(0,$invokeSource.IndexOf($replayClaimExpression,[StringComparison]::Ordinal)),"`n").Count))"
   $productionSites[$replayClaimSite]=@{site=$replayClaimSite;api='File.Open(replay claim, Open, Read, Read)';shareBefore='new';shareAfter=1;decoder='none';callers='Invoke-ManifestReplay';owner='immutable nonce-bound replay phase claim, never the replaceable heavy owner'}

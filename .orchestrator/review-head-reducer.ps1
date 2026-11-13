@@ -12,8 +12,8 @@ param(
   [Parameter(Mandatory)][ValidateRange(1, [int]::MaxValue)][int]$Pr,
   [Parameter(Mandatory)][ValidatePattern("^[a-f0-9]{40}$")][string]$CurrentHead,
   [string]$HistoryPath = (Join-Path $PSScriptRoot "dispatch-log.jsonl"),
-  [ValidateRange(1, 1000000)][int]$MaxHistoryRows = 50000,
-  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = 33554432
+  [ValidateRange(1, [int]::MaxValue)][int]$MaxHistoryRows = [int]::MaxValue,
+  [ValidateRange(1, [long]::MaxValue)][long]$MaxHistoryBytes = [long]::MaxValue
 )
 
 $ErrorActionPreference = "Stop"

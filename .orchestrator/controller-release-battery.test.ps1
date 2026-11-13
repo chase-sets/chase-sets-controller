@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ArtifactWrites", "ConcurrentIdentity", "FleetSampling")]
+  [ValidateSet("All", "Admission", "OmissionMutants", "InheritedAdmissionIsolation", "HostLifecycle", "HostEntry", "ExactChildHost", "RenameReuse", "ReuseBaseline", "BaselineAlsoFails", "ArtifactWrites", "ConcurrentIdentity", "FleetSampling", "MeasuredLoad")]
   [string]$Scenario = "All",
 
   [string]$ExpectedControllerHead = "",
@@ -17,7 +17,10 @@ $ErrorActionPreference = "Stop"
 $routingTestScope=Enter-RoutingDataTestScope
 $controllerRoot = Split-Path -Parent $PSScriptRoot
 $battery = Join-Path $PSScriptRoot "controller-release-battery.ps1"
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ("controller-release-battery-test-" + [guid]::NewGuid().ToString("N"))
+$batteryTestTempRoot = if ($IsWindows) {
+  Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Temp'
+} else { [IO.Path]::GetTempPath() }
+$testRoot = Join-Path $batteryTestTempRoot ("controller-release-battery-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $testRoot ".orchestrator") | Out-Null
 # #8102: synthetic fleet-holder helpers. Their lock directory lives under this
@@ -50,6 +53,7 @@ $omissionRuntimeFiles = @(
   "lease-contract.psm1",
   "orchestration-log-lock.psm1",
   "dispatch-ownership.ps1",
+  "dispatch-ledger-reader.psm1",
   "review-head-contract.psm1",
   "routing-data.ps1",
   "review-head-reducer.ps1",
@@ -61,6 +65,18 @@ $omissionRuntimeFiles = @(
 
 function Assert-BatteryTest([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+
+function Remove-BatteryTestRoot([string]$Root, [string]$Parent) {
+  if (Test-Path -LiteralPath $Root) {
+    $resolved = [IO.Path]::GetFullPath($Root)
+    $temp = [IO.Path]::GetFullPath($Parent).TrimEnd("\", "/")
+    if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
+        (Split-Path -Leaf $resolved) -notlike "controller-release-battery-test-*") {
+      throw "refusing unsafe battery-test cleanup target: $resolved"
+    }
+    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Copy-Value($Value) {
@@ -195,6 +211,7 @@ function New-BatteryChildStartInfo([string]$WorkingDirectory) {
   $start.FileName = (Get-Process -Id $PID -ErrorAction Stop).Path
   $start.WorkingDirectory = $WorkingDirectory
   $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   return $start
@@ -229,7 +246,9 @@ function New-PlanFixture {
   Copy-RuntimeFile $root "controller-release-battery.ps1"
   Copy-RuntimeFile $root "fail-closed-guard-evidence.ps1"
   Copy-RuntimeFile $root "fail-closed-guard-evidence.test.ps1"
+  Copy-RuntimeFile $root "dispatch-ledger-reader.psm1"
   Copy-RuntimeFile $root "review-head-contract.psm1"
+  Copy-RuntimeFile $root "routing-data.ps1"
   foreach ($name in @(
       "controller-release-battery.test.ps1",
       "fail-closed-guard-evidence-aggregate.test.ps1",
@@ -496,7 +515,7 @@ function Invoke-ScopeControl {
   # unknown identity plans silently.
   $refusalTerm = 'if (-not $identitySet.Contains($noReuse)) { Stop-Battery "BATTERY_NO_REUSE_IDENTITY_UNKNOWN:$noReuse" }'
   Assert-BatteryTest (@([regex]::Matches($batterySource, [regex]::Escape($refusalTerm))).Count -eq 1) 'unknown-identity bypass mutant needs the exact refusal'
-  $bypassMutant = Join-Path $testRoot 'no-reuse-identity-bypass-mutant.ps1'
+  $bypassMutant = Join-Path $fixture.root '.orchestrator/no-reuse-identity-bypass-mutant.ps1'
   [IO.File]::WriteAllText($bypassMutant, $batterySource.Replace($refusalTerm, ''), [Text.UTF8Encoding]::new($false))
   $mutantObserved = ''
   $mutantPlan = ''
@@ -656,6 +675,7 @@ function New-AdmissionFixture([hashtable]$ExtraRuntimeFiles = @{}, [string]$Pref
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
   Copy-RuntimeFile $root "controller-release-battery.ps1"
   Copy-RuntimeFile $root "invoke-heavy-verifier.ps1"
+  Copy-RuntimeFile $root "dispatch-ledger-reader.psm1"
   Copy-RuntimeFile $root "dispatch-ownership.ps1"
   Copy-RuntimeFile $root "heavy-nested-owner.cs"
   Copy-RuntimeFile $root "heavy-nested-client.cjs"
@@ -895,7 +915,26 @@ function Invoke-FixtureContender($Fixture) {
   return Complete-BatteryFixtureProcess ([Diagnostics.Process]::Start($start))
 }
 
-function Invoke-AdmissionSuite {
+function Start-BatteryAdmissionProbe($Fixture) {
+  $runtime = Join-Path $Fixture.root '.orchestrator'
+  $ready = Join-Path $runtime 'coordination-ready'
+  $release = Join-Path $runtime 'coordination-release'
+  foreach ($path in @($ready, $release)) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+  }
+  $process = Start-BatteryFixtureProcess $Fixture
+  try {
+    Assert-BatteryTest (Wait-BatteryCondition { Test-Path -LiteralPath $ready -PathType Leaf }) `
+      'battery fixture bootstrap did not reach the coordination boundary'
+    [IO.File]::WriteAllText($release, 'release', [Text.UTF8Encoding]::new($false))
+    return $process
+  } catch {
+    if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+    throw
+  }
+}
+
+function Invoke-AdmissionSuite([switch]$SharedCoordinationMutant) {
   $fixture = New-AdmissionFixture
   $batteryPath = Join-Path $fixture.root ".orchestrator/controller-release-battery.ps1"
   $readyPath = Join-Path $fixture.root ".orchestrator/admission-ready"
@@ -911,6 +950,31 @@ function Invoke-AdmissionSuite {
   }
 '@
   [IO.File]::WriteAllText($batteryPath, $source.Replace($seam, $hold.TrimEnd()), [Text.UTF8Encoding]::new($false))
+  # Keep cold process/host/bootstrap time out of the mutex-isolation clock.
+  # This fixture-only barrier is before the real WaitOne, so a shared-key
+  # mutant still blocks the unchanged bounded admission assertion below.
+  $verifierPath = Join-Path $fixture.root '.orchestrator/invoke-heavy-verifier.ps1'
+  $verifierSource = [IO.File]::ReadAllText($verifierPath)
+  $coordinationSeam = '    $remaining = $script:heavyAdmissionBudget.deadline - $script:heavyAdmissionBudget.watch.ElapsedMilliseconds'
+  Assert-BatteryTest (@([regex]::Matches($verifierSource, [regex]::Escape($coordinationSeam))).Count -eq 1) `
+    'coordination bootstrap seam was not exact'
+  $bootstrap = @'
+    if ($isControllerBattery) {
+      [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'coordination-ready'), 'ready', [Text.UTF8Encoding]::new($false))
+      while (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'coordination-release') -PathType Leaf)) {
+        Assert-HeavyAdmissionTime
+        Start-Sleep -Milliseconds 25
+      }
+    }
+'@
+  $verifierSource = $verifierSource.Replace($coordinationSeam, ($bootstrap.TrimEnd() + "`n" + $coordinationSeam))
+  if ($SharedCoordinationMutant) {
+    $keySeam = '$coordinationKey += "`n" + $lockDirectoryName'
+    Assert-BatteryTest (@([regex]::Matches($verifierSource, [regex]::Escape($keySeam))).Count -eq 1) `
+      'shared coordination mutant did not match exactly once'
+    $verifierSource = $verifierSource.Replace($keySeam, '$coordinationKey += ""')
+  }
+  [IO.File]::WriteAllText($verifierPath, $verifierSource, [Text.UTF8Encoding]::new($false))
   & git -C $fixture.root add --all
   Assert-BatteryTest ($LASTEXITCODE -eq 0) "admission fixture git add failed"
   & git -C $fixture.root commit --quiet -m "admission hold fixture"
@@ -918,6 +982,8 @@ function Invoke-AdmissionSuite {
   $fixture.head = (& git -C $fixture.root rev-parse HEAD 2>&1 | Out-String).Trim()
   New-MinimalReceipt $fixture.head $fixture.receipt
 
+  $forged = $batteryProcess = $nested = $cancelled = $null
+  try {
   $forged = Start-BatteryFixtureProcess $fixture -AdmissionOwned -SlotId ("f" * 32)
   $forgedResult = Complete-BatteryFixtureProcess $forged
   Assert-BatteryTest ($forgedResult.exitCode -ne 0 -and
@@ -931,8 +997,8 @@ function Invoke-AdmissionSuite {
   $coordinationRoot = ([IO.Path]::GetFullPath($testRoot).TrimEnd('\','/')).ToUpperInvariant()
   $platformCoordination = [Threading.Mutex]::new($false, ("Global\chase-sets-heavy-verifier-" + [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($coordinationRoot))).ToLowerInvariant()))
   Assert-BatteryTest ($platformCoordination.WaitOne(5000)) "test holds the platform coordination mutex"
-  $batteryProcess = Start-BatteryFixtureProcess $fixture
   try {
+    $batteryProcess = Start-BatteryAdmissionProbe $fixture
     Assert-BatteryTest (Wait-BatteryCondition { Test-Path -LiteralPath $readyPath -PathType Leaf }) `
       "battery admission waited on the platform coordination mutex"
     Write-Output "PASS controller battery admitted while the platform coordination mutex is held"
@@ -982,7 +1048,7 @@ function Invoke-AdmissionSuite {
     -not (Test-Path -LiteralPath $lockPath)) "contender did not enter after release: $($admittedContender.output)"
 
   Remove-Item -LiteralPath $readyPath, $releasePath -Force
-  $cancelled = Start-BatteryFixtureProcess $fixture
+  $cancelled = Start-BatteryAdmissionProbe $fixture
   Assert-BatteryTest (Wait-BatteryCondition { Test-Path -LiteralPath $readyPath -PathType Leaf }) `
     "cancellation battery did not reach admitted hold"
   $cancelOwner = Get-Content -LiteralPath $ownerPath -Raw | ConvertFrom-Json -DateKind String
@@ -994,6 +1060,14 @@ function Invoke-AdmissionSuite {
   Write-Output "PASS controller battery cancellation released exact owner"
 
   Write-Output "PASS controller battery exact-owner admission blocks competitors and releases on success/cancellation"
+  } finally {
+    foreach ($process in @($forged, $batteryProcess, $nested, $cancelled)) {
+      if ($null -ne $process) {
+        if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }
+        $process.Dispose()
+      }
+    }
+  }
 }
 
 function Write-BatterySuiteResult([string]$Head, [string]$OutPath) {
@@ -1413,6 +1487,7 @@ function Invoke-8102BatteryLeg([string]$Label, [hashtable]$ExtraRuntimeFiles, [s
   # 43308dc; the shared omission inventory above does not carry it, so these
   # legs supply it themselves and leave the other scenarios' fixture unchanged.
   $legFiles = @{ "fixtures/legacy-non-pr-review-history.jsonl" = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "fixtures/legacy-non-pr-review-history.jsonl")) }
+  $legFiles['routing-data-test-support.ps1'] = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'routing-data-test-support.ps1'))
   foreach ($name in @($ExtraRuntimeFiles.Keys)) { $legFiles[$name] = $ExtraRuntimeFiles[$name] }
   $fixture = New-OmissionFixture $legFiles
   $resultPath = Join-Path $fixture.root ".orchestrator/artifacts/8102-$Label.json"
@@ -1555,6 +1630,7 @@ function Invoke-HostRun($Fixture, [string]$Label, [string]$Entry = 'Wrapper', [s
       [IO.Directory]::CreateDirectory((Split-Path -Parent $scriptPath)) | Out-Null
       [IO.File]::Copy((Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'), $scriptPath)
       [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), (Join-Path (Split-Path -Parent $scriptPath) 'dispatch-ownership.ps1'))
+      [IO.File]::Copy((Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1'), (Join-Path (Split-Path -Parent $scriptPath) 'dispatch-ledger-reader.psm1'))
     }
     $branch = (& git -C $Fixture.root branch --show-current | Out-String).Trim()
     $arguments = @('-ControllerBattery', '-Worktree', $Fixture.root, '-Lane', 'host-fixture',
@@ -2158,9 +2234,29 @@ function Test-BatteryBaselineAlsoFails {
   Assert-BatteryTest ($outcomeFailures.Count -gt 0) 'outcome-to-FAIL_PREEXISTING_ONLY mutant SURVIVED'
   Write-Host "MUTANT 98 outcome-to-FAIL_PREEXISTING_ONLY KILLED failures=$($outcomeFailures.Count): $($outcomeFailures -join '; ')"
   Write-Output 'PASS 98 battery baseline-also-fails truth table, outcome, retention and mutants'
-  Test-BatteryArtifactReparseRefusal
-  Test-BatteryArtifactJunctionAbove
-  Test-BatteryArtifactWriteWindowDetection
+  Test-BatteryArtifactWrites
+}
+
+function Test-BatteryArtifactWrites {
+  # Admission's arbitrary-command fixtures need LocalApplicationData/Temp.
+  # Junction write probes need the system temp filesystem and a real write-through.
+  $batteryTestTempRoot = [IO.Path]::GetTempPath()
+  $testRoot = Join-Path $batteryTestTempRoot ("controller-release-battery-test-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path (Join-Path $testRoot '.orchestrator') -Force | Out-Null
+  try {
+    $outside = Join-Path $testRoot 'junction-write-control'
+    New-Item -ItemType Directory -Path $outside | Out-Null
+    $link = Join-Path $testRoot 'junction-write-link'
+    try {
+      New-Reparse98Junction $link $outside
+      [void][IO.Directory]::CreateDirectory((Join-Path $link 'child'))
+      Assert-BatteryTest ([IO.Directory]::Exists((Join-Path $outside 'child'))) 'artifact fixture junction did not write through to its target'
+      Write-Host 'PASS artifact fixture native junction write-through control'
+    } finally { Remove-Reparse98Junction $link }
+    Test-BatteryArtifactReparseRefusal
+    Test-BatteryArtifactJunctionAbove
+    Test-BatteryArtifactWriteWindowDetection
+  } finally { Remove-BatteryTestRoot $testRoot $batteryTestTempRoot }
 }
 
 # ---- #98 review: a junction at or above .orchestrator/artifacts refuses every
@@ -2652,7 +2748,7 @@ function Test-BatteryConcurrentValidation {
     Assert-BatteryTest ($observed -match 'BATTERY_CONCURRENT_IDENTITY_(EMPTY_SEGMENT|NOT_TEST)') "-ConcurrentIdentity '$refused' did not refuse: $observed"
   }
   # Named mutant: without the limit, a three-entry list plans silently.
-  $mutantPath = Join-Path $testRoot 'concurrent-limit-removed-mutant.ps1'
+  $mutantPath = Join-Path $fixture.root '.orchestrator/concurrent-limit-removed-mutant.ps1'
   [IO.File]::WriteAllText($mutantPath, (Replace-BatteryFixtureSource (Get-Concurrent120Source) "  if (`$concurrentSegments.Count -gt 2) { Stop-Battery 'BATTERY_CONCURRENT_IDENTITY_LIMIT' }" ''), [Text.UTF8Encoding]::new($false))
   $mutantObserved = ''; $mutantPlan = ''
   try { $mutantPlan = & $mutantPath -ControllerRoot $fixture.root -ExpectedControllerHead $fixture.head -EvidenceReceiptPath $fixture.receipt -ConcurrentIdentity 'test:cc-a.test.ps1;test:cc-b.test.ps1;test:cc-c.test.ps1' -ValidatePlanOnly 2>&1 | Out-String }
@@ -3301,7 +3397,7 @@ function Invoke-Pause99Run([string]$Variant, [string]$Sampler) {
   $newline = if ($guardSource.Contains("`r`n")) { "`r`n" } else { "`n" }
   $guard = Join-Path $runtime 'invoke-heavy-verifier.ps1'
   [IO.File]::WriteAllText($guard, $guardSource.Replace($pause99Anchor, $pause99Injection.Replace("`r`n", "`n").Replace("`n", $newline)), [Text.UTF8Encoding]::new($false))
-  foreach ($name in @('dispatch-ownership.ps1', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-preload.cjs')) {
+  foreach ($name in @('dispatch-ledger-reader.psm1', 'dispatch-ownership.ps1', 'heavy-nested-owner.cs', 'heavy-nested-client.cjs', 'heavy-admission-preload.cjs')) {
     [IO.File]::Copy((Join-Path $PSScriptRoot $name), (Join-Path $runtime $name))
   }
   [IO.File]::WriteAllText((Join-Path $lane 'README.md'), "synthetic #99 pause lane`n")
@@ -3339,6 +3435,7 @@ function Invoke-Pause99Run([string]$Variant, [string]$Sampler) {
         $samplerScript = Join-Path $container 'sampler.ps1'
         [IO.File]::WriteAllText($samplerScript, (@(
               'param([string]$Controller, [string]$Signal)'
+              'Import-Module (Join-Path $PSScriptRoot ''.orchestrator/dispatch-ledger-reader.psm1'') -Global -DisableNameChecking'
               'function Invoke-Sampler99Hold {'
               '  [IO.File]::WriteAllText((Join-Path $Signal "sampler.open"), "open")'
               '  $deadline = [DateTime]::UtcNow.AddSeconds(120)'
@@ -3463,6 +3560,11 @@ try {
     Write-Output "PASS controller release battery tests All"
   } elseif ($Scenario -ceq "Admission") {
     Invoke-AdmissionSuite
+    $sharedKeyFailure = ''
+    try { Invoke-AdmissionSuite -SharedCoordinationMutant } catch { $sharedKeyFailure = $_.Exception.Message }
+    Assert-BatteryTest ($sharedKeyFailure -ceq 'ASSERTION FAILED: battery admission waited on the platform coordination mutex') `
+      "shared coordination key mutant did not fail the mutex-isolation assertion: $sharedKeyFailure"
+    Write-Output 'PASS controller battery shared coordination key mutant refused within the unchanged admission bound'
   } elseif ($Scenario -ceq "InheritedAdmissionIsolation") {
     Test-InheritedAdmissionIsolation
   } elseif ($Scenario -ceq "HostLifecycle") {
@@ -3478,26 +3580,18 @@ try {
   } elseif ($Scenario -ceq 'BaselineAlsoFails') {
     Test-BatteryBaselineAlsoFails
   } elseif ($Scenario -ceq 'ArtifactWrites') {
-    Test-BatteryArtifactReparseRefusal
-    Test-BatteryArtifactJunctionAbove
-    Test-BatteryArtifactWriteWindowDetection
+    Test-BatteryArtifactWrites
   } elseif ($Scenario -ceq 'ConcurrentIdentity') {
     Test-BatteryConcurrentIdentity
   } elseif ($Scenario -ceq 'FleetSampling') {
     Test-BatteryFleetSampling
+  } elseif ($Scenario -ceq 'MeasuredLoad') {
+    Test-BatteryIncompleteUnderMeasuredLoad
   } else {
     Write-BatterySuiteResult $ExpectedControllerHead $SuiteResultOut
     Write-Output "PASS battery omission summary applied=2 killed=2 survivors=0 not-applied=0 retained-6254=green"
   }
 } finally {
-  if (Test-Path -LiteralPath $testRoot) {
-    $resolved = [IO.Path]::GetFullPath($testRoot)
-    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
-    if ((Split-Path -Parent $resolved).TrimEnd("\", "/") -ne $temp -or
-        (Split-Path -Leaf $resolved) -notlike "controller-release-battery-test-*") {
-      throw "refusing unsafe battery-test cleanup target: $resolved"
-    }
-    Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
-  }
+  Remove-BatteryTestRoot $testRoot $batteryTestTempRoot
   Exit-RoutingDataTestScope $routingTestScope
 }

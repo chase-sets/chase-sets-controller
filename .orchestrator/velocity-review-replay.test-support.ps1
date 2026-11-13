@@ -39,7 +39,7 @@ function Set-ReviewRows([string]$Mode) {
     'filtered-malformed' {$other=$receipt.PSObject.Copy();$other.ts='invalid';$rows+=@($other)}
     continuation {
       $receipt.reviewedHead='b'*40
-      [IO.File]::WriteAllText($dispatchPath,($receipt|ConvertTo-Json -Compress -Depth 10))
+      [IO.File]::WriteAllText($dispatchPath,($receipt|ConvertTo-Json -Compress -Depth 10)+"`n")
       $original=Reduce-ExactHeadReview -Pr $prNumber -CurrentHead ('b'*40) -History (Read-ExactHeadReviewHistory -Path $dispatchPath)
       $rows+=@([pscustomobject]@{ts=$clock.AddMinutes(-1).ToString('o');kind='repair-complete';continuationSchema='rebase-only-continuation/v1';pr=$prNumber
         reviewedHead=('b'*40);predecessorHead=('b'*40);newHead=$head;newBase=('c'*40);reviewedBase=('e'*40)

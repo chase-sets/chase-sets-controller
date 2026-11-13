@@ -19,7 +19,8 @@ function Test-DispatchCountInteger($Value) {
 function Get-DispatchCountDecision($History, $Issue, [string]$CandidateState, [string]$Authority) {
   $result = [ordered]@{schemaVersion='dispatch-count-query/v1';issue=$Issue;state='UNKNOWN';action='NONE'
     reason='HISTORY_INVALID';dispatchCount=$null;decision=$null;finalReceiptIdentity=$null;applicationId=$null;requiresOrdinaryAdmission=$true}
-  if (-not (Test-DispatchCountInteger $Issue) -or $History.complete -isnot [bool] -or -not $History.complete) {
+  if (-not (Test-DispatchCountInteger $Issue) -or $History.complete -isnot [bool] -or -not $History.complete -or
+      ($null -ne $History.PSObject.Properties['partialTrailingRow'] -and $History.partialTrailingRow -eq $true)) {
     return [pscustomobject]$result
   }
   $count=0; $landed=$false; $decision=$null; $finalIdentity=$null
@@ -117,59 +118,10 @@ function Get-DispatchCountDecision($History, $Issue, [string]$CandidateState, [s
   return [pscustomobject]$result
 }
 
-function Read-DispatchCountHistory([string]$Path, $PrefixHistory = $null) {
-  $failure=[pscustomobject]@{complete=$false;rows=@();audit=@{bytes=0};reason='HISTORY_UNREADABLE'}
-  $snapshot=$null
-  try {
-    if ($null -ne $PrefixHistory -and -not $PrefixHistory.complete) { return $PrefixHistory }
-    $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
-    try {
-      $length=$stream.Length
-      $failure.audit.bytes=$length
-      if ($length -gt 33554432) { $failure.reason='HISTORY_TRUNCATED'; return $failure }
-      $prefixLength=if ($null -ne $PrefixHistory) { [long]$PrefixHistory.snapshotLength } else { 0L }
-      $failure.reason='HISTORY_UNTERMINATED_OR_MOVED'
-      if ($length -lt $prefixLength) { return $failure }
-      $bytes=[byte[]]::new($length)
-      $stream.ReadExactly($bytes,0,$bytes.Length)
-      if ($stream.Length -lt $length -or ($length -gt 0 -and $bytes[-1] -ne 10)) { return $failure }
-      # Appends after captured EOF are harmless; a short read or changed boundary is not.
-      if ($length -gt 0) {
-        [void]$stream.Seek($length-1,[IO.SeekOrigin]::Begin)
-        if ($stream.ReadByte() -ne 10) { return $failure }
-      }
-    } finally { $stream.Dispose() }
-    $hash=[Security.Cryptography.SHA256]::Create()
-    try {
-      if ($null -ne $PrefixHistory) {
-        $prefixHash=[Convert]::ToHexString($hash.ComputeHash($bytes,0,$prefixLength)).ToLowerInvariant()
-        if ($prefixHash -cne $PrefixHistory.snapshotHash -or ($prefixLength -gt 0 -and $bytes[$prefixLength-1] -ne 10)) { return $failure }
-      }
-      $snapshotHash=[Convert]::ToHexString($hash.ComputeHash($bytes)).ToLowerInvariant()
-    } finally { $hash.Dispose() }
-    # The shared strict parser still owns malformed/duplicate JSON and row caps.
-    # Only the tail is parsed while the logger holds the append mutex.
-    $snapshot=[IO.Path]::GetTempFileName()
-    $copy=[IO.File]::OpenWrite($snapshot)
-    try { $copy.Write($bytes,$prefixLength,$bytes.Length-$prefixLength) } finally { $copy.Dispose() }
-    $prefixLines=if ($null -ne $PrefixHistory) { $PrefixHistory.snapshotLines } else { 0 }
-    $tailLines=[IO.File]::ReadAllLines($snapshot).Length
-    if ($prefixLines+$tailLines -gt 50000) { $failure.reason='HISTORY_TRUNCATED'; return $failure }
-    $history=Read-ExactHeadReviewHistory -Path $snapshot
-    if (-not $history.complete) { return $history }
-    if ($null -ne $PrefixHistory) {
-      foreach ($row in $history.rows) { $row.line+=$prefixLines }
-      $history.rows=@($PrefixHistory.rows)+@($history.rows)
-      $history.audit.rows+=$PrefixHistory.audit.rows
-      $history.audit.parsedRows+=$PrefixHistory.audit.parsedRows
-    }
-    $history.audit.bytes=$length
-    $history | Add-Member snapshotLength $length
-    $history | Add-Member snapshotLines ($prefixLines+$tailLines)
-    $history | Add-Member snapshotHash $snapshotHash
-    return $history
-  } catch { return $failure }
-  finally { if ($null -ne $snapshot) { [IO.File]::Delete($snapshot) } }
+function Read-DispatchCountHistory([string]$Path, $PrefixHistory = $null, [switch]$RequireTerminated) {
+  # Runtime compatibility redirect. The canonical reader owns the installed fold.
+  Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking -ErrorAction Stop
+  dispatch-ledger-reader\Read-DispatchCountHistory -Path $Path -PrefixHistory $PrefixHistory -RequireTerminated:$RequireTerminated
 }
 
 if ($Library) { return }

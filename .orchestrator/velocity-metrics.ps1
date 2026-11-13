@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'merge-hold-state.ps1')
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 $script:VelocityRepo = "chase-sets/chase-sets"
 $script:VelocityProductRoot = $ProductRoot
@@ -834,7 +835,7 @@ function Assert-VelocityLegacyPlatformRegisterInactive([string]$Container) {
   $path=Join-Path $Container '.orchestrator/platform-handoff.md'
   try {
     if(-not(Test-Path -LiteralPath $path)){return}
-    $text=[IO.File]::ReadAllText($path,[Text.UTF8Encoding]::new($false,$true))
+    $text=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path),[Text.UTF8Encoding]::new($false,$true))
     $table=[regex]::Match($text,'(?s)## 1\. Ownership register\s+(?<table>.*?)\r?\n## 2\.')
     if(-not$table.Success){throw 'missing ownership register'}
     $seen=[Collections.Generic.HashSet[int]]::new();$platform=[Collections.Generic.List[int]]::new();$default=$false
@@ -982,7 +983,7 @@ function Get-VelocityFacts([string]$Container, [datetime]$Now, [string]$Qualific
   $facts.productIssues=$selection.productIssues
   $facts.dispatchQualificationSource=$null
   if ($QualificationPath) {
-    try { $facts.dispatchQualificationSource=Get-Content -LiteralPath $QualificationPath -Raw | ConvertFrom-Json -DateKind String }
+    try { $facts.dispatchQualificationSource=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $QualificationPath) -Raw | ConvertFrom-Json -DateKind String }
     catch { $facts.dispatchQualificationSource=[pscustomobject]@{kind='unreadable';reasonCode='QUALIFICATION_SOURCE_UNREADABLE';candidates=@()} }
   }
   $facts.dispatchRows=$selection.dispatchRows
@@ -1054,7 +1055,7 @@ function Get-VelocityFacts([string]$Container, [datetime]$Now, [string]$Qualific
     $facts.ownershipStatus = [string]$ownership.health.status
     if($facts.ownershipStatus -cne 'ok'){$gaps+=@('ownership-not-complete')}
     $facts.activeLanes = @($ownership.activeLanes | ForEach-Object {
-      $record=Get-Content -LiteralPath $_.ownershipRecordPath -Raw|ConvertFrom-Json -DateKind String
+      $record=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $_.ownershipRecordPath) -Raw|ConvertFrom-Json -DateKind String
       if($record.launchId -cne $_.launchId){throw 'ownership changed while projecting'}
       ConvertTo-VelocityActiveLane $_ $record
     })
@@ -1166,7 +1167,7 @@ if ($MyInvocation.InvocationName -ne ".") {
   $container = [IO.Path]::GetFullPath($ContainerRoot)
   $now = if ([string]::IsNullOrWhiteSpace($NowUtc)) { [datetime]::UtcNow } else { ConvertTo-VelocityUtc $NowUtc }
   $observationPath = if ([string]::IsNullOrWhiteSpace($ObservationLog)) { Join-Path $container ".orchestrator/logs/velocity-observations.jsonl" } else { $ObservationLog }
-  $facts = if ([string]::IsNullOrWhiteSpace($FactsPath)) { Get-VelocityFacts $container $now $DispatchQualificationPath } else { Get-Content -LiteralPath $FactsPath -Raw | ConvertFrom-Json -DateKind String }
+  $facts = if ([string]::IsNullOrWhiteSpace($FactsPath)) { Get-VelocityFacts $container $now $DispatchQualificationPath } else { Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $FactsPath) -Raw | ConvertFrom-Json -DateKind String }
   if (-not [string]::IsNullOrWhiteSpace($FactsOut)) {
     [IO.File]::WriteAllText($FactsOut, ($facts | ConvertTo-Json -Depth 64), [Text.UTF8Encoding]::new($false))
   }

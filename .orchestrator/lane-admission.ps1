@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 $script:LaneAdmissionAuthoritySets = @(
   "candidate-issues",
@@ -1077,7 +1078,7 @@ if (-not $Library -and $MyInvocation.InvocationName -ne ".") {
   if (($InputPath -and $InputJson) -or (-not $InputPath -and -not $InputJson)) {
     throw "supply exactly one of -InputPath or -InputJson"
   }
-  $json = if ($InputPath) { Get-Content -LiteralPath $InputPath -Raw } else { $InputJson }
+  $json = if ($InputPath) { Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $InputPath) -Raw } else { $InputJson }
   $inputObject = $json | ConvertFrom-Json
   $result = ConvertTo-LaneAdmission $inputObject
   $depth = 100

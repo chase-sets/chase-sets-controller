@@ -15,6 +15,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 $script:PremiseRequestSchema = "premise-freshness-request/v1"
 $script:PremiseAuthoritySchema = "premise-freshness-authority/v1"
 $script:PremisePaginationSchema = "github-pagination/v1"
@@ -687,7 +688,7 @@ if ($MyInvocation.InvocationName -ne ".") {
       if (-not (Test-Path -LiteralPath $RequestPath -PathType Leaf)) {
         Stop-PfMalformed "AUTHORITY_UNAVAILABLE"
       }
-      Get-Content -LiteralPath $RequestPath -Raw
+      Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $RequestPath) -Raw
     } else {
       $RequestJson
     }

@@ -2,6 +2,7 @@
 param([string]$GuardRevision = '',
   [ValidateSet('', 'omit-truncation', 'restore-scaled-budget', 'omit-lock-expiry-recheck', 'restore-per-candidate-snapshot', 'restore-process-snapshot-fallback', 'restore-git-snapshot-fallback', 'restore-detached-default', 'omit-absent-pid-dead')][string]$Mutant = '')
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
@@ -69,7 +70,11 @@ if ($Mutant -ceq 'omit-absent-pid-dead') {
   Assert-True ($ownershipSource.Contains($needle)) 'omit-absent-pid-dead target exists'
   $ownershipSource = $ownershipSource.Replace($needle, '        continue')
 }
-. ([scriptblock]::Create($ownershipSource))
+$ownershipTokens = $null; $ownershipErrors = $null
+$ownershipAst = [Management.Automation.Language.Parser]::ParseInput($ownershipSource,
+  (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), [ref]$ownershipTokens, [ref]$ownershipErrors)
+Assert-True ($ownershipErrors.Count -eq 0) 'ownership source retains production source identity'
+. $ownershipAst.GetScriptBlock()
 $nativeGitSnapshot = ${function:Get-DispatchGitIdentitySnapshot}
 # The built-in process snapshot (real Get-Process, before the stub below) records an absent
 # requested PID as dead, so an exited owner stays advisory rather than a blocking probe failure.
@@ -89,7 +94,10 @@ Assert-True ($errors.Count -eq 0) 'guard source parses'
 foreach ($definition in $ast.FindAll({ param($n)
     $n -is [Management.Automation.Language.FunctionDefinitionAst]
   }, $false)) {
-  . ([scriptblock]::Create($definition.Extent.Text))
+  $definitionAst=[Management.Automation.Language.Parser]::ParseInput($definition.Extent.Text,
+    (Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'),[ref]$tokens,[ref]$errors)
+  Assert-True ($errors.Count -eq 0) 'extracted definition retains production source identity'
+  . $definitionAst.GetScriptBlock()
 }
 $census = ${function:Get-LiveDispatchOwnership}
 $instant = [datetime]::SpecifyKind([datetime]'2026-01-01', [DateTimeKind]::Utc)

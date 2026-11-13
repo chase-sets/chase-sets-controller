@@ -135,7 +135,10 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($Verifier,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'native error copied verifier must parse'}
-foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess')},$false)){
+$nativeHelperNames=@('Enter-HeavyAdmissionPriority','Exit-HeavyAdmissionPriority','Invoke-HeavyAdmissionCensus','Invoke-NativeLaunch','Stop-ExactVerifierProcess')
+$nativeHelpers=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $nativeHelperNames},$false))
+if($nativeHelpers.Count -ne $nativeHelperNames.Count){throw 'native error copied verifier helper dependencies must be complete'}
+foreach($definition in $nativeHelpers){
   . ([scriptblock]::Create($definition.Extent.Text))
 }
 $cleanup=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$isNativeDb -and $child -and -not $child.HasExited'},$true))
@@ -1467,7 +1470,7 @@ function Test-NativeRoleAdmission {
   $nativeHead = (& git -C $nativeTree rev-parse HEAD).Trim()
   $nativeBranch = (& git -C $nativeTree branch --show-current).Trim()
   $copyRoot = $orchestrator
-  foreach ($dependency in @('dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs',
+  foreach ($dependency in @('dispatch-ledger-reader.psm1','dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs',
       'heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) {
     Copy-Item (Join-Path $PSScriptRoot $dependency) $copyRoot
   }
@@ -1543,7 +1546,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   # #9627: the inert fixture-equivalence stand-in records its body at $body.
   [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-equivalence.check.ps1'), $fixtureStandInCheck)
   [IO.File]::WriteAllText((Join-Path $nativeTree '.orchestrator/cleanup-scale-fixture-harness.ps1'), $fixtureStandInHarness)
-  $hostHeavyDependencies = @('host-heavy-verifier.test.ps1','invoke-heavy-verifier.ps1','native-db-admission.py','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1')
+  $hostHeavyDependencies = @('host-heavy-verifier.test.ps1','invoke-heavy-verifier.ps1','native-db-admission.py','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-holder-launcher.cjs','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')
   foreach ($dependency in $hostHeavyDependencies) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $nativeTree ".orchestrator/$dependency") -Force
   }
@@ -1556,6 +1559,7 @@ if(-not `$AdmissionOwned -or `$owner.lockId -cne `$env:CHASE_SETS_HEAVY_SLOT_ID)
   $env:HV_FIXTURE_RUNTIME = $orchestrator
   & git -C $nativeTree add .orchestrator/controller-release-battery.ps1 .orchestrator/cleanup-scale-fixture-equivalence.check.ps1 .orchestrator/cleanup-scale-fixture-harness.ps1 package.json role-body.cjs pnpm-lock.yaml
   & git -C $nativeTree add .orchestrator/host-heavy-verifier.test.ps1 .orchestrator/invoke-heavy-verifier.ps1 .orchestrator/native-db-admission.py .orchestrator/heavy-admission-preload.cjs .orchestrator/heavy-slot.cjs .orchestrator/heavy-nested-owner.cs .orchestrator/heavy-nested-client.cjs .orchestrator/heavy-admission-holder-launcher.cjs .orchestrator/dispatch-ownership.ps1
+  & git -C $nativeTree add .orchestrator/dispatch-ledger-reader.psm1
   & git -C $nativeTree -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m 'inert standalone battery'
   Assert-True ($LASTEXITCODE -eq 0) 'inert battery committed in disposable fixture'
   $nativeHead=(& git -C $nativeTree rev-parse HEAD).Trim()
@@ -1788,6 +1792,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
   New-Item -ItemType Directory -Path $guardRoot | Out-Null
   Copy-Item -LiteralPath $guard -Destination (Join-Path $guardRoot 'invoke-heavy-verifier.ps1')
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $guardRoot
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $guardRoot
   $guardCopy = Join-Path $guardRoot 'invoke-heavy-verifier.ps1'
   $runner = Join-Path $guardRoot 'run.ps1'
   [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
@@ -1833,7 +1838,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
       -not (Test-Path -LiteralPath $controllerLock))
       "host-heavy route executes the complete fixed file under the controller owner (exit=$($result.exitCode) output=$($result.output))"
     $receipt = @(Get-ChildItem -LiteralPath (Join-Path $tree '.orchestrator/artifacts') -Filter 'controller-host-heavy-verifier-*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json -DateKind String })
-    $expectedSources = @('.orchestrator/host-heavy-verifier.test.ps1','.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/native-db-admission.py','.orchestrator/heavy-admission-preload.cjs','.orchestrator/heavy-slot.cjs','.orchestrator/heavy-nested-owner.cs','.orchestrator/heavy-nested-client.cjs','.orchestrator/heavy-admission-holder-launcher.cjs','.orchestrator/dispatch-ownership.ps1')
+    $expectedSources = @('.orchestrator/host-heavy-verifier.test.ps1','.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/native-db-admission.py','.orchestrator/heavy-admission-preload.cjs','.orchestrator/heavy-slot.cjs','.orchestrator/heavy-nested-owner.cs','.orchestrator/heavy-nested-client.cjs','.orchestrator/heavy-admission-holder-launcher.cjs','.orchestrator/dispatch-ownership.ps1','.orchestrator/dispatch-ledger-reader.psm1')
     $sourcesBound = $receipt.Count -eq 1 -and @($expectedSources | Where-Object { -not $receipt[0].sources.$_ -or $receipt[0].sources.$_ -cne ((& git -C $tree rev-parse "HEAD:$_").Trim()) }).Count -eq 0
     Assert-True ($receipt.Count -eq 1 -and $sourcesBound -and $receipt[0].controller.head -ceq ((& git -C $controllerRoot rev-parse HEAD).Trim()) -and $receipt[0].controller.sources.'.orchestrator/invoke-heavy-verifier.ps1' -ceq ((& git -C $controllerRoot rev-parse 'HEAD:.orchestrator/invoke-heavy-verifier.ps1').Trim()) -and $receipt[0].slot.name -ceq 'controller-verify-lock.d' -and
       $receipt[0].command.arguments[0] -ceq '-NoProfile' -and $receipt[0].command.arguments[1] -ceq '-NonInteractive' -and

@@ -1,0 +1,515 @@
+{
+  "schemaVersion": "dispatch-history-callers/v1",
+  "rows": [
+    {
+      "path": ".orchestrator/board-reconcile.ps1",
+      "scope": "Get-BoardHistory",
+      "api": "read-dispatchledgersnapshot",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes+lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "24d468d5ca2aa81e68148aa75c46f9a9d21c06e5b8cafbcae8b5f7a68b60ec5d"
+    },
+    {
+      "path": ".orchestrator/capacity-pacing.ps1",
+      "scope": "Get-PacingLaneHours",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "1deb94e6ee220a97b61fe379fc45c45e8e3845e36cea5fb12da68b0cc3cd0846"
+    },
+    {
+      "path": ".orchestrator/cleanup-orphan-worktree-dirs.ps1",
+      "scope": "Get-ReclamationDispatch",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "85a79295afa0258a41a844284bc3da82b65fc2417d2c207c63ca8d3f1a720f86"
+    },
+    {
+      "path": ".orchestrator/controller-release-battery.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "f7645b68344e9b28ab6ad66e73f73b15c45b748121ca15420b745271b306591c"
+    },
+    {
+      "path": ".orchestrator/dispatch-count-history.ps1",
+      "scope": "Read-DispatchCountHistory",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "323f15ff25457da042aa0fd1163c69f82840e35142b36cd577adbaeffec38b47"
+    },
+    {
+      "path": ".orchestrator/dispatch-count-history.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "2488820f73cbbe241de4e03ff910bf34c2d5324195cd60a83beed4ccb86fc3cc"
+    },
+    {
+      "path": ".orchestrator/cost-harvest.ps1",
+      "scope": "Get-DispatchModels",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "04f4ec2bb488960befbca7ebae1ddb6353dce80571c3919e10d66db67bce99c7"
+    },
+    {
+      "path": ".orchestrator/digest-publish.ps1",
+      "scope": "Read-DigestRows",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "8275497c8e0b74b2b817bc6c2d60995bf93856b23e5d6ef5c069da40d6ef775a"
+    },
+    {
+      "path": ".orchestrator/dispatch-history-checkpoint.psm1",
+      "scope": "Read-CheckpointedDispatchHistory",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 1,
+      "mode": "checkpoint",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "projection+delta",
+      "callSha256": "0785db856204fc65116eeca3e31860319d8c6bb9ca9bcf5136523b42244daa52"
+    },
+    {
+      "path": ".orchestrator/dispatch-ledger-reader.psm1",
+      "scope": "Read-DispatchLedgerLines",
+      "api": "read-dispatchledgersnapshot",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes+lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "12e335b3c7c89c56c3e7a47b2f60d39e3565b606d513323d97c2ed385b198c0d"
+    },
+    {
+      "path": ".orchestrator/dispatch-ledger-reader.psm1",
+      "scope": "Read-DispatchLedgerBytes",
+      "api": "read-dispatchledgersnapshot",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes+lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "21cef66d6825258e0914d4ce072b536e86652114687e8dad175e5218e049e91a"
+    },
+    {
+      "path": ".orchestrator/harvest-observed-lanes.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "1196c2a8e2a182aca26a0d1fde745e75fc9b7ed6c4265d3976d66555659e14b1"
+    },
+    {
+      "path": ".orchestrator/integration-dispatch-contract.ps1",
+      "scope": "Get-RetainedIntegrationStart",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/integration-dispatch-contract.ps1",
+      "scope": "Get-IntegrationExecutionAttribution",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/invoke-heavy-verifier.ps1",
+      "scope": "Get-HeavyRoutingRow",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "49d03583ca354662fd5e81a0b7df217869eaf08c48ece05930f796e2871b0294"
+    },
+    {
+      "path": ".orchestrator/landed-integration-consume.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/landed-integration-dispatch.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/landed-integration-dispatch.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 2,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/landed-integration-dispatch.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 3,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "56cc16f8718c6638638c02fd82428a25ef9b7f175d03be15a91bf577f91ca4fe"
+    },
+    {
+      "path": ".orchestrator/landed-integration-evidence.psm1",
+      "scope": "Read-RebaseJsonLines",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "8275497c8e0b74b2b817bc6c2d60995bf93856b23e5d6ef5c069da40d6ef775a"
+    },
+    {
+      "path": ".orchestrator/landing-preflight.ps1",
+      "scope": "Get-ProductionObservation",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba"
+    },
+    {
+      "path": ".orchestrator/landing-preflight.ps1",
+      "scope": "Get-Decision7643BreakerAuthority",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba"
+    },
+    {
+      "path": ".orchestrator/landing-preflight.ps1",
+      "scope": "Get-ReviewReduction",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba"
+    },
+    {
+      "path": ".orchestrator/lane-stall-watchdog.ps1",
+      "scope": "Resolve-LegacyRoutingProvenance",
+      "api": "read-checkpointeddispatchhistory",
+      "ordinal": 1,
+      "mode": "checkpoint",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "projection+delta",
+      "callSha256": "0148d4f50671c75ff7446214cda3ed63c7188174d0756542cf3549bf42005579"
+    },
+    {
+      "path": ".orchestrator/lane-stall-watchdog.ps1",
+      "scope": "Test-WatchdogPolicyMoveConsumed",
+      "api": "read-checkpointeddispatchhistory",
+      "ordinal": 1,
+      "mode": "checkpoint",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "projection+delta",
+      "callSha256": "0148d4f50671c75ff7446214cda3ed63c7188174d0756542cf3549bf42005579"
+    },
+    {
+      "path": ".orchestrator/lane-stall-watchdog.ps1",
+      "scope": "<script>",
+      "api": "read-checkpointeddispatchhistory",
+      "ordinal": 1,
+      "mode": "checkpoint",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "projection+delta",
+      "callSha256": "0148d4f50671c75ff7446214cda3ed63c7188174d0756542cf3549bf42005579"
+    },
+    {
+      "path": ".orchestrator/lane-stall-watchdog.ps1",
+      "scope": "<script>",
+      "api": "read-checkpointeddispatchhistory",
+      "ordinal": 2,
+      "mode": "checkpoint",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "projection+delta",
+      "callSha256": "0148d4f50671c75ff7446214cda3ed63c7188174d0756542cf3549bf42005579"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "New-RebaseOnlyContinuationEvidence",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "7bcf984c65f5822dc59f58b7ef04832473969d079733f89a448ffb7e7b3ddca7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchledgerbytes",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e756b6884eb4e00d921a064e0bad350cb019acbb1888b5a1c793c15bbec76145"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 2,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchledgerbytes",
+      "ordinal": 2,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e756b6884eb4e00d921a064e0bad350cb019acbb1888b5a1c793c15bbec76145"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 3,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchledgerbytes",
+      "ordinal": 3,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e756b6884eb4e00d921a064e0bad350cb019acbb1888b5a1c793c15bbec76145"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 2,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "3a91214d287af4b22f7ac15bcee0cf613238c9aefbe4fd8d4594cbe8902e1e46"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 4,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchledgerbytes",
+      "ordinal": 4,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e756b6884eb4e00d921a064e0bad350cb019acbb1888b5a1c793c15bbec76145"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 5,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-dispatchledgerbytes",
+      "ordinal": 5,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e756b6884eb4e00d921a064e0bad350cb019acbb1888b5a1c793c15bbec76145"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 6,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/log-event.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 7,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "60558b64da397737cc65891c22bafa193d36ffd47cbc0025dcb9b1590e6fddd7"
+    },
+    {
+      "path": ".orchestrator/matrix-refresh.ps1",
+      "scope": "Read-Jsonl",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "8275497c8e0b74b2b817bc6c2d60995bf93856b23e5d6ef5c069da40d6ef775a"
+    },
+    {
+      "path": ".orchestrator/platform-scorecard.ps1",
+      "scope": "Read-ScorecardLedgers",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "6f41170bcf7706e4af9e5ed3857b87abfd6e616a88f69cb30eaa9fe955bd3dc6"
+    },
+    {
+      "path": ".orchestrator/review-head-contract.psm1",
+      "scope": "Assert-LaneTimeTerminalTarget",
+      "api": "read-dispatchledgersnapshot",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes+lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "e5bd6997a898b6e0f5688aa31dd2c7d6de3038e6b3dc0945b8d7e142ddb5e073"
+    },
+    {
+      "path": ".orchestrator/review-head-contract.psm1",
+      "scope": "Read-ExactHeadReviewHistory",
+      "api": "read-dispatchcounthistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "327b0483c17764b7af2daceedd127a4c5e92f8c785dedcdbc53afc3072f03923"
+    },
+    {
+      "path": ".orchestrator/review-head-reducer.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba"
+    },
+    {
+      "path": ".orchestrator/review-queue-health.ps1",
+      "scope": "<script>",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "45a619348756b9d7affbc1ce03977d7704d384cea56d3ffd3577f9c08c22c5ba"
+    },
+    {
+      "path": ".orchestrator/routing-data.ps1",
+      "scope": "Get-CapacityAuthorHistory",
+      "api": "read-dispatchledgersnapshot",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-bytes+lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "84e15b58f0f9141121241949470b69af35bde99e8d64746bf75090033ab38334"
+    },
+    {
+      "path": ".orchestrator/velocity-metrics.ps1",
+      "scope": "Get-VelocityLandingCandidates",
+      "api": "read-exactheadreviewhistory",
+      "ordinal": 1,
+      "mode": "one-pass-stream",
+      "projection": "dispatch-count/v1",
+      "peakEnvelope": "parsed-history",
+      "callSha256": "7b89701dccc13b0b622a451ecbaa77ac16725326c6b35e4e7582430abaa03b9a"
+    },
+    {
+      "path": ".orchestrator/waiting-on-todd.ps1",
+      "scope": "Read-ToddActionRows",
+      "api": "read-dispatchledgerlines",
+      "ordinal": 1,
+      "mode": "one-pass-snapshot",
+      "projection": "captured-lines",
+      "peakEnvelope": "captured-history",
+      "callSha256": "ded2693ce7aede5afaeacf1e764d260ff81db2bf3328a56b3a738c209b1c5122"
+    }
+  ]
+}

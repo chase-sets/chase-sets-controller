@@ -14,6 +14,7 @@ param(
   [Alias('Now')][datetime]$HoldNow=[datetime]::UtcNow
 )
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 function Test-HoldKeys($Value,[string[]]$Keys) {
   if($null -eq $Value -or $Value -isnot [pscustomobject]){return $false}
@@ -73,7 +74,7 @@ function Test-MergeHoldState($State,[datetime]$Now) {
 function Read-MergeHoldState([string]$Path,[datetime]$Now) {
   $Now=$Now.ToUniversalTime()
   try {
-    $state=ConvertFrom-HoldJson ([IO.File]::ReadAllText($Path))
+    $state=ConvertFrom-HoldJson ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)))
     if(-not (Test-MergeHoldState $state $Now)){throw 'MALFORMED'}
     return [pscustomobject]@{status='KNOWN';reason='VALIDATED';state=$state;active=@($state.records|Where-Object{$null -eq $_.releasedAt -and (ConvertTo-HoldUtc $_.takenAt) -le $Now -and $Now -lt (ConvertTo-HoldUtc $_.expiresAt)})}
   } catch {return [pscustomobject]@{status='UNKNOWN';reason='HOLD_STATE_UNVERIFIED';state=$null;active=@()}}

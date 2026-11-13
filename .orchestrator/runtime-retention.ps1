@@ -15,6 +15,7 @@ with -Backfill only when due. Dependencies are library-only hermetic test seams.
 [CmdletBinding()]
 param([switch]$Apply, [string]$Root = (Split-Path -Parent $PSScriptRoot), [switch]$Library)
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 function Initialize-RetentionNative {
     if ('RuntimeRetention.Handle' -as [type]) { return }
@@ -157,7 +158,7 @@ function Get-RetentionContext([string]$Root) {
         $refs=[Text.StringBuilder]::new()
         foreach($p in $tracked) {
             if($p -match '\.(ps1|psm1|mjs|js|cjs|sh|vbs|py)$' -or $p -like '.orchestrator/controller-skills/*') {
-                [void]$refs.AppendLine([IO.File]::ReadAllText((Join-Path $Root $p)))
+                [void]$refs.AppendLine([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $Root $p))))
             }
         }
         # Installed skills are additional readers, never inferred from source alone.
@@ -166,7 +167,7 @@ function Get-RetentionContext([string]$Root) {
                 $p=Join-Path $base "$skill/SKILL.md"
                 if(Test-Path -LiteralPath $p){
                     foreach($file in Get-ChildItem -LiteralPath (Split-Path $p -Parent) -File -Recurse -ErrorAction Stop){
-                        [void]$refs.AppendLine([IO.File]::ReadAllText($file.FullName))
+                        [void]$refs.AppendLine([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName)))
                     }
                 }
             }
@@ -203,7 +204,7 @@ function Get-RetentionLedger([string]$Root) {
     try {
         $path=Join-Path $Root '.orchestrator/cost-ledger.jsonl'
         if(Test-Path -LiteralPath $path) {
-            foreach($line in [IO.File]::ReadLines($path)) {
+            foreach($line in [IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))) {
                 if(-not $line.Trim()){continue}
                 $r=$line | ConvertFrom-Json
                 if([string]::IsNullOrEmpty($r.transcript)){throw 'invalid ledger'}
@@ -245,7 +246,7 @@ function Get-RetentionSnapshot([string]$Runtime,[string]$Relative,[switch]$Metad
             else { $length=$entry.Length }
             if(-not $MetadataOnly) {
                 if($link){$hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$bytes)).ToLowerInvariant()}
-                else{$hash=(Get-FileHash -LiteralPath $entry.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()}
+                else{$hash=(Get-FileHash -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $entry.FullName) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()}
                 $entry.Refresh()
                 if(-not $link -and $entry.Length -ne $length){throw 'changed while hashing'}
             }
@@ -296,20 +297,20 @@ function Test-RetentionUnchanged($Before,$After) {
     return $true
 }
 function Write-RetentionZip([string]$Path,$Files) {
-    $s=[IO.File]::Open($Path,'CreateNew','Write','None');$zip=[IO.Compression.ZipArchive]::new($s,'Create')
+    $s=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);$zip=[IO.Compression.ZipArchive]::new($s,'Create')
     try {
         foreach($f in $Files) {
             $e=$zip.CreateEntry($f.path);$out=$e.Open()
             try {
                 if($f.link){$out.Write([byte[]]$f.bytes,0,$f.bytes.Length)}
-                else{$input=[IO.File]::OpenRead($f.fullPath);try{$input.CopyTo($out)}finally{$input.Dispose()}}
+                else{$input=[IO.File]::OpenRead((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $f.fullPath));try{$input.CopyTo($out)}finally{$input.Dispose()}}
             } finally {$out.Dispose()}
         }
     } finally {$zip.Dispose();$s.Dispose()}
 }
 function Test-RetentionZip([string]$Path,$Files) {
     try {
-        $zip=[IO.Compression.ZipFile]::OpenRead($Path)
+        $zip=[IO.Compression.ZipFile]::OpenRead((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))
         try {
             if($zip.Entries.Count -ne @($Files).Count){return $false}
             $expected=@{};foreach($f in $Files){if($expected.ContainsKey($f.path)){return $false};$expected[$f.path]=$f}
@@ -329,7 +330,7 @@ function Test-RetentionDue([string]$Archive,[datetime]$Now) {
     if(-not (Test-Path -LiteralPath $Archive)){return $true}
     foreach($p in Get-ChildItem -LiteralPath $Archive -Filter '*.manifest.json' -File -ErrorAction Stop) {
         try {
-            $m=[IO.File]::ReadAllText($p.FullName)|ConvertFrom-Json -DateKind String
+            $m=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $p.FullName))|ConvertFrom-Json -DateKind String
             $at=[datetime]::Parse($m.verifiedAt).ToUniversalTime()
             if($m.schema -cne 'runtime-retention-manifest/v1' -or $at -gt $Now -or $at -le $Now.AddHours(-24)){continue}
             $zip=$p.FullName -replace '\.manifest\.json$','.zip'
@@ -436,7 +437,7 @@ function Invoke-RuntimeRetention {
         if(-not (Test-RetentionZip ($stem+'.zip.partial') $files)){throw 'archive-verification-failed'}
         $manifest=@{schema='runtime-retention-manifest/v1';verifiedAt=$Now.ToString('o');files=@($files | Select-Object path,source,length,lastWriteUtc,sha256,link)}
         $bytes=[Text.Encoding]::UTF8.GetBytes(($manifest|ConvertTo-Json -Depth 8))
-        $s=[IO.File]::Open(($stem+'.manifest.json.partial'),'CreateNew','Write','None');try{$s.Write($bytes,0,$bytes.Length);$s.Flush($true)}finally{$s.Dispose()}
+        $s=[IO.File]::Open(($stem+'.manifest.json.partial'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$s.Write($bytes,0,$bytes.Length);$s.Flush($true)}finally{$s.Dispose()}
         & $Dependencies.Phase 'before-publish' $Root
         [IO.File]::Move(($stem+'.zip.partial'),($stem+'.zip'))
         [IO.File]::Move(($stem+'.manifest.json.partial'),($stem+'.manifest.json'))
@@ -450,7 +451,7 @@ function Invoke-RuntimeRetention {
     try {
       # Publication is followed by a locked reverify: the published bytes cannot
       # be replaced or written while any source deletion relies on them.
-      foreach($p in @($report.archive,$report.manifest)){$publishedHandles.Add([IO.File]::Open($p,'Open','Read','Read'))}
+      foreach($p in @($report.archive,$report.manifest)){$publishedHandles.Add([IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $p),'Open','Read','Read'))}
       if(-not (Test-RetentionZip $report.archive $files)){throw 'published-archive-verification-failed'}
       & $Dependencies.Phase 'after-verify' $Root
       $batchRemaining=0

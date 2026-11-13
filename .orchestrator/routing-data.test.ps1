@@ -235,6 +235,11 @@ try{
   if($Case-ne'all'){Invoke-Case $Case;return}
   foreach($name in $cases){Invoke-Case $name}
   $source=[IO.File]::ReadAllText($ResolverPath)
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $root
+  if($EvidenceDir){
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($EvidenceDir))
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $EvidenceDir
+  }
   $mutants=@(
     @{name='freeze-policy';case='policy';needle='$Model=$candidateModel;$Effort=[string]$candidate.Value.effort';replacement='$Model="model-a";$Effort=[string]$candidate.Value.effort'},
     @{name='freeze-policy-effort';case='policy';needle='$Effort=[string]$candidate.Value.effort';replacement='$Effort="high"'},

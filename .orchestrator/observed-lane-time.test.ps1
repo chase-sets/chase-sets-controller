@@ -218,6 +218,61 @@ try {
     }
   }
   if ($Scenario -cin @('all','harvest')) {
+    Check 'harvest-whole-history-above-both-cliffs' {
+      $harvester=Join-Path $scripts 'harvest-observed-lanes.ps1'
+      $largeCapture=Join-Path $root 'synthetic-large-harvest.json'
+      $early=[pscustomobject][ordered]@{ts=$dispatch.ts;kind='dispatch';lane='synthetic-harvest-early';issue=908615}
+      $late=[pscustomobject][ordered]@{ts=$dispatch.ts;kind='dispatch';lane='synthetic-harvest-late';issue=908616}
+      $entries=@($early,$late)|ForEach-Object {
+        [ordered]@{lane=$_.lane;issue=$_.issue;dispatchRowUtc=$_.ts;reportMtimeUtc=$terminal.observedEndAt
+          transcriptCreatedUtc=$_.ts;lateDispatchRow=$false}
+      }
+      [IO.File]::WriteAllText($largeCapture,(ConvertTo-Json -InputObject @($entries) -Depth 8))
+      Write-Fixture @($early,$late)
+      $smallPlan=@(& $harvester -LanesPath $largeCapture -HistoryPath $ledger -LedgerPath $ledger)
+      Assert-Observed ($smallPlan.Count -eq 2 -and ($smallPlan -join "`n").Contains("-Lane 'synthetic-harvest-early'") -and
+        ($smallPlan -join "`n").Contains("-Lane 'synthetic-harvest-late'")) 'small harvest control must plan both current targets'
+      $seed=[IO.File]::ReadAllLines($ledger)
+      $writer=[IO.StreamWriter]::new($ledger,$false,[Text.UTF8Encoding]::new($false),65536)
+      try {
+        $writer.Write($seed[0]);$writer.Write("`n")
+        for($i=0;$i -lt 50000;$i++){$writer.Write("{}`n")}
+        $writer.Write('{"padding":"'+('x'*33554432)+'"}');$writer.Write("`n")
+        $writer.Write($seed[1]);$writer.Write("`n")
+      } finally {$writer.Dispose()}
+      $physicalRows=0
+      foreach($line in [IO.File]::ReadLines($ledger)){$physicalRows++}
+      Assert-Observed ($physicalRows -eq 50003 -and (Get-Item -LiteralPath $ledger).Length -gt 33554432) 'harvest facts must span both former cliffs'
+      $ledgerHash=(Get-FileHash -LiteralPath $ledger).Hash
+      $captureHash=(Get-FileHash -LiteralPath $largeCapture).Hash
+      $warnings=@()
+      $largePlan=@(& $harvester -LanesPath $largeCapture -HistoryPath $ledger -LedgerPath $ledger -WarningVariable warnings -WarningAction SilentlyContinue)
+      Assert-Observed ($warnings.Count -eq 0 -and ($largePlan -join "`n") -ceq ($smallPlan -join "`n")) 'large harvest lost an early/late target or changed its exact identity-bound plan'
+      $suffix=Join-Path $root 'synthetic-harvest-suffix.jsonl'
+      $suffixRows=@([IO.File]::ReadLines($ledger)|Select-Object -Last 50000)
+      [IO.File]::WriteAllLines($suffix,[string[]]$suffixRows,[Text.UTF8Encoding]::new($false))
+      $warnings=@()
+      $suffixPlan=@(& $harvester -LanesPath $largeCapture -HistoryPath $suffix -LedgerPath $suffix -WarningVariable warnings -WarningAction SilentlyContinue)
+      Assert-Observed ($suffixRows.Count -eq 50000 -and $suffixPlan.Count -eq 1 -and
+        $suffixPlan[0].Contains("-Lane 'synthetic-harvest-late'") -and
+        ($warnings -join ' ').Contains('HARVEST_REFUSED: synthetic-harvest-early:')) 'tail-only negative control must refuse the missing early target'
+      Assert-Observed ((Get-FileHash -LiteralPath $ledger).Hash -ceq $ledgerHash -and
+        (Get-FileHash -LiteralPath $largeCapture).Hash -ceq $captureHash) 'harvest planning or negative control changed source bytes'
+      $third=[pscustomobject][ordered]@{ts=$dispatch.ts;kind='dispatch';lane='synthetic-harvest-third';issue=908617}
+      [IO.File]::AppendAllText($ledger,($third|ConvertTo-Json -Compress)+"`n")
+      $entries+=@([ordered]@{lane=$third.lane;issue=$third.issue;dispatchRowUtc=$third.ts;reportMtimeUtc=$terminal.observedEndAt
+        transcriptCreatedUtc=$third.ts;lateDispatchRow=$false})
+      [IO.File]::WriteAllText($largeCapture,(ConvertTo-Json -InputObject @($entries) -Depth 8))
+      $ledgerHash=(Get-FileHash -LiteralPath $ledger).Hash
+      $captureHash=(Get-FileHash -LiteralPath $largeCapture).Hash
+      $appendPlan=@(& $harvester -LanesPath $largeCapture -HistoryPath $ledger -LedgerPath $ledger)
+      Assert-Observed ($appendPlan.Count -eq 3 -and $appendPlan[2].Contains("-Lane 'synthetic-harvest-third'")) 'large caller missed appended target or dropped existing targets'
+      $replayPlan=@(& $harvester -LanesPath $largeCapture -HistoryPath $ledger -LedgerPath $ledger)
+      Assert-Observed (($replayPlan -join "`n") -ceq ($appendPlan -join "`n") -and
+        (Get-FileHash -LiteralPath $ledger).Hash -ceq $ledgerHash -and
+        (Get-FileHash -LiteralPath $largeCapture).Hash -ceq $captureHash -and
+        -not (Test-Path (Join-Path $scripts 'dispatch-log.jsonl'))) 'large harvest replay changed plan or wrote ledger/capture'
+    }
     Check 'harvest-deterministic-evidence-only' {
       $inputPath=Join-Path $root "synthetic lane's list.json"
       $lanes=@(

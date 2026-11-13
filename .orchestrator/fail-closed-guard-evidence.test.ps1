@@ -13,6 +13,7 @@ $checker = Join-Path $PSScriptRoot "fail-closed-guard-evidence.ps1"
 $controllerRoot = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("fail-closed-guard-evidence-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $testRoot
 
 $manifest = @(
   [ordered]@{ id = "C01-RECEIPT-MISSING"; mutant = "bypass-receipt-missing" },

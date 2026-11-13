@@ -11,6 +11,7 @@ param(
   [ValidateSet('candidate','baseline')][string]$Role = 'candidate'
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'controller-ci-planning.ps1')
 
 function Assert-Ci([bool]$Condition, [string]$Message) {
@@ -159,7 +160,7 @@ if ($Mode -ceq 'Plan') {
   }
   $selected = Select-CiRequiredItems $inventory $Items
   $manifestPath = Join-Path $ControllerRoot '.orchestrator/controller-ci-parts.json'
-  $manifest = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -Depth 40 } else { $null }
+  $manifest = if (Test-Path -LiteralPath $manifestPath) { Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $manifestPath) -Raw | ConvertFrom-Json -Depth 40 } else { $null }
   $profile = Read-CiTimingProfile (Join-Path $ControllerRoot '.orchestrator/controller-ci-durations.json')
   . (Join-Path $PSScriptRoot 'controller-ci-record-durations.ps1') -Library
   $shardCount = if ($null -ne $manifest) { Get-CiShardCount @{shardCount=$(if($null -ne $profile.shardCount){$profile.shardCount}else{18})} } else { Get-CiShardCount @{} }
@@ -183,7 +184,7 @@ if ($Mode -ceq 'Plan') {
   return
 }
 
-$plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+$plan = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $PlanPath) -Raw | ConvertFrom-Json -Depth 40 -DateKind String
 Assert-Ci ($plan.schemaVersion -ceq 'controller-ci-plan/v1') 'plan schema mismatch'
 $plan | Add-Member -NotePropertyName planSha256 -NotePropertyValue (Get-FileHash -LiteralPath $PlanPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Mode -ceq 'Shard') {
@@ -230,7 +231,7 @@ if ($Mode -ceq 'Shard') {
 }
 
 $parts = @(Get-ChildItem -LiteralPath $OutputDirectory -Filter shard.json -Recurse -File | ForEach-Object {
-  Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+  Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $_.FullName) -Raw | ConvertFrom-Json -Depth 40 -DateKind String
 })
 $results = Merge-CiResults $plan $parts
 $executionItems = if ($null -ne $plan.executionItems) { @($plan.executionItems) } else { @($plan.selected) }

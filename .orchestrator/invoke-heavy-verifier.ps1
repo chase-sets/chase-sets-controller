@@ -143,6 +143,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
+try {
 $isManifestReplay = $PSCmdlet.ParameterSetName -ceq 'ManifestReplay'
 $script:replayEntryWatch = [Diagnostics.Stopwatch]::StartNew()
 $script:replayExecutionStarted = $false
@@ -344,47 +346,6 @@ function Write-AdmissionResult([bool]$Accepted, [string]$Message, $Record = $nul
       Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
     }
   }
-}
-
-trap {
-  if ($isManifestReplay) {
-    try { Close-ReplaySourceStreams } catch {}
-    [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
-    exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
-  }
-  if ($isNativeDb) {
-    if ($nativeRequest -and -not $nativeReplyWritten) {
-      Write-NativeReply $(if ($ownedRaw) { 'unknown' } else { 'refused' }) $_.Exception.Message
-    }
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isAttachedAdmission) {
-    try { Write-AdmissionResult $false $_.Exception.Message } catch {}
-    try {
-      if (Get-Command Complete-RefusedAttachedAdmission -CommandType Function -ErrorAction SilentlyContinue) {
-        Complete-RefusedAttachedAdmission
-      }
-    } catch {}
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: verify queue', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal) -or
-      $_.Exception.Message.StartsWith('heavy-verifier: unable to persist queue', [StringComparison]::Ordinal)) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isControllerSlot -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  if ($isHostVerifier -or $isControllerHostHeavyVerifier) {
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 73
-  }
-  throw $_.Exception
 }
 
 if ($isAttachedAdmission) {
@@ -636,7 +597,7 @@ function Open-ReplayPin([string]$Path, [string]$Expected, [int]$Maximum = 335544
     if ($script:replaySources[$Path].sha256 -cne $Expected) { throw 'heavy-verifier: conflicting replay pins' }
     return $script:replaySources[$Path]
   }
-  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
   try {
     [ManifestReplayJob]::PlainFile($stream, $Path)
     if ($stream.Length -gt $Maximum -or $script:replaySourceBytes + $stream.Length -gt 33554432) { throw 'heavy-verifier: replay source bound exceeded' }
@@ -722,7 +683,7 @@ function Assert-ReplayPackage {
   $bindingsRaw=Read-ReplaySource $script:replaySources[$bindingsPath]
   $script:replayBindings=Read-ReplayJson $bindingsRaw
   $script:replayControllerPins=[ordered]@{}
-  foreach ($name in @('invoke-heavy-verifier.ps1','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','heavy-admission-preload.cjs','heavy-slot.cjs','dispatch-ownership.ps1')) {
+  foreach ($name in @('invoke-heavy-verifier.ps1','manifest-replay-bindings.schema.json','manifest-replay-receipt.schema.json','heavy-admission-preload.cjs','heavy-slot.cjs','dispatch-ownership.ps1','dispatch-ledger-reader.psm1')) {
     $path=Join-Path $PSScriptRoot $name
     $pin=Open-ReplayPin $path ''
     $script:replayControllerPins[$name]=$pin.sha256
@@ -783,7 +744,7 @@ function Assert-ReplayPackage {
 }
 function Read-ReplayEvidence([string]$Path, [int]$Maximum=1048576) {
   Assert-ReplayPath $Path
-  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  $stream=[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   try {
     [ManifestReplayJob]::PlainFile($stream,$Path)
     if ($stream.Length -gt $Maximum) { throw 'heavy-verifier: replay evidence exceeds bound' }
@@ -850,7 +811,7 @@ function Invoke-ManifestReplay {
     }
     $claim=[ordered]@{schema='host-heavy-replay-claim/v1';nonce=[guid]::NewGuid().ToString('N');runId=$ReplayRunId;phase=$ReplayPhase;head=$acquiredGitIdentity.Head;lane=$Lane;worktree=$worktreeFull;owner=$owner;package=$script:replayPackage}
     $claimHash=Write-ReplayNew $claimPath $claim
-    $claimGuard=[IO.File]::Open($claimPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    $claimGuard=[IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $claimPath),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     $environment=[ordered]@{}
     foreach ($key in @('SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA','COMSPEC','NUMBER_OF_PROCESSORS','OS','PATHEXT')) {
       $value=[Environment]::GetEnvironmentVariable($key)
@@ -949,7 +910,7 @@ function Invoke-ManifestReplay {
     if (Test-Path -LiteralPath $path) {
       try {
         Assert-ReplayPath $path
-        $bytes=[IO.File]::ReadAllBytes($path)
+        $bytes=[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
         if ($bytes.Length -le 8388608) { $logs[$streamName]=@{path=$path;bytes=$bytes.Length;sha256=(Get-ReplayHash $bytes)} }
       } catch { $recorder=$false; if (-not $timedOut) { $exit=1;$outcome='incomplete' } }
     }
@@ -1029,7 +990,7 @@ if ($TestQueueFixture) {
   if (-not $fixturePath.StartsWith($container + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'heavy-verifier: verify queue fixture must be inside its temporary container'
   }
-  $queueFixture = Get-Content -LiteralPath $fixturePath -Raw | ConvertFrom-Json -DateKind String
+  $queueFixture = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $fixturePath) -Raw | ConvertFrom-Json -DateKind String
 }
 if ($worktreeFull -eq $container -or -not $worktreeFull.StartsWith($container + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $worktreeFull -PathType Container)) {
   throw "heavy-verifier: worktree must be an existing child of the container root"
@@ -1188,7 +1149,7 @@ function Assert-DiagnosticDeclaration {
   }
   Assert-DiagnosticPathNoReparse $declarationPath 'diagnostic declaration'
   try {
-    $declarations = [IO.File]::ReadAllText($declarationPath) | ConvertFrom-Json -ErrorAction Stop
+    $declarations = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $declarationPath)) | ConvertFrom-Json -ErrorAction Stop
   } catch {
     throw "heavy-verifier: diagnostic declaration file is unreadable"
   }
@@ -1249,7 +1210,7 @@ function Assert-DiagnosticDeclaration {
   if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
     throw "heavy-verifier: declared diagnostic script was not found"
   }
-  $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($candidate))).ToLowerInvariant()
+  $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $candidate)))).ToLowerInvariant()
   if ($actual -cne $declaredHash.ToLowerInvariant()) {
     throw "heavy-verifier: declared diagnostic SHA-256 does not match the script"
   }
@@ -1289,7 +1250,7 @@ function Assert-DiagnosticDeclaration {
       if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         throw 'heavy-verifier: declared diagnostic dependency was not found'
       }
-      $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($full))).ToLowerInvariant()
+      $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $full)))).ToLowerInvariant()
       if ($actual -cne $dependencyHash.ToLowerInvariant()) {
         throw "heavy-verifier: declared diagnostic dependency SHA-256 does not match: $normalized"
       }
@@ -1604,6 +1565,7 @@ function Get-HeavyCallerAncestry([int]$RootPid, [string]$RootStart, [long]$Oldes
   return $chain
 }
 function Get-HeavyRoutingRow($Record, [string]$RuntimeRoot) {
+  Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
   $path = Join-Path $RuntimeRoot 'dispatch-log.jsonl'
   $file = Get-Item -LiteralPath $path -Force -ErrorAction Stop
   Assert-DispatchObservationTime
@@ -1618,13 +1580,10 @@ using System.IO;
 using System.Text.Json;
 namespace ChaseSets.HeavyAdmission {
   public static class RoutingHistory {
-    public static IEnumerable<string> RelevantRows(string path, string label, string transcript, Action checkExpiry) {
-      using (var reader = new StreamReader(path)) {
+    public static IEnumerable<string> RelevantRows(IEnumerable<string> lines, string label, string transcript, Action checkExpiry) {
       checkExpiry();
-      while (true) {
-        string line = reader.ReadLine();
+      foreach (string line in lines) {
         checkExpiry();
-        if (line == null) break;
         if (String.IsNullOrWhiteSpace(line)) continue;
         using (JsonDocument document = JsonDocument.Parse(line)) {
           JsonElement schema;
@@ -1637,7 +1596,6 @@ namespace ChaseSets.HeavyAdmission {
           if (relevant) yield return line;
         }
       }
-      }
     }
   }
 }
@@ -1645,7 +1603,7 @@ namespace ChaseSets.HeavyAdmission {
   }
   Assert-DispatchObservationTime
   $candidates = @()
-  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows($path, $Record.label, (Split-Path -Leaf $Record.transcriptPath), [Action]{ Assert-DispatchObservationTime })) {
+  foreach ($line in [ChaseSets.HeavyAdmission.RoutingHistory]::RelevantRows([string[]](Read-DispatchLedgerLines -Path $path), $Record.label, (Split-Path -Leaf $Record.transcriptPath), [Action]{ Assert-DispatchObservationTime })) {
     $row = ConvertFrom-DispatchClosedJson $line
     if ($null -eq $row) { throw 'routing history malformed' }
     $keys = @(Get-DispatchRoutingLedgerKeys $row.dispatchRoutingSchema $row)
@@ -1789,7 +1747,7 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     $beforeBytes = @{}
     foreach ($path in $beforePaths) {
       if (-not [IO.File]::Exists($path)) { throw 'dispatch census changed' }
-      $beforeBytes[$path] = [IO.File]::ReadAllText($path)
+      $beforeBytes[$path] = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
       Assert-DispatchObservationTime
       $candidate = Get-ValidatedDispatchOwnershipRecord $path $runtime ([IO.Path]::GetTempPath())
       Assert-DispatchObservationTime
@@ -1816,7 +1774,7 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     }
     Assert-DispatchObservationTime
     if ($Evaluation.ContainsKey('selectedPath') -and (-not [IO.File]::Exists($Evaluation.selectedPath) -or
-        [IO.File]::ReadAllText($Evaluation.selectedPath) -cne $Evaluation.selectedRaw)) { throw 'selected dispatch bytes changed' }
+        [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Evaluation.selectedPath)) -cne $Evaluation.selectedRaw)) { throw 'selected dispatch bytes changed' }
     Assert-DispatchObservationTime
     if ($live.health.counts.truncated -gt 0 -or $live.health.counts.rejected -gt 0 -or
         $live.health.counts.probeFailures -gt 0 -or $live.health.counts.legacyLiveOwners -gt 0) {
@@ -1830,7 +1788,7 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     $records = @{}
     $oldestLaunch = [long]::MaxValue
     foreach ($path in $paths) {
-      $snapshots[$path] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path))
+      $snapshots[$path] = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path)))
       Assert-DispatchObservationTime
       $record = Get-ValidatedDispatchOwnershipRecord $path $runtime ([IO.Path]::GetTempPath())
       Assert-DispatchObservationTime
@@ -1899,7 +1857,7 @@ function Get-HeavyCallerObservation($Evaluation, [long]$RemainingMs) {
     $afterPaths = @(Get-DispatchCensusPaths $runtime | Sort-Object)
     $foreignChanged = ($paths -join "`n") -cne ($afterPaths -join "`n")
     foreach ($path in $paths) {
-      if (-not [IO.File]::Exists($path) -or -not [string]::Equals([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path)), $snapshots[$path], [StringComparison]::Ordinal)) {
+      if (-not [IO.File]::Exists($path) -or -not [string]::Equals([Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))), $snapshots[$path], [StringComparison]::Ordinal)) {
         if ($path -ceq $result.Path) { throw 'selected dispatch bytes changed' }
         $foreignChanged = $true
       }
@@ -2110,7 +2068,7 @@ if ($isNativeDb) {
   }
   $ignored = @(& git -C $worktreeFull check-ignore -- $nativeRequestFull 2>$null)
   if ($LASTEXITCODE -ne 0 -or $ignored.Count -ne 1) { throw 'native-db: request must be ignored' }
-  $nativeRequestBytes = [IO.File]::ReadAllBytes($nativeRequestFull)
+  $nativeRequestBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $nativeRequestFull))
   if ($nativeRequestBytes.Length -gt 65536) { throw 'native-db: request oversized' }
   $nativeRequestRaw = [Text.UTF8Encoding]::new($false, $true).GetString($nativeRequestBytes)
   $nativeRequest = Read-NativeJson $nativeRequestRaw 65536
@@ -2258,7 +2216,7 @@ function Get-GitBlobId([byte[]]$Bytes) {
 # or its uniform CRLF checkout (core.autocrlf on a CR-free blob), with no Git
 # filter or index flag consulted.
 function Test-ControllerFixtureSourceBytes([string]$Path, [string]$Blob) {
-  $bytes = [IO.File]::ReadAllBytes($Path)
+  $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))
   if ((Get-GitBlobId $bytes) -ceq $Blob) { return $true }
   # Latin-1 maps each byte to one char, so only line endings are rewritten.
   $text = [Text.Encoding]::Latin1.GetString($bytes)
@@ -2310,7 +2268,8 @@ $hostHeavyVerifierFiles = @(
   ".orchestrator/heavy-nested-owner.cs",
   ".orchestrator/heavy-nested-client.cjs",
   ".orchestrator/heavy-admission-holder-launcher.cjs",
-  ".orchestrator/dispatch-ownership.ps1"
+  ".orchestrator/dispatch-ownership.ps1",
+  ".orchestrator/dispatch-ledger-reader.psm1"
 )
 $hostHeavyVerifierBlobs = [ordered]@{}
 $hostHeavyVerifierPath = $null
@@ -2323,7 +2282,7 @@ function Assert-ControllerHostHeavyControllerState {
   if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) { throw 'heavy-verifier: controller source root must be a clean exact-head worktree' }
   $head = (@(& git -C $root rev-parse HEAD 2>$null) -join '').Trim()
   if ($head -notmatch '^[a-f0-9]{40}$') { throw 'heavy-verifier: controller source root head is unavailable' }
-  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1')
+  $files = @('.orchestrator/invoke-heavy-verifier.ps1','.orchestrator/dispatch-ownership.ps1','.orchestrator/dispatch-ledger-reader.psm1')
   $blobs = [ordered]@{}
   foreach ($relative in $files) {
     $tracked = @(& git -C $root ls-tree $head -- $relative 2>$null) -join ''
@@ -2413,7 +2372,7 @@ if ($isControllerFixture) {
   Assert-ControllerFixtureGitState
   Resolve-ControllerFixtureEvidence $ControllerFixtureEvidenceDirectory
   Assert-ControllerFixtureEvidenceFresh
-  $fixtureWrapperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($PSCommandPath))).ToLowerInvariant()
+  $fixtureWrapperDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $PSCommandPath)))).ToLowerInvariant()
 }
 if ($isControllerHostHeavyVerifier) {
   Assert-ControllerHostHeavyControllerState
@@ -2597,7 +2556,7 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
     $stream = $null
     for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
       try {
-        $stream = [IO.File]::Open($RecordPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $RecordPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
       } catch {
         $exception = $_.Exception.GetBaseException()
         $errorCode = [int]$exception.HResult -band 0xffff
@@ -2608,9 +2567,8 @@ function Get-OwnerSnapshot([string]$RecordPath = $ownerPath) {
       }
     }
     $buffer = [IO.MemoryStream]::new()
-    try { $stream.CopyTo($buffer); $bytes = $buffer.ToArray() } finally { $stream.Dispose(); $buffer.Dispose() }
-    $buffer = [IO.MemoryStream]::new($bytes, $false)
-    $reader = [IO.StreamReader]::new($buffer, [Text.Encoding]::UTF8, $true)
+    try { $stream.CopyTo($buffer); $bytes = dispatch-ledger-reader\Get-LedgerMemoryBytes -Stream $buffer } finally { $stream.Dispose(); $buffer.Dispose() }
+    $reader = [IO.StreamReader]::new([IO.MemoryStream]::new($bytes, $false), [Text.Encoding]::UTF8, $true)
     try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($record.schemaVersion -eq 6) {
@@ -2875,7 +2833,7 @@ function Get-QueueSha256([byte[]]$Bytes) {
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
 function Read-QueueContent([string]$Path) {
-  $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+  $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
   try {
     $size = $stream.Length
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
@@ -3154,7 +3112,7 @@ function Invoke-QueueQuarantine {
       Write-QueueEvidence $queueRecoveryPath ($marker | ConvertTo-Json -Compress)
       throw "pending ($queueRecoveryPath)"
     }
-    $marker = Read-NativeJson ([IO.File]::ReadAllText($queueRecoveryPath)) 8192
+    $marker = Read-NativeJson ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $queueRecoveryPath))) 8192
     Assert-NativeObject $marker @('schemaVersion','path','identity','writtenUtcTicks','size','sha256','reason','wrapperUtc','record')
     if ($marker.schemaVersion -ne 1 -or $marker.sha256 -cne $QuarantineQueue -or $marker.path -cne $queuePath -or
         (Split-Path -Parent $marker.record) -cne $queueRecordRoot -or
@@ -3196,19 +3154,19 @@ function Invoke-QueueQuarantine {
         try { $bytes=[Text.Encoding]::UTF8.GetBytes(($empty|ConvertTo-Json -Compress)); $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
       }
       Assert-QueuePathSafe $stage
-      $stagedEmpty = Read-NativeJson ([IO.File]::ReadAllText($stage)) 8192
+      $stagedEmpty = Read-NativeJson ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $stage))) 8192
       Assert-NativeObject $stagedEmpty @('schemaVersion','fileIdentity','nextTicket','tickets')
       if ($stagedEmpty.schemaVersion -ne 1 -or $stagedEmpty.nextTicket -ne 1 -or $stagedEmpty.tickets -isnot [array] -or
           $stagedEmpty.tickets.Count -ne 0 -or $stagedEmpty.fileIdentity -cne (Get-QueueFileIdentity $stage)) { throw 'empty-stage-invalid' }
-      $raw = [IO.File]::ReadAllText($stage)
+      $raw = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $stage))
       Write-QueueEvidence $proofPath $raw
     }
     Assert-QueuePathSafe $proofPath
-    $proof = [IO.File]::ReadAllBytes($proofPath)
+    $proof = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $proofPath))
     Stop-QueueRecoveryFixture 'prepared'
     if (-not (Test-PathEntry $queuePath)) {
       Assert-QueuePathSafe $stage
-      if ((Get-QueueSha256 ([IO.File]::ReadAllBytes($stage))) -cne (Get-QueueSha256 $proof)) { throw 'empty-stage-readback-mismatch' }
+      if ((Get-QueueSha256 ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $stage)))) -cne (Get-QueueSha256 $proof)) { throw 'empty-stage-readback-mismatch' }
       [IO.File]::Move($stage, $queuePath)
     }
     Stop-QueueRecoveryFixture 'published'
@@ -3418,14 +3376,14 @@ function Remove-ClaimedOwnerLock([string]$ClaimPath, [string]$ExpectedRaw, [swit
     $nativeOwner = ($ExpectedRaw | ConvertFrom-Json -DateKind String -ErrorAction Stop).schemaVersion -eq 6
     if ($nativeOwner) { $share = $share -bor [IO.FileShare]::Read }
     try {
-      $stream = [IO.File]::Open($ClaimPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+      $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ClaimPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
     } catch [IO.IOException] {
       if (($_.Exception.GetBaseException().HResult -band 0xffff) -eq 32) { return $false }
       throw
     }
     try {
       $encoding = if ($nativeOwner) { [Text.UTF8Encoding]::new($false, $true) } else { [Text.Encoding]::UTF8 }
-      $reader = [IO.StreamReader]::new($stream, $encoding, (-not $nativeOwner), 1024, $true)
+      $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), $encoding, (-not $nativeOwner), 1024, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
       if ($raw -cne $ExpectedRaw) { return $false }
       try { $record = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop } catch { return $false }
@@ -3963,7 +3921,7 @@ try {
       if (Test-Path -LiteralPath $diagnosticResultPath) {
         throw "heavy-verifier: diagnostic result file already exists"
       }
-      $diagnosticSourceStream = [IO.File]::Open($diagnosticScriptFull, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+      $diagnosticSourceStream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $diagnosticScriptFull), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
       $launchHashBytes = [Security.Cryptography.SHA256]::HashData($diagnosticSourceStream)
       $launchHash = [Convert]::ToHexString($launchHashBytes).ToLowerInvariant()
       if ($launchHash -cne $diagnosticDefinition.sha256) {
@@ -4159,7 +4117,7 @@ try {
       [hashtable]$moduleByPath = @{}
       try {
         foreach ($manifestFile in $manifestFiles) {
-          $manifest = [IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json -ErrorAction Stop
+          $manifest = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $manifestFile.FullName)) | ConvertFrom-Json -ErrorAction Stop
           foreach ($module in @($manifest.modules)) {
             if ([string]$module.path -and [string]$module.sha256 -cmatch '^[a-f0-9]{64}$') {
               # Processes never overwrite one another: one path, one loaded digest.
@@ -4184,7 +4142,7 @@ try {
     if ($isDiagnostic) {
       # The declared diagnostic writes <name>.result.json beside its entry script.
       if (Test-SafeFile $diagnosticResultPath) {
-        $diagnosticResultSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($diagnosticResultPath))).ToLowerInvariant()
+        $diagnosticResultSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $diagnosticResultPath)))).ToLowerInvariant()
       }
     }
     $childResources = [ordered]@{
@@ -4209,7 +4167,7 @@ try {
     if ($isWorkspaceDbTest) {
       $workspaceDbStage = $null
       if ($workspaceDbStagePath -and (Test-Path -LiteralPath $workspaceDbStagePath -PathType Leaf)) {
-        try { $workspaceDbStage = [IO.File]::ReadAllText($workspaceDbStagePath) | ConvertFrom-Json } catch { $workspaceDbStage = $null }
+        try { $workspaceDbStage = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $workspaceDbStagePath)) | ConvertFrom-Json } catch { $workspaceDbStage = $null }
         Remove-Item -LiteralPath $workspaceDbStagePath -Force -ErrorAction SilentlyContinue
       }
       if ($childTimedOut) {
@@ -4401,7 +4359,7 @@ if ($releaseMismatch) {
   exit 1
 }
 if ($isControllerHostHeavyVerifier -and $receiptPath -and (Test-SafeFile $receiptPath)) {
-  $releasedReceipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json -AsHashtable -DateKind String
+  $releasedReceipt = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $receiptPath)) | ConvertFrom-Json -AsHashtable -DateKind String
   $releasedReceipt['released'] = $true
   $releasedReceipt['releasedUtc'] = [DateTime]::UtcNow.ToString('o')
   [IO.File]::WriteAllText($receiptPath, ($releasedReceipt | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
@@ -4437,3 +4395,43 @@ if ($isNativeDb) {
   Write-NativeReply $nativeResult.status $nativeResult.diagnostic
 }
 exit $exitCode
+} catch {
+  if ($isManifestReplay) {
+    try { Close-ReplaySourceStreams } catch {}
+    [Console]::Error.WriteLine('heavy-verifier: manifest replay refused or incomplete: ' + ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Substring(0, [Math]::Min(1800, ($_.Exception.Message -replace '[\r\n\x00-\x1f]', ' ').Length)))
+    exit $(if ($script:replayExecutionStarted) { 1 } else { 73 })
+  }
+  if ($isNativeDb) {
+    if ($nativeRequest -and -not $nativeReplyWritten) {
+      Write-NativeReply $(if ($ownedRaw) { 'unknown' } else { 'refused' }) $_.Exception.Message
+    }
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isAttachedAdmission) {
+    try { Write-AdmissionResult $false $_.Exception.Message } catch {}
+    try {
+      if (Get-Command Complete-RefusedAttachedAdmission -CommandType Function -ErrorAction SilentlyContinue) {
+        Complete-RefusedAttachedAdmission
+      }
+    } catch {}
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($_.Exception.Message.StartsWith('heavy-verifier: caller eligibility:', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: verify queue', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: queued;', [StringComparison]::Ordinal) -or
+      $_.Exception.Message.StartsWith('heavy-verifier: unable to persist queue', [StringComparison]::Ordinal)) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isControllerSlot -and $_.Exception.Message.StartsWith("heavy-verifier: lock unavailable (", [StringComparison]::Ordinal)) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  if ($isHostVerifier -or $isControllerHostHeavyVerifier) {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 73
+  }
+  throw $_.Exception
+}

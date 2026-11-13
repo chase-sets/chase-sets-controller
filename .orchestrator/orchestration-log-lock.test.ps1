@@ -339,7 +339,7 @@ function New-LockSubject([string]$Label, [object[]]$Edits) {
   $root = Join-Path $script:TestRoot "subject-$Label"
   $r2 = Join-Path $script:TestRoot "ledgers-$Label"
   foreach ($directory in @($root, $r2)) { [void][IO.Directory]::CreateDirectory($directory) }
-  foreach ($file in @('orchestration-log-lock.psm1', 'log-event.ps1', 'cost-harvest.ps1', 'review-head-contract.psm1', 'routing-data.ps1')) {
+  foreach ($file in @('orchestration-log-lock.psm1', 'log-event.ps1', 'cost-harvest.ps1', 'dispatch-ledger-reader.psm1','review-head-contract.psm1', 'routing-data.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $root
   }
   foreach ($edit in $Edits) {

@@ -1,4 +1,5 @@
 . (Join-Path $PSScriptRoot "dispatch-ownership.ps1")
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 $script:FleetAdmissionSchema = "fleet-exclusive-admission/v1"
 $script:FleetAdmissionDirectoryName = "fleet-admission.d"
@@ -90,7 +91,7 @@ function Get-ValidatedFleetAdmissionRecord(
       return $null
     }
     $record = ConvertFrom-DispatchOwnershipJson ([IO.File]::ReadAllText(
-      $paths.record, [Text.Encoding]::UTF8
+      (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $paths.record), [Text.Encoding]::UTF8
     ))
     $names = @(Get-FleetAdmissionPropertyNames)
     $actual = @($record.PSObject.Properties.Name)

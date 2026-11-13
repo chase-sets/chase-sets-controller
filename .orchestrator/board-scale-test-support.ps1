@@ -272,6 +272,7 @@ function New-BoardScaleRuntime($Fixture, [string]$Arm = 'candidate') {
     }
   }
   [IO.File]::WriteAllText((Join-Path $runtime 'board-reconcile.ps1'), (Protect-ScaleCatches $source))
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $runtime
   $writer = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'board-set.ps1'))
   [IO.File]::WriteAllText((Join-Path $runtime 'board-set.ps1'), (Protect-ScaleCatches $writer))
   [IO.File]::WriteAllText((Join-Path $runtime 'count-probes.ps1'), (Get-BoardScaleProbeSource))

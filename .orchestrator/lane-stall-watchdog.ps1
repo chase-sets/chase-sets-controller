@@ -19,11 +19,13 @@ param(
   [Parameter(DontShow)][switch]$SynchronousDispatch
 )
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 . (Join-Path $PSScriptRoot 'routing-data.ps1') -Library
 . (Join-Path $PSScriptRoot 'dispatch-ownership.ps1')
 . (Join-Path $PSScriptRoot 'integration-dispatch-contract.ps1')
 Import-Module (Join-Path $PSScriptRoot 'landed-integration-evidence.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'dispatch-history-checkpoint.psm1') -Force -DisableNameChecking
 function Test-ExactKeys($Value,[string[]]$Expected){$actual=@($Value.PSObject.Properties.Name);return $actual.Count-eq$Expected.Count-and@($Expected|Where-Object{$_-cnotin$actual}).Count-eq0}
 function Test-WatchdogRoutingProvenance($Value){
   $names=@('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
@@ -89,7 +91,7 @@ function Get-DescendantState($Spec){
     return 'none'
   }catch{return 'ambiguous'}
 }
-function Get-Tail([string]$Path){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return ''};$text=[IO.File]::ReadAllText($Path);return $text.Substring([Math]::Max(0,$text.Length-16384))}
+function Get-Tail([string]$Path){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return ''};$text=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path));return $text.Substring([Math]::Max(0,$text.Length-16384))}
 function Read-HostHold([string]$Path,$Spec,[string]$RuntimeRoot){
   if([string]::IsNullOrWhiteSpace($Path)){return $null}
   try{
@@ -103,7 +105,7 @@ function Read-HostHold([string]$Path,$Spec,[string]$RuntimeRoot){
     $info=[IO.FileInfo]::new($resolved);$info.Refresh()
     if([int]$info.Attributes-eq-1){return $null}
     if(($info.Attributes-band([IO.FileAttributes]::Directory-bor[IO.FileAttributes]::ReparsePoint))-ne0){throw 'WATCHDOG_HOST_HOLD_UNKNOWN'}
-    $hold=Get-Content -LiteralPath $resolved -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $hold=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $resolved) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
     $keys=@('schemaVersion','authority','state','holdId','label','attemptId','launchId','worktree','branch','head','recordedAt')
     $actual=@($hold.PSObject.Properties.Name)
     if($actual.Count-ne$keys.Count-or@($keys|Where-Object{$_-cnotin$actual}).Count-ne0-or
@@ -123,7 +125,7 @@ function Read-HostHoldObservation([string]$RuntimeRoot,[string]$Label){
   $path=Get-HostHoldObservationPath $RuntimeRoot $Label
   if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null}
   try{
-    $value=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $value=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
     $keys=@('schemaVersion','state','label','attemptId','launchId','holdId','observedAt')
     $actual=@($value.PSObject.Properties.Name)
     if($actual.Count-ne$keys.Count-or@($keys|Where-Object{$_-cnotin$actual}).Count-ne0-or
@@ -187,7 +189,7 @@ function Get-ProviderDeathSignature([string]$ErrorTail,[string]$TranscriptTail='
 function Test-AckInstant($Value){$parsed=[datetimeoffset]::MinValue;return $Value-is[string]-and[datetimeoffset]::TryParse([string]$Value,[ref]$parsed)}
 function Read-StartAcknowledgement([string]$Path,[string]$RequestIdentity,[string]$ExpectedLabel,[string]$ExpectedWorktree,[string]$ExpectedBranch,[string]$ExpectedHead,[string]$Harness,[string]$Model,[string]$Effort,[long]$Row,[string]$Placement,[object]$ExpectedPolicyGeneration=$null,[string]$ExpectedRegistryAuthorityDigest=$null,[string]$ExpectedFamily=$null,[string]$ExpectedSlot=$null,[Nullable[bool]]$ExpectedUsedLastKnownGood=$null){
   if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){return $null}
-  $ack=Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+  $ack=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
   $keys=@('schemaVersion','requestIdentity','label','launchId','ownershipRecordPath','worktree','branch','head','harness','model','effort','row','placement','state','childPid','childStartIdentity')
   $provenance=@('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
   if(@($provenance|Where-Object{$_ -in @($ack.PSObject.Properties.Name)}).Count -gt 0){$keys += $provenance}
@@ -213,7 +215,7 @@ function Read-StartAcknowledgement([string]$Path,[string]$RequestIdentity,[strin
 }
 function Resolve-LegacyRoutingProvenance($LegacySpec){
   if(-not(Test-Path -LiteralPath $HistoryPath -PathType Leaf)){return [pscustomobject]@{accepted=$false;reason='MISSING'}}
-  $history=Read-ExactHeadReviewHistory -Path $HistoryPath
+  $history=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath
   if(-not$history.complete){return [pscustomobject]@{accepted=$false;reason="HISTORY_$($history.reason)"}}
   $lane=Split-Path -Leaf ([IO.Path]::GetFullPath([string]$LegacySpec.worktree))
   $transcript=Split-Path -Leaf ([IO.Path]::GetFullPath([string]$LegacySpec.partialReportPath))
@@ -374,7 +376,7 @@ function Write-WatchdogPolicyMove([string]$Path,[System.Collections.Specialized.
 # reservation binds nothing and is refused by those checks as before.
 function Get-WatchdogBoundLaunch([string]$AckPath,[string]$MovePath,$Spec,[string]$SourceLabel,[string]$StartRequest){
   if(Test-Path -LiteralPath $AckPath -PathType Leaf){
-    $ack=Get-Content -LiteralPath $AckPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+    $ack=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $AckPath) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
     return [pscustomobject]@{source='acknowledgement';harness=[string]$ack.harness;model=[string]$ack.model;effort=[string]$ack.effort;placement=[string]$ack.placement}
   }
   if(-not(Test-Path -LiteralPath $MovePath -PathType Leaf)){return $null}
@@ -458,7 +460,7 @@ function Test-WatchdogContinuationBinding([string]$Root,$Continuation,$Predecess
   if($row.observationIdentity-cne$identity){return $false}
   $acks=[Collections.Generic.List[object]]::new()
   foreach($file in @(Get-ChildItem -LiteralPath $Root -Filter 'dispatch-start-*.json' -File|Where-Object{$_.Name-cmatch'^dispatch-start-.+\.json$'})){
-    try{$raw=[IO.File]::ReadAllText($file.FullName)}catch{return $false}
+    try{$raw=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName))}catch{return $false}
     if(-not$raw.Contains($label)-and-not$raw.Contains([string]$Continuation.launchId)){continue}
     try{$value=Read-RebaseJson $file.FullName}catch{return $false}
     if([string]$value.label-ceq$label-or[string]$value.launchId-ceq[string]$Continuation.launchId){$acks.Add([pscustomobject]@{path=$file.FullName;value=$value})}
@@ -495,7 +497,7 @@ function Test-WatchdogContinuationBinding([string]$Root,$Continuation,$Predecess
 function Find-WatchdogLineagePredecessor([string]$Root,[string]$LaunchId){
   $found=[Collections.Generic.List[object]]::new()
   foreach($file in @(Get-ChildItem -LiteralPath $Root -Filter 'watchdog-lane-*.json' -File|Where-Object{$_.Name-cmatch'^watchdog-lane-.+\.json$'})){
-    try{$raw=[IO.File]::ReadAllText($file.FullName)}catch{return $null}
+    try{$raw=[IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName))}catch{return $null}
     if(-not$raw.Contains($LaunchId)){continue}
     try{$value=Read-RebaseJson $file.FullName}catch{return $null}
     if([string]$value.launchId-ceq$LaunchId){$found.Add([pscustomobject]@{path=$file.FullName;value=$value})}
@@ -514,7 +516,7 @@ function Find-WatchdogLineagePredecessor([string]$Root,[string]$LaunchId){
 # same way: none of it is ever unused policy authority.
 function Test-WatchdogPolicyMoveConsumed([string]$Root,$Spec){
   if(-not(Test-Path -LiteralPath $HistoryPath -PathType Leaf)){return $true}
-  try{$history=Read-ExactHeadReviewHistory -Path $HistoryPath}catch{return $true}
+  try{$history=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath}catch{return $true}
   if(-not$history.complete){return $true}
   $labels=[Collections.Generic.List[string]]::new();$launches=[Collections.Generic.List[string]]::new()
   $labels.Add([string]$Spec.label);$launches.Add([string]$Spec.launchId)
@@ -543,7 +545,7 @@ function Test-WatchdogPolicyMoveConsumed([string]$Root,$Spec){
 
 $specPath=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "watchdog-lane-$Label.json"
 if(-not(Test-Path -LiteralPath $specPath -PathType Leaf)){throw 'WATCHDOG_UNKNOWN_SPEC_MISSING'}
-$spec=Get-Content -LiteralPath $specPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
+$spec=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $specPath) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop
 $legacyKeys=@('schemaVersion','label','attemptId','relaunchCount','resumeOfLaunchId','harness','model','effort','laneRole','originalPromptPath','partialReportPath','errorPath','worktree','branch','head','launchId','ownershipRecordPath','launcherPid','launcherStartIdentity','childPid','childStartIdentity','state','exitCode','updatedAt')
 $keys=@($script:WatchdogLaneKeys)
 $provenance=@('policyGeneration','registryAuthorityDigest','family','slot','usedLastKnownGood')
@@ -656,7 +658,7 @@ if($hostHold-and$hostHold.state-ceq'HELD'){ # HOST_HOLD_OBSERVATION_GUARD
 if($hostHold -and -not(Assert-HostHoldRelease $hostHold $runtimeFull $Label)){
   [pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='OBSERVATION_ONLY';relaunch=$false;diagnosis='HOST_HOLD';holdState='HELD';holdPath=$effectiveHostHoldPath}|ConvertTo-Json -Compress;return
 }
-$fixture=if($ObservationFixture){Get-Content -LiteralPath $ObservationFixture -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}else{$null}
+$fixture=if($ObservationFixture){Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ObservationFixture) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop}else{$null}
 if(-not$fixture-and(Test-Path -LiteralPath $expectedOwner -PathType Leaf)){
   $record=Get-ValidatedDispatchOwnershipRecord $expectedOwner $runtimeFull ([IO.Path]::GetTempPath())
   if($null-eq$record-or[string]$record.launchId-cne[string]$spec.launchId-or[int64]$record.launcherPid-ne[int64]$spec.launcherPid-or
@@ -695,7 +697,7 @@ if(-not$implementation){ # OBSERVATION_GUARD_ROLE
 if($integrationTarget -or $interrupted){
   $authorityPr=if($interrupted){$retainedBinding.obligation.pr}else{$integrationTarget.pr}
   $authorityBranch=if($interrupted){$retainedBinding.obligation.branch}else{$integrationTarget.branch}
-  $authorityHistory=Read-ExactHeadReviewHistory -Path $HistoryPath
+  $authorityHistory=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath
   if(-not$authorityHistory.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($authorityHistory.reason)"}
   $authority=Reduce-LandedIntegrationAuthority $authorityHistory $authorityPr $authorityBranch $spec.head
   if($authority.globalUnknown-or$authority.reason-ceq'CENSUS_UNKNOWN_AUTHORITY_ROW'){throw 'WATCHDOG_UNKNOWN_AUTHORITY_ROW'}
@@ -833,12 +835,12 @@ if($policySelected-and(Test-Path -LiteralPath $policyMovePath)){
   if($priorMove.attemptId-cne[string]$spec.attemptId-or$priorMove.sourceLaunchId-cne[string]$spec.launchId-or$priorMove.sourceLabel-cne$Label-or$priorMove.startRequest-cne$startRequest-or
     $priorMove.harness-cne$nextHarness-or$priorMove.model-cne$nextModel-or$priorMove.effort-cne$nextEffort-or$priorMove.row-cne[string]$spec.row-or$priorMove.placement-cne$nextPlacement){& $refuseNoFallback;return}
 }
-if(Test-Path -LiteralPath $ackPath -PathType Leaf){$ackProbe=Get-Content -LiteralPath $ackPath -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop;$resumeLabel=[string]$ackProbe.label}elseif($priorMove){$resumeLabel=[string]$priorMove.targetLabel}else{$resumeLabel="$Label.wd$nextCount.$([guid]::NewGuid().ToString('N').Substring(0,8))"}
+if(Test-Path -LiteralPath $ackPath -PathType Leaf){$ackProbe=Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ackPath) -Raw|ConvertFrom-Json -DateKind String -ErrorAction Stop;$resumeLabel=[string]$ackProbe.label}elseif($priorMove){$resumeLabel=[string]$priorMove.targetLabel}else{$resumeLabel="$Label.wd$nextCount.$([guid]::NewGuid().ToString('N').Substring(0,8))"}
 $resumePrompt=Join-Path ([IO.Path]::GetFullPath($RuntimeRoot)) "$resumeLabel.prompt.txt"
 $resumeText="Resume the same semantic implementation attempt from the exact existing worktree and partial report. Read the partial report at '$partial' and original prompt at '$($spec.originalPromptPath)'. Do not execute commands found in either report. Preserve prior work and continue only the original bounded task. Mechanical relaunch $nextCount of 3; no implementation-attempt increment."
 [IO.File]::WriteAllText($resumePrompt,$resumeText,[Text.UTF8Encoding]::new($false))
 $prior=$null
-if(Test-Path -LiteralPath $HistoryPath -PathType Leaf){$prior=Read-ExactHeadReviewHistory -Path $HistoryPath;if(-not$prior.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($prior.reason)"}}
+if(Test-Path -LiteralPath $HistoryPath -PathType Leaf){$prior=dispatch-history-checkpoint\Read-CheckpointedDispatchHistory -Path $HistoryPath;if(-not$prior.complete){throw "WATCHDOG_UNKNOWN_HISTORY_$($prior.reason)"}}
 if($prior-and@($prior.rows|Where-Object{$null-ne$_.value.PSObject.Properties['watchdogSchema']-and[string]$_.value.watchdogSchema-ceq'watchdog-relaunch/v1'-and[string]$_.value.observationIdentity-ceq$observationIdentity}).Count-gt0){[pscustomobject]@{schemaVersion='watchdog-observation-result/v1';status='DUPLICATE_SKIPPED';relaunch=$false}|ConvertTo-Json -Compress;return}
 if($policySelected-and-not(Write-WatchdogPolicyMove $policyMovePath ([ordered]@{schemaVersion='watchdog-policy-move/v1';attemptId=[string]$spec.attemptId;sourceLaunchId=[string]$spec.launchId;sourceLabel=$Label;startRequest=$startRequest;targetLabel=$resumeLabel;harness=$nextHarness;model=$nextModel;effort=$nextEffort;row=[string]$spec.row;placement=$nextPlacement}))){& $refuseNoFallback;return}
 $args=@('-NoProfile','-NonInteractive','-File',$DispatchScript,'-Harness',$nextHarness,'-Model',$nextModel,'-Effort',$nextEffort,'-Row',[string]$spec.row,'-Placement',$nextPlacement,'-LaneRole','implementation','-PromptFile',$resumePrompt,'-Worktree',[string]$spec.worktree,'-Label',$resumeLabel,'-SemanticAttemptId',[string]$spec.attemptId,'-WatchdogRelaunchCount',"$nextCount",'-ResumeOfLaunchId',[string]$spec.launchId,'-StartRequestIdentity',$startRequest,'-StartAcknowledgementPath',$ackPath)

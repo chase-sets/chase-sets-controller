@@ -1,12 +1,14 @@
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
+
 function Get-CiSourceDigest([string]$Path) {
-  $text = [IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+  $text = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)).Replace("`r`n", "`n")
   return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($text))).ToLowerInvariant()
 }
 
 function Read-CiTimingProfile([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
   try {
-    $profile = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 40 -DateKind String
+    $profile = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path) -Raw | ConvertFrom-Json -Depth 40 -DateKind String
     if ($profile.schemaVersion -cne 'controller-ci-durations/v1') { return $null }
     return $profile
   } catch { return $null }

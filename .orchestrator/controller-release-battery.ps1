@@ -63,6 +63,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 # Committed canonical path declaration. Optional batteryHostSha256 literals in
 # fixtures are diagnostic only: routine bundle updates never require a repin.
 $batteryHostPath = 'C:/Users/ToddS/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe'
@@ -296,7 +297,7 @@ function Get-BatteryFleetLoad([switch]$Holder) {
     $stream = $null
     for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
       try {
-        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ownerPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
       } catch {
         $exception = $_.Exception.GetBaseException()
         $errorCode = [int]$exception.HResult -band 0xffff
@@ -307,7 +308,7 @@ function Get-BatteryFleetLoad([switch]$Holder) {
       }
     }
     try {
-      $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+      $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true)
       try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
     } finally { $stream.Dispose() }
     $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
@@ -443,8 +444,8 @@ function Start-BatteryFleetSampler($Sampler, $Process = $null) {
     $runspace.Open()
     $shell = [powershell]::Create()
     $shell.Runspace = $runspace
-    [void]$shell.AddScript('param($State, $Definitions) . ([scriptblock]::Create($Definitions)); $controller = $State.controller; Invoke-BatteryFleetSamplerLoop $State').
-      AddArgument($state).AddArgument($definitions -join "`n")
+    [void]$shell.AddScript('param($State, $Definitions, $Runtime) Import-Module (Join-Path $Runtime ''dispatch-ledger-reader.psm1'') -Force -DisableNameChecking; . ([scriptblock]::Create($Definitions)); $controller = $State.controller; Invoke-BatteryFleetSamplerLoop $State').
+      AddArgument($state).AddArgument($definitions -join "`n").AddArgument($PSScriptRoot)
     $fleetSampling.host = @{ state = $state; runspace = $runspace; shell = $shell; async = $shell.BeginInvoke() }
   }
   $state = $fleetSampling.host.state
@@ -515,7 +516,7 @@ function Assert-BatteryAdmission {
         $stream = $null
         for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
           try {
-            $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ownerPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
           } catch {
             $exception = $_.Exception.GetBaseException()
             $errorCode = [int]$exception.HResult -band 0xffff
@@ -526,7 +527,7 @@ function Assert-BatteryAdmission {
           }
         }
         try {
-          $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+          $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true)
           try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() }
         } finally { $stream.Dispose() }
         $owner = $raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
@@ -602,7 +603,7 @@ function Get-BatteryHostIdentity {
 
   # Observations are independent, best-effort and never admission predicates.
   try { $identity.actualPath = [IO.Path]::GetFullPath((Get-Process -Id $PID -ErrorAction Stop).Path) } catch {}
-  try { $identity.sha256 = (Get-FileHash -LiteralPath $identity.actualPath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch {}
+  try { $identity.sha256 = (Get-FileHash -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $identity.actualPath) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() } catch {}
   try { $identity.byteLength = (Get-Item -LiteralPath $identity.actualPath -Force -ErrorAction Stop).Length } catch {}
   try {
     $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($identity.actualPath).ProductVersion
@@ -611,7 +612,7 @@ function Get-BatteryHostIdentity {
   try { $identity.PSVersion = $PSVersionTable.PSVersion.ToString() } catch {}
   if (-not [string]::IsNullOrWhiteSpace($PSHOME)) { $identity.PSHOME = $PSHOME }
   try {
-    $metadata = [IO.File]::ReadAllText('C:/Users/ToddS/.cache/codex-runtimes/codex-primary-runtime/runtime.json') | ConvertFrom-Json -ErrorAction Stop
+    $metadata = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path 'C:/Users/ToddS/.cache/codex-runtimes/codex-primary-runtime/runtime.json')) | ConvertFrom-Json -ErrorAction Stop
     if ($metadata.bundleVersion -is [string] -and -not [string]::IsNullOrWhiteSpace($metadata.bundleVersion)) {
       $identity.bundleVersion = $metadata.bundleVersion
     }
@@ -691,7 +692,7 @@ function Get-BatteryReferenceText([string]$RelativePath) {
           ForEach-Object { $_.Text }) -join "`n")
     }
   }
-  return [IO.File]::ReadAllText($absolute)
+  return [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $absolute))
 }
 
 function New-BatteryReferenceIndex([string[]]$TreePaths) {
@@ -867,7 +868,7 @@ function Import-BatteryCiPrior($Prior, [byte[]]$ReceiptBytes) {
   try {
     if ($downloadPath.StartsWith($importRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'CI_TEMP_PATH_INVALID' }
     Save-BatteryCiArtifact ([string]$artifact.id) $downloadPath
-    $archiveBytes = [IO.File]::ReadAllBytes($downloadPath)
+    $archiveBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $downloadPath))
     $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($archiveBytes)).ToLowerInvariant()
     if (('sha256:' + $digest) -cne $artifact.digest) { throw 'CI_DIGEST_MISMATCH' }
     $archive = [IO.Compression.ZipArchive]::new([IO.MemoryStream]::new($archiveBytes, $false), [IO.Compression.ZipArchiveMode]::Read)
@@ -1031,7 +1032,7 @@ if (-not [string]::IsNullOrWhiteSpace($BaselineHead)) {
     $installedHead = ''
     try {
       $identityPath = Join-Path $SkillsRoot 'native-db/identity.json'
-      $identity = Get-Content -LiteralPath $identityPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+      $identity = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $identityPath) -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
       if ($identity -is [pscustomobject] -and @($identity.PSObject.Properties.Name).Count -eq 2 -and
           $identity.head -is [string] -and [string]$identity.head -cmatch '^[a-f0-9]{40}$' -and
           $identity.digest -is [string] -and [string]$identity.digest -cmatch '^[a-f0-9]{64}$') {
@@ -1262,7 +1263,7 @@ if (-not [string]::IsNullOrWhiteSpace($PriorResultPath)) {
     $resolvedPrior = if ([IO.Path]::IsPathRooted($PriorResultPath)) { [IO.Path]::GetFullPath($PriorResultPath) } else { [IO.Path]::GetFullPath((Join-Path $controller $PriorResultPath)) }
     $priorArtifactRoot = [IO.Path]::GetFullPath((Join-Path $runtime "artifacts")).TrimEnd("\", "/")
     if (-not (Test-Path -LiteralPath $resolvedPrior -PathType Leaf)) { throw "PATH" }
-    $priorBytes = [IO.File]::ReadAllBytes($resolvedPrior)
+    $priorBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $resolvedPrior))
     $prior = [Text.Encoding]::UTF8.GetString($priorBytes) | ConvertFrom-Json -DateKind String -ErrorAction Stop
     if ($prior.schemaVersion -cne "controller-battery-result/v1" -or [string]$prior.controllerHead -cnotmatch "^[a-f0-9]{40}$") { throw "SCHEMA" }
     $isCiPrior = $null -ne $prior.PSObject.Properties['ci']
@@ -1275,7 +1276,7 @@ if (-not [string]::IsNullOrWhiteSpace($PriorResultPath)) {
     } else {
       if ([string]$hostIdentity.sha256 -ceq "unavailable" -or [string]$prior.hostIdentity.sha256 -cne [string]$hostIdentity.sha256) { throw "HOST_CHANGED" }
       $priorRawPath = Join-Path $controller ([string]$prior.rawLog.relativePath)
-      $priorRawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($priorRawPath)))).ToLowerInvariant()
+      $priorRawHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $priorRawPath))))).ToLowerInvariant()
       if ($priorRawHash -cne [string]$prior.rawLog.sha256) { throw "RAW_LOG_MISMATCH" }
     }
     $priorResultHash = ([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($priorBytes))).ToLowerInvariant()
@@ -1344,10 +1345,10 @@ if ($priorOrder.Count -eq 0) {
     foreach ($candidateFile in @(Get-ChildItem -LiteralPath (Join-Path $runtime "artifacts") -Filter "*.json" -File -ErrorAction Stop |
         Sort-Object LastWriteTimeUtc -Descending)) {
       $prefix = [byte[]]::new(64)
-      $stream = [IO.File]::OpenRead($candidateFile.FullName)
+      $stream = [IO.File]::OpenRead((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $candidateFile.FullName))
       try { $read = $stream.Read($prefix, 0, 64) } finally { $stream.Dispose() }
       if ([Text.Encoding]::UTF8.GetString($prefix, 0, $read).StartsWith($resultPrefix, [StringComparison]::Ordinal)) {
-        $timingSource = Get-Content -LiteralPath $candidateFile.FullName -Raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
+        $timingSource = Get-Content -LiteralPath (dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $candidateFile.FullName) -Raw | ConvertFrom-Json -DateKind String -ErrorAction Stop
         break
       }
     }

@@ -47,6 +47,175 @@ function Invoke-SyntheticPlanningControl($PlanningRow,[string]$Label){
     ConvertFrom-Json -Depth 30
 }
 
+function Assert-QueueJsonEqual($Expected,$Actual,[string]$Label){
+  $expectedJson=ConvertTo-Json -InputObject $Expected -Compress -Depth 100
+  $actualJson=ConvertTo-Json -InputObject $Actual -Compress -Depth 100
+  Assert-True ($expectedJson -ceq $actualJson) "$Label whole JSON equality (no removed or normalized leaves): expected=$expectedJson actual=$actualJson"
+}
+
+function Get-QueueInputIdentity([string]$Path){
+  $file=Get-Item -LiteralPath $Path
+  [ordered]@{length=$file.Length;lastWriteUtcTicks=$file.LastWriteTimeUtc.Ticks;sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash}
+}
+
+function Invoke-PreservedQueue([string]$Path,[string]$Label){
+  $before=Get-QueueInputIdentity $Path
+  # Exercise the actual CLI's defaults, not an overridden or modelled fold.
+  $value=& $queueScript -HistoryPath $Path -AuthorityFixture $fixture -AuthorityScenario 'mixed-ready-and-enqueued' |
+    ConvertFrom-Json -Depth 100
+  Assert-QueueJsonEqual $before (Get-QueueInputIdentity $Path) "$Label input hash/length/lastwrite preserved"
+  Write-Output "QUEUE $Label bytes=$($before.length) sha256=$($before.sha256) result=$($value|ConvertTo-Json -Compress -Depth 100)" | Out-Host
+  return $value
+}
+
+function Assert-QueueCandidates($Value,[int]$MissingPr=0,[switch]$Blocked){
+  $expected=@(
+    [ordered]@{pr=6254;head=('a'*40);enqueued=$false;state='authorized';reason='LATEST_EXACT_HEAD_PASS'},
+    [ordered]@{pr=6255;head=('b'*40);enqueued=$true;state='authorized';reason='LATEST_EXACT_HEAD_PASS'}
+  )
+  if($MissingPr){
+    $index=if($MissingPr -eq 6254){0}else{1}
+    $expected[$index].state='unknown';$expected[$index].reason='NO_REVIEW_HISTORY'
+  }
+  if($Blocked){$expected[1].state='blocked';$expected[1].reason='LATEST_EXACT_HEAD_BLOCK_FIXABLE'}
+  Assert-QueueJsonEqual $expected $Value.candidates 'exact ready/enqueued candidates, excluding draft'
+  $expectedDeficits=@($expected|Where-Object {$_.state -cne 'authorized'})
+  Assert-QueueJsonEqual $expectedDeficits $Value.deficits 'exact PR deficits'
+  $status=if($expectedDeficits.Count){'debt'}else{'healthy'}
+  $reason=if($expectedDeficits.Count){'READY_OR_ENQUEUED_PR_LACKS_CURRENT_RECEIPT'}else{'ALL_READY_AND_ENQUEUED_PRS_AUTHORIZED'}
+  Assert-True ($Value.status -ceq $status -and $Value.reason -ceq $reason) 'exact queue status and reason'
+}
+
+function Assert-QueueCoverage($Value,[int]$Exact,[int]$Controls){
+  Assert-QueueJsonEqual ([ordered]@{
+    mode='exact-head';exactHeadReceipts=$Exact;planningReceipts=$Controls
+    malformedExactHeadReceipts=0;quarantinedNonPrReceipts=(2*$Controls)
+    legacyReceipts=0;controllerReceipts=(3*$Controls);retroactiveAuthorization=0
+  }) $Value.coverage 'complete receipt coverage map'
+  Assert-True ($Value.authority.queueComplete -eq $true -and $Value.authority.historyComplete -eq $true) 'complete fixture and default history authority'
+  Assert-True ($Value.authority.controllerReductions.Count -eq $Controls) 'exact controller reduction count'
+  if($Controls){
+    $controller=$Value.authority.controllerReductions[0]
+    Assert-True ($controller.state -ceq 'authorized' -and $controller.reason -ceq 'GOVERNING_PASS' -and
+      $controller.selected.candidateRows -eq 6 -and $controller.blockingHeads.Count -eq 0) 'controller authority remains independent of ordinary queue debt'
+    Assert-QueueJsonEqual ([ordered]@{
+      governing=[ordered]@{pass=1;blockFixable=0;blockReplan=0;inFlight=0}
+      shadow=[ordered]@{pass=0;blockFixable=1;blockReplan=0;inFlight=0}
+      advisory=[ordered]@{pass=1;blockFixable=0;blockReplan=0;inFlight=0}
+      legacy=0;duplicateReplay=0;invalidConflict=0
+    }) $controller.census 'complete controller census'
+    # Controller rows precede padding in both files, so even physical audit
+    # leaves and the derived identity must match, without any projection.
+    Assert-QueueJsonEqual @(4,5,6,7,8,9) @($controller.selected.rows.physicalLine|Sort-Object) 'controller physical selected-row positions'
+    Assert-QueueJsonEqual @($Exact+9) $controller.audit.rows 'controller physical audit nonblank row census'
+  }
+}
+
+function Invoke-QueuePhysicalHistoryQualification {
+  $small=Join-Path $testRoot 'synthetic-queue-small.jsonl'
+  $large=Join-Path $testRoot 'synthetic-queue-physical.jsonl'
+  $late=Join-Path $testRoot 'synthetic-queue-late.jsonl'
+  $utf8=[Text.UTF8Encoding]::new($false)
+  Add-ExactReceipt $small 6254 ('a'*40) 'synthetic-queue-early-6254'
+  Add-ExactReceipt $small 0 ('c'*40) 'synthetic-queue-non-pr-one'
+  Add-ExactReceipt $small 0 ('e'*40) 'synthetic-queue-non-pr-two'
+  Add-StrictPair $small governing PASS 'synthetic-queue-governing'
+  Add-StrictPair $small shadow BLOCK_FIXABLE 'synthetic-queue-shadow'
+  Add-StrictPair $small advisory PASS 'synthetic-queue-advisory'
+  Add-JsonRow $small (New-SyntheticPlanningReceipt 'queue-physical')
+  $earlyBytes=[IO.File]::ReadAllBytes($small)
+  $earlyOracle=Invoke-PreservedQueue $small 'small-early-only'
+  Assert-QueueCandidates $earlyOracle -MissingPr 6255
+  Assert-QueueCoverage $earlyOracle 1 1
+
+  [IO.File]::WriteAllBytes($large,$earlyBytes)
+  # Physical LF/byte cliffs only: 50001 whitespace rows, not rich events.
+  $paddingRows=50001
+  $paddingLine=(' '*671)+"`n"
+  $writer=[IO.StreamWriter]::new($large,$true,$utf8)
+  try{for($i=0;$i -lt $paddingRows;$i++){$writer.Write($paddingLine)}}finally{$writer.Dispose()}
+  Assert-True ((Get-Item -LiteralPath $large).Length -gt 32MB) 'late distinct PR receipt starts after the 32MiB cliff'
+  Add-ExactReceipt $late 6255 ('b'*40) 'synthetic-queue-late-6255'
+  $lateText=[IO.File]::ReadAllText($late)
+  [IO.File]::AppendAllText($small,$lateText,$utf8)
+  [IO.File]::AppendAllText($large,$lateText,$utf8)
+  $oracle=Invoke-PreservedQueue $small 'small-complete'
+  Assert-QueueCandidates $oracle
+  Assert-QueueCoverage $oracle 2 1
+  $fullIdentity=Get-QueueInputIdentity $large
+  $fullBytes=[IO.File]::ReadAllBytes($large)
+  $fullLastWrite=[IO.File]::GetLastWriteTimeUtc($large)
+  $lines=[IO.File]::ReadAllLines($large)
+  Assert-True ($lines.Length -eq 50012 -and $fullIdentity.length -gt 32MB -and
+    $fullBytes[$fullBytes.Length-1] -eq 10) 'full fixture exceeds both physical cliffs and ends in LF'
+  $actual=Invoke-PreservedQueue $large 'full-complete'
+  Assert-QueueJsonEqual $oracle $actual 'small versus full complete report including controller identities'
+
+  try{
+    # Materialize the actual last 50000 physical lines in the same input path.
+    $suffix=[string]::Join("`n",$lines,$lines.Length-50000,50000)+"`n"
+    [IO.File]::WriteAllText($large,$suffix,$utf8)
+    Assert-True ([IO.File]::ReadAllLines($large).Length -eq 50000) 'actual physical suffix has exactly 50000 LF rows'
+    $suffixOracle=Invoke-PreservedQueue $late 'small-late-only'
+    Assert-QueueCandidates $suffixOracle -MissingPr 6254
+    Assert-QueueCoverage $suffixOracle 1 0
+    $suffixResult=Invoke-PreservedQueue $large 'actual-last-50000'
+    Assert-QueueJsonEqual $suffixOracle $suffixResult 'suffix loses exactly the early PR and control inventories'
+    Assert-True (($suffixResult|ConvertTo-Json -Compress -Depth 100) -cne ($oracle|ConvertTo-Json -Compress -Depth 100)) 'suffix cannot substitute for complete history'
+  }finally{
+    [IO.File]::WriteAllBytes($large,$fullBytes)
+    [IO.File]::SetLastWriteTimeUtc($large,$fullLastWrite)
+  }
+  Assert-QueueJsonEqual $fullIdentity (Get-QueueInputIdentity $large) 'suffix restoration exact hash/length/lastwrite'
+  Assert-QueueJsonEqual $oracle (Invoke-PreservedQueue $large 'restored-after-suffix') 'suffix restoration whole report'
+
+  try{
+    # Maximal LF-complete prefix no larger than 32MiB, not a reader override.
+    $prefixLength=1+[Array]::LastIndexOf[byte]($fullBytes,10,([int](32MB)-1),[int](32MB))
+    Assert-True ($prefixLength -le 32MB -and $prefixLength -gt $earlyBytes.Length -and
+      $prefixLength+672 -gt 32MB -and $fullBytes[$prefixLength-1] -eq 10) 'prefix is maximal line-complete within 32MiB'
+    $stream=[IO.File]::Create($large)
+    try{$stream.Write($fullBytes,0,$prefixLength)}finally{$stream.Dispose()}
+    $prefixResult=Invoke-PreservedQueue $large 'actual-line-complete-32MiB-prefix'
+    Assert-QueueCandidates $prefixResult -MissingPr 6255
+    Assert-QueueCoverage $prefixResult 1 1
+    Assert-QueueJsonEqual $earlyOracle $prefixResult 'prefix loses exactly late distinct PR terminal authority'
+  }finally{
+    [IO.File]::WriteAllBytes($large,$fullBytes)
+    [IO.File]::SetLastWriteTimeUtc($large,$fullLastWrite)
+  }
+  Assert-QueueJsonEqual $fullIdentity (Get-QueueInputIdentity $large) 'prefix restoration exact hash/length/lastwrite'
+  Assert-QueueJsonEqual $oracle (Invoke-PreservedQueue $large 'restored-after-prefix') 'prefix restoration whole report'
+
+  # Build a valid, later ordinary terminal from the existing receipt builder.
+  $terminal=$lateText|ConvertFrom-Json -DateKind String
+  $terminal.ts='2026-08-02T12:00:00.000Z'
+  $terminal.reviewerAttempt='synthetic-queue-appended-reviewer'
+  $terminal.authorAttempt='synthetic-queue-appended-author'
+  $terminal.outcome='BLOCK_FIXABLE';$terminal.findingIds=[object[]]@('SYNTHETIC_QUEUE_LATE_BLOCK')
+  $terminal.findings.blocking=1
+  $smallBeforeAppend=Get-QueueInputIdentity $small
+  Add-JsonRow $small $terminal
+  Add-JsonRow $large $terminal
+  $appendedIdentity=Get-QueueInputIdentity $large
+  Assert-True ($appendedIdentity.length-$fullIdentity.length -eq
+    (Get-Item -LiteralPath $small).Length-$smallBeforeAppend.length) 'small and physical histories append identical terminal bytes'
+  $appendedBytes=[IO.File]::ReadAllBytes($large)
+  $hasher=[Security.Cryptography.SHA256]::Create()
+  try{$prefixHash=[Convert]::ToHexString($hasher.ComputeHash($appendedBytes,0,$fullBytes.Length))}finally{$hasher.Dispose()}
+  Assert-True ($prefixHash -ceq $fullIdentity.sha256 -and $appendedIdentity.length -gt $fullIdentity.length) 'append preserves every preexisting byte'
+  $appendedOracle=Invoke-PreservedQueue $small 'small-appended-terminal'
+  Assert-QueueCandidates $appendedOracle -Blocked
+  Assert-QueueCoverage $appendedOracle 3 1
+  $appendedActual=Invoke-PreservedQueue $large 'full-appended-terminal'
+  Assert-QueueJsonEqual $appendedOracle $appendedActual 'appended whole-result oracle, including exact blocked deficit'
+  Assert-True (($appendedActual|ConvertTo-Json -Compress -Depth 100) -cne ($actual|ConvertTo-Json -Compress -Depth 100)) 'late terminal changes actual queue semantics'
+  Assert-QueueJsonEqual $appendedOracle (Invoke-PreservedQueue $small 'small-appended-replay') 'small replay whole result'
+  Assert-QueueJsonEqual $appendedActual (Invoke-PreservedQueue $large 'full-appended-replay') 'full replay whole result'
+  Assert-QueueJsonEqual $appendedIdentity (Get-QueueInputIdentity $large) 'appended source preserved through all reads'
+  Write-Output "PASS bounded ordinary queue qualification physicalRows=$($lines.Length) bytes=$($fullIdentity.length) paddingRows=$paddingRows prefixBytes=$prefixLength; whole JSON, suffix/prefix deficits, restoration, append and replay; NOT rich-event or bounded-memory qualification"
+}
+
 try{
   $history=Join-Path $testRoot 'dispatch.jsonl'
   Add-ExactReceipt $history 6254 ('a'*40) 'pr-6254'
@@ -103,6 +272,7 @@ try{
     $missingLaneRoleResult.coverage.planningReceipts-eq0-and
     $missingLaneRoleResult.coverage.malformedExactHeadReceipts-eq1) `
     'synthetic planningContract without laneRole planning remains malformed ordinary authority'
+  Invoke-QueuePhysicalHistoryQualification
   Write-Output 'PASS review-queue-health conserves controller authority without changing ordinary PR health'
 }finally{
   $resolved=[IO.Path]::GetFullPath($testRoot)

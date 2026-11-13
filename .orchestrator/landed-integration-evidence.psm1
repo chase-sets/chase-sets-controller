@@ -1,3 +1,4 @@
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -Force -DisableNameChecking
 # Completion is execution evidence, never review or landing authority. The
 # runtime directory is the existing trusted controller store. Hashes bind bytes;
 # they do not authenticate an administrator who can rewrite that store.
@@ -27,7 +28,7 @@ function Assert-RebaseKeys($Value, [string[]]$Keys) {
 }
 function Read-RebaseJson([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw 'OWED_REBASE_PROOF_MISSING: JSON record' }
-  ConvertFrom-RebaseJson ([IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false,$true)))
+  ConvertFrom-RebaseJson ([IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path), [Text.UTF8Encoding]::new($false,$true)))
 }
 function ConvertFrom-RebaseJson([string]$raw) {
   try {
@@ -177,7 +178,7 @@ function Get-RebaseAuthenticatedOwner($Obligation, [string]$Runtime, [string]$Re
 }
 function Write-RebaseBytes([string]$Path, [byte[]]$Bytes) {
   if (Test-Path -LiteralPath $Path -PathType Leaf) {
-    if ((Get-RebaseHash ([IO.File]::ReadAllBytes($Path))) -cne (Get-RebaseHash $Bytes)) { throw 'OWED_REBASE_PROOF_AMBIGUOUS: immutable record' }
+    if ((Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)))) -cne (Get-RebaseHash $Bytes)) { throw 'OWED_REBASE_PROOF_AMBIGUOUS: immutable record' }
     return
   }
   $stream = [IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
@@ -193,7 +194,7 @@ function Read-RebaseBytes([string]$Runtime, [string]$Hash) {
   Assert-RebaseSha $Hash 64
   $path = Join-Path $Runtime "integration-rebase-bytes-$Hash.bin"
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'OWED_REBASE_PROOF_MISSING: retained bytes' }
-  $bytes = [IO.File]::ReadAllBytes($path)
+  $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
   if ((Get-RebaseHash $bytes) -cne $Hash) { throw 'OWED_REBASE_PROOF_INVALID: retained bytes' }
   return ,$bytes
 }
@@ -206,7 +207,7 @@ function Invoke-RebaseEvidenceGit([string]$Worktree,[string[]]$Arguments,[string
 function Get-RebaseLogBytes([string]$Worktree,[string]$Ref) {
   $path = Get-RebaseGitPath $Worktree "logs/$Ref"
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'OWED_REBASE_PROOF_MISSING: native reflog' }
-  return ,[IO.File]::ReadAllBytes($path)
+  return ,[IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))
 }
 function Get-RebaseGitPath([string]$Worktree,[string]$Name,[string]$GitExecutable='git') {
   $path=Invoke-RebaseEvidenceGit $Worktree @('rev-parse','--git-path',$Name) $GitExecutable
@@ -236,7 +237,7 @@ function Get-RebaseCurrentOwedHash($Obligation,[string]$Runtime) {
   $path=Join-Path $Runtime "integration-owed-$($Obligation.pr)-$($Obligation.landedHead.Substring(0,12)).json"
   $current=Read-RebaseJson $path; Assert-RebaseObligation $current
   if ((Get-RebaseObligationIdentity $current) -cne (Get-RebaseObligationIdentity $Obligation)) { throw 'OWED_REBASE_PROOF_INVALID: current owed changed' }
-  return Get-RebaseHash ([IO.File]::ReadAllBytes($path))
+  return Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path)))
 }
 function New-RebaseStart($Obligation,[string]$Runtime,[string]$RecordPath,[switch]$Prelaunch) {
   Assert-RebaseObligation $Obligation
@@ -268,7 +269,7 @@ function Save-RebaseConflict($Start,[string]$Runtime) {
   foreach ($key in @('orig-head','onto','head-name')) {
     $p = Join-Path $dir $key
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw 'OWED_REBASE_PROOF_MISSING: native conflict' }
-    $values[$key] = [IO.File]::ReadAllText($p).Trim()
+    $values[$key] = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $p)).Trim()
   }
   if ($values['orig-head'] -cne $Start.predecessorHead -or $values.onto -cne $o.newBase -or $values['head-name'] -cne "refs/heads/$($o.branch)") { throw 'OWED_REBASE_PROOF_INVALID: native conflict' }
   $value = [ordered]@{schemaVersion='landed-integration-rebase-conflict/v1';startIdentity=(Get-RebaseRecordIdentity $Start);origHead=$values['orig-head'];onto=$values.onto;headName=$values['head-name'];capturedAt=[datetimeoffset]::UtcNow.ToString('o')}
@@ -364,7 +365,7 @@ function Get-RebaseRecoveryEvidence($References,$Obligation,[string]$Runtime,[st
     Assert-RebaseSha $reference.sha256 64; Assert-RebaseSha $reference.recordIdentity 64
     if (-not (Test-DispatchFullyQualifiedPath $reference.path) -or -not (Test-DispatchSamePath (Split-Path -Parent $reference.path) $Runtime) -or -not $seen.Add($reference.path)) { throw 'OWED_REBASE_PROOF_INVALID: recovery path' }
     if (-not $Retained -and -not (Test-Path -LiteralPath $reference.path -PathType Leaf)) { throw 'OWED_REBASE_PROOF_MISSING: recovery source' }
-    $bytes = if ($Retained) { Read-RebaseBytes $Runtime $reference.sha256 } else { [IO.File]::ReadAllBytes($reference.path) }
+    $bytes = if ($Retained) { Read-RebaseBytes $Runtime $reference.sha256 } else { [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $reference.path)) }
     if ((Get-RebaseHash $bytes) -cne $reference.sha256) { throw 'OWED_REBASE_PROOF_INVALID: recovery bytes' }
     $text = [Text.UTF8Encoding]::new($false,$true).GetString($bytes)
     $sources[[IO.Path]::GetFullPath($reference.path)] = [pscustomobject]@{reference=$reference;bytes=$bytes;text=$text}
@@ -594,13 +595,13 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
   $metadata = [ordered]@{}
   foreach ($file in @(Get-ChildItem -LiteralPath $directory -Force -Recurse -File | Sort-Object FullName)) {
     if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'INTEGRATION_RESUME_OPERATION: linked metadata' }
-    $metadata[[IO.Path]::GetRelativePath($directory,$file.FullName)] = Get-RebaseHash ([IO.File]::ReadAllBytes($file.FullName))
+    $metadata[[IO.Path]::GetRelativePath($directory,$file.FullName)] = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $file.FullName)))
   }
   $native = @{}
   foreach ($name in @('orig-head','onto','stopped-sha','git-rebase-todo','done')) {
     $path = Join-Path $directory $name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "INTEGRATION_RESUME_OPERATION: missing $name" }
-    $native[$name] = [IO.File]::ReadAllText($path).Trim()
+    $native[$name] = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path)).Trim()
   }
   foreach ($name in @('orig-head','onto','stopped-sha')) { Assert-RebaseSha $native[$name] }
   $rebaseHead = Invoke-RebaseEvidenceGit $Worktree @('rev-parse','--verify','REBASE_HEAD')
@@ -634,7 +635,7 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
     if (Test-Path -LiteralPath $path) {
       $item = Get-Item -LiteralPath $path -Force
       if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'INTEGRATION_RESUME_BYTES: unsupported dirty entry' }
-      $dirty[$relative] = Get-RebaseHash ([IO.File]::ReadAllBytes($path))
+      $dirty[$relative] = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path)))
     } else { $dirty[$relative] = 'deleted' }
   }
   # Full index stages cover staged nonconflict hunks as well as stage 1/2/3.
@@ -643,7 +644,7 @@ function Get-InterruptedIntegrationState([string]$Worktree) {
     branch=$branch; originalHead=$native['orig-head']; onto=$native.onto
     stoppedHead=$identity.head; stoppedCommit=$rebaseHead; oldBase=$oldBase
     metadataSha256=(Get-RebaseRecordIdentity $metadata)
-    indexSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($(if ($null -ne $gitPaths) { $gitPaths['index'] } else { Get-RebaseGitPath $Worktree 'index' }))))
+    indexSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $(if ($null -ne $gitPaths) { $gitPaths['index'] } else { Get-RebaseGitPath $Worktree 'index' })))))
     stagesSha256=(Get-RebaseHash $stages); dirtySha256=(Get-RebaseRecordIdentity $dirty)
     stagedSha256=(Get-RebaseHash (Get-InterruptedIntegrationGitBytes $Worktree @('diff','--cached','--binary','--full-index','--no-ext-diff','HEAD')))
     unstagedSha256=(Get-RebaseHash (Get-InterruptedIntegrationGitBytes $Worktree @('diff','--binary','--full-index','--no-ext-diff')))
@@ -794,7 +795,7 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
       Assert-RebaseInstant $checkpoint.capturedAt
       if ($checkpoint.schemaVersion -cne 'integration-resume-stop/v1' -or $checkpoint.launchId -cne $PriorLaunchId -or $checkpoint.bindingIdentity -cne $request -or
           [datetimeoffset]$checkpoint.capturedAt -lt [datetimeoffset]$w.childStartIdentity -or ($w.state -ceq 'exited' -and [datetimeoffset]$checkpoint.capturedAt -gt [datetimeoffset]$w.updatedAt) -or [datetimeoffset]$checkpoint.capturedAt -gt [datetimeoffset]::UtcNow) { throw 'INTEGRATION_RESUME_SOURCE: retained stop causality' }
-      $checkpointHash = Get-RebaseHash ([IO.File]::ReadAllBytes($checkpointPath))
+      $checkpointHash = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $checkpointPath)))
     }
   }
   $ackPath = Join-Path $Runtime "dispatch-start-$request.json"
@@ -821,7 +822,7 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
       -not (Test-DispatchSamePath $w.ownershipRecordPath (Join-Path $Runtime "dispatch-launch-$PriorLaunchId.json")) -or
       -not (Test-DispatchSamePath $w.originalPromptPath (Join-Path $Runtime "$PriorLabel.prompt.txt")) -or
       -not (Test-DispatchSamePath $w.partialReportPath (Join-Path $Runtime "$PriorLabel.jsonl"))) { throw 'INTEGRATION_RESUME_SOURCE: causal paths' }
-  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl')
+  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl') -DispatchHistory
   $routes = @($history | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.label -ceq $PriorLabel })
   if ($routes.Count -ne 1) { throw 'INTEGRATION_RESUME_SOURCE: ambiguous routing' }
   $route = $routes[0]
@@ -833,7 +834,7 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
   Assert-RebaseInstant $route.ts
   if ($route.kind -cne 'dispatch' -or $route.lane -cne (Split-Path -Leaf $o.worktree) -or $route.transcript -cne "$PriorLabel.jsonl" -or
       [datetimeoffset]$route.ts -lt [datetimeoffset]$w.launcherStartIdentity -or [datetimeoffset]$route.ts -gt [datetimeoffset]$w.childStartIdentity) { throw 'INTEGRATION_RESUME_SOURCE: routing causality' }
-  $prompt = [IO.File]::ReadAllText($w.originalPromptPath)
+  $prompt = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.originalPromptPath))
   $commandPrompt = if ($priorBinding) { $priorSource.commandPrompt } else { $prompt }
   if (-not $priorBinding) {
     foreach ($token in @("PR #$($o.pr)","PR #$($o.landedPr)",$o.targetHead,$o.newBase,'rebase-integration.ps1')) {
@@ -862,18 +863,22 @@ function Get-InterruptedIntegrationSources($Obligation,[string]$Runtime,[string]
     owner=$w; rootOwner=$(if ($priorBinding) { $priorSource.rootOwner } else { $w }); commandPrompt=$commandPrompt; canonicalHelper=$canonicalHelper; conflict=$(if ($conflicts.Count) { $conflicts[0] } else { $null }); priorBinding=$priorBinding; checkpoint=$checkpoint
     binding=[ordered]@{
       requestIdentity=$request; priorLabel=$PriorLabel; priorLaunchId=$PriorLaunchId
-      ackSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($ackPath)))
-      watchdogSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($watchdogPath)))
-      promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($w.originalPromptPath)))
-      transcriptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($w.partialReportPath)))
+      ackSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ackPath))))
+      watchdogSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $watchdogPath))))
+      promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.originalPromptPath))))
+      transcriptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.partialReportPath))))
       routingIdentity=(Get-RebaseRecordIdentity $route)
       checkpointSha256=$checkpointHash
     }
   }
 }
 
-function Read-RebaseJsonLines([string]$Path) {
-  foreach ($line in [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true))) {
+function Read-RebaseJsonLines([string]$Path, [switch]$DispatchHistory) {
+  $lines=if ($DispatchHistory) { Read-DispatchLedgerLines -Path $Path } else {
+    dispatch-ledger-reader\Assert-NonDispatchLedgerPath -Path $Path
+    [IO.File]::ReadAllLines($Path,[Text.UTF8Encoding]::new($false,$true))
+  }
+  foreach ($line in $lines) {
     if ($line.Trim()) { ConvertFrom-RebaseJson $line }
   }
 }
@@ -1041,7 +1046,7 @@ function Get-FleetLoadObservation([string]$Container) {
     $stream = $null
     for ($openAttempt = 1; $null -eq $stream; $openAttempt++) {
       try {
-        $stream = [IO.File]::Open($ownerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $stream = [IO.File]::Open((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $ownerPath), [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
       } catch {
         $exception = $_.Exception.GetBaseException()
         $errorCode = [int]$exception.HResult -band 0xffff
@@ -1051,7 +1056,7 @@ function Get-FleetLoadObservation([string]$Container) {
         if ($openDeadline.ElapsedMilliseconds -ge 1000) { throw }
       }
     }
-    try { $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true); try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() } } finally { $stream.Dispose() }
+    try { $reader = [IO.StreamReader]::new((dispatch-ledger-reader\Get-NonDispatchLedgerStream -Stream $stream), [Text.Encoding]::UTF8, $true); try { $raw = $reader.ReadToEnd() } finally { $reader.Dispose() } } finally { $stream.Dispose() }
     $owner = ConvertFrom-RebaseJson $raw
   } catch { $owner = $null }
   if ($null -eq $owner -or $owner -isnot [pscustomobject]) { $observation.reason = 'unparseable'; return [pscustomobject]$observation }
@@ -1271,7 +1276,7 @@ function Read-OrdinaryConflictCapture([string]$Runtime,[string]$LaunchId,[string
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
   $capture = Read-RebaseJson $path
   Assert-OrdinaryConflictCapture $capture $LaunchId $Label $Obligation $Watchdog
-  [pscustomobject]@{path=$path;capture=$capture;sha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($path)));identity=(Get-RebaseRecordIdentity $capture)}
+  [pscustomobject]@{path=$path;capture=$capture;sha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $path))));identity=(Get-RebaseRecordIdentity $capture)}
 }
 
 function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$PriorLabel,[string]$PriorLaunchId,[int]$Depth=0,[switch]$PromptOnly) {
@@ -1340,7 +1345,7 @@ function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$Pr
       -not (Test-DispatchSamePath $w.partialReportPath (Join-Path $Runtime "$PriorLabel.jsonl")) -or
       $w.originalPromptPath -isnot [string] -or -not (Test-DispatchFullyQualifiedPath $w.originalPromptPath) -or -not (Test-Path -LiteralPath $w.originalPromptPath -PathType Leaf) -or
       -not (Test-Path -LiteralPath $w.partialReportPath -PathType Leaf)) { throw 'INTEGRATION_RESUME_SOURCE: ordinary causal paths' }
-  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl')
+  $history = Read-RebaseJsonLines (Join-Path $Runtime 'dispatch-log.jsonl') -DispatchHistory
   $routes = @($history | Where-Object { $_.dispatchRoutingSchema -cin @('watchdog-dispatch-routing/v1','watchdog-dispatch-routing/v2','watchdog-dispatch-routing/v3') -and $_.label -ceq $PriorLabel })
   if ($routes.Count -ne 1) { throw 'INTEGRATION_RESUME_SOURCE: ambiguous routing' }
   $route = $routes[0]
@@ -1352,12 +1357,12 @@ function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$Pr
   Assert-RebaseInstant $route.ts
   if ($route.kind -cne 'dispatch' -or $route.lane -cne (Split-Path -Leaf $o.worktree) -or $route.transcript -cne "$PriorLabel.jsonl" -or
       [datetimeoffset]$route.ts -lt [datetimeoffset]$w.launcherStartIdentity -or [datetimeoffset]$route.ts -gt [datetimeoffset]$w.childStartIdentity) { throw 'INTEGRATION_RESUME_SOURCE: routing causality' }
-  $prompt = [IO.File]::ReadAllText($w.originalPromptPath)
+  $prompt = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.originalPromptPath))
   if (-not $priorBinding -and -not $prompt.Contains('rebase-integration.ps1',[StringComparison]::Ordinal)) { throw 'INTEGRATION_RESUME_SOURCE: ordinary original request' }
   # Publication needs the authenticated host prompt, not the still-open child
   # transcript. Admission/replay callers retain the complete source validation.
   if ($PromptOnly) {
-    return [pscustomobject]@{owner=$w;binding=[ordered]@{promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($w.originalPromptPath)));routingIdentity=(Get-RebaseRecordIdentity $route)}}
+    return [pscustomobject]@{owner=$w;binding=[ordered]@{promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.originalPromptPath))));routingIdentity=(Get-RebaseRecordIdentity $route)}}
   }
   if (-not $priorBinding) { $capture = Read-OrdinaryConflictCapture $Runtime $PriorLaunchId $PriorLabel $o $w; if ($capture) { $checkpointBinding = $capture.identity } }
   if ($checkpointBinding) {
@@ -1373,7 +1378,7 @@ function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$Pr
           [datetimeoffset]$checkpoint.capturedAt -lt [datetimeoffset]$w.childStartIdentity -or ($w.state -ceq 'exited' -and [datetimeoffset]$checkpoint.capturedAt -gt [datetimeoffset]$w.updatedAt) -or
           [datetimeoffset]$checkpoint.capturedAt -gt [datetimeoffset]::UtcNow -or
           ($capture -and [datetimeoffset]$checkpoint.capturedAt -lt [datetimeoffset]$capture.capture.capturedAt)) { throw 'INTEGRATION_RESUME_SOURCE: ordinary retained stop causality' }
-      $checkpointHash = Get-RebaseHash ([IO.File]::ReadAllBytes($checkpointPath))
+      $checkpointHash = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $checkpointPath)))
     }
   }
   # The transcript is data. The first stop is proven by exactly one actual
@@ -1415,9 +1420,9 @@ function Get-OrdinaryIntegrationSources($Obligation,[string]$Runtime,[string]$Pr
     owners=$(if ($priorBinding) { @($priorSource.owners) + @($w) } else { @($w) }); successor=$priorSuccessor
     binding=[ordered]@{
       priorLabel=$PriorLabel; priorLaunchId=$PriorLaunchId; attemptId=[string]$w.attemptId
-      watchdogSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($watchdogPath)))
-      promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($w.originalPromptPath)))
-      transcriptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes($w.partialReportPath)))
+      watchdogSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $watchdogPath))))
+      promptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.originalPromptPath))))
+      transcriptSha256=(Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $w.partialReportPath))))
       routingIdentity=(Get-RebaseRecordIdentity $route)
       conflictSha256=$(if ($capture) { $capture.sha256 } else { $null })
       checkpointSha256=$checkpointHash
@@ -1514,9 +1519,9 @@ function Get-OrdinarySuccessorSources($Obligation,[string]$Runtime,[string]$Prio
   }
   $sources = [ordered]@{}
   foreach ($key in $script:OrdinarySourceKeys) { $sources[$key] = $prior.binding[$key] }
-  $sources.ackSha256 = Get-RebaseHash ([IO.File]::ReadAllBytes((Join-Path $Runtime "dispatch-start-$request.json")))
+  $sources.ackSha256 = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path (Join-Path $Runtime "dispatch-start-$request.json"))))
   $sources.finishLabel = [string]$finishOwner.label; $sources.finishLaunchId = [string]$finishOwner.launchId
-  $sources.finishSha256 = Get-RebaseHash ([IO.File]::ReadAllBytes($finish.path)); $sources.finishIdentity = $finish.identity
+  $sources.finishSha256 = Get-RebaseHash ([IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $finish.path))); $sources.finishIdentity = $finish.identity
   $sources.grantIdentity = Get-RebaseRecordIdentity $authority.grant
   [pscustomobject]@{prior=$prior;finish=$finish;finishOwner=$finishOwner;finishBinding=$finishBinding;authority=$authority;owners=@($prior.owners);sources=$sources}
 }
@@ -1749,7 +1754,7 @@ function Get-OrdinarySuccessorPromptGrant($Binding,[string]$PromptPath,[string]$
   return $grant
 }
 function Read-OrdinaryRepairGrant($Obligation,[string]$Runtime,[string]$PromptPath) {
-  $prompt = [IO.File]::ReadAllText($PromptPath,[Text.UTF8Encoding]::new($false,$true))
+  $prompt = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $PromptPath),[Text.UTF8Encoding]::new($false,$true))
   $blocks = [regex]::Matches($prompt,'(?m)^```ordinary-integration-repair-authority/v1\r?\n([^`]+)\r?\n```\r?$')
   if ($blocks.Count -ne 1) { throw 'INTEGRATION_RESUME_SCOPE: exact host FINAL grant required' }
   $grant = ConvertFrom-RebaseJson $blocks[0].Groups[1].Value
@@ -1762,7 +1767,7 @@ function Read-OrdinaryRepairGrant($Obligation,[string]$Runtime,[string]$PromptPa
       -not (Test-DispatchSamePath (Split-Path -Parent $grant.decisionPath) (Join-Path $Runtime 'logs')) -or
       -not (Test-DispatchJsonInteger $grant.firstLine 1) -or -not (Test-DispatchJsonInteger $grant.lastLine 1) -or $grant.lastLine -lt $grant.firstLine -or
       $grant.focusedTests -isnot [array]) { throw 'INTEGRATION_RESUME_SCOPE: closed FINAL grant' }
-  $decisionBytes = [IO.File]::ReadAllBytes($grant.decisionPath)
+  $decisionBytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $grant.decisionPath))
   $lines = [Text.UTF8Encoding]::new($false,$true).GetString($decisionBytes) -split '\r?\n'
   if ((Get-RebaseHash $decisionBytes) -cne $grant.decisionSha256 -or $grant.lastLine -gt $lines.Count) { throw 'INTEGRATION_RESUME_SCOPE: FINAL evidence changed' }
   $allowed = @($grant.repairPaths)
@@ -1922,7 +1927,7 @@ function Complete-OrdinaryIntegration($Obligation,[string]$Runtime,[string]$Reco
     $capture = Read-OrdinaryConflictCapture $Runtime $record.launchId $record.label $o $null
     if ($null -eq $capture) { throw 'INTEGRATION_RESUME_COMPLETION: helper conflict capture required' }
     if ($capture.capture.owner.launcherPid -ne $record.launcherPid -or $capture.capture.owner.launcherStartIdentity -cne $record.launcherStartIdentity -or $capture.capture.owner.childPid -ne $record.childPid -or $capture.capture.owner.childStartIdentity -cne $record.childStartIdentity) { throw 'INTEGRATION_RESUME_COMPLETION: helper conflict capture owner' }
-    $origin = 'live'; $bindingIdentity = $capture.identity; $earliest = [datetimeoffset]$record.childStartIdentity; $oldBase = $capture.capture.state.oldBase; $retained = [IO.File]::ReadAllText($capture.path,[Text.UTF8Encoding]::new($false,$true))
+    $origin = 'live'; $bindingIdentity = $capture.identity; $earliest = [datetimeoffset]$record.childStartIdentity; $oldBase = $capture.capture.state.oldBase; $retained = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $capture.path),[Text.UTF8Encoding]::new($false,$true))
   } else { throw 'INTEGRATION_RESUME_COMPLETION: ordinary owner record required' }
   $owner = Get-RebaseAuthenticatedOwner $o $Runtime $RecordPath Launcher
   $child = [pscustomobject]@{record=$record;obligation=$o;bindingIdentity=$bindingIdentity;ordinary=$true}

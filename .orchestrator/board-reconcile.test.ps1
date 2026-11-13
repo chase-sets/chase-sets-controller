@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param([switch]$FunctionsOnly, [string]$ScriptPath = (Join-Path $PSScriptRoot 'board-reconcile.ps1'))
 $ErrorActionPreference = 'Stop'
+$readerCompatibilityRuntime=$PSScriptRoot
+if (-not $FunctionsOnly) { . (Join-Path $readerCompatibilityRuntime 'ledger-reader-compatibility.test-support.ps1')
+Test-DispatchLedgerConsumerCompatibility -Consumer 'board' -RuntimeRoot $readerCompatibilityRuntime }
 function Assert-Board([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
 }
@@ -94,6 +97,61 @@ function Run-Board($Fixture, [switch]$Apply) {
   & $ScriptPath -DispatchLog $Fixture.log -GhCommand $Fixture.gh -Apply:$Apply | ConvertFrom-Json -DateKind String
 }
 try {
+  # Exercise the real CLI and its pre-write rereads with lifecycle facts on
+  # both sides of the former row/byte cliffs, using only the synthetic board.
+  $f = New-BoardFixture (Join-Path $root 'large-history') @((New-BoardItem 908448 'Refined'))
+  $largeImpl = Add-BoardAttempt $f 908448 'large-impl'
+  $largeReview = Add-BoardAttempt $f 908448 'large-review' 'review'
+  $small = Run-Board $f
+  Assert-Board ($small.lifecycleRows -eq 2 -and $small.qualifying -eq 1 -and
+    $small.projections[0].known -and $small.projections[0].desired -ceq 'In lane') 'large caller small-control projection'
+  $seed = [IO.File]::ReadAllLines($f.log)
+  $writer = [IO.StreamWriter]::new($f.log, $false, [Text.UTF8Encoding]::new($false), 65536)
+  try {
+    $writer.Write($seed[0]); $writer.Write("`n")
+    for ($i = 0; $i -lt 50000; $i++) { $writer.Write("{}`n") }
+    $writer.Write('{"padding":"' + ('x' * 33554432) + '"}'); $writer.Write("`n")
+    $writer.Write($seed[1]); $writer.Write("`n")
+  } finally { $writer.Dispose() }
+  $physicalRows = 0
+  foreach ($line in [IO.File]::ReadLines($f.log)) { $physicalRows++ }
+  Assert-Board ($physicalRows -eq 50003 -and (Get-Item -LiteralPath $f.log).Length -gt 33554432) 'large board fixture crosses both cliffs'
+  $ledgerHash = (Get-FileHash -LiteralPath $f.log).Hash
+  $boardHash = (Get-FileHash -LiteralPath $f.data).Hash
+  $large = Run-Board $f
+  $smallProjection = $small | Select-Object -Property * -ExcludeProperty ts, lifecycleRows | ConvertTo-Json -Depth 8 -Compress
+  $largeProjection = $large | Select-Object -Property * -ExcludeProperty ts, lifecycleRows | ConvertTo-Json -Depth 8 -Compress
+  Assert-Board ($large.lifecycleRows -eq 50003 -and $largeProjection -ceq $smallProjection) 'large caller differs from small oracle or loses early implementation'
+  Assert-Board ((Get-BoardCalls $f 'mutation').Count -eq 0 -and
+    (Get-FileHash -LiteralPath $f.log).Hash -ceq $ledgerHash -and
+    (Get-FileHash -LiteralPath $f.data).Hash -ceq $boardHash) 'large report-only caller writes ledger or board'
+  $r = Run-Board $f -Apply
+  Assert-Board ($r.mutations -eq 1 -and $r.deferred -eq 0 -and $r.findings[0].desired -ceq 'In lane' -and
+    (@(Get-Content $f.data -Raw | ConvertFrom-Json)[0]).status.name -ceq 'In lane' -and
+    (Get-FileHash -LiteralPath $f.log).Hash -ceq $ledgerHash) 'large caller failed synthetic implementation projection'
+  $largeImpl.row.kind = 'lane-complete'
+  [IO.File]::AppendAllText($f.log, ($largeImpl.row | ConvertTo-Json -Compress) + "`n")
+  $r = Run-Board $f -Apply
+  Assert-Board ($r.lifecycleRows -eq 50004 -and $r.mutations -eq 1 -and $r.deferred -eq 0 -and
+    $r.findings[0].desired -ceq 'In review' -and
+    (@(Get-Content $f.data -Raw | ConvertFrom-Json)[0]).status.name -ceq 'In review') 'large caller lost appended implementation completion or late review'
+  $largeReview.row.kind = 'review-complete'
+  [IO.File]::AppendAllText($f.log, ($largeReview.row | ConvertTo-Json -Compress) + "`n")
+  $r = Run-Board $f -Apply
+  Assert-Board ($r.lifecycleRows -eq 50005 -and $r.mutations -eq 1 -and $r.deferred -eq 0 -and
+    $r.findings[0].action -ceq 'cleared' -and $r.syncDispatched -and -not $r.telemetryError -and
+    (@(Get-Content $f.data -Raw | ConvertFrom-Json)[0]).status.name -ceq '' -and
+    (([IO.File]::ReadLines($f.log) | Select-Object -Last 1) | ConvertFrom-Json).kind -ceq 'gc') 'large caller failed final clear or canonical telemetry append'
+  $ledgerHash = (Get-FileHash -LiteralPath $f.log).Hash
+  $boardHash = (Get-FileHash -LiteralPath $f.data).Hash
+  $writes = (Get-BoardCalls $f 'mutation').Count
+  $r = Run-Board $f -Apply
+  Assert-Board ($r.lifecycleRows -eq 50006 -and $r.qualifying -eq 0 -and $r.mutations -eq 0 -and
+    $r.deferred -eq 0 -and (Get-BoardCalls $f 'mutation').Count -eq $writes -and
+    (Get-FileHash -LiteralPath $f.log).Hash -ceq $ledgerHash -and
+    (Get-FileHash -LiteralPath $f.data).Hash -ceq $boardHash) 'large caller replay changed converged ledger or synthetic board'
+  Write-Output 'PASS actual board caller beyond both cliffs: early/late ownership, append completion, synthetic writes and converged replay'
+
   $f = New-BoardFixture (Join-Path $root 'implementation-planning') @((New-BoardItem 908449))
   $null = Add-BoardAttempt $f 908449 'implementation'
   $p = Add-BoardAttempt $f 908449 'planning' 'planning' 'exited'; $p.row.kind = 'lane-complete'

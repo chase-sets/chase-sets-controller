@@ -10,13 +10,12 @@ param(
   [string]$LedgerPath = ''
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'review-head-contract.psm1') -Force -DisableNameChecking
 function Quote-Harvest([string]$Value) { return "'" + $Value.Replace("'", "''") + "'" }
 $capture = Read-LaneTimeCapture $LanesPath
-$history = Read-ExactHeadReviewHistory -Path $HistoryPath
+$history = Read-ExactHeadReviewHistory -Path $HistoryPath -RequireTerminated
 if (-not $history.complete) { throw "HARVEST_HISTORY_INVALID: $($history.reason)" }
-$bytes = [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($HistoryPath))
-if ($bytes.Length -and $bytes[-1] -ne 10) { throw 'HARVEST_HISTORY_INVALID: unterminated history' }
 $projection = Get-LaneTimeProjection $history
 if ($projection.gaps.Count) { throw "HARVEST_HISTORY_INVALID: $($projection.gaps[0])" }
 $calls = [Collections.Generic.List[string]]::new()

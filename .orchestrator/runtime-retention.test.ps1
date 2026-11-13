@@ -8,6 +8,7 @@ if (-not (Test-Path -LiteralPath $SourcePath)) { throw 'RED runtime-retention: i
 $script:passed = 0
 $script:root = Join-Path ([IO.Path]::GetTempPath()) ('runtime-retention-synthetic-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($script:root) | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $script:root
 function Assert([bool]$Value, [string]$Message) { if (-not $Value) { throw "ASSERT: $Message" } }
 function Test-Case([string]$Name, [scriptblock]$Body) {
     if ($Name -notlike $Case) { return }

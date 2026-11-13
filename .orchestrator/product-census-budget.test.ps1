@@ -386,6 +386,7 @@ try {
     } else { Copy-Item (Join-Path $PSScriptRoot $name) $source }
   }
   if(-not$Baseline){
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $source
     $p=Join-Path $source 'dispatch-ownership.ps1'
     [IO.File]::WriteAllText($p,((Get-CensusBudgetMeterPrelude)+(ConvertTo-DeterministicBudgetSubject ([IO.File]::ReadAllText($p)))))
     $p=Join-Path $source 'landed-integration-evidence.psm1'

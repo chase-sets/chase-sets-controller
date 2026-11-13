@@ -98,6 +98,7 @@ if ($Mutant) {
 }
 function Assert-Fifo($Condition,[string]$Name,[string]$Detail='') { if (-not $Condition) { [Console]::Error.WriteLine(("ASSERTION FAILED: $Name $Detail" -split "\r?\n")[0]); throw "ASSERTION FAILED: $Name $Detail" } }
 function Write-Json($Path,$Value) { [IO.File]::WriteAllText($Path,($Value | ConvertTo-Json -Depth 16 -Compress)) }
+function Write-DispatchRouting($Value) { [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'), ($Value | ConvertTo-Json -Depth 16 -Compress) + "`n") }
 function Read-Json($Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 16 -DateKind String }
 function Hash-File($Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Wait-For([scriptblock]$Predicate,[string]$Name) {
@@ -110,9 +111,9 @@ $drivers=[Collections.Generic.List[object]]::new(); $attempts=[Collections.Gener
 $pwsh=(Get-Command pwsh).Source; $node=(Get-Command node).Source
 [void][IO.Directory]::CreateDirectory($runtime); [void][IO.Directory]::CreateDirectory($tree)
 $guard=Join-Path $runtime 'invoke-heavy-verifier.ps1';[IO.File]::WriteAllText($guard,$source)
-foreach($name in @('dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) { Copy-Item (Join-Path $PSScriptRoot $name) $runtime }
+foreach($name in @('dispatch-ledger-reader.psm1','dispatch-ownership.ps1','heavy-nested-owner.cs','heavy-nested-client.cjs','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-admission-holder-launcher.cjs')) { Copy-Item (Join-Path $PSScriptRoot $name) $runtime }
 $runner=Join-Path $root 'runner.ps1'
-[IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
+[IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw|ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $(if ($?) { 0 } else { $LASTEXITCODE })')
 $body=Join-Path $root 'body.cjs'
 [IO.File]::WriteAllText($body,@'
 const fs=require('fs'); const [marker,release,result]=process.argv.slice(2);
@@ -261,10 +262,23 @@ function New-DispatchFixture($Driver,[string]$Label) {
     label=$Label;transcriptPath=(Join-Path $runtime "$Label.jsonl")
   }
   Write-Json $path $record;[IO.File]::WriteAllText($record.promptPath,'inert');[IO.File]::WriteAllText($record.transcriptPath,"{`"type`":`"item.completed`"}`n")
-  Write-Json (Join-Path $runtime 'dispatch-log.jsonl') @{ts=$record.recordedAt;kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v1';attemptId=$Label;label=$Label;lane='tree';laneRole='implementation';transcript="$Label.jsonl";harness='codex';model='gpt-6-astra';effort='high';row='7';placement='override-Todd';worktree=$tree;branch=$branch;head=$head}
+  Write-DispatchRouting @{ts=$record.recordedAt;kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v1';attemptId=$Label;label=$Label;lane='tree';laneRole='implementation';transcript="$Label.jsonl";harness='codex';model='gpt-6-astra';effort='high';row='7';placement='override-Todd';worktree=$tree;branch=$branch;head=$head}
   return [pscustomobject]@{Path=$path;Record=$record}
 }
 try {
+  $runnerControl=Join-Path $root 'runner-control.ps1';$runnerInput=Join-Path $root 'runner-control.json'
+  Write-Json $runnerInput @{}
+  foreach($control in @(
+    @{name='normal return after native failure';source='& (Join-Path $PSHOME ''pwsh.exe'') -NoProfile -NonInteractive -Command ''exit 128''; return';code=0},
+    @{name='explicit refusal';source='exit 73';code=73},
+    @{name='explicit failure';source='exit 1';code=1},
+    @{name='thrown failure';source='throw ''runner refusal control''';code=1}
+  )) {
+    [IO.File]::WriteAllText($runnerControl,$control.source)
+    $controlOutput=@(& $pwsh -NoProfile -NonInteractive -File $runner $runnerControl $runnerInput 2>&1)
+    $controlExit=$LASTEXITCODE
+    Assert-Fifo ($controlExit-eq$control.code) "SETUP runner exit semantics $($control.name)" "exit=$controlExit expected=$($control.code) $controlOutput"
+  }
   & git -C $tree init --quiet
   [IO.File]::WriteAllText((Join-Path $tree '.gitignore'),".orchestrator/artifacts/`nnode_modules/`n")
   [IO.File]::WriteAllText((Join-Path $tree 'package.json'),'{"name":"inert-heavy-fifo","private":true,"scripts":{"verify:static":"node gate.cjs"}}')
@@ -500,7 +514,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   if($Part -eq 'authority'){
     Clear-Queue;[IO.File]::WriteAllText($queue,'{invalid authority fixture');$hash=Hash-File $queue
     $dispatch=New-DispatchFixture $recoveryDriver 'fifo-authority'
-    $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='7';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+    $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='7';Write-DispatchRouting $routing
     $r=Invoke-Attempt $recoveryDriver Gate @{QuarantineQueue=$hash} -Production
     Assert-Fifo ($r.Code -eq 73 -and -not $r.Body) "MUTANT $Mutant AC4 authority guard refuses unbound reset" $r.Output
     Assert-Fifo (-not(Test-Path $recovery) -and (Hash-File $queue) -ceq $hash) "MUTANT $Mutant AC4 authority guard leaves queue and quarantine unchanged" "output=$($r.Output)"
@@ -543,10 +557,10 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
     Assert-Fifo (-not(Test-Path $recovery)-and(Hash-File $queue)-ceq$hash) 'AC4 token refusal preserves evidence'
   }
   $dispatch=New-DispatchFixture $recoveryDriver 'fifo-recovery'
-  $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='13';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+  $routing=Read-Json (Join-Path $runtime 'dispatch-log.jsonl');$routing.row='13';Write-DispatchRouting $routing
   Assert-Refused (Invoke-Attempt $recoveryDriver Gate) 'AC4 ineligible caller never touches queue' 'caller eligibility:.*routing-row=13'
   Assert-Fifo ((Hash-File $queue)-ceq$hash-and-not(Test-Path $recovery)) 'AC4 ineligible refusal preserves queue'
-  $routing.row='7';Write-Json (Join-Path $runtime 'dispatch-log.jsonl') $routing
+  $routing.row='7';Write-DispatchRouting $routing
   $r=Invoke-Attempt $recoveryDriver Gate $recover -Production
   Assert-Refused $r 'AC4 reset requires unbound host authority' 'host-only'
   Assert-Fifo (-not(Test-Path $recovery)-and(Hash-File $queue)-ceq$hash) 'AC4 lane cannot create recovery marker'
@@ -569,7 +583,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
     Write-Output "PASS AC4 recovery stop $stop blocks admission, byte-exact evidence; rerun resumes"
   }
   $r=Invoke-Attempt $recoveryDriver Gate ($recover+(Set-Fixture @{now=$now.AddSeconds(601).ToString('o')})) -Production
-  Assert-Fifo ($r.Code-eq0-and-not$r.Body-and$r.Output-match'record='-and-not(Test-Path $recovery)-and@((Read-Json $queue).tickets).Count-eq0) 'AC4 only complete recovery enables admission' $r.Output
+  Assert-Fifo ($r.Code-eq0-and-not$r.Body-and$r.Output-match'record='-and-not(Test-Path $recovery)-and@((Read-Json $queue).tickets).Count-eq0) 'AC4 only complete recovery enables admission' "exit=$($r.Code) body=$($r.Body) recoveryMarker=$(Test-Path $recovery) tickets=$(@((Read-Json $queue).tickets).Count) output=$($r.Output)"
   Assert-RecoveryOwners;$script:recoveryOwnerHash=$null
   $released=Release-Attempt $recoveryBarrier;Assert-Fifo ($released.Code-eq0) 'AC4 recovery owner releases normally' $released.Output
   Remove-Item -LiteralPath $script:controllerOwner;Remove-Item -LiteralPath (Split-Path -Parent $script:controllerOwner)

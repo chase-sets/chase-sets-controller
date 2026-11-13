@@ -1,5 +1,6 @@
 # Fail-closed completion audit for Claude CLI stream-json. Task identities use
 # the snake_case fields emitted by current Claude plus known camelCase variants.
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 function Get-ClaudeEventField([object]$Object, [string[]]$Names) {
   if ($null -eq $Object) { return $null }
@@ -33,7 +34,7 @@ function Test-ClaudeStreamJsonCompletion([string]$Path) {
   $successfulResultSeen = $false
   $lineNumber = 0
 
-  foreach ($line in [IO.File]::ReadLines($Path)) {
+  foreach ($line in [IO.File]::ReadLines((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path))) {
     $lineNumber++
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
 

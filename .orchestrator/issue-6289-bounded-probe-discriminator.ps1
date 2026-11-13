@@ -21,6 +21,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 $selfPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 $scriptRoot = Split-Path -Parent $selfPath
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
@@ -233,7 +234,7 @@ try {
   $predecessor = Join-Path $variants "predecessor.ps1"
   Write-Utf8 $predecessor (($predecessorLines -join "`n") + "`n")
 
-  $candidateSource = [IO.File]::ReadAllText($candidate)
+  $candidateSource = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $candidate))
   $delayTarget = '  if ($MaxTailBytes -le 0 -or $MaxCanonicalRowBytes -le 0) {'
   $delayReplacement = '  if (-not (Get-Variable -Name Issue6289ColdDelayConsumed -Scope Script -ErrorAction SilentlyContinue)) {
     $script:Issue6289ColdDelayConsumed = $true

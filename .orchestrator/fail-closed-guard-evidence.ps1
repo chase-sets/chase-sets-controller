@@ -8,6 +8,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Global -DisableNameChecking
 
 # These literal switches are intentionally source-mutation seams. The checker
 # tests copy this script and change exactly one true value to false; the
@@ -366,7 +367,7 @@ if (-not (Test-Path -LiteralPath $resolvedReceipt -PathType Leaf)) {
 }
 
 try {
-  $bytes = [IO.File]::ReadAllBytes($resolvedReceipt)
+  $bytes = [IO.File]::ReadAllBytes((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $resolvedReceipt))
 } catch {
   Complete-EarlyGuard "RECEIPT_UNREADABLE" "C02-RECEIPT-UNREADABLE"
   return

@@ -102,7 +102,7 @@ function New-TestOnlyDiagnosticGuard {
   param([string]$Name = 'test-orchestrator', [switch]$DisableTimeout)
   $testOrchestrator = Join-Path $root $Name
   New-Item -ItemType Directory -Path $testOrchestrator -Force | Out-Null
-  foreach ($name in @('dispatch-ownership.ps1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','workspace-db-test.mjs','native-db-admission.py','heavy-admission-holder-launcher.cjs')) {
+  foreach ($name in @('dispatch-ledger-reader.psm1','dispatch-ownership.ps1','heavy-admission-preload.cjs','heavy-slot.cjs','heavy-nested-owner.cs','heavy-nested-client.cjs','workspace-db-test.mjs','native-db-admission.py','heavy-admission-holder-launcher.cjs')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $testOrchestrator $name) -Force
   }
   $clockFunction = @'

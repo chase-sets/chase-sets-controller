@@ -344,6 +344,7 @@ function New-AdmissionLauncherSubject(
     "invoke-heavy-verifier.ps1",
     "log-event.ps1",
     "orchestration-log-lock.psm1",
+    "dispatch-ledger-reader.psm1",
     "review-head-contract.psm1",
     "routing-data.ps1"
   )) {
@@ -2434,7 +2435,7 @@ function Test-TreeDeathOmissionStillRefuses {
     $text=[IO.File]::ReadAllText($psm)
     Assert-True ([regex]::Matches($text,[regex]::Escape($treeGuard8102Needle)).Count-eq1) "$test`: the omission needle is unique"
     New-Item -ItemType Directory -Path $mutantDir|Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $mutantDir
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'),(Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $mutantDir
     [IO.File]::WriteAllText((Join-Path $mutantDir 'landed-integration-evidence.psm1'),$text.Replace($treeGuard8102Needle,$treeGuard8102),[Text.UTF8Encoding]::new($false))
     Remove-Module $module -Force
     $mutant=Import-Module (Join-Path $mutantDir 'landed-integration-evidence.psm1') -Force -DisableNameChecking -PassThru

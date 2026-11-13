@@ -122,7 +122,9 @@ function Get-LiveDispatchOwnership($RuntimeRoot, $TempRoot, $ContainerRoot, [int
         if ($mode -cne 'open') { Assert-Gap ($facts.merges[0].issues[0].labels.Count -eq 32) "$mode merged labels incomplete" }
       }
       $script:referenceMode='none'
-      Save-Json (Join-Path $runtime 'dispatch-log.jsonl') @{ts=$now.ToString('o');kind='lane-complete';issue=4063;lane='synthetic-closed'}
+      # A dispatch receipt is authoritative only after its JSONL terminator.
+      $receipt=@{ts=$now.ToString('o');kind='lane-complete';issue=4063;lane='synthetic-closed'}
+      [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'), ($receipt | ConvertTo-Json -Depth 30 -Compress)+"`n")
       $facts=Collect
       Assert-Gap ($facts.complete -and $facts.issueDetails.'4063'.labels.Count -eq 32) "dispatch issue labels incomplete: $($facts.gaps -join ',')"
       [IO.File]::WriteAllText((Join-Path $runtime 'dispatch-log.jsonl'), '')

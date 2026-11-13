@@ -33,6 +33,7 @@ param(
   [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Force -DisableNameChecking
 
 $script:ToddActionSchema = 'todd-action/v1'
 $script:ToddActionFields = @('ts','kind','toddActionSchema','actionId','issue','state','action','time','unblocks')
@@ -75,18 +76,15 @@ function Assert-ToddActionRow($Row) {
 
 # Streams the whole ledger: a bounded tail would silently drop older actions.
 # Any line naming todd-action must parse; a todd-action row must be closed.
-function Read-ToddActionRows([string]$Path, [switch]$AllowMissing) {
+function Read-ToddActionRows([string]$Path, [switch]$AllowMissing, [switch]$RequireTerminated) {
   $rows = [Collections.Generic.List[object]]::new()
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     if ($AllowMissing) { return ,$rows }
     throw "TODD_ACTION_LEDGER_MISSING: $Path"
   }
   $number = 0
-  # Shared read so concurrent appends are never blocked; disposed on refusal.
-  $reader = [IO.StreamReader]::new([IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
-    [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), [Text.UTF8Encoding]::new($false, $true))
   try {
-    while ($null -ne ($line = $reader.ReadLine())) {
+    foreach ($line in (Read-DispatchLedgerLines -Path $Path -RequireTerminated:$RequireTerminated)) {
       $number++
       if (-not $line.Contains('todd-action')) { continue }
       try { $value = $line | ConvertFrom-Json -DateKind String -ErrorAction Stop }
@@ -100,7 +98,7 @@ function Read-ToddActionRows([string]$Path, [switch]$AllowMissing) {
   } catch {
     if ($_.Exception.Message -like 'TODD_ACTION_*') { throw }
     throw "TODD_ACTION_LEDGER_INVALID: line $($number + 1) is not readable strict UTF-8"
-  } finally { $reader.Dispose() }
+  }
   return ,$rows
 }
 
@@ -165,7 +163,7 @@ function New-WaitingOnToddState([string]$Repo, [string]$Assignee) {
 
 function Read-WaitingOnToddState([string]$Path, [string]$Repo, [string]$Assignee) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return New-WaitingOnToddState $Repo $Assignee }
-  try { $state = [IO.File]::ReadAllText($Path) | ConvertFrom-Json -DateKind String -ErrorAction Stop }
+  try { $state = [IO.File]::ReadAllText((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path $Path)) | ConvertFrom-Json -DateKind String -ErrorAction Stop }
   catch { throw "WAITING_ON_TODD_STATE_INVALID: $Path does not parse" }
   $names = @($state.PSObject.Properties.Name)
   if ($state -isnot [pscustomobject] -or $names.Count -ne 5 -or
@@ -280,13 +278,13 @@ if (-not $DryRun) {
   $lockDirectory = Split-Path -Parent $script:statePathFull
   if (-not (Test-Path -LiteralPath $lockDirectory -PathType Container)) { [void](New-Item -ItemType Directory -Path $lockDirectory) }
   try {
-    $lock = [IO.FileStream]::new("$($script:statePathFull).lock", [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+    $lock = [IO.FileStream]::new((dispatch-ledger-reader\Get-NonDispatchLedgerPath -Path "$($script:statePathFull).lock"), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
       [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
   } catch { throw "WAITING_ON_TODD_BUSY: another cycle holds the state lock ($($_.Exception.InnerException.Message))" }
 }
 try {
   $state = Read-WaitingOnToddState $script:statePathFull $settings.Repo $settings.Assignee
-  $actions = Get-ToddActionFold (Read-ToddActionRows $ledgerPath)
+  $actions = Get-ToddActionFold (Read-ToddActionRows $ledgerPath -RequireTerminated)
   $desired = [int[]]@($actions | Where-Object { $_.state -ceq 'now' } | ForEach-Object { [int]$_.issue } | Sort-Object -Unique)
   $body = Get-WaitingOnToddBody $actions $now $settings.DoneWindowDays
   $bodySha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($body))).ToLowerInvariant()
