@@ -161,6 +161,23 @@ try {
     $cases["depthMethod$depth"]=@(2,$false,('$Path='+$receiver+'.Replace(''X'','''');[Unknown.Factory]::Decode($Path)'))
     $cases["depthMethodMemory$depth"]=@(4,$false,('$bytes=[Text.Encoding]::UTF8.GetBytes('+$receiver+'.Replace(''X'',''''));[IO.StreamReader]::new([IO.MemoryStream]::new($bytes,$false),[Text.Encoding]::UTF8,$true)'))
   }
+  # Discovery and positive proof stay unchanged. Opaque trusted-code helpers
+  # without dispatch provenance are diagnostics; actual native reads still refuse.
+  $oneViolation=@(
+    'dispatchOpaqueConstructor','dispatchSplitConstructor','dispatchAliasConstructor','dispatchNestedSplit',
+    'dispatchEmptySplit','dispatchGroupedLeft','dispatchGroupedRight','dispatchGroupedBoth','dispatchDoubleGrouped',
+    'unresolvedDynamicMember','unknownComputedMember','nativeComputedMember','opaqueGroupedMemoryCost',
+    'literalUnknownLoad','literalUnknownDecode','unknownInstance','unknownInstanceDynamic','unknownInstanceComputed',
+    'literalUnknownGroupedLoad','uncertainMemory','uncertainAliasMemory','variableOnlyMemory','variableAliasMemory',
+    'expandablePlusMemory','interpolationMemory','formatMemory','variableCostMemory','unaryJoinMemory',
+    'binaryJoinMemory','joinCostMemory','replaceMemory','stringConcatMemory','stringJoinMemory',
+    'literalStringReplaceMemory','stringCostMemory','wrappedStringMemory','variableStringMemory',
+    'variableStringTypeMemory','castStringMemory','genericNativeMethod','genericNativeFileMethod',
+    'dynamicNativeMember','nativeTypeAlias','reboundTypeAlias','nativeFileAlias','nativeAliasAfterCall','nativeAliasConditional',
+    'depthMemory10','depthMemory12','depthMemory20','depthMethodMemory12','depthMethodMemory20'
+  )
+  $threeViolations=@('groupedMemoryDispatch','rightGroupedMemoryDispatch')
+  Check (@($oneViolation+$threeViolations|Where-Object {-not $cases.Contains($_)}).Count -eq 0) 'enforcement expectations name real cases'
   $failures=[Collections.Generic.List[string]]::new()
   foreach($name in $cases.Keys) {
     $source='throw ''inspected source must never execute'''+"`n"+$import+"`nfunction Read-Synthetic { param([string]`$Path,`$Other,`$flag) "+$cases[$name][2]+' }'
@@ -174,25 +191,26 @@ try {
     Check ($canonicalOwner.Count -eq 1 -and $canonicalOwner[0].handled -and $canonicalOwner[0].authority -eq 'dispatch') "authenticated native owner retained $name"
     $rows=@($c.rows|Where-Object path -CEQ 'reader.ps1')
     $violations=@($c.violations|Where-Object path -CEQ 'reader.ps1')
+    $expectedViolations=if($name -cin $oneViolation){1}elseif($name -cin $threeViolations){3}else{0}
     $valid=$rows.Count -eq $cases[$name][0] -and @($rows|Where-Object owner).Count -eq 0 -and
       @($rows|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
-      $violations.Count -eq $(if($cases[$name][1]){0}else{$cases[$name][0]})
+      $violations.Count -eq $expectedViolations
     if($name -cin @('fakeReaderGuarded','nonNativeReadAlias','nativeComputedMember','genericNativeMethod','genericNativeFileMethod','dynamicNativeMember','nativeTypeAlias','reboundTypeAlias','nativeFileAlias','nativeAliasAfterCall','nativeAliasConditional','literalReaderGuarded','literalFileGuarded')) {
-      # Instance-bearing guard implementations add a forwarding refusal, not
-      # authority for their opaque output. Keep every original native control.
+      # The uncertain forwarding row remains inventoried without gaining proof
+      # or blocking the independent native control.
       $forwarded=@($rows|Where-Object family -CEQ 'get-nondispatchledgerpath')
       $native=@($rows|Where-Object family -CNE 'get-nondispatchledgerpath')
       Check ($forwarded.Count -eq 1 -and -not $forwarded[0].handled -and $forwarded[0].authority -ceq 'indeterminate' -and $forwarded[0].role -ceq 'path-forwarder') "guard forwarding uncertainty retained $name"
       $valid=$rows.Count -eq ($cases[$name][0]+1) -and @($rows|Where-Object owner).Count -eq 0 -and
         $native.Count -eq $cases[$name][0] -and @($native|Where-Object {[bool]$_.handled -ne $cases[$name][1]}).Count -eq 0 -and
-        $violations.Count -eq $(if($cases[$name][1]){1}else{$cases[$name][0]+1})
+        $violations.Count -eq $expectedViolations -and -not $forwarded[0].violationReason
     }
     if($name -ceq 'uncertainGuardedFile') {
       # The actual native value guard retains authority; its uncertain input
       # forwarding command is additionally inventoried, not silently discarded.
       $valid=$rows.Count -eq 2 -and @($rows|Where-Object owner).Count -eq 0 -and
         @($rows|Where-Object {$_.family -eq 'IO.File.ReadAllText' -and $_.handled -and $_.authority -eq 'non-ledger'}).Count -eq 1 -and
-        $violations.Count -eq 1 -and $violations[0].family -eq 'get-nondispatchledgerpath'
+        $violations.Count -eq 0 -and @($rows|Where-Object {$_.family -eq 'get-nondispatchledgerpath' -and -not $_.handled -and -not $_.violationReason}).Count -eq 1
     }
     if($name -ceq 'scriptBlockPlus') {
       # Both the original constructor and the opaque call operator must remain

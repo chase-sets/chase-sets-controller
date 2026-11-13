@@ -41,7 +41,7 @@ function Assert-Reader($Condition,[string]$Message) { if (-not $Condition) { thr
 & (Join-Path $PSScriptRoot 'ledger-reader-board-history.test.ps1')
 & (Join-Path $PSScriptRoot 'ledger-reader-query-paths.test.ps1')
 $census=Get-LedgerReaderCensus -Root $ControllerRoot
-foreach ($row in $census.rows) { Write-Output ("CENSUS {0}:{1} role={2} family={3} authority={4} owner={5} test={6} handled={7}" -f $row.path,$row.line,$row.role,$row.family,$row.authority,$row.owner,$row.test,$row.handled) }
+foreach ($row in $census.rows) { Write-Output ("CENSUS {0}:{1} role={2} family={3} authority={4} owner={5} test={6} handled={7} dispatchInput={8} violationReason={9}" -f $row.path,$row.line,$row.role,$row.family,$row.authority,$row.owner,$row.test,$row.handled,$row.dispatchInput,$row.violationReason) }
 if ($CensusPath) { $census | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $CensusPath -Encoding utf8 }
 Assert-Reader ($census.scanned -eq $census.total -and $census.total -gt 0) 'incomplete tracked source scan'
 Assert-Reader (-not $census.violations.Count) ("uncensused or bypass reader: "+($census.violations | ConvertTo-Json -Depth 8 -Compress))

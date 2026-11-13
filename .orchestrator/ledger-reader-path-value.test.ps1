@@ -122,19 +122,23 @@ try {
     $readerRows=@($c.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'reader' })
     $violations=@($c.violations | Where-Object path -CEQ 'reader.ps1')
     $nativeUnknown=@($violations | Where-Object role -CEQ 'reader').Count
-    $forwarding=@($violations | Where-Object role -CEQ 'path-forwarder')
-    $opaque=@($violations | Where-Object role -CEQ 'unclassified')
-    # Keep instance-derived forwarding uncertainty enforced independently of
-    # the native path-value proof; neither inventory nor old mutants disappear.
+    $forwarding=@($c.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'path-forwarder' })
+    $opaque=@($c.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'unclassified' })
+    # Preserve uncertain helper inventory separately from native enforcement.
     $badForwarding=@($forwarding | Where-Object { $_.family -cne 'get-nondispatchledgerpath' -or $_.authority -cne 'indeterminate' -or $_.handled -or $_.owner -or $_.test })
     $badOpaque=@($opaque | Where-Object { $_.family -cne 'unknown-static-type' -or $_.authority -cne 'indeterminate' -or $_.handled -or $_.owner -or $_.test })
     $expectedForwarding=if($name -in @('missingGuardCall','literalAssigned')){0}else{1}
     $expectedOpaque=if($name -eq 'changedLeaf'){1}else{0}
-    $observed.Add([pscustomobject]@{case=$name;expectedNativeViolation=$expected;nativeViolations=$nativeUnknown;forwardingViolations=$forwarding.Count;opaqueViolations=$opaque.Count;violations=$violations.Count;allViolations=$c.violations.Count;rows=@($c.rows)})
+    $expectedForwardingViolations=if($name -in @('dispatchLiteral','nestedNative')){1}else{0}
+    $expectedOpaqueViolations=if($name -eq 'changedLeaf'){1}else{0}
+    $forwardingViolations=@($violations | Where-Object role -CEQ 'path-forwarder')
+    $opaqueViolations=@($violations | Where-Object role -CEQ 'unclassified')
+    $observed.Add([pscustomobject]@{case=$name;expectedNativeViolation=$expected;nativeViolations=$nativeUnknown;forwardingRows=$forwarding.Count;opaqueRows=$opaque.Count;forwardingViolations=$forwardingViolations.Count;opaqueViolations=$opaqueViolations.Count;violations=$violations.Count;allViolations=$c.violations.Count;rows=@($c.rows)})
     if ($c.scanned -ne 2 -or $c.total -ne 2 -or -not $readerRows.Count -or (($nativeUnknown -gt 0) -ne $expected) -or
-        $violations.Count -ne ($nativeUnknown+$forwarding.Count+$opaque.Count) -or $badForwarding.Count -or $badOpaque.Count -or
+        $violations.Count -ne ($nativeUnknown+$expectedForwardingViolations+$expectedOpaqueViolations) -or $badForwarding.Count -or $badOpaque.Count -or
+        $forwardingViolations.Count -ne $expectedForwardingViolations -or $opaqueViolations.Count -ne $expectedOpaqueViolations -or
         $forwarding.Count -ne $expectedForwarding -or $opaque.Count -ne $expectedOpaque) { $failures.Add($name) }
-    Write-Output "PATH-VALUE case=$name nativeViolations=$nativeUnknown forwardingViolations=$($forwarding.Count) expectedNative=$([int]$expected) globalUnknown=$($c.violations.Count)"
+    Write-Output "PATH-VALUE case=$name nativeViolations=$nativeUnknown forwardingRows=$($forwarding.Count) forwardingViolations=$($forwardingViolations.Count) expectedNative=$([int]$expected) globalUnknown=$($c.violations.Count)"
   }
   if ($EvidencePath) { $observed.ToArray()|ConvertTo-Json -Depth 12|Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
   if ($failures.Count) { throw "SURVIVED path-value controls: $($failures -join ',')" }

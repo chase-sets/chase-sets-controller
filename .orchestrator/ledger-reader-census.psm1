@@ -855,7 +855,7 @@ function Get-LedgerMemoryBytes {
               ($node.Static -and $node.Member.Value -match '(?i)read|open' -and
                $node.Arguments.Count -and -not (NonLedgerPath $node.Arguments[0] $unit))) {
             $unknownFamily=if ($node.Static) {'unknown-static-type'} else {'unknown-instance-type'}
-            $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$unknownFamily;role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
+            $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$unknownFamily;role='unclassified';authority='indeterminate';dispatchInput=([bool]($invocationMask -band 1));owner=$false;test=$unit.test;handled=$false})
           }
           continue
         }
@@ -922,7 +922,7 @@ function Get-LedgerMemoryBytes {
             $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber+($text.Substring(0,$match.Index).Split("`n").Count-1)
               family=('embedded-C#.'+$(if ($match.Groups['method'].Success) {'File.'+$match.Groups['method'].Value} else {$match.Groups['type'].Value}))
               role=$embeddedRole;authority=$(if ($dispatchContext) {'dispatch'} elseif ($embeddedRole -eq 'writer') {'non-ledger'} else {'indeterminate'})
-              owner=$false;test=$unit.test;handled=($embeddedRole -eq 'writer')})
+              dispatchInput=$dispatchContext;owner=$false;test=$unit.test;handled=($embeddedRole -eq 'writer')})
           }
         }
         # Syntax also inventories valid constructors with trivia that a lexical
@@ -932,17 +932,17 @@ function Get-LedgerMemoryBytes {
           $embeddedRole=if ($site.writer) { 'writer' } else { 'reader' }
           $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber+($text.Substring(0,$site.index).Split("`n").Count-1)
             family='embedded-C#.FileStream';role=$embeddedRole;authority=$(if ($dispatchContext) {'dispatch'} elseif ($site.writer) {'non-ledger'} else {'indeterminate'})
-            owner=$false;test=$unit.test;handled=$site.writer})
+            dispatchInput=$dispatchContext;owner=$false;test=$unit.test;handled=$site.writer})
         }
         # Unknown embedded readers remain candidates even when their receiver
         # is an alias, using-static import, or an unclassified native family.
         # Do not pretend that recognizing Add-Type proves its payload harmless.
         if ($unclassifiedNative) {
           $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber
-            family='embedded-C#.unclassified';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
+            family='embedded-C#.unclassified';role='reader';authority='indeterminate';dispatchInput=$dispatchContext;owner=$false;test=$unit.test;handled=$false})
         }
         if ($text -match 'dispatch-log\\\.jsonl|cost-ledger\\\.jsonl') {
-          $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='pattern';role='retention-pattern';authority='dispatch/cost';owner=$false;test=$unit.test;handled=$true})
+          $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family='pattern';role='retention-pattern';authority='dispatch/cost';dispatchInput=$dispatchContext;owner=$false;test=$unit.test;handled=$true})
         }
         continue
       }
@@ -975,20 +975,31 @@ function Get-LedgerMemoryBytes {
       }
       $handled=-not $unknown -and $authority -ne 'indeterminate' -and ($role -ne 'reader' -or $owner -or $authority -in @('cost','non-ledger'))
       if ($role -eq 'path-forwarder' -and -not $family) { $role='unclassified';$handled=$false }
-      $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$family;role=$role;authority=$authority;owner=$owner;test=$unit.test;handled=$handled})
+      $rows.Add([pscustomobject]@{path=$unit.path;line=$node.Extent.StartLineNumber;family=$family;role=$role;authority=$authority;dispatchInput=([bool]($mask -band 1));owner=$owner;test=$unit.test;handled=$handled})
     }
     if (-not $unit.ast) {
       # Standalone native sources have no proven I/O/provenance model here.
       # Missing literal ledger text cannot exclude split or runtime paths.
-      $rows.Add([pscustomobject]@{path=$unit.path;line=1;family='native-source';role='unclassified';authority='indeterminate';owner=$false;test=$unit.test;handled=$false})
+      $rows.Add([pscustomobject]@{path=$unit.path;line=1;family='native-source';role='unclassified';authority='indeterminate';dispatchInput=$false;owner=$false;test=$unit.test;handled=$false})
     }
   }
   foreach ($key in $SourceOverride.Keys) { if ($key -cnotin $paths) { throw "LEDGER_CENSUS_UNTRACKED_OVERRIDE:$key" } }
   $head=(& git -C $Root rev-parse HEAD)
   if ($LASTEXITCODE -ne 0 -or $head -cnotmatch '^[a-f0-9]{40}$') { throw 'LEDGER_CENSUS_HEAD_MISSING' }
   $digests=@($units | ForEach-Object { [pscustomobject]@{path=$_.path;sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($_.source))).ToLowerInvariant()} })
+  foreach ($row in $rows) {
+    # Trusted-code uncertainty alone is diagnostic. Real native reads and
+    # dispatch-derived inputs still refuse, including mixed provenance.
+    $reason=if ($row.test -or $row.handled) { '' }
+      elseif ($row.dispatchInput) { 'dispatch-provenance' }
+      elseif ($row.family -eq 'owner-api') { 'owner-api' }
+      elseif ($row.role -eq 'reader') { 'native-reader' }
+      elseif ($row.family -eq 'native-source') { 'native-source' }
+      else { '' }
+    $row | Add-Member -NotePropertyName violationReason -NotePropertyValue $reason
+  }
   [pscustomobject]@{schemaVersion='dispatch-ledger-census/v1';sourceHead=$head;sourceDigests=$digests;scanned=$units.Count;total=$paths.Count
-    rows=$rows.ToArray();violations=@($rows | Where-Object { -not $_.test -and -not $_.handled })}
+    rows=$rows.ToArray();violations=@($rows | Where-Object violationReason)}
 }
 
 Export-ModuleMember -Function Get-LedgerReaderCensus

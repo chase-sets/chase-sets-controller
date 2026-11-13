@@ -16,12 +16,17 @@ try {
   & git -C $temporary -c user.name=Synthetic -c user.email=synthetic@example.invalid commit -qm provenance
   if ($LASTEXITCODE) { throw 'synthetic repository commit failed' }
   $cases=[ordered]@{
+    uncertainHelper=@(0,'param($root,$name);$p="$root/$name";Invoke-Synthetic -Path $p')
+    uncertainInstance=@(0,'param($root,$name,$x);$p="$root/$name";$x.Read($p)')
+    mixedHelper=@(1,'param($root,$name);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};Invoke-Synthetic -Path $p')
+    mixedInstance=@(1,'param($root,$name,$x);$p="dispatch-log.jsonl";if($name){$p="$root/$name"};$x.Read($p)')
     literal=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';[IO.File]::ReadAllText($p)')
     split=@(1,'$p=Join-Path $HOME (''dispatch-''+''log.jsonl'');[IO.File]::ReadAllText($p)')
     unknown=@(1,'param([string]$Path);[IO.File]::ReadAllText($Path)')
     forward=@(1,'function Get-SyntheticPath { Join-Path $HOME ''dispatch-log.jsonl'' };$p=Get-SyntheticPath;[IO.File]::ReadAllText($p)')
     abbrev=@(1,'function Read-Synthetic {param($Path);[IO.File]::ReadAllText($Path)};Read-Synthetic -Pa (Join-Path $HOME ''dispatch-log.jsonl'')')
-    unknownType=@(1,'param($p);[Synthetic.IO]::UnknownReadFamily($p)')
+    unknownType=@(0,'param($p);[Synthetic.IO]::UnknownReadFamily($p)')
+    dispatchUnknownType=@(1,'$p=''dispatch-log.jsonl'';[Synthetic.IO]::UnknownReadFamily($p)')
     unknownAfterCost=@(1,'param($Path);$p=''cost-ledger.jsonl'';$p=$Path;[IO.File]::ReadAllText($p)')
     opaqueCostDefault=@(1,'param($Path=''cost-ledger.jsonl'');[IO.File]::ReadAllText($Path)')
     falseCostBranch=@(1,'$p=Join-Path $HOME ''dispatch-log.jsonl'';if($DispatchHistory){Write-Output ''noop''}else{[IO.File]::ReadAllText($p)}')
@@ -56,6 +61,14 @@ try {
     $row=[pscustomobject]@{case=$name;expectedViolation=([int]$cases[$name][0] -gt 0);violations=$result.violations.Count;scanned=$result.scanned;total=$result.total;rows=@($result.rows)}
     $observed.Add($row)
     if ($result.scanned -ne 1 -or $result.total -ne 1 -or (($result.violations.Count -gt 0) -ne $row.expectedViolation)) { $failures.Add($name) }
+    if ($name -in @('uncertainHelper','uncertainInstance','unknownType')) {
+      $diagnostic=@($result.rows | Where-Object { -not $_.handled -and -not $_.dispatchInput -and -not $_.violationReason })
+      if (-not $diagnostic.Count) { $failures.Add("diagnostic:$name") }
+    }
+    if ($name -in @('mixedHelper','mixedInstance','dispatchUnknownType')) {
+      $dispatch=@($result.violations | Where-Object { $_.dispatchInput -and $_.violationReason -ceq 'dispatch-provenance' })
+      if (-not $dispatch.Count) { $failures.Add("dispatch:$name") }
+    }
     Write-Output "PROVENANCE case=$name violations=$($result.violations.Count) expected=$($cases[$name][0])"
   }
   if ($EvidencePath) { $observed.ToArray() | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $EvidencePath -Encoding utf8 }
