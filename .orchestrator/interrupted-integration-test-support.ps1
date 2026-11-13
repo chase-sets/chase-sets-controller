@@ -1036,7 +1036,7 @@ exit 0
       $entryState=Get-InterruptedIntegrationState $f.repo
       if($Carrier-ceq'watchdog'){$f.cfg.entryOnly=$true}
       $run=Launch $f
-      Proof ($run.exit-in@(0,2)-and(Test-Path -LiteralPath $f.cfg.entry)) "$incident candidate actual child entry exit=$($run.exit) raw=$($run.resultPath)"
+      Proof ($run.exit-in@(0,2)-and(Test-Path -LiteralPath $f.cfg.entry)) "$incident candidate actual child entry exit=$($run.exit) raw=$($run.resultPath) stderr=$($run.stderr | ConvertTo-Json -Compress) stdout=$($run.stdout | ConvertTo-Json -Compress)"
       $gitEnvironmentNames=@('GIT_DIR','GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES')
       Proof (@($gitEnvironmentNames|Where-Object{-not[string]::IsNullOrEmpty([string]$run.gitEnvironment[$_])}).Count-eq0) "$incident resume child launch strips redirected Git environment"
       $entryBefore=if(Test-Path -LiteralPath $f.cfg.entry){Get-RebaseHash ([IO.File]::ReadAllBytes($f.cfg.entry))}else{$null}

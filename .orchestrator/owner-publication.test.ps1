@@ -447,7 +447,7 @@ function Invoke-ReaderInventory {
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
-    'long-product-gate.test.ps1'=@(208,215,231,871)
+    'long-product-gate.test.ps1'=@(212,219,235,875)
     'host-heavy-verifier.test.ps1'=@(1277)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
