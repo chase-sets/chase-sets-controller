@@ -1085,7 +1085,7 @@ const timer = setInterval(() => {
     [IO.File]::WriteAllText($foreign.TranscriptPath, "{`"type`":`"item.completed`"}`n", [Text.UTF8Encoding]::new($false))
     $barrier = Join-Path $root $case.Name
     $sourceText = [IO.File]::ReadAllText($guard)
-    $anchor = if($case.Baseline) { '$beforeCensus = [ChaseSets.HeavyAdmission.NestedOwnerServer]::CaptureDispatchCensus($runtimeRoot)' } else { '$before = Get-HeavyCallerAncestry $rootPid $rootStart $oldestLaunch $candidatePids' }
+    $anchor = Get-CensusAdmissionAnchor $sourceText -Baseline:$case.Baseline
     Assert-True (($sourceText.Split($anchor)).Count -eq 2) "one admission barrier anchor"
     $barrierCode = @'
     [IO.File]::WriteAllText($env:CENSUS_BARRIER + '.ready', 'captured')
