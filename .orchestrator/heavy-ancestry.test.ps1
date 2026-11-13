@@ -17,7 +17,11 @@ function Read-Source([string]$Name) {
   if ($LASTEXITCODE -ne 0) { throw "cannot read $Name at $GuardRevision" }
   return $lines -join "`n"
 }
-. ([scriptblock]::Create((Read-Source 'dispatch-ownership.ps1')))
+$ownershipTokens = $null; $ownershipErrors = $null
+$ownershipAst = [Management.Automation.Language.Parser]::ParseInput((Read-Source 'dispatch-ownership.ps1'),
+  (Join-Path $PSScriptRoot 'dispatch-ownership.ps1'), [ref]$ownershipTokens, [ref]$ownershipErrors)
+Assert-True ($ownershipErrors.Count -eq 0) 'ownership source retains production source identity'
+. $ownershipAst.GetScriptBlock()
 $source = Read-Source 'invoke-heavy-verifier.ps1'
 $mutations = @{
   'unbound-root' = @(@{ Find = '$boundDispatchRoot = $false'; Replace = '$boundDispatchRoot = $true' })

@@ -289,7 +289,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $head = Git @('rev-parse', 'HEAD')
 
   $invalid = @(
-    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='ValidateSet'},
+    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='heavy-verifier: invalid closed route value'},
     @{Name='outside-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='dotdot'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/payments/../ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='absolute'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile',(Join-Path $worktree $validFile),'-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},

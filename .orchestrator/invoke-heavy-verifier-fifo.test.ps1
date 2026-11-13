@@ -262,6 +262,7 @@ function New-DispatchFixture($Driver,[string]$Label) {
   }
   Write-Json $path $record;[IO.File]::WriteAllText($record.promptPath,'inert');[IO.File]::WriteAllText($record.transcriptPath,"{`"type`":`"item.completed`"}`n")
   Write-Json (Join-Path $runtime 'dispatch-log.jsonl') @{ts=$record.recordedAt;kind='dispatch';dispatchRoutingSchema='watchdog-dispatch-routing/v1';attemptId=$Label;label=$Label;lane='tree';laneRole='implementation';transcript="$Label.jsonl";harness='codex';model='gpt-6-astra';effort='high';row='7';placement='override-Todd';worktree=$tree;branch=$branch;head=$head}
+  [IO.File]::AppendAllText((Join-Path $runtime 'dispatch-log.jsonl'), "`n")
   return [pscustomobject]@{Path=$path;Record=$record}
 }
 try {
