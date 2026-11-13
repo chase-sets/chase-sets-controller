@@ -570,7 +570,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
     Write-Output "PASS AC4 recovery stop $stop blocks admission, byte-exact evidence; rerun resumes"
   }
   $r=Invoke-Attempt $recoveryDriver Gate ($recover+(Set-Fixture @{now=$now.AddSeconds(601).ToString('o')})) -Production
-  Assert-Fifo ($r.Code-eq0-and-not$r.Body-and$r.Output-match'record='-and-not(Test-Path $recovery)-and@((Read-Json $queue).tickets).Count-eq0) 'AC4 only complete recovery enables admission' $r.Output
+  Assert-Fifo ($r.Code-eq0-and-not$r.Body-and$r.Output-match'record='-and-not(Test-Path $recovery)-and@((Read-Json $queue).tickets).Count-eq0) 'AC4 only complete recovery enables admission' "exit=$($r.Code) body=$($r.Body) recoveryMarker=$(Test-Path $recovery) tickets=$(@((Read-Json $queue).tickets).Count) output=$($r.Output)"
   Assert-RecoveryOwners;$script:recoveryOwnerHash=$null
   $released=Release-Attempt $recoveryBarrier;Assert-Fifo ($released.Code-eq0) 'AC4 recovery owner releases normally' $released.Output
   Remove-Item -LiteralPath $script:controllerOwner;Remove-Item -LiteralPath (Split-Path -Parent $script:controllerOwner)

@@ -1738,7 +1738,16 @@
     {
       "path": ".orchestrator/board-scale-test-support.ps1",
       "baselineBlob": "3bf88f145428c9950ee02019efca407802dea094",
-      "edits": []
+      "edits": [
+        {
+          "offset": 274,
+          "remove": 0,
+          "original": [],
+          "replacement": [
+            "  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ledger-reader.psm1') -Destination $runtime"
+          ]
+        }
+      ]
     }
   ]
 }
