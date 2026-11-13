@@ -466,6 +466,8 @@ function Invoke-ReaderInventory {
     # Exact native-expression baselines in the battery boundary fixture, not
     # executed reads of a production owner record.
     'ledger-reader-battery-paths.test.ps1'=@(27,28)
+    # Retained synthetic owner bytes during the in-process disposal control.
+    'ledger-reader-memory-value.test.ps1'=@(222)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
