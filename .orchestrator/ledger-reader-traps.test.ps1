@@ -99,10 +99,16 @@ try {
     if(-not $cases[$name][0]) {
       # The terminal trap still proves the native read guard. Separately keep
       # the instance-bearing guard's forwarding UNKNOWN in the full inventory.
-      $forwarded=@($census.violations | Where-Object path -CEQ 'reader.ps1')
+      $forwarded=@($census.rows | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'path-forwarder' })
       Check ($forwarded.Count -eq 1 -and $forwarded[0].family -ceq 'get-nondispatchledgerpath' -and
         $forwarded[0].role -ceq 'path-forwarder' -and $forwarded[0].authority -ceq 'indeterminate' -and
-        -not $forwarded[0].handled -and -not $forwarded[0].owner -and -not $forwarded[0].test) "guard forwarding refusal $name"
+        -not $forwarded[0].handled -and -not $forwarded[0].owner -and -not $forwarded[0].test) "guard forwarding inventory $name"
+      $forwardingRefusals=@($census.violations | Where-Object { $_.path -ceq 'reader.ps1' -and $_.role -ceq 'path-forwarder' })
+      $expectedForwardingRefusals=if($name -ceq 'dispatchLiteral'){1}else{0}
+      Check ($forwardingRefusals.Count -eq $expectedForwardingRefusals) "only dispatch-derived guard forwarding refuses $name"
+      if($name -ceq 'dispatchLiteral') {
+        Check ($forwardingRefusals[0].dispatchInput -and $forwardingRefusals[0].violationReason -ceq 'dispatch-provenance') 'literal dispatch refusal retains provenance'
+      }
       $bad=$nativeUnknown.Count -gt 0
     } else {Check ($nativeUnknown.Count -gt 0) "opaque trap still refuses the native reader $name"}
     Check ($census.scanned -eq 2 -and $census.total -eq 2) "complete census $name"

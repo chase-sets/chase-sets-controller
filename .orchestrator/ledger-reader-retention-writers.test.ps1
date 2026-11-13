@@ -40,11 +40,18 @@ try {
     Check ($row.role -ceq 'writer' -and -not $row.handled -and -not $row.test -and -not $row.owner -and
       $row.authority -ceq 'indeterminate') 'actual writers preserve instance-derived and concatenation uncertainty, without owner or test exemption'
     $enforced=@($census.violations|Where-Object {$_.path -ceq $row.path -and $_.line -eq $row.line -and $_.family -ceq $row.family -and $_.role -ceq 'writer' -and -not $_.handled})
-    Check ($enforced.Count -eq 1) 'each uncertain actual writer remains in global enforcement'
+    Check ($enforced.Count -eq 0 -and -not $row.dispatchInput -and -not $row.violationReason) 'uncertain write-only input remains diagnostic without dispatch provenance'
     Check ($open.Arguments.Count -eq 4 -and $open.Arguments[1].Extent.Text -ceq '[IO.FileMode]::CreateNew' -and
       $open.Arguments[2].Extent.Text -ceq '[IO.FileAccess]::Write' -and $open.Arguments[3].Extent.Text -ceq '[IO.FileShare]::None') 'explicit exclusive CreateNew/write-only enums'
 
     $operand=$open.Arguments[0]
+    # The same writer shape must still refuse a mixed dispatch/unknown input.
+    $dispatchSource=$source.Remove($operand.Extent.StartOffset,$operand.Extent.Text.Length).Insert(
+      $operand.Extent.StartOffset,"('dispatch-log.jsonl'+$($operand.Extent.Text))")
+    $dispatch=Get-LedgerReaderCensus -Root $root -SourceOverride @{'.orchestrator/runtime-retention.ps1'=$dispatchSource}
+    $dispatchRows=@($dispatch.violations|Where-Object {$_.path -ceq $row.path -and $_.line -eq $row.line -and $_.family -ceq $row.family})
+    Check ($dispatchRows.Count -eq 1 -and $dispatchRows[0].role -ceq 'writer' -and -not $dispatchRows[0].handled -and
+      $dispatchRows[0].dispatchInput -and $dispatchRows[0].violationReason -ceq 'dispatch-provenance') 'mixed dispatch writer input remains enforced at each actual site'
     $literalSource=$source.Remove($operand.Extent.StartOffset,$operand.Extent.Text.Length).Insert($operand.Extent.StartOffset,"'ordinary.zip.partial'")
     $literal=Get-LedgerReaderCensus -Root $root -SourceOverride @{'.orchestrator/runtime-retention.ps1'=$literalSource}
     $positive=@($literal.rows|Where-Object {$_.path -ceq $row.path -and $_.line -eq $row.line -and $_.family -ceq $row.family})
