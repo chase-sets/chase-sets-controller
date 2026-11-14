@@ -2867,7 +2867,7 @@ try {
   Remove-Item -LiteralPath $lock -Force
   Assert-True (-not (Test-Path -LiteralPath $lock) -and (Test-Path -LiteralPath $targetOwner)) "only the disposable junction was removed"
   Remove-Item -LiteralPath $reparseTarget -Recurse -Force
-
+  $orphanHandoff=Join-Path $root 'orphan-queue-handoff.txt'; Assert-True ((Invoke-Guard 'orphan-queue-handoff' @('-NoProfile','-File',$markerScript,$orphanHandoff,'0')) -eq 0 -and (Test-Path -LiteralPath $orphanHandoff) -and -not(Test-Path -LiteralPath $lock)) 'orphan preceding claimant completes normal admission before wrapper launch'; $orphanQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($orphanQueue.tickets).Count -eq 0) 'orphan queue handoff retires the preceding claimant ticket'; Write-Host 'PASS orphan queue handoff: prior claimant admitted; tickets=0; no queue deletion or bypass'
   $orphanIdentityPath = Join-Path $root "orphan-child.json"
   $orphanMarker = Join-Path $root "orphan-contender.txt"
   $orphanWrapper = Start-Wrapper "lane-orphan" @("-NoProfile", "-File", $identityChildScript, $orphanIdentityPath, "30000")

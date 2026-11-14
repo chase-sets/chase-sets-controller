@@ -1573,6 +1573,14 @@
           "replacement": [
             "  if ($HostHeavyVerifierOnly) { Test-ControllerHostHeavyVerifier; return }"
           ]
+        },
+        {
+          "offset": 2483,
+          "remove": 1,
+          "original": [""],
+          "replacement": [
+            "  $orphanHandoff=Join-Path $root 'orphan-queue-handoff.txt'; Assert-True ((Invoke-Guard 'orphan-queue-handoff' @('-NoProfile','-File',$markerScript,$orphanHandoff,'0')) -eq 0 -and (Test-Path -LiteralPath $orphanHandoff) -and -not(Test-Path -LiteralPath $lock)) 'orphan preceding claimant completes normal admission before wrapper launch'; $orphanQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($orphanQueue.tickets).Count -eq 0) 'orphan queue handoff retires the preceding claimant ticket'; Write-Host 'PASS orphan queue handoff: prior claimant admitted; tickets=0; no queue deletion or bypass'"
+          ]
         }
       ]
     },
