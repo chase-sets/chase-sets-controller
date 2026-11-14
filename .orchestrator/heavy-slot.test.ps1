@@ -1314,21 +1314,29 @@ function Test-RenameTypeBeforeAcquire {
   $invalid=$source.Replace($class,"$class`n#error fix125 injected rename type failure")
   $load='if (-not $isAttachedAdmission) { Initialize-OwnerRename }'
   Assert-True ($source.Contains($load)) 'rename-type-before-acquire load seam exists'
+  $launch='$child = [Diagnostics.Process]::Start($start)'
+  Assert-True ([regex]::Matches($source,[regex]::Escape($launch)).Count -eq 1) 'rename-type-before-acquire has one actual child launch'
+  # Observe the actual launch, not a Node exit callback that may never run
+  # after the wrapper's deliberate compile failure interrupts publication.
+  $observedLaunch=@'
+$child = [Diagnostics.Process]::Start($start)
+[IO.File]::WriteAllText($env:SLOT_CHILD_START_MARKER, [string]$child.Id)
+'@
   foreach ($variant in @('candidate','late-load')) {
-    $copy=$invalid
+    $copy=$invalid.Replace($launch,$observedLaunch)
     if ($variant -ceq 'late-load') {
       $copy=$copy.Replace($load,'# MUTANT load at first non-create transition')
       $copy=$copy.Replace('  $temporaryPath = Join-Path $lockPath ("owner.transition."','  Initialize-OwnerRename' + "`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')
     }
-    $marker=Join-Path $root "rename-type-$variant.exit"
+    $marker=Join-Path $root "rename-type-$variant.started"
     try {
       [IO.File]::WriteAllText($guard,$copy)
-      $entry=Start-GateWrapper 'test:scripts' $fixture @{SLOT_EXIT_MARKER=$marker}
+      $entry=Start-GateWrapper 'test:scripts' $fixture @{SLOT_CHILD_START_MARKER=$marker}
       $stdout=$entry.Process.StandardOutput.ReadToEndAsync(); $stderr=$entry.Process.StandardError.ReadToEndAsync()
       Assert-True ($entry.Process.WaitForExit(30000)) 'rename compile failure exits within existing fixture bound'
       $output=$stdout.Result + $stderr.Result
       Assert-True ($entry.Process.ExitCode -ne 0 -and $output.Contains('fix125 injected rename type failure')) 'rename type failure is observable'
-      if ($variant -ceq 'late-load') { Wait-Condition { Test-Path $marker } 'late-load pre-acquire exit marker' }
+      if ($variant -ceq 'late-load') { Wait-Condition { Test-Path $marker } 'late-load pre-acquire start marker' }
       $markerPresent=Test-Path $marker
       $lockPresent=Test-Path $lock
       if ($variant -ceq 'candidate') { Assert-True (-not $markerPresent -and -not $lockPresent) 'rename-type-before-acquire leaves no lock or child' }

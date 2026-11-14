@@ -1399,6 +1399,19 @@ try {
   Wait-LockRelease "browser probe control blocker release"
   Assert-True ($probeFailures.Count -eq 0) "all browser probe forms parent-fail before body:`n$($probeFailures -join "`n")"
 
+  # Refusal retains the claimant's FIFO position. Retry each original form
+  # through normal admission before changing to the reverse-order claimant.
+  foreach ($case in $probeCases) {
+    $caseSlug = $case.Name -replace "[^A-Za-z0-9]+", "-"
+    $caseMarker = Join-Path $root "$caseSlug.marker"
+    $caseOutput = Join-Path $root "$caseSlug.output"
+    $handoff = & $case.Start $caseMarker $caseOutput
+    Complete-Fixture $handoff 0 "$($case.Name) refusal queue handoff" | Out-Null
+    Wait-LockRelease "$($case.Name) refusal queue handoff release"
+    Assert-True ((Test-Path -LiteralPath $caseMarker) -and
+      (Test-Path -LiteralPath $caseOutput)) "$($case.Name) original command admits after blocker release"
+  }
+
   # Reversing the launch order gives the probe the same exclusive owner:
   # its inert body starts, and a repository gate refuses before its body.
   $reverseProbeMarker = Join-Path $root "reverse-probe.marker"
@@ -1438,6 +1451,11 @@ try {
   Assert-True ((Test-Path -LiteralPath $reverseProbeMarker) -and
     (Test-Path -LiteralPath $reverseProbeOutput) -and
     -not (Test-Path -LiteralPath $reverseGateMarker)) "reverse launch order admits exactly one command body"
+
+  $reverseGateHandoff = Start-NodeFixture $pnpmScript @("run", "verify:static") $laneA "lane-a" $reverseGateMarker
+  Complete-Fixture $reverseGateHandoff 0 "repository gate refusal queue handoff" | Out-Null
+  Wait-LockRelease "repository gate refusal queue handoff release"
+  Assert-True (Test-Path -LiteralPath $reverseGateMarker) "original repository gate admits after reverse-order probe release"
 
   }
   # Static inventory covers Windows pnpm/npx aliases, shim-final CLI paths,
