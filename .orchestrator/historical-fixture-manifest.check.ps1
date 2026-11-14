@@ -17,7 +17,8 @@ function Get-FixtureEntries([string]$FixtureRoot, [string]$Name) {
   $entries = [Collections.Generic.List[object]]::new()
   foreach ($line in $lines) {
     if ($line -notlike '- *') { continue }
-    $match = [regex]::Match($line, '^- (?<path>\.orchestrator/[A-Za-z0-9._/-]+?)\s*\| blob `(?<blob>[0-9a-f]{40})`$')
+    $pathPattern = if ($Name -ceq 'historical-current-binding') { '(?:\.orchestrator|scripts)/[A-Za-z0-9._/-]+?' } else { '\.orchestrator/[A-Za-z0-9._/-]+?' }
+    $match = [regex]::Match($line, ('^- (?<path>' + $pathPattern + ')\s*\| blob `(?<blob>[0-9a-f]{40})`$'))
     Assert-Fixture $match.Success "$Name has a malformed manifest entry: $line"
     $entries.Add([pscustomobject]@{ path = $match.Groups['path'].Value; blob = $match.Groups['blob'].Value })
   }
@@ -69,7 +70,7 @@ $fixtureRoot = Join-Path $controllerRoot '.orchestrator/fixtures'
 $fixtureTests = @(Get-ChildItem -LiteralPath $fixtureRoot -Filter '*.test.ps1' -File -Recurse)
 Assert-Fixture ($fixtureTests.Count -eq 0) 'fixtures must not contain battery-discoverable test files'
 Write-Output 'PASS all fixtures battery-discoverable test files=0'
-$fixtureNames = @('historical-b3b4ac2', 'historical-aa62899', 'historical-8106d4e1', 'historical-4ef3fc35', 'historical-177f2d55', 'historical-6e9156f8', 'historical-census-before-7958')
+$fixtureNames = @('historical-b3b4ac2', 'historical-aa62899', 'historical-8106d4e1', 'historical-4ef3fc35', 'historical-177f2d55', 'historical-6e9156f8', 'historical-census-before-7958', 'historical-current-binding')
 $validated = [ordered]@{}
 foreach ($name in $fixtureNames) {
   $validated[$name] = @(Test-FixtureManifest $controllerRoot (Join-Path $fixtureRoot $name) $name)

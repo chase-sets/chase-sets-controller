@@ -439,7 +439,7 @@ function Invoke-ReaderInventory {
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
     'heavy-admission-preload.test.ps1'=@(176,629,658,766,1060,1066,1159,1216,1363,1410,1950,1954)
-    'heavy-slot.test.ps1'=@(93,96,119,1910,2236,2413)
+    'heavy-slot.test.ps1'=@(93,96,119,1909,2235,2412)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -510,6 +510,7 @@ function Invoke-ReaderInventory {
     '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
     '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/heavy-nested-owner.cs'=@(900,939)
     '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/invoke-heavy-verifier.ps1'=@(433,704,751)
+    '.orchestrator/fixtures/historical-current-binding/.orchestrator/invoke-heavy-verifier.ps1'=@(433,704,751)
   }
   function Get-ReaderSiteKey([string]$Relative,[int]$Line) {
     if($Relative -clike '.orchestrator/fixtures/historical-*/*'){ return "${Relative}:$Line" }
@@ -533,7 +534,7 @@ function Invoke-ReaderInventory {
     $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
     foreach($line in $historicalSites[$relative]) {
       $key=Get-ReaderSiteKey $relative $line
-      $caller=if($fixtureRoot -ceq '.orchestrator/fixtures/historical-census-before-7958'){'Read-CensusBaselineFixture copy into a synthetic temp root'}else{'New-HistoricalDispatchFixture copy into a synthetic temp root'}
+      $caller=if($fixtureRoot -ceq '.orchestrator/fixtures/historical-census-before-7958'){'Read-CensusBaselineFixture copy into a synthetic temp root'}elseif($fixtureRoot -ceq '.orchestrator/fixtures/historical-current-binding'){'Read-CurrentBindingFixture copy into a synthetic temp root'}else{'New-HistoricalDispatchFixture copy into a synthetic temp root'}
       $table.Add(@{site=$key;api=$lines[$line-1].Trim();shareBefore='pinned historical bytes';shareAfter='unchanged';decoder='unchanged historical decoder';callers=$caller;owner="pinned historical fixture bytes (blob $($pin[0])), never live publication"})
       $classified[$key]=$true
     }

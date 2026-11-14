@@ -1132,16 +1132,15 @@ function Invoke-CurrentBindingControls {
   # commits after launch, then runs the unmodified product scoped CLI. Only the
   # disposable package's leaf checks are markers; no admission seam replaces
   # the positive path. Product sources are pinned to the observed consumer.
-  $product = Join-Path (Split-Path -Parent $controllerRoot) "main"
   $productHead = "50a920d4cede95309dff8c4aead17ed43859ccee"
   foreach ($relative in @("scripts/verify-static-scoped.mjs", "scripts/verify-static-surfaces.mjs",
       "scripts/change-scope.mjs", "scripts/e2e-suites.mjs", "scripts/lib/repo.mjs",
       "scripts/lib/risk-policy-v1.mjs", "scripts/lib/heavy-slot.mjs")) {
-    $source = @(& git -C $product show "${productHead}:$relative")
-    Assert-True ($LASTEXITCODE -eq 0) "pinned production scoped dependency $relative is available"
+    $source = Read-CurrentBindingFixture $relative
+    Assert-True (-not [string]::IsNullOrWhiteSpace($source)) "pinned production scoped dependency $relative is available"
     $target = Join-Path $worktree $relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-    [IO.File]::WriteAllText($target, ($source -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($target, $source, [Text.UTF8Encoding]::new($false))
   }
   $leaf = Join-Path $worktree "scripts/binding-leaf.mjs"
   [IO.File]::WriteAllText($leaf, @'
@@ -1206,9 +1205,9 @@ console.log(`BINDING_BODY ${process.argv[2]} pid=${process.pid}`);
 
   # Execute the exact pre-fix wrapper, then the candidate, against the same
   # real native author, unchanged launch bytes, clean Git head and scoped CLI.
-  $original = @(& git -C $controllerRoot cat-file blob 3d1a71ebd741e78cb018e16e758971272ba31fb7)
-  Assert-True ($LASTEXITCODE -eq 0) "pre-fix wrapper blob is available"
-  [IO.File]::WriteAllText($guard, ($original -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+  $original = Read-CurrentBindingFixture '.orchestrator/invoke-heavy-verifier.ps1'
+  Assert-True (-not [string]::IsNullOrWhiteSpace($original)) "pre-fix wrapper blob is available"
+  [IO.File]::WriteAllText($guard, $original, [Text.UTF8Encoding]::new($false))
   Invoke-ScopedBinding "before-fix-postcommit" 73
   $diagnosticEntry = Start-GateWrapper "test:scripts" $fixture
   $diagnostic = Complete-Fixture $diagnosticEntry 73 "original binding reason at same actual identity"
