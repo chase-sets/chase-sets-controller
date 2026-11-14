@@ -130,3 +130,40 @@ Assert-Fixture ($expectedCommand -and $matrixPackage.scripts.'test:canonical-rec
 $matrixPackage.scripts.PSObject.Properties.Remove('test:canonical-record')
 Assert-Fixture ($matrixPackage.scripts.'test:canonical-record' -cne $expectedCommand) 'missing canonical command fails the fixture contract'
 Write-Output 'PASS ordinary gate-matrix package matches unchanged canonical-record script pin; missing command refuses'
+
+$measurementReads = @($ast.FindAll({param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+  $n.Left.Extent.Text -cin @('$baselineGuardBytes', '$baselineBytes')
+}, $true))
+Assert-Fixture ($measurementReads.Count -eq 2) 'both ordinary measurement input reads are present'
+$controllerRoot = Split-Path -Parent $PSScriptRoot
+$baselineClientBlob = '71deeaae2c999d377d3d2ffe9b933219d62a06ff'
+$guardPin = '7aae059c121a433e628cf7935fb1e62e7f08b2ee'
+function Assert-True($Condition, [string]$Message) { Assert-Fixture $Condition $Message }
+function Read-ActualMeasurementInput($Read, [switch]$Missing) {
+  $statements = @($Read.Parent.Statements)
+  $index = 0
+  while ($statements[$index].Extent.StartOffset -ne $Read.Extent.StartOffset) { $index++ }
+  $assertion = $statements[$index + 1].Extent.Text
+  Assert-Fixture ($assertion.StartsWith('Assert-True ', [StringComparison]::Ordinal)) 'actual readability assertion immediately follows its input read'
+  $code = $Read.Extent.Text
+  if ($Missing) {
+    $baselineClientBlob = 'ffffffffffffffffffffffffffffffffffffffff'
+    $code = $code.Replace($guardPin, $baselineClientBlob)
+  }
+  return & ([scriptblock]::Create($code + "`n" + $assertion + "`n" + $Read.Left.Extent.Text))
+}
+foreach ($read in $measurementReads) {
+  $lines = @(Read-ActualMeasurementInput $read)
+  $name = if ($read.Left.Extent.Text -ceq '$baselineGuardBytes') { 'invoke-heavy-verifier.ps1' } else { 'heavy-slot.cjs' }
+  $pin = if ($name -ceq 'heavy-slot.cjs') { $baselineClientBlob } else { $guardPin }
+  $path = Join-Path $PSScriptRoot "fixtures/historical-nested-measurement/.orchestrator/$name"
+  $rawPin = & git -C $controllerRoot hash-object --no-filters -- $path
+  Assert-Fixture ($LASTEXITCODE -eq 0 -and $rawPin -ceq $pin) "$name retains its original raw Git blob"
+  $expected = [IO.File]::ReadAllText($path).Replace("`r`n", "`n").TrimEnd([char[]]"`n")
+  Assert-Fixture (($lines -join "`n").TrimEnd([char[]]"`n") -ceq $expected) "$name actual measurement lookup reads exactly the public fixture"
+  $missing = $false
+  try { Read-ActualMeasurementInput $read -Missing | Out-Null } catch { $missing = $true }
+  Assert-Fixture $missing "$name missing Git object still fails the ordinary readability assertion"
+}
+Write-Output 'PASS ordinary measurement reads: original public blobs, exact content, missing-object refusal; measurement execution NOT_RUN'

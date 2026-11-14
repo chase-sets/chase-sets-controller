@@ -2558,7 +2558,7 @@ try {
   $fixtureStage = "measurement"
   $baselineClient = Join-Path $root "heavy-slot.baseline.cjs"
   $baselineGuard = Join-Path $root "invoke-heavy-verifier.baseline.ps1"
-  $baselineGuardBytes = & git -C $controllerRoot show '177f2d55176d122b267444c3de240927f98285ff:.orchestrator/invoke-heavy-verifier.ps1' 2>$null
+  $baselineGuardBytes = & git -C $controllerRoot cat-file blob '7aae059c121a433e628cf7935fb1e62e7f08b2ee' 2>$null
   Assert-True ($LASTEXITCODE -eq 0) "baseline wrapper is readable at the installed baseline"
   [IO.File]::WriteAllText($baselineGuard, (($baselineGuardBytes -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
   $baselineBytes = & git -C $controllerRoot cat-file blob $baselineClientBlob 2>$null
