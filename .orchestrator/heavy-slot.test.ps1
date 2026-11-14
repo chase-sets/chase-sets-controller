@@ -1311,7 +1311,18 @@ function Test-RenameTypeBeforeAcquire {
   $source=[IO.File]::ReadAllText($guardSource)
   $class='public static class OwnerRename {'
   Assert-True ($source.Contains($class)) 'rename-type-before-acquire compile seam exists'
-  $invalid=$source.Replace($class,"$class`n#error fix125 injected rename type failure")
+  $parseErrors=$null
+  $syntax=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$parseErrors)
+  $initializer=@($syntax.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-OwnerRename'},$true))
+  $queueWriter=@($syntax.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-VerifyQueue'},$true))
+  Assert-True ($parseErrors.Count -eq 0 -and $initializer.Count -eq 1 -and $queueWriter.Count -eq 1) 'rename fault isolation has unique parsed owner initializer and queue writer'
+  # Keep the real queue publisher operational with the same initializer/body,
+  # renamed only in this fixture copy. Its eager initialization must not mask
+  # the owner-load ordering regression by compiling the injected owner fault.
+  $queueInitializer=$initializer[0].Extent.Text.Replace('OwnerRename','QueueRename')
+  $isolated=$source.Replace($initializer[0].Extent.Text,$queueInitializer + "`n" + $initializer[0].Extent.Text)
+  $isolated=$isolated.Replace($queueWriter[0].Extent.Text,$queueWriter[0].Extent.Text.Replace('OwnerRename','QueueRename'))
+  $invalid=$isolated.Replace($class,"$class`n#error fix125 injected rename type failure")
   $load='if (-not $isAttachedAdmission) { Initialize-OwnerRename }'
   Assert-True ($source.Contains($load)) 'rename-type-before-acquire load seam exists'
   $launch='$child = [Diagnostics.Process]::Start($start)'

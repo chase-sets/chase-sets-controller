@@ -1399,9 +1399,11 @@ try {
   Wait-LockRelease "browser probe control blocker release"
   Assert-True ($probeFailures.Count -eq 0) "all browser probe forms parent-fail before body:`n$($probeFailures -join "`n")"
 
-  # Refusal retains the claimant's FIFO position. Retry each original form
-  # through normal admission before changing to the reverse-order claimant.
-  foreach ($case in $probeCases) {
+  # Direct Node retains the live test-parent claimant; wrapper claimants exit.
+  # Drain that original claimant first, then retry every remaining original form.
+  $retryCases=@($probeCases | Sort-Object -Stable { $_.Name -cne 'direct node browser-e2e-probe.mjs' })
+  Assert-True ($retryCases.Count -eq $probeCases.Count -and $retryCases[0].Name -ceq 'direct node browser-e2e-probe.mjs') 'browser refusal handoff retries the retained direct-Node claimant first without omitting forms'
+  foreach ($case in $retryCases) {
     $caseSlug = $case.Name -replace "[^A-Za-z0-9]+", "-"
     $caseMarker = Join-Path $root "$caseSlug.marker"
     $caseOutput = Join-Path $root "$caseSlug.output"
