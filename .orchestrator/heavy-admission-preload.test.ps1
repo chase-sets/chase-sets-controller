@@ -487,6 +487,7 @@ $descendantScript = Join-Path $root "descendant.cjs"
 $descendantWorker = Join-Path $root "descendant-worker.cjs"
 $probeScriptA = Join-Path $laneA "scripts\browser-e2e-probe.mjs"
 $probeScriptB = Join-Path $laneB "scripts\browser-e2e-probe.mjs"
+Initialize-AdmissionGitFixtures $container @($laneA, $laneB)
 New-Item -ItemType Directory -Path $playwrightDirectory, $vitestDirectory,
   (Split-Path -Parent $probeScriptA), (Split-Path -Parent $probeScriptB) | Out-Null
 $bodySource = @'
@@ -594,7 +595,6 @@ $packageJson = @{
     "dev:e2e:probe:nested" = "pnpm run dev:e2e:probe:alias"
   }
 } | ConvertTo-Json -Depth 4
-Initialize-AdmissionGitFixtures $container @($laneA, $laneB)
 Set-Content -LiteralPath (Join-Path $laneA "package.json") -Value $packageJson
 Set-Content -LiteralPath (Join-Path $laneB "package.json") -Value $packageJson
 foreach ($fixture in @(

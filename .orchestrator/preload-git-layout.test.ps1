@@ -27,7 +27,23 @@ try {
   $laneA = Join-Path $container 'lane-a'
   $laneB = Join-Path $container 'lane-b'
   foreach ($path in @($laneA, $laneB)) { [void][IO.Directory]::CreateDirectory($path) }
-  Initialize-AdmissionGitFixtures $container @($laneA, $laneB)
+  $ast = [Management.Automation.Language.Parser]::ParseFile($fixture, [ref]$null, [ref]$null)
+  $outer = @($ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] })
+  if ($outer.Count -ne 1) { throw 'expected one ordinary fixture body' }
+  $setup = @($outer[0].Body.Statements | Where-Object {
+    ($_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+      $_.Left.Extent.Text -cin @('$playwrightDirectory', '$vitestDirectory', '$probeScriptA', '$probeScriptB')) -or
+    $_.Extent.Text.StartsWith('Initialize-AdmissionGitFixtures ', [StringComparison]::Ordinal) -or
+    $_.Extent.Text.StartsWith('New-Item -ItemType Directory -Path $playwrightDirectory,', [StringComparison]::Ordinal) -or
+    $_.Extent.Text.StartsWith('Set-Content -LiteralPath $probeScriptA ', [StringComparison]::Ordinal) -or
+    $_.Extent.Text.StartsWith('Set-Content -LiteralPath $probeScriptB ', [StringComparison]::Ordinal)
+  })
+  if ($setup.Count -ne 8) { throw 'expected actual initializer, probe paths, directory creation and both writes' }
+  $probeSource = 'inert browser probe sentinel'
+  . ([scriptblock]::Create(($setup.Extent.Text -join "`n")))
+  foreach ($probe in @($probeScriptA, $probeScriptB)) {
+    if ([IO.File]::ReadAllText($probe).TrimEnd("`r", "`n") -cne $probeSource) { throw 'real setup lost browser probe contents' }
+  }
   $derived = Join-Path $container 'derived-lane'
   Invoke-RepoGit $laneA @('worktree', 'add', '-b', 'codex/derived-lane', $derived) | Out-Null
   $role = Get-FixtureFunction $fixture 'Test-PreloadRoleEligibility'
