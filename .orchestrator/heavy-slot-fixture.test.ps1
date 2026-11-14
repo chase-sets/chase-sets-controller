@@ -111,3 +111,22 @@ try {
   if (Test-Path $bindingTemp) { Remove-Item -LiteralPath $bindingTemp -Recurse -Force }
 }
 Write-Output 'PASS current-binding fixtures: eight original blobs, actual seven-file copy, exact raw bytes, missing/mutated/foreign input refusals; native execution NOT_RUN'
+
+$packageWrites = @($ast.FindAll({param($n)
+  $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+  $n.Member.Value -ceq 'WriteAllText' -and $n.Arguments.Count -eq 3 -and
+  $n.Arguments[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and
+  $n.Arguments[1].Value.Contains('"name":"heavy-slot-fixture"')
+}, $true))
+Assert-Fixture ($packageWrites.Count -eq 1) 'one actual gate-matrix package fixture'
+$matrixPackage = $packageWrites[0].Arguments[1].Value | ConvertFrom-Json
+$pin = @($candidateAst.FindAll({param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+  $n.Left.Extent.Text -ceq '$canonicalRecordScriptExpected'
+}, $true))
+Assert-Fixture ($pin.Count -eq 1) 'one production canonical-record command pin'
+$expectedCommand = $pin[0].Right.Expression.Value
+Assert-Fixture ($expectedCommand -and $matrixPackage.scripts.'test:canonical-record' -ceq $expectedCommand) 'ordinary matrix fixture satisfies the unchanged production command pin'
+$matrixPackage.scripts.PSObject.Properties.Remove('test:canonical-record')
+Assert-Fixture ($matrixPackage.scripts.'test:canonical-record' -cne $expectedCommand) 'missing canonical command fails the fixture contract'
+Write-Output 'PASS ordinary gate-matrix package matches unchanged canonical-record script pin; missing command refuses'

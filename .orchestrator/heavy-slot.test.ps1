@@ -1713,7 +1713,7 @@ process.exit(0);
 Copy-Item -LiteralPath $childFixture -Destination (Join-Path $worktree "scripts/playwright.js")
 [IO.File]::WriteAllText((Join-Path $worktree "scripts/run-e2e-suite.mjs"), 'import "./fixture.cjs";', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $worktree "scripts/run-workspaces.mjs"), 'import "./child.cjs";', [Text.UTF8Encoding]::new($false))
-[IO.File]::WriteAllText((Join-Path $worktree "package.json"), '{"name":"heavy-slot-fixture","private":true,"scripts":{"test:e2e:suite":"node ./scripts/run-e2e-suite.mjs","suite:alias":"pnpm run suite:direct","suite:direct":"node ./scripts/run-e2e-suite.mjs"}}', [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $worktree "package.json"), '{"name":"heavy-slot-fixture","private":true,"scripts":{"test:e2e:suite":"node ./scripts/run-e2e-suite.mjs","suite:alias":"pnpm run suite:direct","suite:direct":"node ./scripts/run-e2e-suite.mjs","test:canonical-record":"vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false"}}', [Text.UTF8Encoding]::new($false))
 Invoke-FixtureGit @("init", "--initial-branch=codex/heavy-slot-fixture") | Out-Null
 Invoke-FixtureGit @("config", "user.name", "Heavy Slot Test") | Out-Null
 Invoke-FixtureGit @("config", "user.email", "heavy-slot-test@example.invalid") | Out-Null
