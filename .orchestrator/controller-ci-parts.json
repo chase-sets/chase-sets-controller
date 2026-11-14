@@ -1583,6 +1583,18 @@
           ]
         },
         {
+          "offset": 1862,
+          "remove": 1,
+          "original": ["      Remove-Item -LiteralPath $slotLock -Recurse -Force"],
+          "replacement": ["      Remove-Item -LiteralPath $slotLock -Recurse -Force; if ($slot -ceq 'controller') { Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'controller-owner-queue-handoff'; $fixtureQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($fixtureQueue.tickets).Count -eq 0) 'fixture controller-owner handoff retires the original command ticket' }"]
+        },
+        {
+          "offset": 2176,
+          "remove": 1,
+          "original": [""],
+          "replacement": ["  $precursorHandoff=Invoke-PrecursorProcess 'fail-closed-guard-evidence' $liveOut; Assert-True ($precursorHandoff.exitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $worktree $liveOut)) -and -not(Test-Path -LiteralPath $lock)) 'precursor live-owner handoff completes the original command through normal admission'; $precursorQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($precursorQueue.tickets).Count -eq 0) 'precursor live-owner handoff retires the original command ticket'"]
+        },
+        {
           "offset": 362,
           "remove": 2,
           "original": [

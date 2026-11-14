@@ -2245,7 +2245,7 @@ catch { $_.Exception.Message; exit 1 }
         Assert-FixtureCompleted $result $evidence 'beside-live-platform-owner'
       }
       Assert-True ([IO.File]::ReadAllText((Join-Path $slotLock 'owner.json')) -ceq $foreignRaw) "foreign $slot owner stays byte-exact"
-      Remove-Item -LiteralPath $slotLock -Recurse -Force
+      Remove-Item -LiteralPath $slotLock -Recurse -Force; if ($slot -ceq 'controller') { Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'controller-owner-queue-handoff'; $fixtureQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($fixtureQueue.tickets).Count -eq 0) 'fixture controller-owner handoff retires the original command ticket' }
     }
 
     # AC2: native failure exit, cancellation and HEAD movement after acquisition.
@@ -2560,7 +2560,7 @@ try {
     -not (Test-Path -LiteralPath (Join-Path $worktree $liveOut)) -and
     (Get-Content -LiteralPath $ownerPath -Raw) -ceq $precursorLiveRaw) "live owner exits 73 with no child/artifact and preserves owner byte-exact"
   Remove-DisposableLock
-
+  $precursorHandoff=Invoke-PrecursorProcess 'fail-closed-guard-evidence' $liveOut; Assert-True ($precursorHandoff.exitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $worktree $liveOut)) -and -not(Test-Path -LiteralPath $lock)) 'precursor live-owner handoff completes the original command through normal admission'; $precursorQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($precursorQueue.tickets).Count -eq 0) 'precursor live-owner handoff retires the original command ticket'
   $failureOut = ".orchestrator/artifacts/child-failure.json"
   $failure = Invoke-Precursor "fail-closed-guard-evidence" $failureOut
   Assert-True ($failure.exitCode -eq 29 -and -not (Test-Path -LiteralPath (Join-Path $worktree $failureOut)) -and

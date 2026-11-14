@@ -461,7 +461,7 @@ function Invoke-ReaderInventory {
     'product-census-budget.test.ps1'=@(396,455,509,548)
     # Source-conservation checker reads a synthetic ownership path for its
     # static contract; it is not a production owner publication reader.
-    'controller-ci-coverage.check.ps1'=@(143)
+    'controller-ci-coverage.check.ps1'=@(156)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
