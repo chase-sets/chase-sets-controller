@@ -7,11 +7,12 @@ Runs UPDATE_MAIN_FROM_ORIGIN.ps1 and appends timestamped output to a log file.
 
 [CmdletBinding()]
 param(
-  [Parameter(DontShow)][string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+  [Parameter(DontShow)][string]$ProjectRoot,
   [Parameter(DontShow)][string]$MutexName = 'Global\ChaseSetsMainSync'
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 $ScriptPath = Join-Path $ProjectRoot "UPDATE_MAIN_FROM_ORIGIN.ps1"
 $LogPath = Join-Path $ProjectRoot '.orchestrator/main-sync.log'
 $StatusPath = Join-Path $ProjectRoot '.orchestrator/main-sync-status.json'

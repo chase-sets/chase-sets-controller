@@ -1,15 +1,21 @@
 [CmdletBinding()]
-param([string]$SourcePath = (Join-Path $PSScriptRoot 'run-main-sync.ps1'), [switch]$FailureOnly)
+param([string]$SourcePath, [switch]$FailureOnly)
 $ErrorActionPreference = 'Stop'
+if (-not $SourcePath) { $SourcePath = Join-Path $PSScriptRoot 'run-main-sync.ps1' }
 $root = Join-Path ([IO.Path]::GetTempPath()) ('main-sync-test-' + [guid]::NewGuid().ToString('N'))
 $powershell = (Get-Command powershell.exe -ErrorAction Stop).Source
 function Assert-Sync($Value, [string]$Message) { if (-not $Value) { throw "ASSERTION FAILED: $Message" } }
 function Git([string]$Directory, [string[]]$Arguments) {
+  $ErrorActionPreference = 'Continue'
   $result = @(& git.exe -C $Directory @Arguments 2>&1)
   if ($LASTEXITCODE) { throw "fixture git failed: $($result -join ' ')" }
   return ($result -join "`n")
 }
-function Run-Sync([string]$Probe = 'empty') {
+function Run-Sync([string]$Probe = 'empty', [switch]$DefaultProjectRoot) {
+  if ($DefaultProjectRoot) {
+    $output = @(& $powershell -NoProfile -NonInteractive -File $source -MutexName "main-sync-test-$([guid]::NewGuid().ToString('N'))" 2>&1)
+    return [pscustomobject]@{code=$LASTEXITCODE; output=($output -join "`n")}
+  }
   $wrapper = Join-Path $root 'runner.ps1'
   $mock = switch ($Probe) {
     'busy' { "function Get-CimInstance { [pscustomobject]@{ProcessId=123} }" }
@@ -30,6 +36,8 @@ try {
   $source = Join-Path $root '.orchestrator/run-main-sync.ps1'
   Copy-Item -LiteralPath $SourcePath -Destination $source
   if ($FailureOnly) {
+    $failureMain = Join-Path $root 'main'; [void][IO.Directory]::CreateDirectory($failureMain)
+    Git $failureMain @('init','--initial-branch=main') | Out-Null
     [IO.File]::WriteAllText((Join-Path $root 'UPDATE_MAIN_FROM_ORIGIN.ps1'), 'exit 17')
     $r = Run-Sync
     Assert-Sync ($r.code -eq 17) "sync failure reaches task: expected17 actual=$($r.code)"
@@ -83,11 +91,18 @@ exit $LASTEXITCODE
   $statusPath = Join-Path $root '.orchestrator/main-sync-status.json'
   $status = Get-Content $statusPath -Raw | ConvertFrom-Json
   Assert-Sync ($status.outcome -ceq 'success' -and $status.lastSuccessAt -and -not $status.lastError) 'successful sync records timestamp and clears last error'
+  Push-Location $seed
+  try { $r = Run-Sync -DefaultProjectRoot } finally { Pop-Location }
+  $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+  Assert-Sync ($r.code -eq 0 -and $status.outcome -ceq 'success' -and $status.lastSuccessAt -and -not $status.lastError -and (Git $main @('rev-parse','HEAD')) -ceq $second) 'Windows PowerShell 5.1 production launch resolves project root without override from unrelated cwd'
   $lastSuccess = $status.lastSuccessAt
   [IO.File]::WriteAllText($updater, "[Console]::Error.WriteLine('synthetic sync failure'); exit 17")
   $r = Run-Sync
   $status = Get-Content $statusPath -Raw | ConvertFrom-Json
   Assert-Sync ($r.code -eq 17 -and $status.outcome -ceq 'failed' -and $status.lastError -match 'code 17' -and $status.lastSuccessAt -ceq $lastSuccess) 'child failure reaches scheduled-task exit and preserves last success with error'
+  $r = Run-Sync -DefaultProjectRoot
+  $status = Get-Content $statusPath -Raw | ConvertFrom-Json
+  Assert-Sync ($r.code -eq 17 -and $status.outcome -ceq 'failed' -and $status.lastError -match 'code 17' -and $status.lastSuccessAt -ceq $lastSuccess) 'Windows PowerShell 5.1 production launch without override preserves exact child failure and status'
   Assert-Sync ((Get-Content $statusPath).Count -eq 1) 'status is one-line JSON'
   Assert-Sync ((Get-Content (Join-Path $root '.orchestrator/main-sync.log') -Raw).Contains('synthetic sync failure')) 'actual child error remains in log'
   $vbs = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'run-main-sync.vbs'))
