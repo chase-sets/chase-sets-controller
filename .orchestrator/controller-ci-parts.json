@@ -1443,7 +1443,7 @@
             "  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $guardRoot",
             "  $guardCopy = Join-Path $guardRoot 'invoke-heavy-verifier.ps1'",
             "  $runner = Join-Path $guardRoot 'run.ps1'",
-            "  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')",
+            "  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')",
             "  $containerRoot = $container",
             "  $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'",
             "  function Invoke-HostHeavyRoute([hashtable]$Extra = @{}, [string]$SourceOverride = $guardCopy) {",
@@ -1581,6 +1581,54 @@
           "replacement": [
             "  $orphanHandoff=Join-Path $root 'orphan-queue-handoff.txt'; Assert-True ((Invoke-Guard 'orphan-queue-handoff' @('-NoProfile','-File',$markerScript,$orphanHandoff,'0')) -eq 0 -and (Test-Path -LiteralPath $orphanHandoff) -and -not(Test-Path -LiteralPath $lock)) 'orphan preceding claimant completes normal admission before wrapper launch'; $orphanQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($orphanQueue.tickets).Count -eq 0) 'orphan queue handoff retires the preceding claimant ticket'; Write-Host 'PASS orphan queue handoff: prior claimant admitted; tickets=0; no queue deletion or bypass'"
           ]
+        },
+        {
+          "offset": 362,
+          "remove": 2,
+          "original": [
+            "  Assert-True ($Source -match '(?s)Parameter\\(ParameterSetName\\s*=\\s*\"Gate\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ControllerBattery\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"Attach\",\\s*DontShow\\)\\]\\s*\\[string\\]\\$CommandPath') `",
+            "    \"CommandPath is not confined to the Gate parameter set\""
+          ],
+          "replacement": [
+            "  Assert-True ($Source -match '(?s)Parameter\\(ParameterSetName\\s*=\\s*\"Gate\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ControllerBattery\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"Attach\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ManifestReplay\",\\s*DontShow\\)\\]\\s*\\[string\\]\\$CommandPath') `",
+            "    \"CommandPath must expose only Gate, ControllerBattery, Attach and rejection-only ManifestReplay seams\""
+          ]
+        },
+        {
+          "offset": 1568,
+          "remove": 1,
+          "original": [
+            "  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')"
+          ],
+          "replacement": [
+            "  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')"
+          ]
+        },
+        {
+          "offset": 2056,
+          "remove": 1,
+          "original": [
+            "  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match \"ValidateSet\" -and"
+          ],
+          "replacement": [
+            "  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match 'heavy-verifier: invalid closed route value' -and"
+          ]
+        },
+        {
+          "offset": 2568,
+          "remove": 1,
+          "original": [
+            "  Assert-True ($bypassFailed -and \"$bypassOutput\" -match \"ValidateSet\") \"unsupported gate bypass is refused\""
+          ],
+          "replacement": [
+            "  Assert-True ($bypassFailed -and \"$bypassOutput\" -match '^heavy-verifier: invalid closed route value$') \"unsupported gate bypass is refused\""
+          ]
+        },
+        {
+          "offset": 988,
+          "remove": 1,
+          "original": ["    return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }"],
+          "replacement": ["    if ($_.Exception -is [Management.Automation.ParameterBindingException]) { return [pscustomobject]@{ exitCode = 1; output = ('parameter set refusal: ' + $_.FullyQualifiedErrorId + \"`n\" + $_.Exception.Message) } }; return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }"]
         }
       ]
     },

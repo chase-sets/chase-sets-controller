@@ -471,8 +471,8 @@ function Assert-PrecursorAdmissionSurface([string]$Source) {
     Assert-True ($Source -match ('"' + [regex]::Escape($producer) + '"\s*=\s*\[ordered\]')) `
       "closed producer mapping is absent: $producer"
   }
-  Assert-True ($Source -match '(?s)Parameter\(ParameterSetName\s*=\s*"Gate",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"ControllerBattery",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"Attach",\s*DontShow\)\]\s*\[string\]\$CommandPath') `
-    "CommandPath is not confined to the Gate parameter set"
+  Assert-True ($Source -match '(?s)Parameter\(ParameterSetName\s*=\s*"Gate",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"ControllerBattery",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"Attach",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"ManifestReplay",\s*DontShow\)\]\s*\[string\]\$CommandPath') `
+    "CommandPath must expose only Gate, ControllerBattery, Attach and rejection-only ManifestReplay seams"
   Assert-True ($Source -match 'controller precursor authoritative output already exists' -and
     $Source -match 'succeeded without its required safe output artifact') `
     "precursor create-once output contract is incomplete"
@@ -1158,7 +1158,7 @@ function Invoke-Precursor([string]$Producer, [string]$Output, [hashtable]$Extra 
     $observed = (& $guard @parameters 2>&1 | Out-String).Trim()
     return [pscustomobject]@{ exitCode = $LASTEXITCODE; output = $observed }
   } catch {
-    return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }
+    if ($_.Exception -is [Management.Automation.ParameterBindingException]) { return [pscustomobject]@{ exitCode = 1; output = ('parameter set refusal: ' + $_.FullyQualifiedErrorId + "`n" + $_.Exception.Message) } }; return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }
   }
 }
 function Read-PrecursorArtifact([string]$RelativePath) {
@@ -1790,7 +1790,7 @@ exit ([int]$(if ($env:HV_HOST_EXIT) { $env:HV_HOST_EXIT } else { 0 }))
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $guardRoot
   $guardCopy = Join-Path $guardRoot 'invoke-heavy-verifier.ps1'
   $runner = Join-Path $guardRoot 'run.ps1'
-  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')
+  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')
   $containerRoot = $container
   $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'
   function Invoke-HostHeavyRoute([hashtable]$Extra = @{}, [string]$SourceOverride = $guardCopy) {
@@ -1951,7 +1951,7 @@ function Test-ControllerFixtureEquivalence {
   [IO.File]::WriteAllText($fixtureGuard, (Get-FixtureMutantSource (Get-GuardSource)))
   $fixtureRunner = Join-Path $fixtureGuardRoot 'run.ps1'
   # An uncaught refusal still exits 1; its message stays unwrapped for matching.
-  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')
+  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')
   $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'
   $platformLock = Join-Path $orchestrator 'verify-lock.d'
   $fixtureBody = Join-Path $root 'fixture-route-body.json'
@@ -2440,7 +2440,7 @@ try {
   # are all outside the ControllerPrecursor parameter set.
   $unknownOut = ".orchestrator/artifacts/unknown-producer.json"
   $unknownProducer = Invoke-Precursor "not-a-producer" $unknownOut
-  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match "ValidateSet" -and
+  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match 'heavy-verifier: invalid closed route value' -and
     -not (Test-Path -LiteralPath (Join-Path $worktree $unknownOut))) "unknown precursor producer is rejected by the closed allowlist"
   $wrongScenarioOut = ".orchestrator/artifacts/wrong-scenario.json"
   $wrongScenario = Invoke-Precursor "fail-closed-guard-evidence" $wrongScenarioOut @{ Scenario = "All" }
@@ -2952,7 +2952,7 @@ try {
     -not (Test-Path -LiteralPath $lock)) "noncanonical worktree path refuses before body and owner creation"
   $bypassFailed = $false; $bypassOutput = $null
   try { & $guard -Gate "not-a-heavy-gate" -Worktree $worktree -Lane "lane-bypass" -Branch "codex/test" -ClaimedHead $currentFixtureHead -ContainerRoot $container } catch { $bypassFailed = $true; $bypassOutput = $_.Exception.Message }
-  Assert-True ($bypassFailed -and "$bypassOutput" -match "ValidateSet") "unsupported gate bypass is refused"
+  Assert-True ($bypassFailed -and "$bypassOutput" -match '^heavy-verifier: invalid closed route value$') "unsupported gate bypass is refused"
 
   $freshRaceA = Join-Path $root "fresh-race-a.txt"
   $freshRaceB = Join-Path $root "fresh-race-b.txt"

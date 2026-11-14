@@ -33,6 +33,19 @@ $conservationRetirements=@{
     'HashtableAst:@{name=''code-exclusion-dropped'';file=''routing-data.ps1'';case=''capacity-roles'';old="    if (`$role -ceq ''implementation'') { return ''code'' }`n    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }";new="    if (`$role -ceq ''implementation'') { return `$null }`n    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }"}',
     'HashtableAst:@{name=''brief-authors-merged'';file=''routing-data.ps1'';case=''capacity-roles'';old="    if (`$role -ceq ''planning'') { return ''brief'' }`n    if (`$role -ceq ''review'') { return `$null }";new="    if (`$role -ceq ''planning'') { return ''code'' }`n    if (`$role -ceq ''review'') { return `$null }"}'
   )
+  # Replay moved scalar validation into its early closed-value guard and added a rejection-only command seam.
+  # Retire only these exact obsolete diagnostics; full reconstruction binds their replacements.
+  'invoke-heavy-verifier.test.ps1'=@(
+    ('CommandAst:Assert-True ($Source -match ''(?s)Parameter\(ParameterSetName\s*=\s*"Gate",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"ControllerBattery",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"Attach",\s*DontShow\)\]\s*\[string\]\$CommandPath'') `' + "`n" + '    "CommandPath is not confined to the Gate parameter set"'),
+    ('BinaryExpressionAst:$Source -match ''(?s)Parameter\(ParameterSetName\s*=\s*"Gate",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"ControllerBattery",\s*DontShow\)\]\s*\[Parameter\(ParameterSetName\s*=\s*"Attach",\s*DontShow\)\]\s*\[string\]\$CommandPath'''),
+    ('CommandAst:Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match "ValidateSet" -and' + "`n" + '    -not (Test-Path -LiteralPath (Join-Path $worktree $unknownOut))) "unknown precursor producer is rejected by the closed allowlist"'),
+    ('BinaryExpressionAst:$unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match "ValidateSet" -and' + "`n" + '    -not (Test-Path -LiteralPath (Join-Path $worktree $unknownOut))'),
+    ('BinaryExpressionAst:$unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match "ValidateSet"'),
+    ('BinaryExpressionAst:$unknownProducer.output -match "ValidateSet"'),
+    ('CommandAst:Assert-True ($bypassFailed -and "$bypassOutput" -match "ValidateSet") "unsupported gate bypass is refused"'),
+    ('BinaryExpressionAst:$bypassFailed -and "$bypassOutput" -match "ValidateSet"'),
+    ('BinaryExpressionAst:"$bypassOutput" -match "ValidateSet"')
+  )
 }
 function Assert-Conservation($Manifest,$Overrides=@{}) {
   $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
