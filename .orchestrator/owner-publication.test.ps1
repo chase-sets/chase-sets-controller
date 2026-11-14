@@ -438,7 +438,7 @@ function Invoke-ReaderInventory {
   $fixtures=@{
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
-    'heavy-admission-preload.test.ps1'=@(165,620,649,757,1051,1057,1150,1207,1354,1401,1941,1945)
+    'heavy-admission-preload.test.ps1'=@(176,629,658,766,1060,1066,1159,1216,1363,1410,1950,1954)
     'heavy-slot.test.ps1'=@(92,95,118,1909,2235,2412)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.

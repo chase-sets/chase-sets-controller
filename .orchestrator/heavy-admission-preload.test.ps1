@@ -101,6 +101,17 @@ function Invoke-RepoGit([string]$Worktree, [string[]]$Arguments) {
   }
   return ($output -join "`n").Trim()
 }
+function Initialize-AdmissionGitFixtures([string]$Container, [string[]]$Lanes) {
+  $main = Join-Path $Container 'main'
+  [void][IO.Directory]::CreateDirectory($main)
+  Invoke-RepoGit $main @('init', '--initial-branch=synthetic-passthrough') | Out-Null
+  Invoke-RepoGit $main @('config', 'user.name', 'Heavy Admission Test') | Out-Null
+  Invoke-RepoGit $main @('config', 'user.email', 'heavy-admission-test@example.invalid') | Out-Null
+  Invoke-RepoGit $main @('commit', '--allow-empty', '-m', 'admission registry fixture') | Out-Null
+  foreach ($lane in $Lanes) {
+    Invoke-RepoGit $main @('worktree', 'add', '-b', "codex/$(Split-Path -Leaf $lane)", $lane) | Out-Null
+  }
+}
 function Assert-DisposableRoot {
   $resolved = [IO.Path]::GetFullPath($root).TrimEnd("\", "/")
   Assert-True ($resolved.StartsWith($systemTemp + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) "test root stays below system temp"
@@ -583,15 +594,13 @@ $packageJson = @{
     "dev:e2e:probe:nested" = "pnpm run dev:e2e:probe:alias"
   }
 } | ConvertTo-Json -Depth 4
+Initialize-AdmissionGitFixtures $container @($laneA, $laneB)
 Set-Content -LiteralPath (Join-Path $laneA "package.json") -Value $packageJson
 Set-Content -LiteralPath (Join-Path $laneB "package.json") -Value $packageJson
 foreach ($fixture in @(
     [pscustomobject]@{ Worktree = $laneA; Branch = "codex/lane-a" },
     [pscustomobject]@{ Worktree = $laneB; Branch = "codex/lane-b" }
   )) {
-  Invoke-RepoGit $fixture.Worktree @("init", "--initial-branch=$($fixture.Branch)") | Out-Null
-  Invoke-RepoGit $fixture.Worktree @("config", "user.name", "Heavy Admission Test") | Out-Null
-  Invoke-RepoGit $fixture.Worktree @("config", "user.email", "heavy-admission-test@example.invalid") | Out-Null
   Invoke-RepoGit $fixture.Worktree @("add", "--", "package.json") | Out-Null
   Invoke-RepoGit $fixture.Worktree @("commit", "-m", "admission fixture") | Out-Null
 }
@@ -604,9 +613,9 @@ function Test-DerivedAdmission {
   $mainFixture = Join-Path $container "main"
   $outsideFixture = "$container-sibling"
   $nonGitFixture = Join-Path $container "non-git"
-  New-Item -ItemType Directory -Path $derivedDirectory, $mainFixture, $outsideFixture, $nonGitFixture | Out-Null
+  New-Item -ItemType Directory -Path $derivedDirectory, $outsideFixture, $nonGitFixture | Out-Null
   Invoke-RepoGit $laneA @("worktree", "add", "-b", "codex/derived-lane", $derivedLane) | Out-Null
-  foreach ($directory in @($mainFixture, $outsideFixture)) {
+  foreach ($directory in @($outsideFixture)) {
     Invoke-RepoGit $directory @("init", "--initial-branch=synthetic-passthrough") | Out-Null
   }
   Set-Content -LiteralPath $derivedObserver -Value @'
@@ -1108,8 +1117,8 @@ $parameters = $fixture.Parameters
 
 function Test-PreloadRoleEligibility {
   $tree=Join-Path $container 'review-preload'
-  $clone=@(& git clone --quiet $laneA $tree 2>&1)
-  Assert-True ($LASTEXITCODE -eq 0) 'role preload fixture clone'
+  Invoke-RepoGit $laneA @('worktree', 'add', '-b', 'codex/review-preload', $tree) | Out-Null
+  Assert-True ($LASTEXITCODE -eq 0) 'registered role preload fixture'
   $head=Invoke-RepoGit $tree @('rev-parse','HEAD')
   $branch=Invoke-RepoGit $tree @('branch','--show-current')
   $launchId=[guid]::NewGuid().ToString()
