@@ -3881,7 +3881,7 @@ Invoke-HeavyAdmissionCensus {
     $coordinationMutex.Dispose()
   }
 }
-if ($script:heavyAdmissionQuitAfterQuarantine) { return }
+if ($script:heavyAdmissionQuitAfterQuarantine) { exit 0 }
 if ($isManifestReplay) { exit (Invoke-ManifestReplay) }
 
 $exitCode = 1
