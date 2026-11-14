@@ -75,6 +75,11 @@ if (-not $alternatePnpm) {
   $alternatePnpm = Join-Path $root 'alternate/pnpm.exe'
   [void][IO.Directory]::CreateDirectory((Split-Path -Parent $alternatePnpm))
   Copy-Item -LiteralPath $nativePnpm -Destination $alternatePnpm
+  # Current native pnpm loads its bundled runtime beside the executable.
+  foreach ($relative in @('dist', 'package.json')) {
+    $companion = Join-Path (Split-Path -Parent $nativePnpm) $relative
+    if (Test-Path -LiteralPath $companion) { Copy-Item -LiteralPath $companion -Destination (Split-Path -Parent $alternatePnpm) -Recurse }
+  }
 }
 Copy-Item -LiteralPath $preloadSource -Destination $preload
 Copy-Item -LiteralPath $clientSource -Destination $client

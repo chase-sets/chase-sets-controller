@@ -41,6 +41,39 @@ try {
     $failed = $true
   }
   if (-not $failed) { throw 'missing native executable accepted' }
+  $preloadPath = Join-Path $PSScriptRoot 'heavy-admission-preload.test.ps1'
+  $parseErrors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseFile($preloadPath, [ref]$null, [ref]$parseErrors)
+  $fallback = @($ast.FindAll({ param($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '-not $alternatePnpm'
+  }, $true))
+  if ($parseErrors.Count -ne 0 -or $fallback.Count -ne 1) { throw 'native relocation fallback must be a unique parsed fixture block' }
+  $body = $fallback[0].Clauses[0].Item2.Extent.Text
+  $copyFixture = [scriptblock]::Create($body.Substring(1, $body.Length - 2))
+  function Invoke-InertRelocation([scriptblock]$Copy, [string]$DestinationRoot) {
+    & {
+      param($copyBody, $root, $nativePnpm)
+      $alternatePnpm = $null
+      . $copyBody
+      return $alternatePnpm
+    } $Copy $DestinationRoot $binary
+  }
+  $standalone = Invoke-InertRelocation $copyFixture (Join-Path $root 'standalone-copy')
+  if ([IO.File]::ReadAllText($standalone) -cne 'not an executable' -or $standalone -ceq $binary) { throw 'self-contained native fixture relocation changed executable bytes or path' }
+  $bundleRoot = Split-Path -Parent $binary
+  [void][IO.Directory]::CreateDirectory((Join-Path $bundleRoot 'dist/nested'))
+  $companions = @('dist/pnpm.mjs', 'dist/nested/resource.txt', 'package.json')
+  foreach ($relative in $companions) { [IO.File]::WriteAllText((Join-Path $bundleRoot $relative), "inert companion $relative") }
+  $bundled = Invoke-InertRelocation $copyFixture (Join-Path $root 'bundled-copy')
+  foreach ($relative in @('pnpm.exe') + $companions) {
+    if ([IO.File]::ReadAllText((Join-Path (Split-Path -Parent $bundled) $relative)) -cne [IO.File]::ReadAllText((Join-Path $bundleRoot $relative))) { throw "native bundled relocation changed or omitted $relative" }
+  }
+  $companionCopy = @($fallback[0].FindAll({ param($node) $node -is [Management.Automation.Language.ForEachStatementAst] }, $true))
+  if ($companionCopy.Count -ne 1) { throw 'native companion-copy mutant requires one parsed loop' }
+  $mutantBody = $body.Replace($companionCopy[0].Extent.Text, '')
+  $mutant = Invoke-InertRelocation ([scriptblock]::Create($mutantBody.Substring(1, $mutantBody.Length - 2))) (Join-Path $root 'exe-only-mutant')
+  if (-not (Test-Path -LiteralPath $mutant) -or (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $mutant) 'dist/pnpm.mjs'))) { throw 'exe-only relocation mutant did not reproduce missing bundled runtime' }
+  Write-Output 'PASS native relocation keeps exact executable and optional bundled runtime recursively; exe-only omission mutant RED; inert files only'
   $workflow = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/controller-battery.yml')).Replace("`r`n", "`n")
   $setups = [regex]::Matches($workflow, '(?m)^      - (?:id: native_pnpm\n        )?uses: pnpm/action-setup@[^\n]+\n        with:\n(?<inputs>(?:          [^\n]+\n)+)')
   if ($setups.Count -ne 4) { throw 'expected separate native and Node-hosted pnpm in plan and shard' }
