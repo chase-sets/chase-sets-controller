@@ -135,7 +135,7 @@ $ErrorActionPreference='Stop'
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($Verifier,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'native error copied verifier must parse'}
-foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess')},$false)){
+foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess','Invoke-HeavyAdmissionCensus','Enter-HeavyAdmissionPriority','Exit-HeavyAdmissionPriority')},$false)){
   . ([scriptblock]::Create($definition.Extent.Text))
 }
 $cleanup=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$isNativeDb -and $child -and -not $child.HasExited'},$true))
@@ -1492,7 +1492,7 @@ function Test-NativeRoleAdmission {
     [IO.File]::WriteAllText($inputPath,($Parameters | ConvertTo-Json -Depth 8))
     $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
     $start.UseShellExecute=$false; $start.CreateNoWindow=$true
-    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.Environment['CHASE_SETS_CONTROLLER_ROOT']=$nativeTree
     foreach($arg in @('-NoProfile','-File',$roleRunner,$nativeGuard,$inputPath)){[void]$start.ArgumentList.Add($arg)}
     $child=[Diagnostics.Process]::Start($start)
     $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()

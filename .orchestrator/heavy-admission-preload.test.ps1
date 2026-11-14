@@ -11,22 +11,52 @@ $guardSource = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 $launcherSource = Join-Path $PSScriptRoot "heavy-admission-holder-launcher.cjs"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
+$systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
+$root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
+$privateTemp = Join-Path $root "fixture-temp"
+function Assert-True($Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
+    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
+    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
+      [void]$Start.Environment.Remove("NODE_OPTIONS")
+    } else {
+      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
+    }
+  }
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
+    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
+    if ([string]::IsNullOrEmpty($originalScriptShell)) {
+      [void]$Start.Environment.Remove("npm_config_script_shell")
+    } else {
+      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
+    }
+  }
+  foreach ($name in @(
+      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_SLOT_ID",
+      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
+    )) {
+    [void]$Start.Environment.Remove($name)
+  }
+  $Start.Environment["TEMP"] = $privateTemp
+  $Start.Environment["TMP"] = $privateTemp
+}
+. (Join-Path $PSScriptRoot 'native-pnpm-test-support.ps1')
 $pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
   Where-Object { $_.Source -like "*\pnpm.CMD" } |
   Select-Object -First 1
-$pnpmCommandText = Get-Content -LiteralPath $pnpmCommandShim.Source -Raw
-if ($pnpmCommandText -notmatch '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') {
-  throw "unable to resolve the active pnpm.CMD direct binary"
-}
-$nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmCommandShim.Source) $Matches.relative))
-$alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction Stop |
+$nativePnpm = Resolve-NativePnpmFixture (Get-NativePnpmFixtureShim $pnpmCommandShim.Source)
+$alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction SilentlyContinue |
   Where-Object { -not [string]::Equals([IO.Path]::GetFullPath($_.Source), $nativePnpm, [StringComparison]::OrdinalIgnoreCase) } |
   Select-Object -First 1 -ExpandProperty Source
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-$systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
-$root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
-$privateTemp = Join-Path $root "fixture-temp"
 $container = Join-Path $root "container with spaces"
 $orchestrator = Join-Path $container ".orchestrator"
 $preload = Join-Path $orchestrator "heavy-admission-preload.cjs"
@@ -41,6 +71,11 @@ $laneB = Join-Path $container "lane-b"
 $startedProcesses = [Collections.Generic.List[object]]::new()
 $descendantRelease = $null
 New-Item -ItemType Directory -Path $orchestrator, $laneA, $laneB, $privateTemp | Out-Null
+if (-not $alternatePnpm) {
+  $alternatePnpm = Join-Path $root 'alternate/pnpm.exe'
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $alternatePnpm))
+  Copy-Item -LiteralPath $nativePnpm -Destination $alternatePnpm
+}
 Copy-Item -LiteralPath $preloadSource -Destination $preload
 Copy-Item -LiteralPath $clientSource -Destination $client
 Copy-Item -LiteralPath $guardSource -Destination $guard
@@ -54,9 +89,6 @@ foreach ($dependency in @("heavy-nested-owner.cs", "heavy-nested-client.cjs", "d
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $orchestrator $dependency)
 }
 
-function Assert-True($Condition, [string]$Message) {
-  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
-}
 function Invoke-RepoGit([string]$Worktree, [string[]]$Arguments) {
   $output = @(& git -C $Worktree @Arguments 2>&1)
   if ($LASTEXITCODE -ne 0) {
@@ -146,36 +178,6 @@ function Stop-ExactProcess($Identity) {
   $candidate = Get-Process -Id ([int]$Identity.pid) -ErrorAction Stop
   Stop-Process -InputObject $candidate -Force
   $candidate.WaitForExit()
-}
-function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
-    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
-    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
-      [void]$Start.Environment.Remove("NODE_OPTIONS")
-    } else {
-      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
-    }
-  }
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
-    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
-    if ([string]::IsNullOrEmpty($originalScriptShell)) {
-      [void]$Start.Environment.Remove("npm_config_script_shell")
-    } else {
-      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
-    }
-  }
-  foreach ($name in @(
-      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_SLOT_ID",
-      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
-    )) {
-    [void]$Start.Environment.Remove($name)
-  }
-  $Start.Environment["TEMP"] = $privateTemp
-  $Start.Environment["TMP"] = $privateTemp
 }
 function Assert-FreshChildEnvironmentBoundary {
   $admissionNames = @(

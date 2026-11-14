@@ -438,8 +438,8 @@ function Invoke-ReaderInventory {
   $fixtures=@{
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
-    'heavy-admission-preload.test.ps1'=@(128,613,642,750,1044,1050,1143,1200,1347,1394,1914,1918)
-    'heavy-slot.test.ps1'=@(95,98,121,1893,2219,2396)
+    'heavy-admission-preload.test.ps1'=@(160,615,644,752,1046,1052,1145,1202,1349,1396,1916,1920)
+    'heavy-slot.test.ps1'=@(92,95,118,1890,2216,2393)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -447,7 +447,7 @@ function Invoke-ReaderInventory {
     # Complete current-site table for the combined head.  These are fixture
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
-    'long-product-gate.test.ps1'=@(208,215,231,871)
+    'long-product-gate.test.ps1'=@(212,219,235,875)
     'host-heavy-verifier.test.ps1'=@(1277)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)

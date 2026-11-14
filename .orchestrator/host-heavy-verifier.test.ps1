@@ -1379,9 +1379,11 @@ process.exit(Number(process.env.HOST_EXIT || 0));
     Complete (Start-Child $pwsh ($common + @('-Gate', 'verify:test-db'))) 73
   } finally { [IO.File]::WriteAllBytes($manifestPath, $manifestBytes) }
   $pnpmShim = Get-Command pnpm -All -CommandType Application | Where-Object Source -like '*\pnpm.CMD' | Select-Object -First 1
-  $shim = Get-Content $pnpmShim.Source -Raw
-  Assert ($shim -match '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') 'active packaged pnpm shim has its exact executable'
-  $nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmShim.Source) $Matches.relative))
+  . (Join-Path $PSScriptRoot 'native-pnpm-test-support.ps1')
+  $nativeShim = Get-NativePnpmFixtureShim $pnpmShim.Source
+  $shim = Get-Content $nativeShim -Raw
+  Assert ($shim -match '"%~dp0\\(?<relative>[^"]*\\pnpm(?:\.exe)?)"') 'packaged native pnpm shim has its exact executable'
+  $nativePnpm = Resolve-NativePnpmFixture $nativeShim
   $direct = Start-Child $nativePnpm @('run', 'verify:test-db')
   Complete $direct 73
   Assert ($direct.Err.GetAwaiter().GetResult() -match 'use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest') 'unsafe packaged Node diagnostic names canonical entrypoint'

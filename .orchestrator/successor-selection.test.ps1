@@ -166,7 +166,8 @@ try {
   $historicalReceipt=Get-Content $history -Tail 1|ConvertFrom-Json
   $historicalReceipt.model='claude-sonnet-5'
   $historicalReceipt.authorModel='claude-sonnet-5'
-  $historicalReceipt.reviewerAttempt='synthetic-retired-sonnet'
+  Check (-not $historicalReceipt.PSObject.Properties['reviewerAttempt']) 'current PR receipt must not restore retired attempt authority'
+  $historicalReceipt | Add-Member -NotePropertyName reviewerAttempt -NotePropertyValue 'synthetic-retired-sonnet'
   $historicalPath=Join-Path $root 'historical-sonnet-review.jsonl'
   [IO.File]::WriteAllText($historicalPath,($historicalReceipt|ConvertTo-Json -Compress -Depth 20))
   $beforeHash=(Get-FileHash $historicalPath).Hash
