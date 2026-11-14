@@ -1323,6 +1323,16 @@
           ]
         },
         {
+          "offset": 1291,
+          "remove": 1,
+          "original": [
+            "    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true"
+          ],
+          "replacement": [
+            "    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.Environment['CHASE_SETS_CONTROLLER_ROOT']=$nativeTree"
+          ]
+        },
+        {
           "offset": 1342,
           "remove": 0,
           "original": [],

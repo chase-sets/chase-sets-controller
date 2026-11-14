@@ -1492,7 +1492,7 @@ function Test-NativeRoleAdmission {
     [IO.File]::WriteAllText($inputPath,($Parameters | ConvertTo-Json -Depth 8))
     $start=[Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME 'pwsh.exe'))
     $start.UseShellExecute=$false; $start.CreateNoWindow=$true
-    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.Environment['CHASE_SETS_CONTROLLER_ROOT']=$nativeTree
     foreach($arg in @('-NoProfile','-File',$roleRunner,$nativeGuard,$inputPath)){[void]$start.ArgumentList.Add($arg)}
     $child=[Diagnostics.Process]::Start($start)
     $stdout=$child.StandardOutput.ReadToEndAsync(); $stderr=$child.StandardError.ReadToEndAsync()
