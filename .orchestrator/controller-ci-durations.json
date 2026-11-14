@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "controller-ci-durations/v1",
+  "shardCount": 39,
   "records": [
     {
       "identity": "test:cleanup-orphan-worktree-dirs.test.ps1",
@@ -52785,7 +52785,67 @@
       "planSha256": "af5a048d730edfa6191668026d29f30883a4e4bfade02a0f8e2d086f9babe3d0",
       "result": "PASS",
       "exitCode": 0
+    },
+    {
+      "identity": "check:controller-ci-coverage",
+      "elapsedMs": 32466,
+      "recordedAtUtc": "2026-11-14T15:20:48.5121880Z",
+      "sourceSha256": "2db57240c88c93c5786122dbd04e70868b87635a3563e75e1270f4110c2216c8",
+      "sourceSetSha256": "e14989c5ce710c24d11af0e9f4cdcfe203b26f2d43793e09dad76e750f10a56c",
+      "controllerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "checkoutHead": "67c8040c27565af372310575ace015c3959114cc",
+      "runnerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "productSha": "2fc7186f3b8ce366e238ef2ba207f6cc953befae",
+      "runId": "43609444718",
+      "planSha256": "dd8e47200ebfe9ca0d9bce7a2fa905f9a27377aff3f31233b90b638c81b01b95",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "test:run-main-sync.test.ps1",
+      "elapsedMs": 10593,
+      "recordedAtUtc": "2026-11-14T15:20:24.0493550Z",
+      "sourceSha256": "b81925393a0616e78bb22ab79abb93286e9525a0408615d531191613d9b8790a",
+      "sourceSetSha256": "d5b969f0ba2c4be971c80e32f2d1f9548d291499c069554e613ff630518e7ef5",
+      "controllerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "checkoutHead": "67c8040c27565af372310575ace015c3959114cc",
+      "runnerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "productSha": "2fc7186f3b8ce366e238ef2ba207f6cc953befae",
+      "runId": "43609444718",
+      "planSha256": "dd8e47200ebfe9ca0d9bce7a2fa905f9a27377aff3f31233b90b638c81b01b95",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "test:controller-ci.test.ps1",
+      "elapsedMs": 4849,
+      "recordedAtUtc": "2026-11-14T15:20:20.3509113Z",
+      "sourceSha256": "5c74ad3612d287aaacb808ef7c68b66f7bb648eef799a24d418563906ae56883",
+      "sourceSetSha256": "e14989c5ce710c24d11af0e9f4cdcfe203b26f2d43793e09dad76e750f10a56c",
+      "controllerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "checkoutHead": "67c8040c27565af372310575ace015c3959114cc",
+      "runnerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "productSha": "2fc7186f3b8ce366e238ef2ba207f6cc953befae",
+      "runId": "43609444718",
+      "planSha256": "dd8e47200ebfe9ca0d9bce7a2fa905f9a27377aff3f31233b90b638c81b01b95",
+      "result": "PASS",
+      "exitCode": 0
+    },
+    {
+      "identity": "check:controller-ci-sharding",
+      "elapsedMs": 2898,
+      "recordedAtUtc": "2026-11-14T15:20:07.8707270Z",
+      "sourceSha256": "ddd749eb4cf4e2158a8c52ba8f4b0d28740724aa8d11d9da7d431f5400f0698a",
+      "sourceSetSha256": "e14989c5ce710c24d11af0e9f4cdcfe203b26f2d43793e09dad76e750f10a56c",
+      "controllerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "checkoutHead": "67c8040c27565af372310575ace015c3959114cc",
+      "runnerHead": "67c8040c27565af372310575ace015c3959114cc",
+      "productSha": "2fc7186f3b8ce366e238ef2ba207f6cc953befae",
+      "runId": "43609444718",
+      "planSha256": "dd8e47200ebfe9ca0d9bce7a2fa905f9a27377aff3f31233b90b638c81b01b95",
+      "result": "PASS",
+      "exitCode": 0
     }
   ],
-  "shardCount": 39
+  "schemaVersion": "controller-ci-durations/v1"
 }
