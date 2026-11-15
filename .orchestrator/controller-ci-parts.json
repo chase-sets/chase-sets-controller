@@ -545,6 +545,22 @@
       }
     },
     {
+      "identity": "test:host-heavy-verifier.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "windows", "weight": 1 },
+        {
+          "name": "native",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Pinned Ubuntu WSL namespace/native admission fixture at /srv/chase-sets-pg-probe is not provisioned on hosted Windows runners; required local execution proof remains unresolved."
+          }
+        }
+      ],
+      "ownership": { "parts": ["windows", "native"] }
+    },
+    {
       "identity": "test:heavy-slot.test.ps1",
       "selector": "-Part",
       "parts": [

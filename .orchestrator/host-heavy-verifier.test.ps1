@@ -1,6 +1,9 @@
 param([switch]$Baseline, [switch]$NativeDbOnly,
-  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'claimant-pause-injection', 'native-terminal-controls', 'harness-controls', 'canonical-record-script-pin')][string]$Control = '')
+  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'claimant-pause-injection', 'native-terminal-controls', 'harness-controls', 'canonical-record-script-pin')][string]$Control = '', [string]$Part = '')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('windows','native') $PSBoundParameters @('Baseline','NativeDbOnly','Control')
+if ($Part -ceq 'native') { $NativeDbOnly = $true }
 function Read-FixtureOwner([string]$OwnerPath) {
   $stream=[IO.File]::Open($OwnerPath,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
   try {
@@ -1197,7 +1200,7 @@ fs.writeFileSync(process.env.CANONICAL_RECORD_OWNER_IDENTITY, owner.commandIdent
     $commandIdentityMutant.OwnerCommandIdentity -cne $mutantExpectedIdentity) 'command-identity argv mutant launches the real argv but goes red against the observed launch identity'
   Write-Output 'MUTANT_RED canonical-record-command-identity-argv launch=real identity=placeholder'
 }
-if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
+if ((Test-SuitePart $Part 'native') -and -not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
 if ($Control -ceq 'canonical-record-script-pin') { Invoke-CanonicalRecordScriptPinControl; exit 0 }
 $source = $PSScriptRoot
 $root = Join-Path ([IO.Path]::GetTempPath()) ('host-heavy-test-' + [guid]::NewGuid().ToString('N'))
