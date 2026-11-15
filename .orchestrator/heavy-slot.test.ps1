@@ -1,6 +1,10 @@
-param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
+param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0, [string]$Part = '')
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('contracts','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
+if ($Part -ceq 'measurements') { $MeasurementsAndMutantsOnly = $true }
+if ($Part -ceq 'mutants') { $MutantsOnly = $true }
 . (Join-Path $PSScriptRoot 'heavy-slot-fixture-test-support.ps1')
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
 if ($MeasurementsAndMutantsOnly) { $NestedOnly = $true }
@@ -2551,6 +2555,7 @@ try {
   Write-Output "PASS gate/kind closure proven for every allowed and crossed pair"
   }
 
+  if (Test-SuitePart $Part 'measurements') {
   # AC1 measurement: complete unchanged work (one root, nineteen sequential
   # nested children, one deeper grandchild) under the baseline client at
   # 71deeaae and under the candidate, counted by job-object accounting.
@@ -2630,6 +2635,8 @@ try {
 
   }
 
+  }
+  if (Test-SuitePart $Part 'mutants') {
   # Per-guard candidate/bypass mutants: one governing variable each, every
   # other input frozen, proving each refusal is load-bearing.
   $fixtureStage = "mutants"
@@ -2801,6 +2808,7 @@ try {
   foreach ($row in $mutantRows) { Write-Output $row }
   Write-Output "PASS per-guard candidate/bypass mutants: every nested authority guard is load-bearing"
 
+  }
   Write-Output "PASS heavy slot artifact acquisition, token identity, refusal, nesting, nested authority, and re-entrancy"
 } catch {
   $bodyFailure = $_

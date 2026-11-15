@@ -545,6 +545,18 @@
       }
     },
     {
+      "identity": "test:heavy-slot.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "contracts", "weight": 1 },
+        { "name": "measurements", "weight": 1 },
+        { "name": "mutants", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["contracts", "measurements", "mutants"]
+      }
+    },
+    {
       "identity": "test:heavy-verifier-priority.test.ps1",
       "selector": "-Part",
       "parts": [
