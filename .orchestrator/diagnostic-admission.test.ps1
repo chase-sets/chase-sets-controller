@@ -38,7 +38,7 @@ $chromiumDeclaration = $releaseDeclarations.diagnostics.'staged-import-chromium-
 Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declarations/v1' -and
   $chromiumDeclaration.enabled -eq $true -and $chromiumDeclaration.kind -ceq 'standalone-node' -and
   $chromiumDeclaration.path -ceq '.tmp/operator-7334-staged-import/chromium-control.mjs' -and
-  $chromiumDeclaration.sha256 -ceq 'da3ed81e6aaf4f4e5700ec14c103ee7de5e689d35470f8b9dc06a8de2a9afab1' -and
+  $chromiumDeclaration.sha256 -ceq 'e7e9c5640c641e3308469453ba2aa7ac17a3a0017c8cbc0e9030e09874552d85' -and
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
 $expectedChromiumDependencies = @(
@@ -506,7 +506,7 @@ function Test-IgnoredChromiumPackage {
   Invoke-FixtureGit @('add','--','.gitignore') | Out-Null
   Invoke-FixtureGit @('commit','-m','ignored package fixture') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
-  $g4r2Root='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import-g4r2'
+  $g4r2Root='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import'
   if (-not (Test-Path -LiteralPath $g4r2Root -PathType Container)) {
     Write-Output "SKIP g4r2-positive-admission reason=reviewed package directory missing: $g4r2Root"
   } else {

@@ -21,7 +21,7 @@
       "enabled": true,
       "kind": "standalone-node",
       "path": ".tmp/operator-7334-staged-import/chromium-control.mjs",
-      "sha256": "da3ed81e6aaf4f4e5700ec14c103ee7de5e689d35470f8b9dc06a8de2a9afab1",
+      "sha256": "e7e9c5640c641e3308469453ba2aa7ac17a3a0017c8cbc0e9030e09874552d85",
       "dependencies": [
         { "path": ".tmp/operator-7334-staged-import/runtime.mjs", "sha256": "0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60" },
         { "path": ".tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-classification.js", "sha256": "b9222c43896c74d65d167aef45337552678196a9a7badcf24c6e208c302960f9" },
