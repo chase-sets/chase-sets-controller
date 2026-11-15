@@ -722,8 +722,8 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     [IO.File]::WriteAllText($requestPath, $requestRaw, [Text.UTF8Encoding]::new($false))
     if ((Test-Path (Join-Path $runtime 'verify-lock.d')) -or @(Get-ChildItem $artifacts -Filter 'native-db-*.json').Count) { throw 'native prelaunch refusals must leave no owner or execution evidence' }
     Write-Output 'PASS native invocation forms: missing branch, wrong head, dirty anchor, mixed identity, command/env surface, profile case and changed encoding refuse before body'
-    $reply = @(& pwsh -NoProfile -File (Join-Path $runtime 'invoke-heavy-verifier.ps1') -NativeDbProfile reconciliation-pg16/v1 -NativeRequestPath $requestPath -ContainerRoot $windowsRoot -Worktree $anchor -Lane synthetic-native-component -Branch codex/synthetic -ClaimedHead $head 2>&1)
-    $exit = $LASTEXITCODE
+    $missingRunner=Start-NativeFixture $nativeMode; $reply = (Complete-NativeFixture $missingRunner 73) -split "\r?\n"
+    $exit = $missingRunner.process.ExitCode
     Write-Output ($reply -join "`n")
     if ($exit -ne 73) { throw "native missing runner expected 73, got $exit" }
     $record = Select-NativeReply $reply $request.correlation 'refused'

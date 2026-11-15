@@ -22,7 +22,16 @@ $prelude = $prelude.Replace("`r`n", "`n")
 $expected = Replace-One $expected "`$ErrorActionPreference = 'Stop'`nfunction Read-FixtureOwner" ("`$ErrorActionPreference = 'Stop'`n" + $prelude + "`nfunction Read-FixtureOwner")
 $expected = Replace-One $expected 'if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }' 'if ((Test-SuitePart $Part ''native'') -and -not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }'
 $expected = Replace-One $expected '    [void](Complete-NativeFixture (Start-NativeFixture @(''-NativeDbProfile'',''Reconciliation-pg16/v1'',''-NativeRequestPath'',$requestPath)) 1)' '    if ((Complete-NativeFixture (Start-NativeFixture @(''-NativeDbProfile'',''Reconciliation-pg16/v1'',''-NativeRequestPath'',$requestPath)) 73) -notmatch ''^heavy-verifier: invalid closed route value\s*$'') { throw ''native profile-case refusal lost its closed-route boundary'' }'
-Assert-True ($source -ceq $expected) 'full host source conserved: only selector prelude, native-call guard and exact profile-case refusal repair added'
+$oldMissingRunner = @'
+    $reply = @(& pwsh -NoProfile -File (Join-Path $runtime 'invoke-heavy-verifier.ps1') -NativeDbProfile reconciliation-pg16/v1 -NativeRequestPath $requestPath -ContainerRoot $windowsRoot -Worktree $anchor -Lane synthetic-native-component -Branch codex/synthetic -ClaimedHead $head 2>&1)
+    $exit = $LASTEXITCODE
+'@
+$newMissingRunner = @'
+    $missingRunner=Start-NativeFixture $nativeMode; $reply = (Complete-NativeFixture $missingRunner 73) -split "\r?\n"
+    $exit = $missingRunner.process.ExitCode
+'@
+$expected = Replace-One $expected ($oldMissingRunner.Replace("`r`n", "`n")) ($newMissingRunner.Replace("`r`n", "`n"))
+Assert-True ($source -ceq $expected) 'full host source conserved: only selector prelude, native-call guard, exact profile refusal and missing-runner fixture isolation repairs added'
 
 # Stop before even defining the fixture helpers; exercise real parameter binding.
 $prefix = $source.Substring(0, $source.IndexOf('function Read-FixtureOwner'))
