@@ -61,3 +61,109 @@ foreach ($invalid in @($candidate.Replace('function Get-HeavyCallerObservation('
   Assert-Fixture $refused 'missing, ambiguous or malformed candidate statement fails closed'
 }
 Write-Output 'PASS pinned census fixtures and real admission anchor: complete arguments, no stray output, baseline unchanged; native execution NOT_RUN'
+
+$bindingPaths = @('scripts/verify-static-scoped.mjs','scripts/verify-static-surfaces.mjs',
+  'scripts/change-scope.mjs','scripts/e2e-suites.mjs','scripts/lib/repo.mjs',
+  'scripts/lib/risk-policy-v1.mjs','scripts/lib/heavy-slot.mjs')
+$binding = @($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-CurrentBindingControls'}, $true))
+Assert-Fixture ($binding.Count -eq 1) 'one ordinary current binding control'
+$copies = @($binding[0].Body.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.ForEachStatementAst] -and $_.Variable.Extent.Text -ceq '$relative' })
+Assert-Fixture ($copies.Count -eq 1) 'one actual product dependency copy loop'
+$actualPaths = @(& ([scriptblock]::Create($copies[0].Condition.Extent.Text)))
+Assert-Fixture (($actualPaths -join ',') -ceq ($bindingPaths -join ',')) 'ordinary copy loop retains all seven original product paths'
+Assert-Fixture ($copies[0].Body.Extent.Text.Contains('Read-CurrentBindingFixture $relative') -and
+  -not $binding[0].Extent.Text.Contains('git -C $product show') -and
+  $binding[0].Extent.Text.Contains("Read-CurrentBindingFixture '.orchestrator/invoke-heavy-verifier.ps1'")) 'both ordinary product and original-wrapper legs use pinned fixtures'
+$bindingTemp = Join-Path ([IO.Path]::GetTempPath()) ('binding-fixture-' + [guid]::NewGuid().ToString('N'))
+try {
+  [void][IO.Directory]::CreateDirectory($bindingTemp)
+  # Execute the ordinary copy loop, but none of its native admission controls.
+  $worktree = Join-Path $bindingTemp 'copy'
+  function Assert-True($Condition, [string]$Message) { Assert-Fixture $Condition $Message }
+  & ([scriptblock]::Create($copies[0].Extent.Text))
+  foreach ($relative in @($bindingPaths) + @('.orchestrator/invoke-heavy-verifier.ps1')) {
+    $sourcePath = Join-Path $PSScriptRoot "fixtures/historical-current-binding/$relative"
+    $raw = [IO.File]::ReadAllBytes($sourcePath)
+    $decoded = Read-CurrentBindingFixture $relative
+    Assert-Fixture ([Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($decoded)) -ceq
+      [Convert]::ToBase64String($raw)) "$relative decodes and reencodes the exact original raw bytes"
+    if ($bindingPaths -ccontains $relative) {
+      Assert-Fixture ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $worktree $relative))) -ceq
+        [Convert]::ToBase64String($raw)) "$relative ordinary copy preserves the exact original raw bytes"
+    }
+    $missing = $false
+    try { Read-CurrentBindingFixture $relative (Join-Path $bindingTemp 'missing') | Out-Null } catch { $missing = $true }
+    Assert-Fixture $missing "$relative missing input fails closed"
+    $mutantPath = Join-Path $bindingTemp "mutant/$relative"
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $mutantPath))
+    $raw[$raw.Length - 1] = $raw[$raw.Length - 1] -bxor 1
+    [IO.File]::WriteAllBytes($mutantPath, $raw)
+    $refused = $false
+    try { Read-CurrentBindingFixture $relative (Join-Path $bindingTemp 'mutant') | Out-Null } catch { $refused = $_.Exception.Message.Contains('blob mismatch') }
+    Assert-Fixture $refused "$relative one-byte mutation fails closed"
+  }
+  $invalidPath = $false
+  try { Read-CurrentBindingFixture '../invoke-heavy-verifier.ps1' | Out-Null } catch { $invalidPath = $true }
+  Assert-Fixture $invalidPath 'out-of-inventory fixture path fails closed'
+} finally {
+  $parent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/')
+  Assert-Fixture ((Split-Path -Parent ([IO.Path]::GetFullPath($bindingTemp))) -ceq $parent) 'binding cleanup remains in owned temp root'
+  if (Test-Path $bindingTemp) { Remove-Item -LiteralPath $bindingTemp -Recurse -Force }
+}
+Write-Output 'PASS current-binding fixtures: eight original blobs, actual seven-file copy, exact raw bytes, missing/mutated/foreign input refusals; native execution NOT_RUN'
+
+$packageWrites = @($ast.FindAll({param($n)
+  $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+  $n.Member.Value -ceq 'WriteAllText' -and $n.Arguments.Count -eq 3 -and
+  $n.Arguments[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and
+  $n.Arguments[1].Value.Contains('"name":"heavy-slot-fixture"')
+}, $true))
+Assert-Fixture ($packageWrites.Count -eq 1) 'one actual gate-matrix package fixture'
+$matrixPackage = $packageWrites[0].Arguments[1].Value | ConvertFrom-Json
+$pin = @($candidateAst.FindAll({param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+  $n.Left.Extent.Text -ceq '$canonicalRecordScriptExpected'
+}, $true))
+Assert-Fixture ($pin.Count -eq 1) 'one production canonical-record command pin'
+$expectedCommand = $pin[0].Right.Expression.Value
+Assert-Fixture ($expectedCommand -and $matrixPackage.scripts.'test:canonical-record' -ceq $expectedCommand) 'ordinary matrix fixture satisfies the unchanged production command pin'
+$matrixPackage.scripts.PSObject.Properties.Remove('test:canonical-record')
+Assert-Fixture ($matrixPackage.scripts.'test:canonical-record' -cne $expectedCommand) 'missing canonical command fails the fixture contract'
+Write-Output 'PASS ordinary gate-matrix package matches unchanged canonical-record script pin; missing command refuses'
+
+$measurementReads = @($ast.FindAll({param($n)
+  $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+  $n.Left.Extent.Text -cin @('$baselineGuardBytes', '$baselineBytes')
+}, $true))
+Assert-Fixture ($measurementReads.Count -eq 2) 'both ordinary measurement input reads are present'
+$controllerRoot = Split-Path -Parent $PSScriptRoot
+$baselineClientBlob = '71deeaae2c999d377d3d2ffe9b933219d62a06ff'
+$guardPin = '7aae059c121a433e628cf7935fb1e62e7f08b2ee'
+function Assert-True($Condition, [string]$Message) { Assert-Fixture $Condition $Message }
+function Read-ActualMeasurementInput($Read, [switch]$Missing) {
+  $statements = @($Read.Parent.Statements)
+  $index = 0
+  while ($statements[$index].Extent.StartOffset -ne $Read.Extent.StartOffset) { $index++ }
+  $assertion = $statements[$index + 1].Extent.Text
+  Assert-Fixture ($assertion.StartsWith('Assert-True ', [StringComparison]::Ordinal)) 'actual readability assertion immediately follows its input read'
+  $code = $Read.Extent.Text
+  if ($Missing) {
+    $baselineClientBlob = 'ffffffffffffffffffffffffffffffffffffffff'
+    $code = $code.Replace($guardPin, $baselineClientBlob)
+  }
+  return & ([scriptblock]::Create($code + "`n" + $assertion + "`n" + $Read.Left.Extent.Text))
+}
+foreach ($read in $measurementReads) {
+  $lines = @(Read-ActualMeasurementInput $read)
+  $name = if ($read.Left.Extent.Text -ceq '$baselineGuardBytes') { 'invoke-heavy-verifier.ps1' } else { 'heavy-slot.cjs' }
+  $pin = if ($name -ceq 'heavy-slot.cjs') { $baselineClientBlob } else { $guardPin }
+  $path = Join-Path $PSScriptRoot "fixtures/historical-nested-measurement/.orchestrator/$name"
+  $rawPin = & git -C $controllerRoot hash-object --no-filters -- $path
+  Assert-Fixture ($LASTEXITCODE -eq 0 -and $rawPin -ceq $pin) "$name retains its original raw Git blob"
+  $expected = [IO.File]::ReadAllText($path).Replace("`r`n", "`n").TrimEnd([char[]]"`n")
+  Assert-Fixture (($lines -join "`n").TrimEnd([char[]]"`n") -ceq $expected) "$name actual measurement lookup reads exactly the public fixture"
+  $missing = $false
+  try { Read-ActualMeasurementInput $read -Missing | Out-Null } catch { $missing = $true }
+  Assert-Fixture $missing "$name missing Git object still fails the ordinary readability assertion"
+}
+Write-Output 'PASS ordinary measurement reads: original public blobs, exact content, missing-object refusal; measurement execution NOT_RUN'

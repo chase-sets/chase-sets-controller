@@ -78,6 +78,8 @@ exit 0
   Write-Text $runner @'
 param($Runtime,$Worktree,$Label,$Override)
 $ErrorActionPreference='Stop'
+# The isolated synthetic launcher starts Normal even on a lowered CI host.
+[Diagnostics.Process]::GetCurrentProcess().PriorityClass = "Normal"
 $global:priorityProbeRuntime=$Runtime
 $global:priorityProbeCensus=($Label -ceq 'priority-default')
 # A debugger probe observes the real admission and ownership scan without

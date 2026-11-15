@@ -72,7 +72,7 @@ exit 0
   # Immutable before helper, with only a barrier inserted between enumeration
   # and StartTime. With the launch handle retained, the old helper silently
   # accepts normal exit as a hard kill. The candidate must refuse that lifecycle.
-  $beforeSource=(& git -C $PSScriptRoot show 'f85f146380fb82dcee44accba762032f51987bf4:.orchestrator/admission-temp-cleanup.test.ps1')-join"`n"
+  $beforeSource=(& git -C $PSScriptRoot cat-file blob '611c05666a74e39444cbf84e3e0ff2369d94a27b')-join"`n"
   Assert-True($LASTEXITCODE-eq0)'immutable cleanup carrier unavailable'
   $beforeLine=($beforeSource-split"`n"|Where-Object{$_-like'function Stop-Exact*'})
   Assert-True(@($beforeLine).Count-eq1)'immutable Stop-Exact ambiguous'

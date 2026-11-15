@@ -32,9 +32,18 @@ $original = Parse-Source $source
 $initializer = (Find-Function $original 'Initialize-OwnerRename').Extent.Text
 $queue = (Find-Function $original 'Write-VerifyQueue').Extent.Text
 $late = Parse-Source $variants['late-load']
-Assert-True ((Find-Function $late 'Initialize-QueueOwnerRename').Extent.Text -ceq $initializer.Replace('OwnerRename','QueueOwnerRename')) 'mutant queue initializer conserves production implementation except its type name'
-Assert-True ((Find-Function $late 'Write-VerifyQueue').Extent.Text -ceq $queue.Replace('OwnerRename','QueueOwnerRename')) 'mutant queue publication retains all production checks and atomic publication'
-Assert-True ($variants['candidate'] -ceq $source.Replace('public static class OwnerRename {', "public static class OwnerRename {`n#error fix125 injected rename type failure")) 'candidate is only the original compile-failure injection'
+$isolated = $source.Replace($initializer, $initializer.Replace('OwnerRename','QueueRename') + "`n" + $initializer)
+$isolated = $isolated.Replace($queue, $queue.Replace('OwnerRename','QueueRename'))
+$fixtureNewline = if ($fixture.Extent.Text.Contains("`r`n")) { "`r`n" } else { "`n" }
+$observedLaunch = @('$child = [Diagnostics.Process]::Start($start)',
+  '[IO.File]::WriteAllText($env:SLOT_CHILD_START_MARKER, [string]$child.Id)') -join $fixtureNewline
+$expectedCandidate = $isolated.Replace('public static class OwnerRename {', "public static class OwnerRename {`n#error fix125 injected rename type failure").Replace('$child = [Diagnostics.Process]::Start($start)', $observedLaunch)
+foreach ($variant in @('candidate','late-load')) {
+  $variantAst = Parse-Source $variants[$variant]
+  Assert-True ((Find-Function $variantAst 'Initialize-QueueRename').Extent.Text -ceq $initializer.Replace('OwnerRename','QueueRename')) "$variant queue initializer conserves production implementation except its type name"
+  Assert-True ((Find-Function $variantAst 'Write-VerifyQueue').Extent.Text -ceq $queue.Replace('OwnerRename','QueueRename')) "$variant queue publication retains all production checks and atomic publication"
+}
+Assert-True ($variants['candidate'] -ceq $expectedCandidate) 'candidate retains the compile-failure injection, isolated production queue and actual child-launch observation'
 Assert-True ((Find-Function $late 'Initialize-OwnerRename').Extent.Text.Contains('#error fix125 injected rename type failure')) 'late owner initializer still fails compilation'
 Assert-True (-not $variants['late-load'].Contains('if (-not $isAttachedAdmission) { Initialize-OwnerRename }')) 'mutant moves the early owner compile'
 Assert-True ($variants['late-load'].Contains("  Initialize-OwnerRename`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')) 'mutant still compiles at the owner transition after child launch'

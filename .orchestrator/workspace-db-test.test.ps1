@@ -223,7 +223,11 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
     $noFileReceipt.timedOut -eq $false -and $noFileReceipt.elapsedMs -ge 0 -and
     $noFileReceipt.outcome -ceq 'passed') 'no-file receipt records workspace, null file, budget, elapsed and passed outcome'
   $pnpmShim = Get-Command pnpm -All -CommandType Application | Where-Object Source -like '*\pnpm.CMD' | Select-Object -First 1
-  $pnpmScript = Join-Path (Split-Path -Parent $pnpmShim.Source) 'node_modules/pnpm/bin/pnpm.cjs'
+  $pnpmScript = @('node_modules/pnpm/bin/pnpm.cjs', 'node_modules/pnpm/bin/pnpm.mjs',
+      '../pnpm/bin/pnpm.cjs', '../pnpm/bin/pnpm.mjs') | ForEach-Object {
+    [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmShim.Source) $_))
+  } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  Assert-True ($pnpmScript) 'fixture resolves the installed Node-hosted pnpm entrypoint'
   $directIdentity = "verify:test-db`n$($noFileReceipt.executable)`n$pnpmScript`nrun`nverify:test-db"
   $directHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($directIdentity))).ToLowerInvariant()
   Assert-True ($noFileReceipt.commandIdentity -cne $directHash) 'bounded workspace command identity differs from full verify:test-db'
@@ -289,7 +293,7 @@ node "%~dp0\..\..\..\..\scripts\file-body.mjs" %*
   $head = Git @('rev-parse', 'HEAD')
 
   $invalid = @(
-    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='ValidateSet'},
+    @{Name='unknown-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/ordering','-WorkspaceDbBudgetSeconds','10'); Text='heavy-verifier: invalid closed route value'},
     @{Name='outside-workspace'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='dotdot'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile','bounded-contexts/payments/../ordering/foo.db.test.ts','-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},
     @{Name='absolute'; Extra=@('-WorkspaceDbTest','@chase-sets/payments','-WorkspaceDbTestFile',(Join-Path $worktree $validFile),'-WorkspaceDbBudgetSeconds','10'); Text='normalized repository-relative payments'},

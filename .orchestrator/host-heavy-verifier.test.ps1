@@ -1,6 +1,9 @@
 param([switch]$Baseline, [switch]$NativeDbOnly,
-  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'claimant-pause-injection', 'native-terminal-controls', 'harness-controls', 'canonical-record-script-pin')][string]$Control = '')
+  [ValidateSet('', 'host-ready-latency-injection', 'forced-failure-release', 'transition-pause-injection', 'claimant-pause-injection', 'native-terminal-controls', 'harness-controls', 'canonical-record-script-pin')][string]$Control = '', [string]$Part = '')
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('windows','native') $PSBoundParameters @('Baseline','NativeDbOnly','Control')
+if ($Part -ceq 'native') { $NativeDbOnly = $true }
 function Read-FixtureOwner([string]$OwnerPath) {
   $stream=[IO.File]::Open($OwnerPath,'Open','Read',([IO.FileShare]::ReadWrite-bor[IO.FileShare]::Delete))
   try {
@@ -709,7 +712,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     foreach ($extra in @(@('-CommandPath',(Get-Process -Id $PID).Path),@('-NativeEnvironment','PGHOSTADDR=synthetic'))) {
       [void](Complete-NativeFixture (Start-NativeFixture ($nativeMode+$extra)) 1)
     }
-    [void](Complete-NativeFixture (Start-NativeFixture @('-NativeDbProfile','Reconciliation-pg16/v1','-NativeRequestPath',$requestPath)) 1)
+    if ((Complete-NativeFixture (Start-NativeFixture @('-NativeDbProfile','Reconciliation-pg16/v1','-NativeRequestPath',$requestPath)) 73) -notmatch '^heavy-verifier: invalid closed route value\s*$') { throw 'native profile-case refusal lost its closed-route boundary' }
     $requestRaw = [IO.File]::ReadAllText($requestPath)
     foreach ($encoding in @([Text.UTF8Encoding]::new($true), [Text.UnicodeEncoding]::new($false, $true))) {
       [byte[]]$encoded = $encoding.GetPreamble() + $encoding.GetBytes($requestRaw)
@@ -719,8 +722,8 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     [IO.File]::WriteAllText($requestPath, $requestRaw, [Text.UTF8Encoding]::new($false))
     if ((Test-Path (Join-Path $runtime 'verify-lock.d')) -or @(Get-ChildItem $artifacts -Filter 'native-db-*.json').Count) { throw 'native prelaunch refusals must leave no owner or execution evidence' }
     Write-Output 'PASS native invocation forms: missing branch, wrong head, dirty anchor, mixed identity, command/env surface, profile case and changed encoding refuse before body'
-    $reply = @(& pwsh -NoProfile -File (Join-Path $runtime 'invoke-heavy-verifier.ps1') -NativeDbProfile reconciliation-pg16/v1 -NativeRequestPath $requestPath -ContainerRoot $windowsRoot -Worktree $anchor -Lane synthetic-native-component -Branch codex/synthetic -ClaimedHead $head 2>&1)
-    $exit = $LASTEXITCODE
+    $missingRunner=Start-NativeFixture $nativeMode; $reply = (Complete-NativeFixture $missingRunner 73) -split "\r?\n"
+    $exit = $missingRunner.process.ExitCode
     Write-Output ($reply -join "`n")
     if ($exit -ne 73) { throw "native missing runner expected 73, got $exit" }
     $record = Select-NativeReply $reply $request.correlation 'refused'
@@ -1197,7 +1200,7 @@ fs.writeFileSync(process.env.CANONICAL_RECORD_OWNER_IDENTITY, owner.commandIdent
     $commandIdentityMutant.OwnerCommandIdentity -cne $mutantExpectedIdentity) 'command-identity argv mutant launches the real argv but goes red against the observed launch identity'
   Write-Output 'MUTANT_RED canonical-record-command-identity-argv launch=real identity=placeholder'
 }
-if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
+if ((Test-SuitePart $Part 'native') -and -not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }
 if ($Control -ceq 'canonical-record-script-pin') { Invoke-CanonicalRecordScriptPinControl; exit 0 }
 $source = $PSScriptRoot
 $root = Join-Path ([IO.Path]::GetTempPath()) ('host-heavy-test-' + [guid]::NewGuid().ToString('N'))
@@ -1379,9 +1382,11 @@ process.exit(Number(process.env.HOST_EXIT || 0));
     Complete (Start-Child $pwsh ($common + @('-Gate', 'verify:test-db'))) 73
   } finally { [IO.File]::WriteAllBytes($manifestPath, $manifestBytes) }
   $pnpmShim = Get-Command pnpm -All -CommandType Application | Where-Object Source -like '*\pnpm.CMD' | Select-Object -First 1
-  $shim = Get-Content $pnpmShim.Source -Raw
-  Assert ($shim -match '"%~dp0\\(?<relative>[^"]*\\pnpm\.exe)"') 'active packaged pnpm shim has its exact executable'
-  $nativePnpm = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $pnpmShim.Source) $Matches.relative))
+  . (Join-Path $PSScriptRoot 'native-pnpm-test-support.ps1')
+  $nativeShim = Get-NativePnpmFixtureShim $pnpmShim.Source
+  $shim = Get-Content $nativeShim -Raw
+  Assert ($shim -match '"%~dp0\\(?<relative>[^"]*\\pnpm(?:\.exe)?)"') 'packaged native pnpm shim has its exact executable'
+  $nativePnpm = Resolve-NativePnpmFixture $nativeShim
   $direct = Start-Child $nativePnpm @('run', 'verify:test-db')
   Complete $direct 73
   Assert ($direct.Err.GetAwaiter().GetResult() -match 'use invoke-heavy-verifier.ps1 -Gate or -WorkspaceTest') 'unsafe packaged Node diagnostic names canonical entrypoint'

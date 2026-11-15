@@ -438,8 +438,8 @@ function Invoke-ReaderInventory {
   $fixtures=@{
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
-    'heavy-admission-preload.test.ps1'=@(125,610,639,747,1041,1047,1140,1197,1344,1391,1911,1915)
-    'heavy-slot.test.ps1'=@(92,95,118,1899,2225,2402)
+    'heavy-admission-preload.test.ps1'=@(177,630,659,767,1061,1067,1160,1217,1364,1411,1951,1955)
+    'heavy-slot.test.ps1'=@(97,100,123,1916,2243,2420)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
     'install-controller-skills.ps1'=@(145)
@@ -448,7 +448,7 @@ function Invoke-ReaderInventory {
     # observations of retained owner bytes, not production publication.
     'invoke-heavy-verifier.test.ps1'=@(423,743,1308,1355,1367,1416,1420,1431,1456,1538,1552,1762,2157,2237,2247,2261,2556,2561,2580,2586,2813,2820,2832,2835,2845,2856,2878,2883,2895,2900,2917,2931)
     'long-product-gate.test.ps1'=@(212,219,235,875)
-    'host-heavy-verifier.test.ps1'=@(1277)
+    'host-heavy-verifier.test.ps1'=@(1280)
     # Immutable fixture priority-launch metadata, not a live owner snapshot.
     'lane-priority.test.ps1'=@(41)
     'invoke-fleet-exclusive-gate.test.ps1'=@(309,310)
@@ -461,7 +461,7 @@ function Invoke-ReaderInventory {
     'product-census-budget.test.ps1'=@(396,455,509,548)
     # Source-conservation checker reads a synthetic ownership path for its
     # static contract; it is not a production owner publication reader.
-    'controller-ci-coverage.check.ps1'=@(143)
+    'controller-ci-coverage.check.ps1'=@(157)
   }
   foreach($name in $fixtures.Keys) {
     $lines=(Read-Source $name)-split "`n"
@@ -469,10 +469,10 @@ function Invoke-ReaderInventory {
       $table.Add(@{site="${name}:$line";api=$lines[$line-1].Trim();shareBefore='unchanged fixture API';shareAfter='unchanged';decoder='unchanged fixture decoder';callers='fixture-local assertion/observation';owner='fixture-only: synthetic lock or retained-byte assertion, not production publication'})
     }
   }
-  foreach($line in @(5,1136)) {
+  foreach($line in @(8,1139)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='1/3/libuv';shareAfter='unchanged';decoder='unchanged';callers='interruption / teardown / embedded Node';owner='#9624, deliberately not converted'})
   }
-  foreach($line in @(374,387,446,477,478,507,515,527,546,547,556,559,667,750,753,764,938,939,965,967)) {
+  foreach($line in @(377,390,449,480,481,510,518,530,549,550,559,562,670,753,756,767,941,942,968,970)) {
     $table.Add(@{site="host-heavy-verifier.test.ps1:$line";api=($sources['host-heavy-verifier.test.ps1']-split "`n")[$line-1].Trim();shareBefore='Python read_text/read_bytes or pipe read';shareAfter='unchanged';decoder='unchanged Python decoder';callers='embedded native fixture setup / proc observation / pipe transport';owner='#9624; non-heavy-owner fixture/proc/transport reads, explicitly retained'})
   }
   $table.Add(@{site='controller-install-lock.psm1:230';api='File.Open / MemoryStream (snapshot copies bytes once)';shareBefore='new in #207';shareAfter=7;decoder='strict UTF8, no BOM / ConvertFrom-Json';callers='Get-ControllerInstallOwnerSnapshot / Invoke-ReclaimableControllerVerifyOwner';owner='#207 installer dead-owner reclaim (#210)'})
@@ -510,6 +510,7 @@ function Invoke-ReaderInventory {
     '.orchestrator/fixtures/historical-f67fc96a/.orchestrator/invoke-heavy-verifier.ps1'=@(474,745,792)
     '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/heavy-nested-owner.cs'=@(900,939)
     '.orchestrator/fixtures/historical-census-before-7958/.orchestrator/invoke-heavy-verifier.ps1'=@(433,704,751)
+    '.orchestrator/fixtures/historical-current-binding/.orchestrator/invoke-heavy-verifier.ps1'=@(433,704,751)
   }
   function Get-ReaderSiteKey([string]$Relative,[int]$Line) {
     if($Relative -clike '.orchestrator/fixtures/historical-*/*'){ return "${Relative}:$Line" }
@@ -533,7 +534,7 @@ function Invoke-ReaderInventory {
     $lines=[IO.File]::ReadAllLines((Join-Path $root $relative))
     foreach($line in $historicalSites[$relative]) {
       $key=Get-ReaderSiteKey $relative $line
-      $caller=if($fixtureRoot -ceq '.orchestrator/fixtures/historical-census-before-7958'){'Read-CensusBaselineFixture copy into a synthetic temp root'}else{'New-HistoricalDispatchFixture copy into a synthetic temp root'}
+      $caller=if($fixtureRoot -ceq '.orchestrator/fixtures/historical-census-before-7958'){'Read-CensusBaselineFixture copy into a synthetic temp root'}elseif($fixtureRoot -ceq '.orchestrator/fixtures/historical-current-binding'){'Read-CurrentBindingFixture copy into a synthetic temp root'}else{'New-HistoricalDispatchFixture copy into a synthetic temp root'}
       $table.Add(@{site=$key;api=$lines[$line-1].Trim();shareBefore='pinned historical bytes';shareAfter='unchanged';decoder='unchanged historical decoder';callers=$caller;owner="pinned historical fixture bytes (blob $($pin[0])), never live publication"})
       $classified[$key]=$true
     }

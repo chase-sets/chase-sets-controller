@@ -545,6 +545,45 @@
       }
     },
     {
+      "identity": "test:host-heavy-verifier.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "windows", "weight": 1 },
+        {
+          "name": "native",
+          "weight": 1,
+          "restriction": {
+            "classification": "LOCAL_ONLY",
+            "reason": "Pinned Ubuntu WSL namespace/native admission fixture at /srv/chase-sets-pg-probe is not provisioned on hosted Windows runners; required local execution proof remains unresolved."
+          }
+        }
+      ],
+      "ownership": { "parts": ["windows", "native"] }
+    },
+    {
+      "identity": "test:invoke-heavy-verifier-fifo.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "hosted-controller", "weight": 1 },
+        { "name": "hosted-main", "weight": 3 }
+      ],
+      "ownership": { "parts": ["hosted-controller", "hosted-main"] }
+    },
+    {
+      "identity": "test:heavy-slot.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "contracts", "weight": 1 },
+        { "name": "authority", "weight": 1 },
+        { "name": "matrix", "weight": 1 },
+        { "name": "measurements", "weight": 1 },
+        { "name": "mutants", "weight": 1 }
+      ],
+      "ownership": {
+        "parts": ["contracts", "authority", "matrix", "measurements", "mutants"]
+      }
+    },
+    {
       "identity": "test:heavy-verifier-priority.test.ps1",
       "selector": "-Part",
       "parts": [
@@ -1022,7 +1061,7 @@
             "$tokens=$null;$errors=$null",
             "$ast=[Management.Automation.Language.Parser]::ParseFile($Verifier,[ref]$tokens,[ref]$errors)",
             "if($errors.Count){throw 'native error copied verifier must parse'}",
-            "foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess')},$false)){",
+            "foreach($definition in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-NativeLaunch','Stop-ExactVerifierProcess','Invoke-HeavyAdmissionCensus','Enter-HeavyAdmissionPriority','Exit-HeavyAdmissionPriority')},$false)){",
             "  . ([scriptblock]::Create($definition.Extent.Text))",
             "}",
             "$cleanup=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$isNativeDb -and $child -and -not $child.HasExited'},$true))",
@@ -1323,6 +1362,16 @@
           ]
         },
         {
+          "offset": 1291,
+          "remove": 1,
+          "original": [
+            "    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true"
+          ],
+          "replacement": [
+            "    $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true; $start.Environment['CHASE_SETS_CONTROLLER_ROOT']=$nativeTree"
+          ]
+        },
+        {
           "offset": 1342,
           "remove": 0,
           "original": [],
@@ -1433,7 +1482,7 @@
             "  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'dispatch-ownership.ps1') -Destination $guardRoot",
             "  $guardCopy = Join-Path $guardRoot 'invoke-heavy-verifier.ps1'",
             "  $runner = Join-Path $guardRoot 'run.ps1'",
-            "  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; & $Guard @p; exit $LASTEXITCODE')",
+            "  [IO.File]::WriteAllText($runner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable -DateKind String; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')",
             "  $containerRoot = $container",
             "  $controllerLock = Join-Path $orchestrator 'controller-verify-lock.d'",
             "  function Invoke-HostHeavyRoute([hashtable]$Extra = @{}, [string]$SourceOverride = $guardCopy) {",
@@ -1563,6 +1612,74 @@
           "replacement": [
             "  if ($HostHeavyVerifierOnly) { Test-ControllerHostHeavyVerifier; return }"
           ]
+        },
+        {
+          "offset": 2483,
+          "remove": 1,
+          "original": [""],
+          "replacement": [
+            "  $orphanHandoff=Join-Path $root 'orphan-queue-handoff.txt'; Assert-True ((Invoke-Guard 'orphan-queue-handoff' @('-NoProfile','-File',$markerScript,$orphanHandoff,'0')) -eq 0 -and (Test-Path -LiteralPath $orphanHandoff) -and -not(Test-Path -LiteralPath $lock)) 'orphan preceding claimant completes normal admission before wrapper launch'; $orphanQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($orphanQueue.tickets).Count -eq 0) 'orphan queue handoff retires the preceding claimant ticket'; Write-Host 'PASS orphan queue handoff: prior claimant admitted; tickets=0; no queue deletion or bypass'"
+          ]
+        },
+        {
+          "offset": 1862,
+          "remove": 1,
+          "original": ["      Remove-Item -LiteralPath $slotLock -Recurse -Force"],
+          "replacement": ["      Remove-Item -LiteralPath $slotLock -Recurse -Force; if ($slot -ceq 'controller') { Assert-FixtureCompleted (Invoke-FixtureRoute (Get-FixtureParameters $evidence)) $evidence 'controller-owner-queue-handoff'; $fixtureQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($fixtureQueue.tickets).Count -eq 0) 'fixture controller-owner handoff retires the original command ticket' }"]
+        },
+        {
+          "offset": 2176,
+          "remove": 1,
+          "original": [""],
+          "replacement": ["  $precursorHandoff=Invoke-PrecursorProcess 'fail-closed-guard-evidence' $liveOut; Assert-True ($precursorHandoff.exitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $worktree $liveOut)) -and -not(Test-Path -LiteralPath $lock)) 'precursor live-owner handoff completes the original command through normal admission'; $precursorQueue=Get-Content -LiteralPath (Join-Path $orchestrator 'controller-verify-queue.json') -Raw | ConvertFrom-Json -DateKind String; Assert-True (@($precursorQueue.tickets).Count -eq 0) 'precursor live-owner handoff retires the original command ticket'"]
+        },
+        {
+          "offset": 362,
+          "remove": 2,
+          "original": [
+            "  Assert-True ($Source -match '(?s)Parameter\\(ParameterSetName\\s*=\\s*\"Gate\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ControllerBattery\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"Attach\",\\s*DontShow\\)\\]\\s*\\[string\\]\\$CommandPath') `",
+            "    \"CommandPath is not confined to the Gate parameter set\""
+          ],
+          "replacement": [
+            "  Assert-True ($Source -match '(?s)Parameter\\(ParameterSetName\\s*=\\s*\"Gate\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ControllerBattery\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"Attach\",\\s*DontShow\\)\\]\\s*\\[Parameter\\(ParameterSetName\\s*=\\s*\"ManifestReplay\",\\s*DontShow\\)\\]\\s*\\[string\\]\\$CommandPath') `",
+            "    \"CommandPath must expose only Gate, ControllerBattery, Attach and rejection-only ManifestReplay seams\""
+          ]
+        },
+        {
+          "offset": 1568,
+          "remove": 1,
+          "original": [
+            "  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')"
+          ],
+          "replacement": [
+            "  [IO.File]::WriteAllText($fixtureRunner, 'param($Guard,$InputPath); $ErrorActionPreference=''Stop''; $p=Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json -AsHashtable; try { & $Guard @p; exit $LASTEXITCODE } catch { if ($_.Exception -is [Management.Automation.ParameterBindingException]) { [Console]::Error.WriteLine(''parameter set refusal: '' + $_.FullyQualifiedErrorId) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }')"
+          ]
+        },
+        {
+          "offset": 2056,
+          "remove": 1,
+          "original": [
+            "  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match \"ValidateSet\" -and"
+          ],
+          "replacement": [
+            "  Assert-True ($unknownProducer.exitCode -ne 0 -and $unknownProducer.output -match 'heavy-verifier: invalid closed route value' -and"
+          ]
+        },
+        {
+          "offset": 2568,
+          "remove": 1,
+          "original": [
+            "  Assert-True ($bypassFailed -and \"$bypassOutput\" -match \"ValidateSet\") \"unsupported gate bypass is refused\""
+          ],
+          "replacement": [
+            "  Assert-True ($bypassFailed -and \"$bypassOutput\" -match '^heavy-verifier: invalid closed route value$') \"unsupported gate bypass is refused\""
+          ]
+        },
+        {
+          "offset": 988,
+          "remove": 1,
+          "original": ["    return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }"],
+          "replacement": ["    if ($_.Exception -is [Management.Automation.ParameterBindingException]) { return [pscustomobject]@{ exitCode = 1; output = ('parameter set refusal: ' + $_.FullyQualifiedErrorId + \"`n\" + $_.Exception.Message) } }; return [pscustomobject]@{ exitCode = 1; output = $_.Exception.Message }"]
         }
       ]
     },

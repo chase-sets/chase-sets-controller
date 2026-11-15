@@ -70,7 +70,7 @@ $legacyFixture = Join-Path $PSScriptRoot "fixtures/legacy-non-pr-review-history.
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("review-head-reducer-test-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 $baselinePath=Join-Path $testRoot 'controller-review-baseline.psm1'
-$baselineSource=& git -C (Split-Path -Parent $PSScriptRoot) show '16c53af23eb0656e7d2b233164fee99d8be55527:.orchestrator/review-head-contract.psm1'
+$baselineSource=& git -C (Split-Path -Parent $PSScriptRoot) cat-file blob 'd02e647f06e87ffbec69f4f6828f0d9f22ffbecb'
 if($LASTEXITCODE-ne0){throw 'cannot extract reducer equivalence baseline'}
 [IO.File]::WriteAllLines($baselinePath,$baselineSource,[Text.UTF8Encoding]::new($false))
 $script:equivalenceBaseline=Import-Module $baselinePath -Force -PassThru -DisableNameChecking
@@ -236,11 +236,15 @@ try {
       "a missing-PR row without a positive supported issue identity was misclassified as legacy non-PR"
   }
   $ordinaryBaseline = "8d1affe3d308443155eb3d81eaa619c345e1124e"
+  $ordinaryBaselineBlobs = @{
+    '.orchestrator/review-head-contract.psm1' = '4139444d8af64a8f0dadee2bf4b095dcde87a2d0'
+    '.orchestrator/review-head-reducer.ps1' = '0d15b88f300fb1cfcbc99974ab44a0e340ea3ea9'
+  }
   $baselineRuntime = Join-Path $testRoot "ordinary-baseline"
   [IO.Directory]::CreateDirectory($baselineRuntime) | Out-Null
   $controllerRoot = Split-Path -Parent $PSScriptRoot
   foreach($relative in @(".orchestrator/review-head-contract.psm1",".orchestrator/review-head-reducer.ps1")){
-    $sourceLines=@(& git -C $controllerRoot show "${ordinaryBaseline}:$relative")
+    $sourceLines=@(& git -C $controllerRoot cat-file blob $ordinaryBaselineBlobs[$relative])
     Assert-True ($LASTEXITCODE-eq0-and$sourceLines.Count-gt0) "ordinary reducer baseline source must be readable at $ordinaryBaseline"
     [IO.File]::WriteAllText((Join-Path $baselineRuntime (Split-Path -Leaf $relative)),($sourceLines-join"`n")+"`n",[Text.UTF8Encoding]::new($false))
   }
@@ -912,7 +916,7 @@ try {
   $badReduction=Invoke-PrelogReduction @($foreignReceipt,$bad,$secondForeign)
   Assert-True ($badReduction.reason -ceq 'MALFORMED_RELEVANT_STRICT_ROW' -and $badReduction.audit.invalidRows[0].dangling) '9382 AC3 dangling receipt match is head-scoped'
   $baseline9382Path=Join-Path $testRoot 'installed-9382-baseline.psm1'
-  $baseline9382Source=@(& git -C (Split-Path -Parent $PSScriptRoot) show '24a00072a5d10b93c290d805d900920e3a2aa84a:.orchestrator/review-head-contract.psm1')
+  $baseline9382Source=@(& git -C (Split-Path -Parent $PSScriptRoot) cat-file blob '4a54ac04fd0c800c7b3d54e7424f2994c0dfc1b8')
   Assert-True ($LASTEXITCODE -eq 0) '9382 extract exact installed reducer baseline'
   [IO.File]::WriteAllLines($baseline9382Path,$baseline9382Source,[Text.UTF8Encoding]::new($false))
   $baseline9382Module=Import-Module $baseline9382Path -Force -PassThru -DisableNameChecking

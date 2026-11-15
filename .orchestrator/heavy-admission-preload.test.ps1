@@ -12,14 +12,52 @@ $guardSource = Join-Path $PSScriptRoot "invoke-heavy-verifier.ps1"
 $launcherSource = Join-Path $PSScriptRoot "heavy-admission-holder-launcher.cjs"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-. (Join-Path $PSScriptRoot 'pnpm-test-support.ps1')
-$pnpmCommandShim = Resolve-NativePnpmTestCommand
-$nativePnpm = $pnpmCommandShim.NativePath
-$pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
-  Select-Object -First 1 -ExpandProperty Source
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
 $root = Join-Path $systemTemp ("heavy-admission-test-" + [guid]::NewGuid().ToString("N"))
 $privateTemp = Join-Path $root "fixture-temp"
+function Assert-True($Condition, [string]$Message) {
+  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
+}
+function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
+    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
+    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
+      [void]$Start.Environment.Remove("NODE_OPTIONS")
+    } else {
+      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
+    }
+  }
+  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
+    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
+    if ([string]::IsNullOrEmpty($originalScriptShell)) {
+      [void]$Start.Environment.Remove("npm_config_script_shell")
+    } else {
+      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
+    }
+  }
+  foreach ($name in @(
+      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
+      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
+      "CHASE_SETS_HEAVY_SLOT_ID",
+      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
+    )) {
+    [void]$Start.Environment.Remove($name)
+  }
+  $Start.Environment["TEMP"] = $privateTemp
+  $Start.Environment["TMP"] = $privateTemp
+}
+. (Join-Path $PSScriptRoot 'native-pnpm-test-support.ps1')
+$pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
+  Where-Object { $_.Source -like "*\pnpm.CMD" } |
+  Select-Object -First 1
+$nativePnpm = Resolve-NativePnpmFixture (Get-NativePnpmFixtureShim $pnpmCommandShim.Source)
+$alternatePnpm = Get-Command pnpm.exe -All -CommandType Application -ErrorAction SilentlyContinue |
+  Where-Object { -not [string]::Equals([IO.Path]::GetFullPath($_.Source), $nativePnpm, [StringComparison]::OrdinalIgnoreCase) } |
+  Select-Object -First 1 -ExpandProperty Source
+$pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
+  Select-Object -First 1 -ExpandProperty Source
 $container = Join-Path $root "container with spaces"
 $orchestrator = Join-Path $container ".orchestrator"
 $preload = Join-Path $orchestrator "heavy-admission-preload.cjs"
@@ -34,10 +72,16 @@ $laneB = Join-Path $container "lane-b"
 $startedProcesses = [Collections.Generic.List[object]]::new()
 $descendantRelease = $null
 New-Item -ItemType Directory -Path $orchestrator, $laneA, $laneB, $privateTemp | Out-Null
-$alternatePnpmDirectory = Join-Path $root 'alternate native pnpm'
-[void][IO.Directory]::CreateDirectory($alternatePnpmDirectory)
-$alternatePnpm = Join-Path $alternatePnpmDirectory 'pnpm.exe'
-Copy-Item -LiteralPath $nativePnpm -Destination $alternatePnpm
+if (-not $alternatePnpm) {
+  $alternatePnpm = Join-Path $root 'alternate/pnpm.exe'
+  [void][IO.Directory]::CreateDirectory((Split-Path -Parent $alternatePnpm))
+  Copy-Item -LiteralPath $nativePnpm -Destination $alternatePnpm
+  # Current native pnpm loads its bundled runtime beside the executable.
+  foreach ($relative in @('dist', 'package.json')) {
+    $companion = Join-Path (Split-Path -Parent $nativePnpm) $relative
+    if (Test-Path -LiteralPath $companion) { Copy-Item -LiteralPath $companion -Destination (Split-Path -Parent $alternatePnpm) -Recurse }
+  }
+}
 Copy-Item -LiteralPath $preloadSource -Destination $preload
 Copy-Item -LiteralPath $clientSource -Destination $client
 Copy-Item -LiteralPath $guardSource -Destination $guard
@@ -51,15 +95,23 @@ foreach ($dependency in @("heavy-nested-owner.cs", "heavy-nested-client.cjs", "d
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $dependency) -Destination (Join-Path $orchestrator $dependency)
 }
 
-function Assert-True($Condition, [string]$Message) {
-  if (-not $Condition) { throw "ASSERTION FAILED: $Message" }
-}
 function Invoke-RepoGit([string]$Worktree, [string[]]$Arguments) {
   $output = @(& git -C $Worktree @Arguments 2>&1)
   if ($LASTEXITCODE -ne 0) {
     throw "fixture git command failed in '$Worktree': git $($Arguments -join ' ')`n$($output -join "`n")"
   }
   return ($output -join "`n").Trim()
+}
+function Initialize-AdmissionGitFixtures([string]$Container, [string[]]$Lanes) {
+  $main = Join-Path $Container 'main'
+  [void][IO.Directory]::CreateDirectory($main)
+  Invoke-RepoGit $main @('init', '--initial-branch=synthetic-passthrough') | Out-Null
+  Invoke-RepoGit $main @('config', 'user.name', 'Heavy Admission Test') | Out-Null
+  Invoke-RepoGit $main @('config', 'user.email', 'heavy-admission-test@example.invalid') | Out-Null
+  Invoke-RepoGit $main @('commit', '--allow-empty', '-m', 'admission registry fixture') | Out-Null
+  foreach ($lane in $Lanes) {
+    Invoke-RepoGit $main @('worktree', 'add', '-b', "codex/$(Split-Path -Leaf $lane)", $lane) | Out-Null
+  }
 }
 function Assert-DisposableRoot {
   $resolved = [IO.Path]::GetFullPath($root).TrimEnd("\", "/")
@@ -143,36 +195,6 @@ function Stop-ExactProcess($Identity) {
   $candidate = Get-Process -Id ([int]$Identity.pid) -ErrorAction Stop
   Stop-Process -InputObject $candidate -Force
   $candidate.WaitForExit()
-}
-function Set-CleanAdmissionEnvironment([Diagnostics.ProcessStartInfo]$Start) {
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS")) {
-    $originalNodeOptions = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS"]
-    if ([string]::IsNullOrEmpty($originalNodeOptions)) {
-      [void]$Start.Environment.Remove("NODE_OPTIONS")
-    } else {
-      $Start.Environment["NODE_OPTIONS"] = $originalNodeOptions
-    }
-  }
-  if ($Start.Environment.ContainsKey("CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL")) {
-    $originalScriptShell = $Start.Environment["CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL"]
-    if ([string]::IsNullOrEmpty($originalScriptShell)) {
-      [void]$Start.Environment.Remove("npm_config_script_shell")
-    } else {
-      $Start.Environment["npm_config_script_shell"] = $originalScriptShell
-    }
-  }
-  foreach ($name in @(
-      "CHASE_SETS_HEAVY_ADMISSION_CONFIG",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_NODE_OPTIONS",
-      "CHASE_SETS_HEAVY_ADMISSION_ORIGINAL_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_ADMISSION_PNPM_SCRIPT_SHELL",
-      "CHASE_SETS_HEAVY_SLOT_ID",
-      "CHASE_SETS_HEAVY_ADMISSION_WARNED_ROOT"
-    )) {
-    [void]$Start.Environment.Remove($name)
-  }
-  $Start.Environment["TEMP"] = $privateTemp
-  $Start.Environment["TMP"] = $privateTemp
 }
 function Assert-FreshChildEnvironmentBoundary {
   $admissionNames = @(
@@ -466,6 +488,7 @@ $descendantScript = Join-Path $root "descendant.cjs"
 $descendantWorker = Join-Path $root "descendant-worker.cjs"
 $probeScriptA = Join-Path $laneA "scripts\browser-e2e-probe.mjs"
 $probeScriptB = Join-Path $laneB "scripts\browser-e2e-probe.mjs"
+Initialize-AdmissionGitFixtures $container @($laneA, $laneB)
 New-Item -ItemType Directory -Path $playwrightDirectory, $vitestDirectory,
   (Split-Path -Parent $probeScriptA), (Split-Path -Parent $probeScriptB) | Out-Null
 $bodySource = @'
@@ -579,9 +602,6 @@ foreach ($fixture in @(
     [pscustomobject]@{ Worktree = $laneA; Branch = "codex/lane-a" },
     [pscustomobject]@{ Worktree = $laneB; Branch = "codex/lane-b" }
   )) {
-  Invoke-RepoGit $fixture.Worktree @("init", "--initial-branch=$($fixture.Branch)") | Out-Null
-  Invoke-RepoGit $fixture.Worktree @("config", "user.name", "Heavy Admission Test") | Out-Null
-  Invoke-RepoGit $fixture.Worktree @("config", "user.email", "heavy-admission-test@example.invalid") | Out-Null
   Invoke-RepoGit $fixture.Worktree @("add", "--", "package.json") | Out-Null
   Invoke-RepoGit $fixture.Worktree @("commit", "-m", "admission fixture") | Out-Null
 }
@@ -594,9 +614,9 @@ function Test-DerivedAdmission {
   $mainFixture = Join-Path $container "main"
   $outsideFixture = "$container-sibling"
   $nonGitFixture = Join-Path $container "non-git"
-  New-Item -ItemType Directory -Path $derivedDirectory, $mainFixture, $outsideFixture, $nonGitFixture | Out-Null
+  New-Item -ItemType Directory -Path $derivedDirectory, $outsideFixture, $nonGitFixture | Out-Null
   Invoke-RepoGit $laneA @("worktree", "add", "-b", "codex/derived-lane", $derivedLane) | Out-Null
-  foreach ($directory in @($mainFixture, $outsideFixture)) {
+  foreach ($directory in @($outsideFixture)) {
     Invoke-RepoGit $directory @("init", "--initial-branch=synthetic-passthrough") | Out-Null
   }
   Set-Content -LiteralPath $derivedObserver -Value @'
@@ -1098,8 +1118,8 @@ $parameters = $fixture.Parameters
 
 function Test-PreloadRoleEligibility {
   $tree=Join-Path $container 'review-preload'
-  $clone=@(& git clone --quiet $laneA $tree 2>&1)
-  Assert-True ($LASTEXITCODE -eq 0) 'role preload fixture clone'
+  Invoke-RepoGit $laneA @('worktree', 'add', '-b', 'codex/review-preload', $tree) | Out-Null
+  Assert-True ($LASTEXITCODE -eq 0) 'registered role preload fixture'
   $head=Invoke-RepoGit $tree @('rev-parse','HEAD')
   $branch=Invoke-RepoGit $tree @('branch','--show-current')
   $launchId=[guid]::NewGuid().ToString()
@@ -1394,6 +1414,21 @@ try {
   Wait-LockRelease "browser probe control blocker release"
   Assert-True ($probeFailures.Count -eq 0) "all browser probe forms parent-fail before body:`n$($probeFailures -join "`n")"
 
+  # Direct Node retains the live test-parent claimant; wrapper claimants exit.
+  # Drain that original claimant first, then retry every remaining original form.
+  $retryCases=@($probeCases | Sort-Object -Stable { $_.Name -cne 'direct node browser-e2e-probe.mjs' })
+  Assert-True ($retryCases.Count -eq $probeCases.Count -and $retryCases[0].Name -ceq 'direct node browser-e2e-probe.mjs') 'browser refusal handoff retries the retained direct-Node claimant first without omitting forms'
+  foreach ($case in $retryCases) {
+    $caseSlug = $case.Name -replace "[^A-Za-z0-9]+", "-"
+    $caseMarker = Join-Path $root "$caseSlug.marker"
+    $caseOutput = Join-Path $root "$caseSlug.output"
+    $handoff = & $case.Start $caseMarker $caseOutput
+    Complete-Fixture $handoff 0 "$($case.Name) refusal queue handoff" | Out-Null
+    Wait-LockRelease "$($case.Name) refusal queue handoff release"
+    Assert-True ((Test-Path -LiteralPath $caseMarker) -and
+      (Test-Path -LiteralPath $caseOutput)) "$($case.Name) original command admits after blocker release"
+  }
+
   # Reversing the launch order gives the probe the same exclusive owner:
   # its inert body starts, and a repository gate refuses before its body.
   $reverseProbeMarker = Join-Path $root "reverse-probe.marker"
@@ -1433,6 +1468,11 @@ try {
   Assert-True ((Test-Path -LiteralPath $reverseProbeMarker) -and
     (Test-Path -LiteralPath $reverseProbeOutput) -and
     -not (Test-Path -LiteralPath $reverseGateMarker)) "reverse launch order admits exactly one command body"
+
+  $reverseGateHandoff = Start-NodeFixture $pnpmScript @("run", "verify:static") $laneA "lane-a" $reverseGateMarker
+  Complete-Fixture $reverseGateHandoff 0 "repository gate refusal queue handoff" | Out-Null
+  Wait-LockRelease "repository gate refusal queue handoff release"
+  Assert-True (Test-Path -LiteralPath $reverseGateMarker) "original repository gate admits after reverse-order probe release"
 
   }
   # Static inventory covers Windows pnpm/npx aliases, shim-final CLI paths,

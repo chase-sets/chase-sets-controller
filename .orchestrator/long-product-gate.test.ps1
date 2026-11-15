@@ -135,7 +135,7 @@ function New-LongGateFixture([string]$Root, [string]$Lane = 'lane-23') {
   $main = Join-Path $Root 'main'
   if (-not (Test-Path -LiteralPath (Join-Path $main '.git'))) {
     New-Item -ItemType Directory -Path $main -Force | Out-Null
-    Invoke-CheckedGit $main @('init','--initial-branch=main') | Out-Null
+    Invoke-CheckedGit $main @('init','--initial-branch=synthetic/long-gate-main') | Out-Null
     Invoke-CheckedGit $main @('config','user.name','Long Product Gate Test') | Out-Null
     Invoke-CheckedGit $main @('config','user.email','long-product-gate@example.invalid') | Out-Null
     Write-Text (Join-Path $main 'seed.txt') 'seed'

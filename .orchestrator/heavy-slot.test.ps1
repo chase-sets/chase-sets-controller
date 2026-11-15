@@ -1,6 +1,10 @@
-param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0)
+param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserOnly, [switch]$BrowserBaseline, [switch]$CensusOnly, [switch]$CurrentBindingOnly, [switch]$IdentityOnly, [switch]$LauncherNonReentryOnly, [switch]$Baseline, [switch]$CleanupDiscriminator, [switch]$NestedSmoke, [switch]$NestedOnly, [switch]$MeasurementsAndMutantsOnly, [switch]$MutantsOnly, [ValidateRange(0,11)][int]$MutantStartAt = 0, [string]$Part = '')
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('contracts','authority','matrix','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
+if ($Part -ceq 'measurements') { $MeasurementsAndMutantsOnly = $true }
+if ($Part -ceq 'mutants') { $MutantsOnly = $true }
 . (Join-Path $PSScriptRoot 'heavy-slot-fixture-test-support.ps1')
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
 if ($MeasurementsAndMutantsOnly) { $NestedOnly = $true }
@@ -19,9 +23,10 @@ $dispatchOwnershipSource = Join-Path $PSScriptRoot "dispatch-ownership.ps1"
 $baselineClientBlob = "71deeaae2c999d377d3d2ffe9b933219d62a06ff"
 $node = Get-Command node -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
-. (Join-Path $PSScriptRoot 'pnpm-test-support.ps1')
-$pnpmCommandShim = Resolve-NativePnpmTestCommand
-$nativePnpm = $pnpmCommandShim.NativePath
+$pnpmCommandShim = Get-Command pnpm -All -ErrorAction Stop |
+  Where-Object { $_.Source -like "*\pnpm.CMD" } | Select-Object -First 1
+. (Join-Path $PSScriptRoot 'native-pnpm-test-support.ps1')
+$nativePnpm = Resolve-NativePnpmFixture (Get-NativePnpmFixtureShim $pnpmCommandShim.Source)
 $pwsh = Get-Command pwsh -CommandType Application -ErrorAction Stop |
   Select-Object -First 1 -ExpandProperty Source
 $systemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\", "/")
@@ -1131,16 +1136,15 @@ function Invoke-CurrentBindingControls {
   # commits after launch, then runs the unmodified product scoped CLI. Only the
   # disposable package's leaf checks are markers; no admission seam replaces
   # the positive path. Product sources are pinned to the observed consumer.
-  $product = Join-Path (Split-Path -Parent $controllerRoot) "main"
   $productHead = "50a920d4cede95309dff8c4aead17ed43859ccee"
   foreach ($relative in @("scripts/verify-static-scoped.mjs", "scripts/verify-static-surfaces.mjs",
       "scripts/change-scope.mjs", "scripts/e2e-suites.mjs", "scripts/lib/repo.mjs",
       "scripts/lib/risk-policy-v1.mjs", "scripts/lib/heavy-slot.mjs")) {
-    $source = @(& git -C $product show "${productHead}:$relative")
-    Assert-True ($LASTEXITCODE -eq 0) "pinned production scoped dependency $relative is available"
+    $source = Read-CurrentBindingFixture $relative
+    Assert-True (-not [string]::IsNullOrWhiteSpace($source)) "pinned production scoped dependency $relative is available"
     $target = Join-Path $worktree $relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
-    [IO.File]::WriteAllText($target, ($source -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($target, $source, [Text.UTF8Encoding]::new($false))
   }
   $leaf = Join-Path $worktree "scripts/binding-leaf.mjs"
   [IO.File]::WriteAllText($leaf, @'
@@ -1205,9 +1209,9 @@ console.log(`BINDING_BODY ${process.argv[2]} pid=${process.pid}`);
 
   # Execute the exact pre-fix wrapper, then the candidate, against the same
   # real native author, unchanged launch bytes, clean Git head and scoped CLI.
-  $original = @(& git -C $controllerRoot cat-file blob 3d1a71ebd741e78cb018e16e758971272ba31fb7)
-  Assert-True ($LASTEXITCODE -eq 0) "pre-fix wrapper blob is available"
-  [IO.File]::WriteAllText($guard, ($original -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+  $original = Read-CurrentBindingFixture '.orchestrator/invoke-heavy-verifier.ps1'
+  Assert-True (-not [string]::IsNullOrWhiteSpace($original)) "pre-fix wrapper blob is available"
+  [IO.File]::WriteAllText($guard, $original, [Text.UTF8Encoding]::new($false))
   Invoke-ScopedBinding "before-fix-postcommit" 73
   $diagnosticEntry = Start-GateWrapper "test:scripts" $fixture
   $diagnostic = Complete-Fixture $diagnosticEntry 73 "original binding reason at same actual identity"
@@ -1311,33 +1315,43 @@ function Test-RenameTypeBeforeAcquire {
   $source=[IO.File]::ReadAllText($guardSource)
   $class='public static class OwnerRename {'
   Assert-True ($source.Contains($class)) 'rename-type-before-acquire compile seam exists'
-  $invalid=$source.Replace($class,"$class`n#error fix125 injected rename type failure")
+  $parseErrors=$null
+  $syntax=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$parseErrors)
+  $initializer=@($syntax.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-OwnerRename'},$true))
+  $queueWriter=@($syntax.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Write-VerifyQueue'},$true))
+  Assert-True ($parseErrors.Count -eq 0 -and $initializer.Count -eq 1 -and $queueWriter.Count -eq 1) 'rename fault isolation has unique parsed owner initializer and queue writer'
+  # Keep the real queue publisher operational with the same initializer/body,
+  # renamed only in this fixture copy. Its eager initialization must not mask
+  # the owner-load ordering regression by compiling the injected owner fault.
+  $queueInitializer=$initializer[0].Extent.Text.Replace('OwnerRename','QueueRename')
+  $isolated=$source.Replace($initializer[0].Extent.Text,$queueInitializer + "`n" + $initializer[0].Extent.Text)
+  $isolated=$isolated.Replace($queueWriter[0].Extent.Text,$queueWriter[0].Extent.Text.Replace('OwnerRename','QueueRename'))
+  $invalid=$isolated.Replace($class,"$class`n#error fix125 injected rename type failure")
   $load='if (-not $isAttachedAdmission) { Initialize-OwnerRename }'
   Assert-True ($source.Contains($load)) 'rename-type-before-acquire load seam exists'
+  $launch='$child = [Diagnostics.Process]::Start($start)'
+  Assert-True ([regex]::Matches($source,[regex]::Escape($launch)).Count -eq 1) 'rename-type-before-acquire has one actual child launch'
+  # Observe the actual launch, not a Node exit callback that may never run
+  # after the wrapper's deliberate compile failure interrupts publication.
+  $observedLaunch=@'
+$child = [Diagnostics.Process]::Start($start)
+[IO.File]::WriteAllText($env:SLOT_CHILD_START_MARKER, [string]$child.Id)
+'@
   foreach ($variant in @('candidate','late-load')) {
-    $copy=$invalid
+    $copy=$invalid.Replace($launch,$observedLaunch)
     if ($variant -ceq 'late-load') {
-      # Queue publication also uses this type before child launch. Keep its
-      # implementation intact under a separate name in this owner-only mutant.
-      $guardAst=[Management.Automation.Language.Parser]::ParseInput($source,[ref]$null,[ref]$null)
-      $initializers=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Initialize-OwnerRename'},$true))
-      $queueWriters=@($guardAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Write-VerifyQueue'},$true))
-      Assert-True ($initializers.Count -eq 1 -and $queueWriters.Count -eq 1) 'late-load queue isolation has exact production seams'
-      $queueInitializer=$initializers[0].Extent.Text.Replace('OwnerRename','QueueOwnerRename')
-      $queueWriter=$queueWriters[0].Extent.Text
-      $copy=$copy.Replace($queueWriter,$queueWriter.Replace('OwnerRename','QueueOwnerRename'))
-      $copy=$copy.Replace($load,$queueInitializer + "`n# MUTANT load at first non-create transition")
+      $copy=$copy.Replace($load,'# MUTANT load at first non-create transition')
       $copy=$copy.Replace('  $temporaryPath = Join-Path $lockPath ("owner.transition."','  Initialize-OwnerRename' + "`n" + '  $temporaryPath = Join-Path $lockPath ("owner.transition."')
     }
-    $marker=Join-Path $root "rename-type-$variant.exit"
+    $marker=Join-Path $root "rename-type-$variant.started"
     try {
       [IO.File]::WriteAllText($guard,$copy)
-      $entry=Start-GateWrapper 'test:scripts' $fixture @{SLOT_EXIT_MARKER=$marker}
+      $entry=Start-GateWrapper 'test:scripts' $fixture @{SLOT_CHILD_START_MARKER=$marker}
       $stdout=$entry.Process.StandardOutput.ReadToEndAsync(); $stderr=$entry.Process.StandardError.ReadToEndAsync()
       Assert-True ($entry.Process.WaitForExit(30000)) 'rename compile failure exits within existing fixture bound'
       $output=$stdout.Result + $stderr.Result
       Assert-True ($entry.Process.ExitCode -ne 0 -and $output.Contains('fix125 injected rename type failure')) 'rename type failure is observable'
-      if ($variant -ceq 'late-load') { Wait-Condition { Test-Path $marker } 'late-load pre-acquire exit marker' }
+      if ($variant -ceq 'late-load') { Wait-Condition { Test-Path $marker } 'late-load pre-acquire start marker' }
       $markerPresent=Test-Path $marker
       $lockPresent=Test-Path $lock
       if ($variant -ceq 'candidate') { Assert-True (-not $markerPresent -and -not $lockPresent) 'rename-type-before-acquire leaves no lock or child' }
@@ -1703,7 +1717,7 @@ process.exit(0);
 Copy-Item -LiteralPath $childFixture -Destination (Join-Path $worktree "scripts/playwright.js")
 [IO.File]::WriteAllText((Join-Path $worktree "scripts/run-e2e-suite.mjs"), 'import "./fixture.cjs";', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $worktree "scripts/run-workspaces.mjs"), 'import "./child.cjs";', [Text.UTF8Encoding]::new($false))
-[IO.File]::WriteAllText((Join-Path $worktree "package.json"), '{"name":"heavy-slot-fixture","private":true,"scripts":{"test:e2e:suite":"node ./scripts/run-e2e-suite.mjs","suite:alias":"pnpm run suite:direct","suite:direct":"node ./scripts/run-e2e-suite.mjs"}}', [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $worktree "package.json"), '{"name":"heavy-slot-fixture","private":true,"scripts":{"test:e2e:suite":"node ./scripts/run-e2e-suite.mjs","suite:alias":"pnpm run suite:direct","suite:direct":"node ./scripts/run-e2e-suite.mjs","test:canonical-record":"vitest run --config ./vitest.scripts.config.mjs scripts/canonical-record.test.mjs --maxWorkers=1 --fileParallelism=false --silent=false"}}', [Text.UTF8Encoding]::new($false))
 Invoke-FixtureGit @("init", "--initial-branch=codex/heavy-slot-fixture") | Out-Null
 Invoke-FixtureGit @("config", "user.name", "Heavy Slot Test") | Out-Null
 Invoke-FixtureGit @("config", "user.email", "heavy-slot-test@example.invalid") | Out-Null
@@ -1742,6 +1756,7 @@ try {
   $fixtureStage = "initial-boundary"
   Assert-DisposableRoot
   Assert-FreshChildEnvironmentBoundary
+  if (Test-SuitePart $Part 'contracts') {
   if ($OwnerTransitionOnly -or -not ($FilteredTestOnly -or $BrowserOnly -or $BrowserBaseline -or $CensusOnly -or $CurrentBindingOnly -or $IdentityOnly -or $LauncherNonReentryOnly -or $Baseline -or $CleanupDiscriminator -or $NestedSmoke -or $NestedOnly)) {
     $fixtureStage = 'nested-publication-window'
     $dispatchRecord = Write-DispatchOwnership
@@ -1840,8 +1855,10 @@ try {
     Write-Output "PASS detached/branch protocol: attached and started roots, real descendants, malformed/null/empty/crossed fields, same-head Git transitions"
     if ($IdentityOnly) { return }
   }
+  }
   $dispatchRecord = Write-DispatchOwnership
 
+  if (Test-SuitePart $Part 'contracts') {
   if ($FilteredTestOnly -or (-not $NestedOnly -and -not $NestedSmoke -and -not $Baseline)) {
     $fixtureStage = "filtered-workspace-test"
     Invoke-FilteredTestControls
@@ -2039,10 +2056,11 @@ try {
   $fixtureStage = "launcher-non-reentry"
   Test-LauncherNonReentry
   }
+  }
 
   # Hold one exact test-local owner (a real driver root) for the NC1-NC4,
   # sibling, nested, writer-entry, record, and raw-protocol controls.
-  if (-not $MeasurementsAndMutantsOnly) {
+  if ((Test-SuitePart $Part 'authority') -and -not $MeasurementsAndMutantsOnly) {
   $fixtureStage = "shared-holder-start"
   $holderMarker = Join-Path $root "holder.marker"
   $holder = Start-DriverHolder @{ SLOT_MARKER = $holderMarker }
@@ -2499,6 +2517,8 @@ try {
   Assert-True ($escapedProduction.error -ceq "ENOENT") "production wrapper death removes the pipe while the Gate child lives (connect=$($escapedProduction | ConvertTo-Json -Compress))"
   Write-Output "PASS escaped server handle: pipe instance does not outlive the exact wrapper"
 
+  }
+  if ((Test-SuitePart $Part 'matrix') -and -not $MeasurementsAndMutantsOnly) {
   # Gate/kind closure: every allowed and crossed pair under Attach and Gate roots.
   $fixtureStage = "kind-matrix"
   $matrixRows = [Collections.Generic.List[string]]::new()
@@ -2541,6 +2561,7 @@ try {
   Write-Output "PASS gate/kind closure proven for every allowed and crossed pair"
   }
 
+  if (Test-SuitePart $Part 'measurements') {
   # AC1 measurement: complete unchanged work (one root, nineteen sequential
   # nested children, one deeper grandchild) under the baseline client at
   # 71deeaae and under the candidate, counted by job-object accounting.
@@ -2548,7 +2569,7 @@ try {
   $fixtureStage = "measurement"
   $baselineClient = Join-Path $root "heavy-slot.baseline.cjs"
   $baselineGuard = Join-Path $root "invoke-heavy-verifier.baseline.ps1"
-  $baselineGuardBytes = & git -C $controllerRoot show '177f2d55176d122b267444c3de240927f98285ff:.orchestrator/invoke-heavy-verifier.ps1' 2>$null
+  $baselineGuardBytes = & git -C $controllerRoot cat-file blob '7aae059c121a433e628cf7935fb1e62e7f08b2ee' 2>$null
   Assert-True ($LASTEXITCODE -eq 0) "baseline wrapper is readable at the installed baseline"
   [IO.File]::WriteAllText($baselineGuard, (($baselineGuardBytes -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
   $baselineBytes = & git -C $controllerRoot cat-file blob $baselineClientBlob 2>$null
@@ -2620,6 +2641,8 @@ try {
 
   }
 
+  }
+  if (Test-SuitePart $Part 'mutants') {
   # Per-guard candidate/bypass mutants: one governing variable each, every
   # other input frozen, proving each refusal is load-bearing.
   $fixtureStage = "mutants"
@@ -2791,6 +2814,7 @@ try {
   foreach ($row in $mutantRows) { Write-Output $row }
   Write-Output "PASS per-guard candidate/bypass mutants: every nested authority guard is load-bearing"
 
+  }
   Write-Output "PASS heavy slot artifact acquisition, token identity, refusal, nesting, nested authority, and re-entrancy"
 } catch {
   $bodyFailure = $_
