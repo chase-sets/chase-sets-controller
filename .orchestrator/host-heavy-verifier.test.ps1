@@ -712,7 +712,7 @@ text = source.read_text().replace("Path('/opt/chase-sets-native-db/admission.py'
     foreach ($extra in @(@('-CommandPath',(Get-Process -Id $PID).Path),@('-NativeEnvironment','PGHOSTADDR=synthetic'))) {
       [void](Complete-NativeFixture (Start-NativeFixture ($nativeMode+$extra)) 1)
     }
-    [void](Complete-NativeFixture (Start-NativeFixture @('-NativeDbProfile','Reconciliation-pg16/v1','-NativeRequestPath',$requestPath)) 1)
+    if ((Complete-NativeFixture (Start-NativeFixture @('-NativeDbProfile','Reconciliation-pg16/v1','-NativeRequestPath',$requestPath)) 73) -notmatch '^heavy-verifier: invalid closed route value\s*$') { throw 'native profile-case refusal lost its closed-route boundary' }
     $requestRaw = [IO.File]::ReadAllText($requestPath)
     foreach ($encoding in @([Text.UTF8Encoding]::new($true), [Text.UnicodeEncoding]::new($false, $true))) {
       [byte[]]$encoded = $encoding.GetPreamble() + $encoding.GetBytes($requestRaw)

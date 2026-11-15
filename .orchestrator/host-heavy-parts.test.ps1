@@ -21,7 +21,8 @@ if ($Part -ceq 'native') { $NativeDbOnly = $true }
 $prelude = $prelude.Replace("`r`n", "`n")
 $expected = Replace-One $expected "`$ErrorActionPreference = 'Stop'`nfunction Read-FixtureOwner" ("`$ErrorActionPreference = 'Stop'`n" + $prelude + "`nfunction Read-FixtureOwner")
 $expected = Replace-One $expected 'if (-not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }' 'if ((Test-SuitePart $Part ''native'') -and -not $Baseline -and -not $Control) { & $PSCommandPath -NativeDbOnly }'
-Assert-True ($source -ceq $expected) 'full host source conserved: only selector prelude and native-call guard added'
+$expected = Replace-One $expected '    [void](Complete-NativeFixture (Start-NativeFixture @(''-NativeDbProfile'',''Reconciliation-pg16/v1'',''-NativeRequestPath'',$requestPath)) 1)' '    if ((Complete-NativeFixture (Start-NativeFixture @(''-NativeDbProfile'',''Reconciliation-pg16/v1'',''-NativeRequestPath'',$requestPath)) 73) -notmatch ''^heavy-verifier: invalid closed route value\s*$'') { throw ''native profile-case refusal lost its closed-route boundary'' }'
+Assert-True ($source -ceq $expected) 'full host source conserved: only selector prelude, native-call guard and exact profile-case refusal repair added'
 
 # Stop before even defining the fixture helpers; exercise real parameter binding.
 $prefix = $source.Substring(0, $source.IndexOf('function Read-FixtureOwner'))
