@@ -2,7 +2,7 @@
 param(
   [ValidateSet('', 'bypass-fifo', 'skip-absent-head', 'renumber-on-retry', 'prune-live', 'never-expire', 'reset-without-authority', 'quarantine-early', 'ignore-marker', 'rename-completes', 'controller-bypass-fifo', 'controller-command-link')][string]$Mutant = '',
   [string]$GuardRevision = '',
-  [ValidateSet('all','order','lifecycle','authority','recovery','isolation','controller')][string]$Part = 'all',
+  [ValidateSet('all','order','lifecycle','authority','recovery','isolation','controller','hosted-controller','hosted-main')][string]$Part = 'all',
   # Bound for each fixture step (driver start, one guarded attempt). A loaded
   # host can spend most of a minute inside one cold guard process.
   [ValidateRange(10,1800)][int]$FixtureTimeoutSeconds = 300,
@@ -13,6 +13,13 @@ param(
   [ValidateRange(1,11)][int]$MatrixThrottle = 1
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+$skipControllerOrder = $false
+if ($Part -like 'hosted-*') {
+  Assert-SuiteSelection $Part @('hosted-controller','hosted-main') $PSBoundParameters @('Mutant','GuardRevision','MutantMatrix','MatrixMutants','MatrixThrottle')
+  $skipControllerOrder = $Part -ceq 'hosted-main'
+  $Part = if ($skipControllerOrder) { 'all' } else { 'controller' }
+}
 $suiteClock = [Diagnostics.Stopwatch]::StartNew()
 $repo = Split-Path -Parent $PSScriptRoot
 $expectedKills = [ordered]@{
@@ -341,7 +348,7 @@ fs.appendFileSync(process.env.FIFO_BODY,'body\n');
   }
   if($Part -eq 'lifecycle'){Test-MutantLifecycle;Write-Output "PASS FIFO mutant case=$Mutant";return}
   if($Part-eq'all') {
-  Test-ControllerOrder
+  if (-not $skipControllerOrder) { Test-ControllerOrder }
   $control=Invoke-Attempt $a Gate
   Assert-Fifo ($control.Code-eq0-and$control.Body) 'AC2 initial no-waiter control' $control.Output
   Write-Output 'PASS AC2 initial no-waiter control'

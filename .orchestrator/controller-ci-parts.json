@@ -561,6 +561,15 @@
       "ownership": { "parts": ["windows", "native"] }
     },
     {
+      "identity": "test:invoke-heavy-verifier-fifo.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "hosted-controller", "weight": 1 },
+        { "name": "hosted-main", "weight": 3 }
+      ],
+      "ownership": { "parts": ["hosted-controller", "hosted-main"] }
+    },
+    {
       "identity": "test:heavy-slot.test.ps1",
       "selector": "-Part",
       "parts": [

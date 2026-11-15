@@ -111,8 +111,8 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
   }
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1')
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1','test:dispatch-ownership.test.ps1')
-  $expectedMappings += @('test:heavy-slot.test.ps1','test:host-heavy-verifier.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq16-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings += @('test:heavy-slot.test.ps1','test:host-heavy-verifier.test.ps1','test:invoke-heavy-verifier-fifo.test.ps1')
+  Assert-Ci (@($Manifest.items).Count-eq17-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
