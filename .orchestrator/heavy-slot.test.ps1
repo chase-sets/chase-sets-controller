@@ -2,7 +2,7 @@ param([switch]$OwnerTransitionOnly, [switch]$FilteredTestOnly, [switch]$BrowserO
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
-Assert-SuiteSelection $Part @('contracts','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
+Assert-SuiteSelection $Part @('contracts','authority','matrix','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
 if ($Part -ceq 'measurements') { $MeasurementsAndMutantsOnly = $true }
 if ($Part -ceq 'mutants') { $MutantsOnly = $true }
 . (Join-Path $PSScriptRoot 'heavy-slot-fixture-test-support.ps1')
@@ -1756,6 +1756,7 @@ try {
   $fixtureStage = "initial-boundary"
   Assert-DisposableRoot
   Assert-FreshChildEnvironmentBoundary
+  if (Test-SuitePart $Part 'contracts') {
   if ($OwnerTransitionOnly -or -not ($FilteredTestOnly -or $BrowserOnly -or $BrowserBaseline -or $CensusOnly -or $CurrentBindingOnly -or $IdentityOnly -or $LauncherNonReentryOnly -or $Baseline -or $CleanupDiscriminator -or $NestedSmoke -or $NestedOnly)) {
     $fixtureStage = 'nested-publication-window'
     $dispatchRecord = Write-DispatchOwnership
@@ -1854,8 +1855,10 @@ try {
     Write-Output "PASS detached/branch protocol: attached and started roots, real descendants, malformed/null/empty/crossed fields, same-head Git transitions"
     if ($IdentityOnly) { return }
   }
+  }
   $dispatchRecord = Write-DispatchOwnership
 
+  if (Test-SuitePart $Part 'contracts') {
   if ($FilteredTestOnly -or (-not $NestedOnly -and -not $NestedSmoke -and -not $Baseline)) {
     $fixtureStage = "filtered-workspace-test"
     Invoke-FilteredTestControls
@@ -2053,10 +2056,11 @@ try {
   $fixtureStage = "launcher-non-reentry"
   Test-LauncherNonReentry
   }
+  }
 
   # Hold one exact test-local owner (a real driver root) for the NC1-NC4,
   # sibling, nested, writer-entry, record, and raw-protocol controls.
-  if (-not $MeasurementsAndMutantsOnly) {
+  if ((Test-SuitePart $Part 'authority') -and -not $MeasurementsAndMutantsOnly) {
   $fixtureStage = "shared-holder-start"
   $holderMarker = Join-Path $root "holder.marker"
   $holder = Start-DriverHolder @{ SLOT_MARKER = $holderMarker }
@@ -2513,6 +2517,8 @@ try {
   Assert-True ($escapedProduction.error -ceq "ENOENT") "production wrapper death removes the pipe while the Gate child lives (connect=$($escapedProduction | ConvertTo-Json -Compress))"
   Write-Output "PASS escaped server handle: pipe instance does not outlive the exact wrapper"
 
+  }
+  if ((Test-SuitePart $Part 'matrix') -and -not $MeasurementsAndMutantsOnly) {
   # Gate/kind closure: every allowed and crossed pair under Attach and Gate roots.
   $fixtureStage = "kind-matrix"
   $matrixRows = [Collections.Generic.List[string]]::new()

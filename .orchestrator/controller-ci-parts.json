@@ -549,11 +549,13 @@
       "selector": "-Part",
       "parts": [
         { "name": "contracts", "weight": 1 },
+        { "name": "authority", "weight": 1 },
+        { "name": "matrix", "weight": 1 },
         { "name": "measurements", "weight": 1 },
         { "name": "mutants", "weight": 1 }
       ],
       "ownership": {
-        "parts": ["contracts", "measurements", "mutants"]
+        "parts": ["contracts", "authority", "matrix", "measurements", "mutants"]
       }
     },
     {

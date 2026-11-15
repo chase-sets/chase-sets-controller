@@ -12,12 +12,18 @@ $oldHeader = $baseline.Split("`n")[0]
 $newHeader = $oldHeader.Substring(0, $oldHeader.Length - 1) + ", [string]`$Part = '')"
 $prelude = @'
 . (Join-Path $PSScriptRoot 'suite-parts.ps1')
-Assert-SuiteSelection $Part @('contracts','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
+Assert-SuiteSelection $Part @('contracts','authority','matrix','measurements','mutants') $PSBoundParameters @('OwnerTransitionOnly','FilteredTestOnly','BrowserOnly','BrowserBaseline','CensusOnly','CurrentBindingOnly','IdentityOnly','LauncherNonReentryOnly','Baseline','CleanupDiscriminator','NestedSmoke','NestedOnly','MeasurementsAndMutantsOnly','MutantsOnly','MutantStartAt')
 if ($Part -ceq 'measurements') { $MeasurementsAndMutantsOnly = $true }
 if ($Part -ceq 'mutants') { $MutantsOnly = $true }
 '@
+$prelude = $prelude.Replace("`r`n", "`n")
 $expected = Replace-One $baseline $oldHeader $newHeader
 $expected = Replace-One $expected '. (Join-Path $PSScriptRoot ''heavy-slot-fixture-test-support.ps1'')' ($prelude + "`n. (Join-Path `$PSScriptRoot 'heavy-slot-fixture-test-support.ps1')")
+$expected = Replace-One $expected '  Assert-FreshChildEnvironmentBoundary' ("  Assert-FreshChildEnvironmentBoundary`n  if (Test-SuitePart `$Part 'contracts') {")
+$expected = Replace-One $expected "  `$dispatchRecord = Write-DispatchOwnership`n`n  if (`$FilteredTestOnly" ("  }`n  `$dispatchRecord = Write-DispatchOwnership`n`n  if (Test-SuitePart `$Part 'contracts') {`n  if (`$FilteredTestOnly")
+$expected = Replace-One $expected "  Test-LauncherNonReentry`n  }" "  Test-LauncherNonReentry`n  }`n  }"
+$expected = Replace-One $expected '  if (-not $MeasurementsAndMutantsOnly) {' "  if ((Test-SuitePart `$Part 'authority') -and -not `$MeasurementsAndMutantsOnly) {"
+$expected = Replace-One $expected '  # Gate/kind closure: every allowed and crossed pair under Attach and Gate roots.' ("  }`n  if ((Test-SuitePart `$Part 'matrix') -and -not `$MeasurementsAndMutantsOnly) {`n  # Gate/kind closure: every allowed and crossed pair under Attach and Gate roots.")
 $expected = Replace-One $expected '  # AC1 measurement: complete unchanged work (one root, nineteen sequential' ("  if (Test-SuitePart `$Part 'measurements') {`n  # AC1 measurement: complete unchanged work (one root, nineteen sequential")
 $expected = Replace-One $expected '  # Per-guard candidate/bypass mutants: one governing variable each, every' ("  }`n  if (Test-SuitePart `$Part 'mutants') {`n  # Per-guard candidate/bypass mutants: one governing variable each, every")
 $expected = Replace-One $expected '  Write-Output "PASS heavy slot artifact acquisition, token identity, refusal, nesting, nested authority, and re-entrancy"' ("  }`n  Write-Output `"PASS heavy slot artifact acquisition, token identity, refusal, nesting, nested authority, and re-entrancy`"")
@@ -28,15 +34,17 @@ $prefix = $source.Substring(0, $source.IndexOf(". (Join-Path `$PSScriptRoot 'hea
 $probe = [scriptblock]::Create($prefix.Replace('$PSScriptRoot', "'$PSScriptRoot'") + @'
 if ($MutantsOnly) { $MeasurementsAndMutantsOnly = $true }
 [pscustomobject]@{
-  contracts = -not $MeasurementsAndMutantsOnly
+  contracts = (Test-SuitePart $Part 'contracts') -and -not $MeasurementsAndMutantsOnly
+  authority = (Test-SuitePart $Part 'authority') -and -not $MeasurementsAndMutantsOnly
+  matrix = (Test-SuitePart $Part 'matrix') -and -not $MeasurementsAndMutantsOnly
   measurements = (Test-SuitePart $Part 'measurements') -and -not $MutantsOnly
   mutants = Test-SuitePart $Part 'mutants'
 }
 '@)
-foreach ($name in @('<default>','contracts','measurements','mutants')) {
+foreach ($name in @('<default>','contracts','authority','matrix','measurements','mutants')) {
   $arguments = if ($name -ceq '<default>') { @{} } else { @{Part=$name} }
   $row = & $probe @arguments
-  foreach ($stage in @('contracts','measurements','mutants')) {
+  foreach ($stage in @('contracts','authority','matrix','measurements','mutants')) {
     Assert-True ($row.$stage -eq ($name -ceq '<default>' -or $name -ceq $stage)) "exact split selection: $name/$stage"
   }
 }
@@ -61,8 +69,8 @@ $inventory = @([pscustomobject]@{identity=$item[0].identity;path='.orchestrator/
 $only = @{schemaVersion='controller-ci-parts/v1';items=$item}
 Assert-CiManifest $inventory $only (Split-Path -Parent $PSScriptRoot)
 $tasks = New-CiAssignments $inventory '' $only -ShardCount 16
-Assert-True ($tasks.Count -eq 3 -and @($tasks | Where-Object restriction).Count -eq 0) 'all three parts remain hosted requirements'
-foreach ($missing in @('contracts','measurements','mutants')) {
+Assert-True ($tasks.Count -eq 5 -and @($tasks | Where-Object restriction).Count -eq 0) 'all five parts remain hosted requirements'
+foreach ($missing in @('contracts','authority','matrix','measurements','mutants')) {
   $bad = $only | ConvertTo-Json -Depth 50 | ConvertFrom-Json -Depth 50
   $bad.items[0].parts = @($bad.items[0].parts | Where-Object name -CNE $missing)
   $refused = $false
