@@ -127,6 +127,15 @@ Assert-Ci ((@($diagnosticItem[0].parts.name|Sort-Object)-join',')-ceq'admission,
 Assert-Ci (((Get-SuiteExpectedParts $diagnosticPath|Sort-Object)-join',')-ceq'admission,cost') 'diagnostic selector census changed'
 $diagnosticBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','bbe3ce539cacfa664fe73dd6d78bfe0cb38d29ad'))
 $diagnosticBaseline=$diagnosticBaseline.Replace("`r`n","`n")
+$diagnosticPinUpdates=@{
+  '0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60'='b99079940a5ab40a45e3f3f416d29dca62482b1c160c3475d76e24409f3212c0'
+  'release declaration preserves all five staged-import Chromium dependency hashes'='release declaration pins all five staged-import Chromium dependency hashes'
+  'dependencies=5 hashes=unchanged'='dependencies=5 hashes=pinned'
+}
+foreach($update in $diagnosticPinUpdates.GetEnumerator()){
+  Assert-Ci (([regex]::Matches($diagnosticBaseline,[regex]::Escape($update.Key))).Count-eq1) 'diagnostic pin update anchor missing/duplicate'
+  $diagnosticBaseline=$diagnosticBaseline.Replace($update.Key,$update.Value)
+}
 $diagnosticParameter=@'
   [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All',
   [string]$Part = ''
