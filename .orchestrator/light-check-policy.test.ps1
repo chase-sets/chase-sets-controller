@@ -12,6 +12,9 @@ foreach ($role in @('implementation','planning','review','decision')) {
     foreach ($required in @('Scoped compiler checks and explicit one-worker non-DB test files run directly',
         'do not add acquireHeavySlot or an invoke-heavy-verifier wrapper',
         'Full-workspace, DB and browser checks retain heavy admission',
+        'For known Vitest non-DB file checks, use pnpm --filter <exact-package> exec vitest run',
+        'preserve the package config, explicit files, --maxWorkers=1 and --no-file-parallelism',
+        'Filtered run test aliases still require admission; do not use them for these light checks',
         'Never run a refused heavy command unadmitted')) {
       if (-not $text.Contains($required, [StringComparison]::Ordinal)) { throw "missing light-check boundary for $role/row-$row : $required" }
     }
@@ -32,6 +35,10 @@ const classifier = require(process.argv[1]);
 const scripts = { scoped: 'tsc -p work/scoped.json --noEmit', focused: 'vitest run source/one.test.ts --maxWorkers 1',
   mixed: 'tsc -p work/scoped.json --noEmit && pnpm run verify:test-db', browser: 'playwright test source/one.spec.ts' };
 const cases = [
+  // The reported product command is a package alias, not a direct Vitest CLI.
+  [['node','pnpm.cjs','--filter','@chase-sets/checkout','run','test','--maxWorkers=1','--no-file-parallelism','features/sell-list/read-model/queries.test.ts'], 'script-battery'],
+  [['node','pnpm.cjs','--filter','@chase-sets/checkout','exec','vitest','run','--config','./tests/vitest.config.mjs','--maxWorkers=1','--no-file-parallelism','features/sell-list/read-model/queries.test.ts'], null],
+  [['node','pnpm.cjs','--filter','@chase-sets/checkout','exec','vitest','run','--config','./tests/vitest.config.mjs','--maxWorkers=1','--no-file-parallelism'], 'vitest-full'],
   [['node','node_modules/typescript/bin/tsc','-p','work/scoped.json','--noEmit'], null],
   [['node','pnpm.cjs','run','scoped'], null],
   [['node','pnpm.cjs','run','focused'], null],

@@ -1045,7 +1045,7 @@ if ($admissionIdentityMode -eq "branch") {
 }
 
 function Get-HeavyVerificationPreamble([string]$Role, [int]$RoutingRow, [string]$Entrypoint) {
-  $lightChecks = "Light-check boundary: Scoped compiler checks and explicit one-worker non-DB test files run directly; do not add acquireHeavySlot or an invoke-heavy-verifier wrapper to those commands. Full-workspace, DB and browser checks retain heavy admission, including aliases and mixed commands. Never run a refused heavy command unadmitted. Hosted exact-head CI remains authoritative.`r`n`r`n"
+  $lightChecks = "Light-check boundary: Scoped compiler checks and explicit one-worker non-DB test files run directly; do not add acquireHeavySlot or an invoke-heavy-verifier wrapper to those commands. For known Vitest non-DB file checks, use pnpm --filter <exact-package> exec vitest run; preserve the package config, explicit files, --maxWorkers=1 and --no-file-parallelism. Filtered run test aliases still require admission; do not use them for these light checks. Full-workspace, DB and browser checks retain heavy admission, including aliases and mixed commands. Never run a refused heavy command unadmitted. Hosted exact-head CI remains authoritative.`r`n`r`n"
   if ($Role -cne 'implementation' -or $RoutingRow -eq 13) {
     return $lightChecks + "Heavy verification contract: planning, review and row-13 documentation lanes use evidence inspection and cheap focused checks only. Heavy commands refuse with exit 73 before reservation; this is non-execution, not PASS or a consumed attempt. Return heavy reproduction to the host for an attributed implementation/verifier lane. Controller reviewers rerun changed tests directly, never through ControllerBattery or ControllerPrecursor.`r`n`r`n"
   }
