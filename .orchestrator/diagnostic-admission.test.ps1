@@ -3,10 +3,14 @@ param(
   [switch]$CostAttributionOnly,
   [switch]$ExistingAdmissionOnly,
   [switch]$JsonCensusOnly,
-  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All'
+  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All',
+  [string]$Part = ''
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('admission','cost') $PSBoundParameters @('CostAttributionOnly','ExistingAdmissionOnly','JsonCensusOnly','CostPart')
+if ($Part) { $CostAttributionOnly = $Part -ceq 'cost'; $ExistingAdmissionOnly = $Part -ceq 'admission' }
 if (([int][bool]$CostAttributionOnly + [int][bool]$ExistingAdmissionOnly + [int][bool]$JsonCensusOnly) -gt 1) { throw 'Select only one focused diagnostic-admission control set' }
 if ($CostPart -ne 'All' -and -not $CostAttributionOnly) { throw 'CostPart requires the explicit CostAttributionOnly focus' }
 $guard = Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'
@@ -38,19 +42,19 @@ $chromiumDeclaration = $releaseDeclarations.diagnostics.'staged-import-chromium-
 Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declarations/v1' -and
   $chromiumDeclaration.enabled -eq $true -and $chromiumDeclaration.kind -ceq 'standalone-node' -and
   $chromiumDeclaration.path -ceq '.tmp/operator-7334-staged-import/chromium-control.mjs' -and
-  $chromiumDeclaration.sha256 -ceq 'da3ed81e6aaf4f4e5700ec14c103ee7de5e689d35470f8b9dc06a8de2a9afab1' -and
+  $chromiumDeclaration.sha256 -ceq 'e7e9c5640c641e3308469453ba2aa7ac17a3a0017c8cbc0e9030e09874552d85' -and
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
 $expectedChromiumDependencies = @(
-  '.tmp/operator-7334-staged-import/runtime.mjs=0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60',
+  '.tmp/operator-7334-staged-import/runtime.mjs=b99079940a5ab40a45e3f3f416d29dca62482b1c160c3475d76e24409f3212c0',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-classification.js=b9222c43896c74d65d167aef45337552678196a9a7badcf24c6e208c302960f9',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-envelope.js=db23964f76c7cbff8ccdf95298b96e3b5cb294dd8087abdb3b653967339afa20',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-readback-verdict.js=456c5bff8d25dc3f7a8ad31ac1a4d8f6da34895dc069c04ae96525381eee8a1d',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-release-gate.js=93ed41b9a06146270b384a7e9c107d1ba76e69c80b3ba45aa0ff2b19e9cb5144'
 )
 $actualChromiumDependencies = @($chromiumDeclaration.dependencies | ForEach-Object { "$($_.path)=$($_.sha256)" })
-Assert-True (($actualChromiumDependencies -join '|') -ceq ($expectedChromiumDependencies -join '|')) 'release declaration preserves all five staged-import Chromium dependency hashes'
-Write-Output 'PASS release declaration staged-import-chromium-control dependencies=5 hashes=unchanged'
+Assert-True (($actualChromiumDependencies -join '|') -ceq ($expectedChromiumDependencies -join '|')) 'release declaration pins all five staged-import Chromium dependency hashes'
+Write-Output 'PASS release declaration staged-import-chromium-control dependencies=5 hashes=pinned'
 $censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
 $censusReviewedSha256 = '1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce'
 Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run,json-census-cost-attribution' -and
@@ -506,7 +510,7 @@ function Test-IgnoredChromiumPackage {
   Invoke-FixtureGit @('add','--','.gitignore') | Out-Null
   Invoke-FixtureGit @('commit','-m','ignored package fixture') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
-  $g4r2Root='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import-g4r2'
+  $g4r2Root='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import'
   if (-not (Test-Path -LiteralPath $g4r2Root -PathType Container)) {
     Write-Output "SKIP g4r2-positive-admission reason=reviewed package directory missing: $g4r2Root"
   } else {

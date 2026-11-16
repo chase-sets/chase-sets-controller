@@ -1,6 +1,15 @@
 {
   "items": [
     {
+      "identity": "test:diagnostic-admission.test.ps1",
+      "selector": "-Part",
+      "parts": [
+        { "name": "admission", "weight": 1 },
+        { "name": "cost", "weight": 1 }
+      ],
+      "ownership": { "parts": ["admission", "cost"] }
+    },
+    {
       "identity": "test:dispatch-lane.test.ps1",
       "selector": "-Part",
       "parts": [

@@ -112,12 +112,73 @@ function Assert-Conservation($Manifest,$Overrides=@{}) {
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1')
   $expectedMappings=@('test:dispatch-lane.test.ps1','test:dispatch-routing-data.test.ps1','test:board-hourly-scale.test.ps1','test:landed-integration-dispatch.test.ps1','test:invoke-heavy-verifier.test.ps1','test:heavy-verifier-priority.test.ps1','test:cleanup-orphan-worktree-dirs.test.ps1','test:long-product-gate.test.ps1','test:landed-integration-r3.test.ps1','test:codex-launch-boundary.test.ps1','test:dispatch-lane-installed-claude.test.ps1','test:dispatch-ownership.test.ps1')
   $expectedMappings += @('test:heavy-slot.test.ps1','test:host-heavy-verifier.test.ps1','test:invoke-heavy-verifier-fifo.test.ps1')
-  Assert-Ci (@($Manifest.items).Count-eq17-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
+  $expectedMappings += 'test:diagnostic-admission.test.ps1'
+  Assert-Ci (@($Manifest.items).Count-eq18-and@($expectedMappings|Where-Object{$_-cnotin@($Manifest.items.identity)}).Count-eq0) 'missing/extra proof ownership'
   $inventory=@($Manifest.items|ForEach-Object{[pscustomobject]@{identity=$_.identity;path=('.orchestrator/'+$_.identity.Substring(5));restriction=$null}})
   Assert-CiManifest $inventory $Manifest $root
 }
 Assert-Conservation $manifest
 function Refuses-Coverage([scriptblock]$Body){$refused=$false;try{&$Body}catch{$refused=$true};Assert-Ci $refused 'coverage bypass survived'}
+
+$diagnosticPath=Join-Path $PSScriptRoot 'diagnostic-admission.test.ps1'
+$diagnosticItem=@($manifest.items|Where-Object identity -CEQ 'test:diagnostic-admission.test.ps1')
+Assert-Ci ($diagnosticItem.Count-eq1-and$diagnosticItem[0].selector-ceq'-Part') 'diagnostic split mapping missing/duplicate'
+Assert-Ci ((@($diagnosticItem[0].parts.name|Sort-Object)-join',')-ceq'admission,cost') 'diagnostic part ownership changed'
+Assert-Ci (((Get-SuiteExpectedParts $diagnosticPath|Sort-Object)-join',')-ceq'admission,cost') 'diagnostic selector census changed'
+$diagnosticBaseline=ConvertFrom-CiUtf8 (Read-CiGitBytes $root @('cat-file','blob','bbe3ce539cacfa664fe73dd6d78bfe0cb38d29ad'))
+$diagnosticBaseline=$diagnosticBaseline.Replace("`r`n","`n")
+$diagnosticPinUpdates=@{
+  '0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60'='b99079940a5ab40a45e3f3f416d29dca62482b1c160c3475d76e24409f3212c0'
+  'release declaration preserves all five staged-import Chromium dependency hashes'='release declaration pins all five staged-import Chromium dependency hashes'
+  'dependencies=5 hashes=unchanged'='dependencies=5 hashes=pinned'
+}
+foreach($update in $diagnosticPinUpdates.GetEnumerator()){
+  Assert-Ci (([regex]::Matches($diagnosticBaseline,[regex]::Escape($update.Key))).Count-eq1) 'diagnostic pin update anchor missing/duplicate'
+  $diagnosticBaseline=$diagnosticBaseline.Replace($update.Key,$update.Value)
+}
+$diagnosticParameter=@'
+  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All',
+  [string]$Part = ''
+'@
+$diagnosticSelection=@'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('admission','cost') $PSBoundParameters @('CostAttributionOnly','ExistingAdmissionOnly','JsonCensusOnly','CostPart')
+if ($Part) { $CostAttributionOnly = $Part -ceq 'cost'; $ExistingAdmissionOnly = $Part -ceq 'admission' }
+'@
+$diagnosticParameter=$diagnosticParameter.Replace("`r`n","`n")
+$diagnosticSelection=$diagnosticSelection.Replace("`r`n","`n")
+function Assert-DiagnosticConservation([string]$Source){
+  Assert-Ci (([regex]::Matches($Source,[regex]::Escape($diagnosticParameter))).Count-eq1-and
+    ([regex]::Matches($Source,[regex]::Escape($diagnosticSelection))).Count-eq1) 'diagnostic selector edits missing/duplicate/changed'
+  $restored=$Source.Replace($diagnosticParameter,"  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]`$CostPart = 'All'").Replace($diagnosticSelection+"`n",'')
+  Assert-Ci ($restored-ceq$diagnosticBaseline) 'diagnostic original source changed/dropped/duplicated'
+}
+$diagnosticSource=[IO.File]::ReadAllText($diagnosticPath).Replace("`r`n","`n")
+Assert-DiagnosticConservation $diagnosticSource
+foreach($needle in @('  Test-DiagnosticDescendantSnapshot','  if ($CostAttributionOnly) { return }',"`$success.Result.Code -eq 7")){
+  Assert-Ci ($diagnosticSource.Contains($needle)) 'diagnostic conservation mutant anchor missing'
+  Refuses-Coverage { Assert-DiagnosticConservation $diagnosticSource.Replace($needle,'') }
+  Refuses-Coverage { Assert-DiagnosticConservation $diagnosticSource.Replace($needle,$needle+"`n"+$needle) }
+}
+Refuses-Coverage { Assert-DiagnosticConservation $diagnosticSource.Replace("-ceq 'cost'","-cne 'cost'") }
+foreach($part in @('admission','cost')){
+  Refuses-Coverage { Assert-Ci ((@($diagnosticItem[0].parts.name|Where-Object{$_-cne$part}|Sort-Object)-join',')-ceq'admission,cost') 'diagnostic dropped part survived' }
+}
+$selectionOnly=[scriptblock]::Create(@'
+param([switch]$CostAttributionOnly,[switch]$ExistingAdmissionOnly,[switch]$JsonCensusOnly,[string]$CostPart='All',[string]$Part='')
+'@ + "`n" + $diagnosticSelection.Substring($diagnosticSelection.IndexOf("`n")+1) + "`n" + '[pscustomobject]@{cost=[bool]$CostAttributionOnly;admission=[bool]$ExistingAdmissionOnly;census=[bool]$JsonCensusOnly;costPart=$CostPart}')
+$defaultSelection=& $selectionOnly
+Assert-Ci (-not$defaultSelection.cost-and-not$defaultSelection.admission-and-not$defaultSelection.census-and$defaultSelection.costPart-ceq'All') 'diagnostic default full suite changed'
+foreach($part in @('admission','cost')){
+  $selected=& $selectionOnly -Part $part
+  Assert-Ci ($selected.cost-eq($part-ceq'cost')-and$selected.admission-eq($part-ceq'admission')-and-not$selected.census-and$selected.costPart-ceq'All') 'diagnostic part maps to wrong legacy focus'
+  foreach($legacy in @('CostAttributionOnly','ExistingAdmissionOnly','JsonCensusOnly','CostPart')){
+    $arguments=@{Part=$part};$arguments[$legacy]=if($legacy-ceq'CostPart'){'All'}else{$false}
+    Refuses-Coverage { & $selectionOnly @arguments }
+  }
+}
+foreach($invalid in @('','all','Admission','unknown')){Refuses-Coverage { & $selectionOnly -Part $invalid }}
+Write-Output 'PASS diagnostic split: exact original full source conserved; admission/cost ownership, default whole run, explicit-false legacy conflicts, dropped/duplicated/changed-proof negatives refused'
 
 $codexPath=Join-Path $PSScriptRoot 'codex-launch-boundary.test.ps1'
 $codexItem=$manifest.items|Where-Object identity -eq 'test:codex-launch-boundary.test.ps1'
