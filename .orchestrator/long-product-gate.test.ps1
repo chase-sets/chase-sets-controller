@@ -613,7 +613,7 @@ $queueWatch | Add-Member -MemberType ScriptProperty -Name Elapsed -Value { [Time
         Write-Output 'PASS transient census refusal while queued re-presents ticket=171 and admits with the same ticket'
       }
       'before' {
-        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=<none> count=1)') -and $history.Contains('heavy-verifier: queued; ticket=171') -and $history.Contains('heavy-verifier: admitted; ticket=171')) 'transient census refusal before a ticket starts the queue watch and re-presents before admission'
+        Assert-True ($result.status -ceq 'verifier-passed' -and $result.exit -eq 0 -and $history.Contains('long-product-gate: transient caller-eligibility refusal; re-presenting (ticket=<none> count=1)') -and $history.Contains('heavy-verifier: queued; ticket=171') -and $history.Contains('heavy-verifier: admitted; ticket=171')) "transient census refusal before a ticket starts the queue watch and re-presents before admission (status=$($result.status) exit=$($result.exit) history=$($history | ConvertTo-Json -Compress))"
         Write-Output 'PASS transient census refusal before a ticket starts the queue watch and admits'
       }
       'cap' {

@@ -82,6 +82,98 @@ function Get-PoolStatusFixture($Item,[string]$Name){
 function Invoke-Watchdog($Item,[string]$Name){& $watchdog -Label $Item.spec.label -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $Item.partial -ObservationFixture (New-Observation $Name) -DispatchScript $stub -PoolStatusFixturePath (Get-PoolStatusFixture $Item $Name) -SynchronousDispatch|ConvertFrom-Json -DateKind String}
 function Save-Spec($Item){[IO.File]::WriteAllText((Join-Path $runtime "watchdog-lane-$($Item.spec.label).json"),($Item.spec|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))}
 function Get-CallCount {if(Test-Path $calls){@(Get-Content $calls).Count}else{0}}
+function Test-TransportDeath {
+  $reset='API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again.'
+  $lost='API Error: Connection lost mid-response'
+  function Set-TransportTranscript($Item,[string]$Message,[string]$FinalRecord=''){
+    $records=@(1..10|ForEach-Object{'{"type":"system","subtype":"api_retry","error":"unknown","attempt":'+$_+'}'})
+    $records+='{"type":"assistant","error":"server_error","api_error":"connection_failed","message":{"role":"assistant","content":[{"type":"text","text":"'+$Message+'"}]}}'
+    if(-not$FinalRecord){$FinalRecord=([ordered]@{type='result';subtype='success';is_error=$true;terminal_reason='api_error';result=$Message}|ConvertTo-Json -Compress)}
+    $records+=$FinalRecord
+    [IO.File]::WriteAllText($Item.error,'')
+    [IO.File]::WriteAllText($Item.partial,($records-join"`n")+"`n",[Text.UTF8Encoding]::new($false))
+  }
+  foreach($case in @(@('reset',$reset,1),@('lost',$lost,1),@('connection-failed','API Error: connection_failed',1),@('zero-exit',$reset,0))){
+    $item=New-Spec "transport-$($case[0])" 'claude-opus-5-5' high 0 6 measured
+    $item.spec.exitCode=[long]$case[2];Save-Spec $item;Set-TransportTranscript $item $case[1]
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+    Assert-Recovery $item $result 'claude-opus-5-5' high measured $before
+    $row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+    Assert-True ($row.deathSignature-ceq'STREAM_DISCONNECTED'-and$row.outcome-ceq'WATCHDOG_RELAUNCH'-and$result.relaunchKind-ceq'same-config') 'Claude transport death was not a same-config transport retry'
+    Assert-True ([IO.File]::ReadAllText((Join-Path $runtime "$($result.label).prompt.txt")).Contains('Never repeat an action whose prior outcome is unknown')) 'transport continuation omitted the paid/operator no-replay guard'
+    $again=Invoke-Watchdog $item "$($item.spec.label)-again"
+    Assert-True ($again.status-ceq'DUPLICATE_SKIPPED'-and(Get-CallCount)-eq($before+1)) 'Claude transport death relaunched twice'
+  }
+  $ceiling=New-Spec 'transport-ceiling' 'claude-opus-5-5' high 3 6 measured;Set-TransportTranscript $ceiling $reset
+  $before=Get-CallCount;$result=Invoke-Watchdog $ceiling $ceiling.spec.label;$row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+  Assert-True ($result.status-ceq'HARNESS_CEILING'-and-not$result.relaunch-and(Get-CallCount)-eq$before-and$row.deathSignature-ceq'STREAM_DISCONNECTED') 'Claude transport death bypassed the harness ceiling'
+  foreach($count in 1..2){
+    $item=New-Spec "transport-repeated-$count" 'claude-opus-5-5' high $count 6 measured;Set-TransportTranscript $item $reset
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+    Assert-Recovery $item $result 'claude-opus-5-5' high measured $before
+    Assert-True ($result.relaunchKind-ceq'same-config') 'repeated transport failures invented cross-provider authority'
+  }
+  $fatal='{"type":"result","is_error":true,"terminal_reason":"api_error","result":"'+$reset+'"}'
+  $completed='{"type":"result","is_error":false,"terminal_reason":"completed","result":"recovered successfully"}'
+  foreach($case in @(
+    @('false',$fatal.Replace('"is_error":true','"is_error":false')),
+    @('missing',$fatal.Replace('"is_error":true,','')),
+    @('string',$fatal.Replace('"is_error":true','"is_error":"true"')),
+    @('integer',$fatal.Replace('"is_error":true','"is_error":1')),
+    @('reason',$fatal.Replace('"terminal_reason":"api_error"','"terminal_reason":"completed"')),
+    @('missing-reason',$fatal.Replace('"terminal_reason":"api_error",','')),
+    @('result-object','{"type":"result","is_error":true,"terminal_reason":"api_error","result":{"text":"ECONNRESET"}}'),
+    @('duplicate',$fatal.Replace('"is_error":true','"is_error":false,"is_error":true')),
+    @('array',('['+$fatal+']')),
+    @('malformed','{"type":"result","is_error":true'),
+    @('recovered',($fatal+"`n"+$completed)),
+    @('retry-only','{"type":"system","subtype":"api_retry","api_error":"connection_failed"}'),
+    @('assistant-only','{"type":"assistant","error":"server_error","api_error":"connection_failed","message":{"content":[{"type":"text","text":"ECONNRESET"}]}}')
+  )){
+    $item=New-Spec "transport-negative-$($case[0])" 'claude-opus-5-5' high 0 6 measured;Set-TransportTranscript $item $reset $case[1]
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label;$row=Get-Content $history -Tail 1|ConvertFrom-Json -DateKind String
+    Assert-Recovery $item $result 'claude-opus-5-5' high measured $before
+    Assert-True ($row.deathSignature-ceq'OWNER_DEAD') "transport negative $($case[0]) authorized transport recovery"
+  }
+  foreach($guard in @(@('live','none','LIVE_SLOW'),@('reused','none','OWNERSHIP_UNKNOWN'),@('dead','possible','OWNERSHIP_UNKNOWN'),@('dead','ambiguous','OWNERSHIP_UNKNOWN'))){
+    $item=New-Spec "transport-owner-$($guard[0])-$($guard[1])" 'claude-opus-5-5' high 0 6 measured;Set-TransportTranscript $item $reset
+    $before=Get-CallCount
+    $result=& $watchdog -Label $item.spec.label -RuntimeRoot $runtime -HistoryPath $history -ObservationFixture (New-Observation $item.spec.label $guard[0] $guard[1]) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json
+    Assert-True ($result.status-ceq$guard[2]-and-not$result.relaunch-and(Get-CallCount)-eq$before) 'transport death bypassed ownership safety'
+  }
+  foreach($role in @('planning','review','decision')){
+    $item=New-Spec "transport-role-$role" 'claude-opus-5-5' high 0 6 measured;$item.spec.laneRole=$role;$item.spec.exitCode=[long]0;Save-Spec $item;Set-TransportTranscript $item $reset
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+    Assert-True ($result.status-ceq'OBSERVATION_ONLY'-and-not$result.relaunch-and(Get-CallCount)-eq$before) 'zero-exit transport failure was success or retried for an observation-only role'
+  }
+  $held=New-Spec 'transport-held' 'claude-opus-5-5' high 0 6 measured;Set-TransportTranscript $held $reset
+  $hold=[ordered]@{schemaVersion='watchdog-host-hold/v1';authority='host';state='HELD';holdId=[guid]::NewGuid().ToString();label=$held.spec.label;attemptId=$held.spec.attemptId;launchId=$held.spec.launchId;worktree=$held.spec.worktree;branch=$held.spec.branch;head=$held.spec.head;recordedAt=[datetimeoffset]::UtcNow.ToString('o')}
+  [IO.File]::WriteAllText((Join-Path $runtime "watchdog-host-hold-$($held.spec.label).json"),($hold|ConvertTo-Json -Compress))
+  $before=Get-CallCount;$result=Invoke-Watchdog $held $held.spec.label
+  Assert-True ($result.status-ceq'OBSERVATION_ONLY'-and$result.diagnosis-ceq'HOST_HOLD'-and(Get-CallCount)-eq$before) 'Claude transport death bypassed a host hold'
+  foreach($report in @('unstructured WHOLE_TASK_RELEASE','{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"WHOLE_TASK_RELEASE"}}','{"type":"result","is_error":false,"result":"quoted WHOLE_TASK_RELEASE"}','{"type":"result","is_error":true,"result":"WHOLE_TASK_RELEASE"}')){
+    $item=New-Spec ('transport-orphan-'+[guid]::NewGuid().ToString('N'));$item.spec.exitCode=[long]0;Save-Spec $item;[IO.File]::WriteAllText($item.partial,$report)
+    $before=Get-CallCount;$rowsBefore=@(Get-Content $history).Count;$filesBefore=@(Get-ChildItem $runtime -Filter '*.prompt.txt').Count
+    foreach($observation in 1..2){
+      $result=Invoke-Watchdog $item "$($item.spec.label)-$observation"
+      Assert-True ($result.status-ceq'OBSERVATION_ONLY'-and$result.diagnosis-ceq'ORPHAN_NO_WHOLE_TASK_RELEASE'-and-not$result.relaunch) 'missing implementation release was not a host orphan'
+    }
+    Assert-True ((Get-CallCount)-eq$before-and@(Get-Content $history).Count-eq$rowsBefore-and@(Get-ChildItem $runtime -Filter '*.prompt.txt').Count-eq$filesBefore) 'generic orphan replayed work or mutated recovery history'
+  }
+  $longReport=([ordered]@{type='result';is_error=$false;result=(('completed work '*2000)+"`nWHOLE_TASK_RELEASE")}|ConvertTo-Json -Compress)
+  foreach($report in @('{"type":"result","is_error":false,"result":"Done.\nWHOLE_TASK_RELEASE"}',('{"type":"item.completed","item":{"type":"agent_message","text":"Done.\nWHOLE_TASK_RELEASE"}}'+"`n"+'{"type":"turn.completed"}'),$longReport)){
+    $item=New-Spec ('transport-release-'+[guid]::NewGuid().ToString('N'));$item.spec.exitCode=[long]0;Save-Spec $item;[IO.File]::WriteAllText($item.partial,$report)
+    Set-Content $item.error 'stream disconnected'
+    $before=Get-CallCount;$result=Invoke-Watchdog $item $item.spec.label
+    Assert-True ($result.status-ceq'TERMINAL_SUCCESS'-and-not$result.relaunch-and(Get-CallCount)-eq$before) 'native whole-task release was not terminal success'
+  }
+  foreach($case in @(@('quota','provider quota exceeded','PROVIDER_QUOTA'),@('disconnect','stream disconnected','STREAM_DISCONNECTED'))){
+    $item=New-Spec "transport-control-$($case[0])" 'gpt-6.1-sol' high 0 4 provisional;Set-Content $item.error $case[1]
+    $result=Invoke-Watchdog $item $item.spec.label;$row=Get-Content $history -Tail 1|ConvertFrom-Json
+    Assert-True ($result.status-ceq'RELAUNCHED'-and$row.deathSignature-ceq$case[2]) 'existing quota/disconnect classification changed'
+  }
+  Write-Output 'PASS transport terminal records, same-config once/ceiling, malformed/recovered negatives, owner/role safety, native releases, orphan no-replay and quota/disconnect controls'
+}
 function Assert-Recovery($Item,$Result,[string]$Model,[string]$Effort,[string]$Placement,[int]$Before){
   Assert-True ($Result.status-ceq'RELAUNCHED'-and$Result.row-eq$Item.spec.row-and$Result.model-ceq$Model-and$Result.effort-ceq$Effort-and$Result.placement-ceq$Placement-and$Result.relaunchCount-eq($Item.spec.relaunchCount+1)-and$Result.implementationAttemptIncrement-eq0) 'recovery result changed exact route or semantic count'
   $expected="$($Result.label)|$(Get-Harness $Model)|$Model|$Effort|$($Item.spec.row)|$Placement|$($Item.spec.attemptId)|$($Item.spec.relaunchCount+1)|$($Item.spec.launchId)"
@@ -1396,7 +1488,7 @@ if($IntegrationTargetPath){$target=Get-Content $IntegrationTargetPath -Raw|Conve
     [IO.File]::WriteAllText($history,$valid)
     switch($case){
       malformed {Add-Content $history '{synthetic malformed'}
-      scoped-invalid {$row=(Read-ExactHeadReviewHistory $history).rows[0].value;$row|Add-Member unexpected $true;$row|ConvertTo-Json -Compress|Add-Content $history}
+      scoped-invalid {$authorityRows=@((Read-ExactHeadReviewHistory $history).rows|Where-Object rawSha256 -CEQ $stop);Assert-True ($authorityRows.Count-eq1) 'scoped-invalid fixture binds the exact STOP row';$row=$authorityRows[0].value;$row|Add-Member unexpected $true;$row|ConvertTo-Json -Compress|Add-Content $history}
       unscoped {Add-Content $history '{"integrationAuthoritySchema":"landed-integration-authority/v1","pr":null}'}
       missing {Remove-Item -LiteralPath $history}
     }
@@ -1912,7 +2004,9 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   $failure=New-Spec 'launch-failure';$env:SYNTHETIC_WATCHDOG_FAIL_LABEL='launch-failure.wd1.';$beforeRows=if(Test-Path $history){@(Get-Content $history).Count}else{0};$failedOne=Invoke-Watchdog $failure 'launch-failure-one';$failedTwo=Invoke-Watchdog $failure 'launch-failure-two';$afterRows=if(Test-Path $history){@(Get-Content $history).Count}else{0};Assert-True ($failedOne.status-ceq'LAUNCH_FAILED'-and$failedTwo.status-ceq'LAUNCH_FAILED'-and$beforeRows-eq$afterRows-and$failedOne.relaunchCount-eq0-and$failedTwo.relaunchCount-eq0) 'failed launcher consumed identity/count';Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL
   $ceiling=New-Spec 'ceiling' 'gpt-6.1-sol' 'high' 3;$ceilingResult=Invoke-Watchdog $ceiling 'ceiling';Assert-True ($ceilingResult.status-ceq'HARNESS_CEILING'-and$ceilingResult.implementationAttemptIncrement-eq0) 'fourth death did not block at ceiling'
   foreach($control in @([ordered]@{name='live-slow';owner='live';desc='none';status='LIVE_SLOW'},[ordered]@{name='possible-child';owner='dead';desc='possible';status='OWNERSHIP_UNKNOWN'},[ordered]@{name='reused-pid';owner='reused';desc='none';status='OWNERSHIP_UNKNOWN'},[ordered]@{name='ambiguous-child';owner='dead';desc='ambiguous';status='OWNERSHIP_UNKNOWN'})){$item=New-Spec $control.name;$count=@(Get-Content $calls).Count;$result=& $watchdog -Label $control.name -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $item.partial -ObservationFixture (New-Observation $control.name $control.owner $control.desc) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String;Assert-True ($result.status-ceq$control.status-and@(Get-Content $calls).Count-eq$count) "$($control.name) was relaunched"}
-  $success=New-Spec 'terminal-success';$success.spec.exitCode=[long]0;[IO.File]::WriteAllText((Join-Path $runtime 'watchdog-lane-terminal-success.json'),($success.spec|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$successCount=@(Get-Content $calls).Count;$successResult=& $watchdog -Label terminal-success -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $success.partial -ObservationFixture (New-Observation 'terminal-success') -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String;Assert-True ($successResult.status-ceq'TERMINAL_SUCCESS'-and@(Get-Content $calls).Count-eq$successCount) 'terminal success relaunched'
+  $success=New-Spec 'terminal-success';$success.spec.exitCode=[long]0
+  [IO.File]::WriteAllText($success.partial,'{"type":"item.completed","item":{"type":"agent_message","text":"Done.\nWHOLE_TASK_RELEASE"}}'+"`n"+'{"type":"turn.completed"}')
+  [IO.File]::WriteAllText((Join-Path $runtime 'watchdog-lane-terminal-success.json'),($success.spec|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false));$successCount=@(Get-Content $calls).Count;$successResult=& $watchdog -Label terminal-success -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $success.partial -ObservationFixture (New-Observation 'terminal-success') -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String;Assert-True ($successResult.status-ceq'TERMINAL_SUCCESS'-and@(Get-Content $calls).Count-eq$successCount) 'terminal success relaunched'
   $deadline=New-Spec 'deadline';$deadlineResult=& $watchdog -Label deadline -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $deadline.partial -ObservationFixture (New-Observation 'deadline' 'dead' 'none' 300) -DispatchScript $stub -SynchronousDispatch|ConvertFrom-Json -DateKind String;Assert-True ($deadlineResult.status-ceq'RELAUNCHED'-and$deadlineResult.elapsedSeconds-eq300) 'exact deadline refused'
   $stale=New-Spec 'stale-window';$staleFailed=$false;try{& $watchdog -Label stale-window -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $stale.partial -ObservationFixture (New-Observation 'stale-window' 'dead' 'none' 301) -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$staleFailed=$_.Exception.Message-match'WINDOW_EXPIRED'};Assert-True $staleFailed 'stale observation admitted'
   $wrong=New-Spec 'partial-identity';$other=Join-Path $runtime 'other.jsonl';Set-Content $other 'unrelated';$partialFailed=$false;try{& $watchdog -Label partial-identity -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $other -ObservationFixture (New-Observation 'partial') -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$partialFailed=$_.Exception.Message-match'UNKNOWN_PARTIAL'};Assert-True $partialFailed 'wrong partial admitted'
@@ -1950,6 +2044,7 @@ while(-not(Test-Path -LiteralPath $Identity)){Start-Sleep -Milliseconds 50}
   Write-Output 'MUTANT watchdog-constant-route RED (frozen 7|fable/high and 7|astra/high deletion rejected)'
   $ordinary=New-Spec 'synthetic-row7-ordinary' 'gpt-6.1-sol' 'high' 0 7 'provisional';$before=Get-CallCount;$ordinaryResult=Invoke-Watchdog $ordinary 'ordinary';Assert-Recovery $ordinary $ordinaryResult 'gpt-6.1-sol' 'high' 'provisional' $before
   $invalid=New-Spec 'unqualified-cross-row' 'gpt-6.1-sol' 'medium' 0 7;$invalidFailed=$false;try{& $watchdog -Label unqualified-cross-row -RuntimeRoot $runtime -HistoryPath $history -TranscriptPath $invalid.partial -ObservationFixture (New-Observation 'unqualified' 'live' 'none') -DispatchScript $stub -SynchronousDispatch|Out-Null}catch{$invalidFailed=$_.Exception.Message-match'UNKNOWN_SPEC_INVALID'};Assert-True $invalidFailed 'unqualified cross-row config accepted'
+  if(-not$BeforeFixControl-and-not$Row15MeasuredControl-and-not$Named8098Control-and-not$Named8186Control){Test-TransportDeath}
   Write-Output 'PASS watchdog v2 closure, uniquely bound v2.61 routing adapter, provider-envelope-only classification, exhaustive row/config admission, qualified fallback or closed block, acknowledged exact-once relaunch, retryable launch failure, ceiling, live-slow, reused-PID, descendant, partial, and deadline controls'
 }finally{
   Remove-Item Env:SYNTHETIC_WATCHDOG_CALLS -ErrorAction SilentlyContinue;Remove-Item Env:SYNTHETIC_WATCHDOG_FAIL_LABEL -ErrorAction SilentlyContinue

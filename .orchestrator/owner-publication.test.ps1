@@ -438,7 +438,7 @@ function Invoke-ReaderInventory {
   $fixtures=@{
     # 3242: the #99 sampler-transition-pause pre-fix Get-Content sampler (RED control).
     'controller-release-battery.test.ps1'=@(950,959,969,988,1593,1928,3242)
-    'heavy-admission-preload.test.ps1'=@(176,629,658,766,1060,1066,1159,1216,1363,1410,1950,1954)
+    'heavy-admission-preload.test.ps1'=@(177,630,659,767,1061,1067,1160,1217,1364,1411,1951,1955)
     'heavy-slot.test.ps1'=@(97,100,123,1916,2243,2420)
     # install-controller-skills.ps1 reads the installed release record, not heavy
     # owner state; the test-file sites compare fixture-retained owner bytes.
@@ -456,7 +456,7 @@ function Invoke-ReaderInventory {
     'interrupted-integration-test-support.ps1'=@(1006)
     'landed-integration-evidence-test-support.ps1'=@(245)
     'landed-integration-r3.test.ps1'=@(52)
-    'lane-stall-watchdog.test.ps1'=@(566,612,615)
+    'lane-stall-watchdog.test.ps1'=@(658,704,707)
     'lease-contract.test.ps1'=@(87,88)
     'product-census-budget.test.ps1'=@(396,455,509,548)
     # Source-conservation checker reads a synthetic ownership path for its

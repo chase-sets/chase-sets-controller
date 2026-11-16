@@ -1,4 +1,4 @@
-param([ValidateSet('All','AC1','AC2','AC3','AC4','AC8186','mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','terminal-sibling','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal')][string]$Only='All', [switch]$BeforeFix)
+param([ValidateSet('All','AC1','AC2','AC3','AC4','AC8186','mixed-role-isolation','reducer-failure-isolation','day-after-error-and-observation','terminal-sibling','launch-status-observed','transport-vs-reducer-failure','relaunch-follow-stays-fatal','transport-orphan')][string]$Only='All', [switch]$BeforeFix)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'routing-data-test-support.ps1')
 $routingTestScope=Enter-RoutingDataTestScope
@@ -57,7 +57,7 @@ function End-Native($Handle){
 }
 function Run-Native([string]$Script,[string[]]$Arguments,[string]$Name){End-Native (Begin-Native $Script $Arguments $Name)}
 function Git([string]$Repo,[string[]]$Arguments){$output=& git.exe -C $Repo @Arguments 2>&1;Check ($LASTEXITCODE-eq0) 'synthetic Git setup';return ($output-join"`n")}
-function New-Producer([string]$Label,[ValidateSet('dead','terminal','live')][string]$Mode,[string]$SharedRuntime,[ValidateSet('implementation','planning','review')][string]$Role='implementation',[int]$Row=7,[string]$Placement='override-Todd',[switch]$Detached){
+function New-Producer([string]$Label,[ValidateSet('dead','terminal','live','orphan','transport')][string]$Mode,[string]$SharedRuntime,[ValidateSet('implementation','planning','review')][string]$Role='implementation',[int]$Row=7,[string]$Placement='override-Todd',[switch]$Detached){
   $case=Join-Path $root "$Label space";$repo=Join-Path $case 'worktree';$runtime=Join-Path $case 'runtime space';$temp=Join-Path $case 'temp'
   if($SharedRuntime){$runtime=$SharedRuntime}
   foreach($p in @($repo,$runtime,$temp)){[void][IO.Directory]::CreateDirectory($p)}
@@ -81,6 +81,12 @@ param($Mode,$Release,$Progress,$Grow)
 $null=[Console]::In.ReadToEnd()
 Write-Output '{"type":"synthetic.worker.started"}'
 if($Mode-eq'dead'){[Console]::Error.WriteLine('stream disconnected');exit 17}
+if($Mode-eq'transport'){
+  foreach($attempt in 1..10){Write-Output ('{"type":"system","subtype":"api_retry","error":"unknown","attempt":'+$attempt+'}')}
+  Write-Output '{"type":"assistant","error":"server_error","api_error":"connection_failed","message":{"role":"assistant","content":[{"type":"text","text":"API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again."}]}}'
+  Write-Output '{"type":"result","is_error":true,"terminal_reason":"api_error","result":"API Error: Connection dropped (ECONNRESET). Check the proxy set in https_proxy, then try again."}'
+  exit 1
+}
 if($Mode-eq'live'){
   $arguments=@('-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'descendant.ps1'),$Release,$Progress,$Grow)|ForEach-Object{'"'+$_+'"'}
   $child=Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WindowStyle Hidden -PassThru
@@ -93,17 +99,19 @@ if($Mode-eq'live'){
   }
   [IO.File]::WriteAllText($Release,'cooperative descendant exit');$child.WaitForExit();$child.Dispose()
 }
+if($Mode-ne'orphan'){Write-Output '{"type":"item.completed","item":{"type":"agent_message","text":"Synthetic task done.\nWHOLE_TASK_RELEASE"}}'}
 Write-Output '{"type":"turn.completed"}'
 exit 0
 '@)
   $config=Join-Path $case 'dispatch.json';$runner=Join-Path $case 'produce.ps1'
   $workerArguments=@('-NoProfile','-NonInteractive','-File',$body,$Mode,$release,$progress,$grow)|ForEach-Object{'"'+$_+'"'}
-  Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness='codex';Model='gpt-6-astra';Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
+  $harness=if($Mode-ceq'transport'){'claude'}else{'codex'};$model=if($Mode-ceq'transport'){'claude-opus-5-5'}else{'gpt-6-astra'}
+  Json $config @{script=(Join-Path $PSScriptRoot 'dispatch-lane.ps1');parameters=@{Harness=$harness;Model=$model;Effort='high';Row=$Row;Placement=$Placement;LaneRole=$Role;PromptFile=$prompt;Worktree=$repo;Label=$Label;ExecutablePath=$pwsh;TestRuntimeRoot=$runtime;TestTempRoot=$temp;TestArgumentList=@($workerArguments)}}
   [IO.File]::WriteAllText($runner,'$c=Get-Content -LiteralPath '''+$config.Replace("'","''")+''' -Raw|ConvertFrom-Json -AsHashtable;$p=$c.parameters;& $c.script @p;exit $LASTEXITCODE')
   $handle=Begin-Native $runner @() "$Label-producer"
   $caseObject=[pscustomobject]@{label=$Label;runtime=$runtime;transcript=(Join-Path $runtime "$Label.jsonl");spec=(Join-Path $runtime "watchdog-lane-$Label.json");release=$release;progress=$progress;grow=$grow;handle=$handle;descendant=$null}
   $workers.Add($caseObject)
-  if($Mode-ne'live'){$r=End-Native $handle;Check ($r.exit-eq$(if($Mode-eq'dead'){17}else{0})) "real producer $Mode exit"}
+  if($Mode-ne'live'){$r=End-Native $handle;Check ($r.exit-eq$(if($Mode-eq'dead'){17}elseif($Mode-eq'transport'){1}else{0})) "real producer $Mode exit"}
   else{
     $deadline=[datetime]::UtcNow.AddSeconds(30);$ready=$false
     while([datetime]::UtcNow-lt$deadline-and-not$handle.process.HasExited){
@@ -208,6 +216,23 @@ function Growth-Oracle($Result,$Case){
 try{
   $terminal=New-Producer 'synthetic-terminal' terminal
   $reducer=Join-Path $PSScriptRoot 'lane-stall-watchdog.ps1'
+  if($Only-in@('All','transport-orphan')){
+    $orphan=New-Producer 'synthetic-zero-orphan' orphan
+    $noReplay=Stub 'orphan-must-not-dispatch' 'throw ''ASSERTION FAILED: orphan dispatch must not run'''
+    $clocked=Poll-Clock 'transport-orphan' 3
+    $r=Batch @((Lane $orphan),(Lane $terminal)) 'transport-orphan' @('-ReducerScript',$reducer,'-DispatchScript',$noReplay) $clocked 8
+    $observations=@($r.events|Where-Object{$_.event-ceq'OBSERVATION'-and$_.label-ceq$orphan.label})
+    Check ($r.exit-eq0-and$r.events[-1].reason-ceq'WINDOW_EXPIRED'-and$observations.Count-ge2-and
+      @($observations|Where-Object{$_.status-cne'OBSERVATION_ONLY'-or$_.diagnosis-cne'ORPHAN_NO_WHOLE_TASK_RELEASE'-or$_.relaunch}).Count-eq0-and
+      @($r.events|Where-Object event -eq REDUCER_FAILURE).Count-eq0-and@($r.events|Where-Object relaunch -eq $true).Count-eq0) 'generic zero-exit orphan must stay watched and surface its closed diagnosis without replay or terminal success'
+    $transport=New-Producer 'synthetic-claude-transport' transport -Row 5 -Placement override-Todd
+    $refuse=Stub 'transport-failed-dispatch' 'exit 19'
+    $r=Batch @((Lane $transport)) 'transport-recovers-not-success' @('-ReducerScript',$reducer,'-DispatchScript',$refuse,'-SynchronousDispatch') (Poll-Clock 'transport-death' 2) 8
+    Check ($r.exit-eq0-and$r.events[-1].reason-ceq'WINDOW_EXPIRED'-and
+      @($r.events|Where-Object{$_.event-ceq'OBSERVATION'-and$_.status-ceq'LAUNCH_FAILED'}).Count-ge1-and
+      @($r.events|Where-Object status -eq TERMINAL_SUCCESS).Count-eq0-and@($r.events|Where-Object event -eq REDUCER_FAILURE).Count-eq0) 'batch Claude terminal transport must reach guarded recovery, not false terminal success or invalid-result failure'
+    Write-Output 'PASS transport-orphan batch surfaces orphan diagnosis, keeps observation active and sends Claude transport death through recovery'
+  }
   $reducerHash=(Get-FileHash $reducer).Hash
   if($Only-in@('All','AC1')){
     $r=Batch @((Lane $terminal)) 'AC1-real-producer-spaces'

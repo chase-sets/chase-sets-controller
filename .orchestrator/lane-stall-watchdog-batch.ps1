@@ -93,7 +93,8 @@ function Observe($Lane,[string]$DetectedAt){
     if($result.schemaVersion-cne'watchdog-observation-result/v1'-or$result.status-isnot[string]-or$result.status-cnotin$statuses-or
       $result.relaunch-isnot[bool]-or$result.relaunch-ne($result.status-ceq'RELAUNCHED')){throw 'RESULT_INVALID'}
     # Do not publish arbitrary reducer text, error messages, or fixture fields.
-    return [pscustomobject]@{status=$result.status;relaunch=$result.relaunch;label=$result.label;pid=$process.Id}
+    $diagnosis=if($result.status-ceq'OBSERVATION_ONLY'-and$result.diagnosis-ceq'ORPHAN_NO_WHOLE_TASK_RELEASE'){'ORPHAN_NO_WHOLE_TASK_RELEASE'}else{$null}
+    return [pscustomobject]@{status=$result.status;relaunch=$result.relaunch;label=$result.label;diagnosis=$diagnosis;pid=$process.Id}
   }finally{if($process){$process.Dispose()}}
 }
 function Note-ReducerFailure($Lane,[string]$DetectedAt,[string]$Code){
@@ -165,7 +166,9 @@ try{
         Note-ReducerFailure $lane $detectedAt $_.Exception.Message
       }
       if($null-eq$result){continue}
-      Report 'OBSERVATION' @{label=$lane.label;observedAt=$detectedAt;status=$result.status;relaunch=$result.relaunch;transportPid=$result.pid}
+      $observation=@{label=$lane.label;observedAt=$detectedAt;status=$result.status;relaunch=$result.relaunch;transportPid=$result.pid}
+      if($result.diagnosis){$observation.diagnosis=$result.diagnosis}
+      Report 'OBSERVATION' $observation
       $lane.unchanged=0
       # Only a valid, non-duplicate reduction resolves an earlier lane error.
       if($result.status-cne'DUPLICATE_SKIPPED'){$lane.unresolved=$false}
