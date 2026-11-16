@@ -3,10 +3,14 @@ param(
   [switch]$CostAttributionOnly,
   [switch]$ExistingAdmissionOnly,
   [switch]$JsonCensusOnly,
-  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All'
+  [ValidateSet('All','Admission','Protocol','Cutoff','MissingWork')][string]$CostPart = 'All',
+  [string]$Part = ''
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'suite-parts.ps1')
+Assert-SuiteSelection $Part @('admission','cost') $PSBoundParameters @('CostAttributionOnly','ExistingAdmissionOnly','JsonCensusOnly','CostPart')
+if ($Part) { $CostAttributionOnly = $Part -ceq 'cost'; $ExistingAdmissionOnly = $Part -ceq 'admission' }
 if (([int][bool]$CostAttributionOnly + [int][bool]$ExistingAdmissionOnly + [int][bool]$JsonCensusOnly) -gt 1) { throw 'Select only one focused diagnostic-admission control set' }
 if ($CostPart -ne 'All' -and -not $CostAttributionOnly) { throw 'CostPart requires the explicit CostAttributionOnly focus' }
 $guard = Join-Path $PSScriptRoot 'invoke-heavy-verifier.ps1'
