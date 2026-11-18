@@ -38,11 +38,11 @@ $chromiumDeclaration = $releaseDeclarations.diagnostics.'staged-import-chromium-
 Assert-True ($releaseDeclarations.schema -ceq 'host-heavy-diagnostic-declarations/v1' -and
   $chromiumDeclaration.enabled -eq $true -and $chromiumDeclaration.kind -ceq 'standalone-node' -and
   $chromiumDeclaration.path -ceq '.tmp/operator-7334-staged-import/chromium-control.mjs' -and
-  $chromiumDeclaration.sha256 -ceq 'da3ed81e6aaf4f4e5700ec14c103ee7de5e689d35470f8b9dc06a8de2a9afab1' -and
+  $chromiumDeclaration.sha256 -ceq 'efaea7b7c17af36fdb32e5ad677ee637bb7bc9880d7100987032e9a69e72b3ca' -and
   $chromiumDeclaration.maxBudgetSeconds -eq 900) 'release declaration pins staged-import Chromium path, bytes and 900-second cap'
 Write-Output 'PASS release declaration staged-import-chromium-control path=1 sha256=1 maxBudget=900'
 $expectedChromiumDependencies = @(
-  '.tmp/operator-7334-staged-import/runtime.mjs=0d81a2ea620eaeb068d2cfd263758a4aa3c20749e668acc12980c8c4234f2b60',
+  '.tmp/operator-7334-staged-import/runtime.mjs=b99079940a5ab40a45e3f3f416d29dca62482b1c160c3475d76e24409f3212c0',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-classification.js=b9222c43896c74d65d167aef45337552678196a9a7badcf24c6e208c302960f9',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-envelope.js=db23964f76c7cbff8ccdf95298b96e3b5cb294dd8087abdb3b653967339afa20',
   '.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-readback-verdict.js=456c5bff8d25dc3f7a8ad31ac1a4d8f6da34895dc069c04ae96525381eee8a1d',
@@ -50,7 +50,7 @@ $expectedChromiumDependencies = @(
 )
 $actualChromiumDependencies = @($chromiumDeclaration.dependencies | ForEach-Object { "$($_.path)=$($_.sha256)" })
 Assert-True (($actualChromiumDependencies -join '|') -ceq ($expectedChromiumDependencies -join '|')) 'release declaration preserves all five staged-import Chromium dependency hashes'
-Write-Output 'PASS release declaration staged-import-chromium-control dependencies=5 hashes=unchanged'
+Write-Output 'PASS release declaration staged-import-chromium-control dependencies=5 hashes=exact'
 $censusDeclaration = $releaseDeclarations.diagnostics.'json-census-five-run'
 $censusReviewedSha256 = '1bdd1c7539e89c4925402f502956ce6aa7334c18338ac950b190a56e92e647ce'
 Assert-True ((@($releaseDeclarations.diagnostics.PSObject.Properties.Name) -join ',') -ceq 'worst13-no-fit,staged-import-chromium-control,json-census-five-run,json-census-cost-attribution' -and
@@ -506,11 +506,11 @@ function Test-IgnoredChromiumPackage {
   Invoke-FixtureGit @('add','--','.gitignore') | Out-Null
   Invoke-FixtureGit @('commit','-m','ignored package fixture') | Out-Null
   $head=Invoke-FixtureGit @('rev-parse','HEAD')
-  $g4r2Root='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import-g4r2'
-  if (-not (Test-Path -LiteralPath $g4r2Root -PathType Container)) {
-    Write-Output "SKIP g4r2-positive-admission reason=reviewed package directory missing: $g4r2Root"
+  $packageRoot='D:\Users\ToddS\Source\Repos\chase-sets\.orchestrator\operator-7334-staged-import'
+  if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) {
+    Write-Output "SKIP chromium-exact-package-admission reason=reviewed package directory missing: $packageRoot"
   } else {
-    $g4r2Files = @(
+    $packageFiles = @(
       @{ Source='chromium-control.mjs'; Relative=$chromiumDeclaration.path },
       @{ Source='runtime.mjs'; Relative='.tmp/operator-7334-staged-import/runtime.mjs' },
       @{ Source='compiled/tcgplayer-staged-import-classification.js'; Relative='.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-classification.js' },
@@ -518,21 +518,21 @@ function Test-IgnoredChromiumPackage {
       @{ Source='compiled/tcgplayer-staged-import-readback-verdict.js'; Relative='.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-readback-verdict.js' },
       @{ Source='compiled/tcgplayer-staged-import-release-gate.js'; Relative='.tmp/operator-7334-staged-import/compiled/tcgplayer-staged-import-release-gate.js' }
     )
-    foreach ($file in $g4r2Files) {
+    foreach ($file in $packageFiles) {
       $destination=Join-Path $worktree ($file.Relative -replace '/','\')
       New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-      Copy-Item -LiteralPath (Join-Path $g4r2Root $file.Source) -Destination $destination -Force
+      Copy-Item -LiteralPath (Join-Path $packageRoot $file.Source) -Destination $destination -Force
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'diagnostic-declarations.json') -Destination $declarationPath -Force
     $scriptRelative=[string]$chromiumDeclaration.path; $scriptPath=Join-Path $worktree ($scriptRelative -replace '/','\'); $scriptHash=Get-Sha256 $scriptPath
-    $g4r2Guard=New-TestOnlyDiagnosticGuard 'g4r2-positive-admission'
-    $g4r2GuardText=[IO.File]::ReadAllText($g4r2Guard)
-    $g4r2GuardAnchor="`r`nAssert-DiagnosticDeclaration`r`n"
-    Assert-True (([regex]::Matches($g4r2GuardText,[regex]::Escape($g4r2GuardAnchor))).Count -eq 1) 'g4r2-positive-admission setup: declaration assertion anchor matched exactly once'
-    [IO.File]::WriteAllText($g4r2Guard, $g4r2GuardText.Replace($g4r2GuardAnchor, "`r`nAssert-DiagnosticDeclaration`r`nthrow 'g4r2-positive-admission-stop-before-body'`r`n"))
-    $g4r2Case=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='900' } 'g4r2-positive-admission' @{} 'staged-import-chromium-control' $g4r2Guard
-    Assert-True ($g4r2Case.Result.Code -eq 73 -and $g4r2Case.Result.Stderr.Contains('g4r2-positive-admission-stop-before-body') -and -not (Test-Path -LiteralPath $g4r2Case.Marker)) "g4r2-positive-admission: exact reviewed bytes pass declaration and dependency checks before body stop (exit=$($g4r2Case.Result.Code) stderr=$($g4r2Case.Result.Stderr))"
-    Write-Output 'PASS g4r2-positive-admission exact-control-and-dependencies=1 body=not-run browser=not-launched network=not-reached'
+    $packageGuard=New-TestOnlyDiagnosticGuard 'chromium-exact-package-admission'
+    $packageGuardText=[IO.File]::ReadAllText($packageGuard)
+    $packageGuardAnchor="`r`nAssert-DiagnosticDeclaration`r`n"
+    Assert-True (([regex]::Matches($packageGuardText,[regex]::Escape($packageGuardAnchor))).Count -eq 1) 'chromium-exact-package-admission setup: declaration assertion anchor matched exactly once'
+    [IO.File]::WriteAllText($packageGuard, $packageGuardText.Replace($packageGuardAnchor, "`r`nAssert-DiagnosticDeclaration`r`nthrow 'chromium-exact-package-admission-stop-before-body'`r`n"))
+    $packageCase=Invoke-Diagnostic @{ '-DiagnosticBudgetSeconds'='900' } 'chromium-exact-package-admission' @{} 'staged-import-chromium-control' $packageGuard
+    Assert-True ($packageCase.Result.Code -eq 73 -and $packageCase.Result.Stderr.Contains('chromium-exact-package-admission-stop-before-body') -and -not (Test-Path -LiteralPath $packageCase.Marker)) "chromium-exact-package-admission: exact reviewed bytes pass declaration and dependency checks before body stop (exit=$($packageCase.Result.Code) stderr=$($packageCase.Result.Stderr))"
+    Write-Output 'PASS chromium-exact-package-admission exact-control-and-dependencies=1 body=not-run browser=not-launched network=not-reached'
   }
   $source=Join-Path $root 'fixture-chromium-control.mjs'
   Set-Content -LiteralPath $source -Value @'
